@@ -35,6 +35,7 @@
 #include "mongo/db/namespace_string.h"
 
 namespace mongo {
+void initMyShardInvalidatedForTargetingInfo();
 
 /**
  * This error is thrown when a stale shard is found when attempting to retrieve a shard's shard

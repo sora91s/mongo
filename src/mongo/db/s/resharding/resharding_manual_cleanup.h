@@ -70,16 +70,17 @@ private:
     PersistentTaskStore<ReshardingDocument> _store;
 };
 
-class ReshardingCoordinatorCleaner : public ReshardingCleaner<ReshardingCoordinatorService,
-                                                              ReshardingCoordinator,
-                                                              ReshardingCoordinatorDocument> {
+class ReshardingCoordinatorCleaner
+    : public ReshardingCleaner<ReshardingCoordinatorService,
+                               ReshardingCoordinatorService::ReshardingCoordinator,
+                               ReshardingCoordinatorDocument> {
 public:
     ReshardingCoordinatorCleaner(NamespaceString nss, UUID reshardingUUID);
 
 private:
     void _doClean(OperationContext* opCtx, const ReshardingCoordinatorDocument& doc) override;
 
-    void _abortMachine(ReshardingCoordinator& machine) override;
+    void _abortMachine(ReshardingCoordinatorService::ReshardingCoordinator& machine) override;
 
     void _cleanOnParticipantShards(OperationContext* opCtx,
                                    const ReshardingCoordinatorDocument& doc);

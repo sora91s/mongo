@@ -54,9 +54,9 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const final;
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const final;
 
 protected:
     /**
@@ -73,7 +73,7 @@ protected:
     static unsigned int parseOpId(const BSONObj& cmdObj);
 
     static void reportSuccessfulCompletion(OperationContext* opCtx,
-                                           const DatabaseName& dbName,
+                                           const std::string& db,
                                            const BSONObj& cmdObj);
 
     /**

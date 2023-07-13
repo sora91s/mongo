@@ -86,8 +86,7 @@ public:
                     value::SlotVector innerProjects,
                     value::SlotMap<std::unique_ptr<EExpression>> innerAggs,
                     boost::optional<value::SlotId> collatorSlot,
-                    PlanNodeId planNodeId,
-                    bool participateInTrialRunTracking = true);
+                    PlanNodeId planNodeId);
 
     std::unique_ptr<PlanStage> clone() const final;
 
@@ -101,9 +100,6 @@ public:
     const SpecificStats* getSpecificStats() const final;
     std::vector<DebugPrinter::Block> debugPrint() const final;
     size_t estimateCompileTimeSize() const final;
-
-protected:
-    void saveChildrenState(bool relinquishCursor, bool disableSlotAccess) final;
 
 private:
     using HashTableType = std::unordered_map<value::MaterializedRow,  // NOLINT
@@ -184,7 +180,7 @@ private:
     const value::SlotVector _innerProjects;
     const value::SlotMap<std::unique_ptr<EExpression>> _innerAggs;
     const boost::optional<value::SlotId> _collatorSlot;
-    CollatorInterface* _collator{nullptr};
+    CollatorInterface* _collator;
 
     value::SlotAccessorMap _outAccessorMap;
     value::SlotAccessorMap _outInnerProjectAccessorMap;

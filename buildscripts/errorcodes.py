@@ -23,9 +23,12 @@ except ImportError:
     print("*** Run 'pip3 install --user regex' to speed up error code checking")
     import re  # type: ignore
 
+ASSERT_NAMES = ["uassert", "massert", "fassert", "fassertFailed"]
 MAXIMUM_CODE = 9999999  # JIRA Ticket + XX
 
+# pylint: disable=invalid-name
 codes = []  # type: ignore
+# pylint: enable=invalid-name
 
 # Each AssertLocation identifies the C++ source location of an assertion
 AssertLocation = namedtuple("AssertLocation", ['sourceFile', 'byteOffset', 'lines', 'code'])
@@ -57,7 +60,7 @@ _CODE_PATTERNS = [
 ]
 
 _DIR_EXCLUDE_RE = re.compile(r'(\..*'
-                             r'|pcre2.*'
+                             r'|pcre-.*'
                              r'|32bit.*'
                              r'|mongodb-.*'
                              r'|debian.*'
@@ -236,7 +239,7 @@ def read_error_codes(src_root='src/mongo'):
     return (codes, errors, seen)
 
 
-def replace_bad_codes(errors, next_code_generator):
+def replace_bad_codes(errors, next_code_generator):  # pylint: disable=too-many-locals
     """
     Modify C++ source files to replace invalid assertion codes.
 
@@ -304,7 +307,7 @@ def main():
     parser.add_option("--list-files", dest="list_files", action="store_true", default=False,
                       help="Print the name of each file as it is scanned [default: %default]")
     parser.add_option(
-        "--ticket", dest="ticket", type="str", action="store", default=None,
+        "--ticket", dest="ticket", type="str", action="store", default=0,
         help="Generate error codes for a given SERVER ticket number. Inputs can be of"
         " the form: `--ticket=12345` or `--ticket=SERVER-12345`.")
     options, extra = parser.parse_args()
@@ -320,13 +323,11 @@ def main():
     if ok and options.quiet:
         return
 
-    print("ok: %s" % ok)
+    next_code_gen = get_next_code(seen, coerce_to_number(options.ticket))
 
-    if options.ticket:
-        next_code_gen = get_next_code(seen, coerce_to_number(options.ticket))
+    print("ok: %s" % ok)
+    if not options.replace:
         print("next: %s" % next(next_code_gen))
-    else:
-        next_code_gen = get_next_code(seen, 0)
 
     if ok:
         sys.exit(0)

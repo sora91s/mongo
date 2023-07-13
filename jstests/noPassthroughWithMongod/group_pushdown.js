@@ -7,8 +7,8 @@
 load("jstests/libs/analyze_plan.js");
 load("jstests/libs/sbe_util.js");  // For checkSBEEnabled.
 
-if (!checkSBEEnabled(db)) {
-    jsTestLog("Skipping test because SBE is not enabled");
+if (!checkSBEEnabled(db, ["featureFlagSBEGroupPushdown"])) {
+    jsTestLog("Skipping test because the sbe group pushdown feature flag is disabled");
     return;
 }
 
@@ -60,7 +60,7 @@ let assertResultsMatchWithAndWithoutPushdown = function(
     assertGroupPushdown(coll, pipeline, expectedResults, expectedGroupCountInExplain);
 
     // Turn sbe off.
-    db.adminCommand({setParameter: 1, internalQueryFrameworkControl: "forceClassicEngine"});
+    db.adminCommand({setParameter: 1, internalQueryForceClassicEngine: true});
 
     // Sanity check the results when no pushdown happens.
     let resultNoGroupPushdown = coll.aggregate(pipeline).toArray();
@@ -68,17 +68,17 @@ let assertResultsMatchWithAndWithoutPushdown = function(
 
     // Turn sbe on which will allow $group stages that contain supported accumulators to be pushed
     // down under certain conditions.
-    db.adminCommand({setParameter: 1, internalQueryFrameworkControl: "tryBonsai"});
+    db.adminCommand({setParameter: 1, internalQueryForceClassicEngine: false});
 
     let resultWithGroupPushdown = coll.aggregate(pipeline).toArray();
     assert.sameMembers(resultNoGroupPushdown, resultWithGroupPushdown);
 };
 
 let assertShardedGroupResultsMatch = function(coll, pipeline, expectedGroupCountInExplain = 1) {
-    const originalFrameworkControl =
+    const originalSBEEngineStatus =
         assert
-            .commandWorked(db.adminCommand(
-                {setParameter: 1, internalQueryFrameworkControl: "forceClassicEngine"}))
+            .commandWorked(
+                db.adminCommand({setParameter: 1, internalQueryForceClassicEngine: true}))
             .was;
 
     const cmd = {
@@ -91,7 +91,7 @@ let assertShardedGroupResultsMatch = function(coll, pipeline, expectedGroupCount
 
     const classicalRes = coll.runCommand(cmd).cursor.firstBatch;
     assert.commandWorked(
-        db.adminCommand({setParameter: 1, internalQueryFrameworkControl: "tryBonsai"}));
+        db.adminCommand({setParameter: 1, internalQueryForceClassicEngine: false}));
     const explainCmd = {
         aggregate: coll.getName(),
         pipeline: pipeline,
@@ -107,31 +107,13 @@ let assertShardedGroupResultsMatch = function(coll, pipeline, expectedGroupCount
     assert.sameMembers(sbeRes, classicalRes);
 
     assert.commandWorked(db.adminCommand(
-        {setParameter: 1, internalQueryFrameworkControl: originalFrameworkControl}));
+        {setParameter: 1, internalQueryForceClassicEngine: originalSBEEngineStatus}));
 };
 
 // Try a pipeline with no group stage.
 assert.eq(
     coll.aggregate([{$match: {item: "c"}}]).toArray(),
     [{"_id": 5, "item": "c", "price": 5, "quantity": 10, "date": ISODate("2014-02-15T09:05:00Z")}]);
-
-// Run a simple $group with {$sum: 1} accumulator, and check if it gets pushed down.
-assertResultsMatchWithAndWithoutPushdown(
-    coll,
-    [{$group: {_id: "$item", c: {$sum: NumberInt(1)}}}],
-    [{_id: "a", c: NumberInt(2)}, {_id: "b", c: NumberInt(2)}, {_id: "c", c: NumberInt(1)}],
-    1);
-
-assertResultsMatchWithAndWithoutPushdown(
-    coll,
-    [{$group: {_id: "$item", c: {$sum: NumberLong(1)}}}],
-    [{_id: "a", c: NumberLong(2)}, {_id: "b", c: NumberLong(2)}, {_id: "c", c: NumberLong(1)}],
-    1);
-
-assertResultsMatchWithAndWithoutPushdown(coll,
-                                         [{$group: {_id: "$item", c: {$sum: 1}}}],
-                                         [{_id: "a", c: 2}, {_id: "b", c: 2}, {_id: "c", c: 1}],
-                                         1);
 
 // Run a simple $group with supported $sum accumulator, and check if it gets pushed down.
 assertResultsMatchWithAndWithoutPushdown(coll,
@@ -185,38 +167,28 @@ assertResultsMatchWithAndWithoutPushdown(
     ],
     1);
 
-// Computed projections are only eligible for pushdown into SBE when SBE is fully enabled.
-// Additionally, $group stages with dotted fields may only be eligible for pushdown when SBE is
-// fully enabled as dependancy analysis may produce a dotted projection, which are not currently
-// supported in mainline SBE.
-const sbeFull = checkSBEEnabled(db, ["featureFlagSbeFull"]);
-if (sbeFull) {
-    // The $group stage refers to two existing sub-fields.
-    assertResultsMatchWithAndWithoutPushdown(
-        coll,
-        [
-            {
-                $project:
-                    {item: 1, price: 1, quantity: 1, dateParts: {$dateToParts: {date: "$date"}}}
-            },
-            {
-                $group: {
-                    _id: "$item",
-                    hs: {$sum:
-                             {$add: ["$dateParts.hour", "$dateParts.hour", "$dateParts.minute"]}}
-                }
-            },
-        ],
-        [{"_id": "a", "hs": 39}, {"_id": "b", "hs": 34}, {"_id": "c", "hs": 23}],
-        1);
+// The $group stage refers to two existing sub-fields.
+assertResultsMatchWithAndWithoutPushdown(
+    coll,
+    [
+        {$project: {item: 1, price: 1, quantity: 1, dateParts: {$dateToParts: {date: "$date"}}}},
+        {
+            $group: {
+                _id: "$item",
+                hs: {$sum: {$add: ["$dateParts.hour", "$dateParts.hour", "$dateParts.minute"]}}
+            }
+        },
+    ],
+    [{"_id": "a", "hs": 39}, {"_id": "b", "hs": 34}, {"_id": "c", "hs": 23}],
+    1);
 
-    // The $group stage refers to a non-existing sub-field twice.
-    assertResultsMatchWithAndWithoutPushdown(
-        coll,
-        [{$group: {_id: "$item", hs: {$sum: {$add: ["$date.hour", "$date.hour"]}}}}],
-        [{"_id": "a", "hs": 0}, {"_id": "b", "hs": 0}, {"_id": "c", "hs": 0}],
-        1);
-}
+// The $group stage refers to a non-existing sub-field twice.
+assertResultsMatchWithAndWithoutPushdown(
+    coll,
+    [{$group: {_id: "$item", hs: {$sum: {$add: ["$date.hour", "$date.hour"]}}}}],
+    [{"_id": "a", "hs": 0}, {"_id": "b", "hs": 0}, {"_id": "c", "hs": 0}],
+    1);
+
 // Two group stages both get pushed down and the second $group stage refers to only existing
 // top-level fields of the first $group. The field name may be one of "result" / "recordId" /
 // "returnKey" / "snapshotId" / "indexId" / "indexKey" / "indexKeyPattern" which are reserved names
@@ -341,6 +313,21 @@ assertResultsMatchWithAndWithoutPushdown(coll,
                                          ],
                                          [{"_id": null, "lowp": 2, "highp": 1}],
                                          2);
+
+// The second $group stage refers to top-fields below a $filter
+assertResultsMatchWithAndWithoutPushdown(
+    coll,
+    [
+        {$group: {_id: "$item", prices: {$push: "$price"}}},
+        {
+            $group: {
+                _id: "$_id",
+                o: {$push: {$filter: {input: "$prices", as: "p", cond: {$gte: ["$$p", 5]}}}}
+            }
+        }
+    ],
+    [{"_id": "a", "o": [[10, 5]]}, {"_id": "b", "o": [[20, 10]]}, {"_id": "c", "o": [[5]]}],
+    2);
 
 // The second $group stage refers to top-fields below a $let
 assertResultsMatchWithAndWithoutPushdown(
@@ -658,11 +645,6 @@ assertResultsMatchWithAndWithoutPushdown(
     [{$sortByCount: "$item"}],
     [{"_id": "a", "count": 2}, {"_id": "b", "count": 2}, {"_id": "c", "count": 1}]);
 
-assertResultsMatchWithAndWithoutPushdown(
-    coll,
-    [{$sortByCount: {$cond: [{$eq: ["$item", {$const: "a"}]}, "$price", "$quantity"]}}],
-    [{_id: 10, count: 3}, {_id: 1, count: 1}, {_id: 5, count: 1}]);
-
 // When at the mongos-side in a sharded environment or we are spilling $doingMerge is set to true.
 // We should bail out and not push down $group stages and the suffix of the pipeline when we
 // encounter a $group stage with this flag set.
@@ -690,12 +672,6 @@ assert.neq(null, getAggPlanStage(explain, "GROUP"), explain);
 
 // Verifies that a basic sharded $sum accumulator works.
 assertShardedGroupResultsMatch(coll, [{$group: {_id: "$item", s: {$sum: "$quantity"}}}]);
-
-// Verifies that a sharded count-like accumulator works
-assertShardedGroupResultsMatch(coll, [{$group: {_id: "$item", s: {$sum: NumberInt(1)}}}]);
-assertShardedGroupResultsMatch(coll, [{$group: {_id: "$item", s: {$sum: NumberLong(1)}}}]);
-assertShardedGroupResultsMatch(coll, [{$group: {_id: "$item", s: {$sum: 1}}}]);
-assertShardedGroupResultsMatch(coll, [{$group: {_id: "$item", s: {$count: {}}}}]);
 
 // When there's overflow for 'NumberLong', the mongod sends back the partial sum as a doc with
 // 'subTotal' and 'subTotalError' fields. So, we need an overflow case to verify such behavior.

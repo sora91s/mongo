@@ -2,8 +2,10 @@
  * Tests that tenant migration recipient's in memory state is recovered correctly on startup. This
  * test randomly selects a point during the migration to shutdown the recipient.
  *
- *  TODO SERVER-72209 Remove incompatible_with_shard_merge once recipient is resistent to restarts
+ * Tenant migrations are not expected to be run on servers with ephemeralForTest.
+ *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -13,16 +15,17 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {makeX509OptionsForTest} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 
 const recipientRst = new ReplSetTest({
     nodes: 1,
     name: 'recipient',
-    nodeOptions: Object.assign(makeX509OptionsForTest().recipient, {
+    nodeOptions: Object.assign(TenantMigrationUtil.makeX509OptionsForTest().recipient, {
         setParameter:
             {"failpoint.PrimaryOnlyServiceSkipRebuildingInstances": tojson({mode: "alwaysOn"})}
     })
@@ -34,7 +37,7 @@ recipientRst.initiate();
 const tenantMigrationTest = new TenantMigrationTest({name: jsTestName(), recipientRst});
 
 const kMaxSleepTimeMS = 7500;
-const kTenantId = ObjectId().str;
+const kTenantId = 'testTenantId';
 
 let recipientPrimary = tenantMigrationTest.getRecipientPrimary();
 
@@ -49,9 +52,8 @@ if (index < kMigrationFpNames.length) {
     configureFailPoint(recipientPrimary, kMigrationFpNames[index], {action: "hang"});
 }
 
-const migrationId = UUID();
 const migrationOpts = {
-    migrationIdString: extractUUIDFromObject(migrationId),
+    migrationIdString: extractUUIDFromObject(UUID()),
     tenantId: kTenantId,
 };
 assert.commandWorked(tenantMigrationTest.startMigration(migrationOpts));
@@ -66,7 +68,7 @@ recipientRst.startSet({
 recipientPrimary = recipientRst.getPrimary();
 const configRecipientsColl =
     recipientPrimary.getCollection(TenantMigrationTest.kConfigRecipientsNS);
-const recipientDoc = configRecipientsColl.findOne({_id: migrationId});
+const recipientDoc = configRecipientsColl.findOne({tenantId: kTenantId});
 if (recipientDoc) {
     switch (recipientDoc.state) {
         case TenantMigrationTest.RecipientState.kStarted:
@@ -107,3 +109,4 @@ if (recipientDoc) {
 
 tenantMigrationTest.stop();
 recipientRst.stopSet();
+})();

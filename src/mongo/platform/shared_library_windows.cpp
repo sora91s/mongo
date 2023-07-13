@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -38,19 +39,16 @@
 #include "mongo/util/str.h"
 #include "mongo/util/text.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
-
 namespace mongo {
 
 SharedLibrary::~SharedLibrary() {
     if (_handle) {
         if (FreeLibrary(static_cast<HMODULE>(_handle)) == 0) {
-            auto ec = lastSystemError();
+            DWORD lasterror = GetLastError();
             LOGV2_DEBUG(22614,
                         2,
                         "Load library close failed: {errnoWithDescription_lasterror}",
-                        "errnoWithDescription_lasterror"_attr = errorMessage(ec));
+                        "errnoWithDescription_lasterror"_attr = errnoWithDescription(lasterror));
         }
     }
 }
@@ -64,10 +62,9 @@ StatusWith<std::unique_ptr<SharedLibrary>> SharedLibrary::create(
 
     HMODULE handle = LoadLibraryW(full_path.c_str());
     if (handle == nullptr) {
-        auto ec = lastSystemError();
         return StatusWith<std::unique_ptr<SharedLibrary>>(ErrorCodes::InternalError,
                                                           str::stream() << "Load library failed: "
-                                                                        << errorMessage(ec));
+                                                                        << errnoWithDescription());
     }
 
     return StatusWith<std::unique_ptr<SharedLibrary>>(
@@ -85,7 +82,7 @@ StatusWith<void*> SharedLibrary::getSymbol(StringData name) {
         if (gle != ERROR_PROC_NOT_FOUND) {
             return StatusWith<void*>(ErrorCodes::InternalError,
                                      str::stream() << "GetProcAddress failed for symbol: "
-                                                   << errorMessage(systemError(gle)));
+                                                   << errnoWithDescription());
         }
     }
 

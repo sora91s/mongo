@@ -99,15 +99,13 @@ main(int argc, char *argv[])
     opts = &_opts;
     memset(opts, 0, sizeof(*opts));
     opts->nthreads = 20;
-    opts->nrecords = 100 * WT_THOUSAND;
+    opts->nrecords = 100000;
     opts->table_type = TABLE_ROW;
     testutil_check(testutil_parse_opts(argc, argv, opts));
     testutil_make_work_dir(opts->home);
 
     testutil_check(wiredtiger_open(opts->home, NULL,
-      "create,cache_size=2G,eviction=(threads_max=5),statistics=(all),statistics_log=(json,on_"
-      "close,wait=1)",
-      &opts->conn));
+      "create,cache_size=2G,eviction=(threads_max=5),statistics=(fast)", &opts->conn));
     testutil_check(opts->conn->open_session(opts->conn, NULL, NULL, &session));
     testutil_check(__wt_snprintf(tableconf, sizeof(tableconf),
       "key_format=%s,value_format=%s,leaf_page_max=32k,", opts->table_type == TABLE_ROW ? "Q" : "r",
@@ -194,12 +192,12 @@ thread_insert_race(void *arg)
             printf("Error in update: %d\n", ret);
         }
         testutil_check(session->commit_transaction(session, NULL));
-        if (i % (10 * WT_THOUSAND) == 0) {
+        if (i % 10000 == 0) {
             printf("insert: %" PRIu64 "\r", i);
             fflush(stdout);
         }
     }
-    if (i > 10 * WT_THOUSAND)
+    if (i > 10000)
         printf("\n");
 
     opts->running = false;

@@ -44,32 +44,24 @@ public:
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
-
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-
     bool skipApiVersionCheck() const override {
         // Internal command (server to server).
         return true;
     }
-
     std::string help() const override {
         return "{ _isSelf : 1 } INTERNAL ONLY";
     }
-
     bool requiresAuth() const override {
         return false;
     }
-
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();
-    }
-
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const override {}
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
         result.append("id", repl::instanceId);

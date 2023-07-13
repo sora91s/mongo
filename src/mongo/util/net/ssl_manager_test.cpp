@@ -27,14 +27,15 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include <fstream>
 
 #include "mongo/config.h"
 #include "mongo/platform/basic.h"
 
-#include "mongo/transport/asio/asio_transport_layer.h"
 #include "mongo/transport/service_entry_point.h"
+#include "mongo/transport/transport_layer_asio.h"
 #include "mongo/transport/transport_layer_manager.h"
 #include "mongo/util/net/ssl/context.hpp"
 #include "mongo/util/net/ssl_manager.h"
@@ -48,8 +49,6 @@
 #include "mongo/util/net/ssl/context_openssl.hpp"
 #endif
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 namespace {
@@ -57,7 +56,7 @@ namespace {
 // Test implementation needed by ASIO transport.
 class ServiceEntryPointUtil : public ServiceEntryPoint {
 public:
-    void startSession(std::shared_ptr<transport::Session> session) override {
+    void startSession(transport::SessionHandle session) override {
         stdx::unique_lock<Latch> lk(_mutex);
         _sessions.push_back(std::move(session));
         LOGV2(2303202, "started session");
@@ -66,7 +65,7 @@ public:
 
     void endAllSessions(transport::Session::TagMask tags) override {
         LOGV2(2303302, "end all sessions");
-        std::vector<std::shared_ptr<transport::Session>> old_sessions;
+        std::vector<transport::SessionHandle> old_sessions;
         {
             stdx::unique_lock<Latch> lock(_mutex);
             old_sessions.swap(_sessions);
@@ -94,10 +93,6 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    logv2::LogSeverity slowSessionWorkflowLogSeverity() override {
-        MONGO_UNIMPLEMENTED;
-    }
-
     void setTransportLayer(transport::TransportLayer* tl) {
         _transport = tl;
     }
@@ -110,7 +105,7 @@ public:
 private:
     mutable Mutex _mutex = MONGO_MAKE_LATCH("::_mutex");
     stdx::condition_variable _cv;
-    std::vector<std::shared_ptr<transport::Session>> _sessions;
+    std::vector<transport::SessionHandle> _sessions;
     transport::TransportLayer* _transport = nullptr;
 };
 
@@ -507,10 +502,10 @@ TEST(SSLManager, RotateCertificatesFromFile) {
     auto options = [] {
         ServerGlobalParams params;
         params.noUnixSocket = true;
-        transport::AsioTransportLayer::Options opts(&params);
+        transport::TransportLayerASIO::Options opts(&params);
         return opts;
     }();
-    transport::AsioTransportLayer tla(options, &sepu);
+    transport::TransportLayerASIO tla(options, &sepu);
     uassertStatusOK(tla.rotateCertificates(manager, false /* asyncOCSPStaple */));
 }
 
@@ -522,12 +517,9 @@ TEST(SSLManager, InitContextFromFileShouldFail) {
     params.sslCAFile = "jstests/libs/ca.pem";
     params.sslClusterFile = "jstests/libs/client.pem";
 #if MONGO_CONFIG_SSL_PROVIDER == MONGO_CONFIG_SSL_PROVIDER_OPENSSL
-    ASSERT_THROWS_CODE(
-        [&params] {
-            SSLManagerInterface::create(params, true /* isSSLServer */);
-        }(),
-        DBException,
-        ErrorCodes::InvalidSSLConfiguration);
+    ASSERT_THROWS_CODE([&params] { SSLManagerInterface::create(params, true /* isSSLServer */); }(),
+                       DBException,
+                       ErrorCodes::InvalidSSLConfiguration);
 #endif
 }
 
@@ -546,10 +538,10 @@ TEST(SSLManager, RotateClusterCertificatesFromFile) {
     auto options = [] {
         ServerGlobalParams params;
         params.noUnixSocket = true;
-        transport::AsioTransportLayer::Options opts(&params);
+        transport::TransportLayerASIO::Options opts(&params);
         return opts;
     }();
-    transport::AsioTransportLayer tla(options, &sepu);
+    transport::TransportLayerASIO tla(options, &sepu);
     uassertStatusOK(tla.rotateCertificates(manager, false /* asyncOCSPStaple */));
 }
 
@@ -614,10 +606,10 @@ TEST(SSLManager, TransientSSLParams) {
     auto options = [] {
         ServerGlobalParams params;
         params.noUnixSocket = true;
-        transport::AsioTransportLayer::Options opts(&params);
+        transport::TransportLayerASIO::Options opts(&params);
         return opts;
     }();
-    transport::AsioTransportLayer tla(options, &sepu);
+    transport::TransportLayerASIO tla(options, &sepu);
 
     TransientSSLParams transientSSLParams;
     transientSSLParams.sslClusterPEMPayload = loadFile("jstests/libs/client.pem");
@@ -647,10 +639,10 @@ TEST(SSLManager, TransientSSLParamsStressTestWithTransport) {
     auto options = [] {
         ServerGlobalParams params;
         params.noUnixSocket = true;
-        transport::AsioTransportLayer::Options opts(&params);
+        transport::TransportLayerASIO::Options opts(&params);
         return opts;
     }();
-    transport::AsioTransportLayer tla(options, &sepu);
+    transport::TransportLayerASIO tla(options, &sepu);
 
     TransientSSLParams transientSSLParams;
     transientSSLParams.sslClusterPEMPayload = loadFile("jstests/libs/client.pem");

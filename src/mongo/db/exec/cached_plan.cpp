@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -35,7 +36,7 @@
 #include <memory>
 
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/multi_plan.h"
 #include "mongo/db/exec/plan_cache_util.h"
 #include "mongo/db/exec/scoped_timer.h"
@@ -52,9 +53,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/str.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -77,8 +75,9 @@ CachedPlanStage::CachedPlanStage(ExpressionContext* expCtx,
 }
 
 Status CachedPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
-    // Adds the amount of time taken by pickBestPlan() to executionTime. There's lots of execution
-    // work that happens here, so this is needed for the time accounting to make sense.
+    // Adds the amount of time taken by pickBestPlan() to executionTimeMillis. There's lots of
+    // execution work that happens here, so this is needed for the time accounting to
+    // make sense.
     auto optTimer = getOptTimer();
 
     // During plan selection, the list of indices we are using to plan must remain stable, so the
@@ -145,11 +144,8 @@ Status CachedPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
             return Status::OK();
         } else if (PlanStage::NEED_YIELD == state) {
             invariant(id == WorkingSet::INVALID_ID);
-            // Run-time plan selection occurs before a WriteUnitOfWork is opened and it's not
-            // subject to TemporarilyUnavailableException's.
-            invariant(!expCtx()->getTemporarilyUnavailableException());
             if (!yieldPolicy->canAutoYield()) {
-                throwWriteConflictException("Write conflict during best plan selection period.");
+                throw WriteConflictException();
             }
 
             if (yieldPolicy->canAutoYield()) {

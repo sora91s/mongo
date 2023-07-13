@@ -27,8 +27,11 @@
  *    it in the license file.
  */
 
-#include "mongo/db/catalog/capped_collection_maintenance.h"
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/storage/record_store_test_harness.h"
+
+#include "mongo/db/storage/record_store.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -172,10 +175,7 @@ TEST(RecordStoreTestHarness, SeekNearOplog) {
 
     {
         ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
-        rs->cappedTruncateAfter(opCtx.get(),
-                                RecordId(2, 2),
-                                false /* inclusive */,
-                                nullptr /* aboutToDelete callback */);  // no-op
+        rs->cappedTruncateAfter(opCtx.get(), RecordId(2, 2), false);  // no-op
     }
 
     {
@@ -188,10 +188,7 @@ TEST(RecordStoreTestHarness, SeekNearOplog) {
 
     {
         ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
-        rs->cappedTruncateAfter(opCtx.get(),
-                                RecordId(1, 2),
-                                false /* inclusive */,
-                                nullptr /* aboutToDelete callback */);  // deletes 2,2
+        rs->cappedTruncateAfter(opCtx.get(), RecordId(1, 2), false);  // deletes 2,2
     }
 
     {
@@ -204,10 +201,7 @@ TEST(RecordStoreTestHarness, SeekNearOplog) {
 
     {
         ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
-        rs->cappedTruncateAfter(opCtx.get(),
-                                RecordId(1, 2),
-                                true /* inclusive */,
-                                nullptr /* aboutToDelete callback */);  // deletes 1,2
+        rs->cappedTruncateAfter(opCtx.get(), RecordId(1, 2), true);  // deletes 1,2
     }
 
     {
@@ -290,7 +284,7 @@ std::string stringifyForDebug(OperationContext* opCtx,
     auto optOplogReadTimestampInt = opCtx->recoveryUnit()->getOplogVisibilityTs();
     if (optOplogReadTimestampInt) {
         output << "Latest oplog visibility timestamp: "
-               << Timestamp(optOplogReadTimestampInt.value());
+               << Timestamp(optOplogReadTimestampInt.get());
     }
 
     if (record) {
@@ -429,8 +423,7 @@ TEST(RecordStoreTestHarness, OplogOrder) {
     {
         auto client2 = harnessHelper->serviceContext()->makeClient("c2");
         auto opCtx = harnessHelper->newOperationContext(client2.get());
-        rs->cappedTruncateAfter(
-            opCtx.get(), id1, false /* inclusive */, nullptr /* aboutToDelete callback */);
+        rs->cappedTruncateAfter(opCtx.get(), id1, /*inclusive*/ false);
     }
 
     rs->waitForAllEarlierOplogWritesToBeVisible(harnessHelper->newOperationContext().get());
@@ -537,7 +530,7 @@ TEST(RecordStoreTestHarness, OplogVisibilityStandalone) {
                 rs->insertRecord(opCtx.get(), obj.objdata(), obj.objsize(), Timestamp());
             ASSERT_OK(res.getStatus());
             id1 = res.getValue();
-            StatusWith<RecordId> expectedId = record_id_helpers::keyForOptime(ts, KeyFormat::Long);
+            StatusWith<RecordId> expectedId = record_id_helpers::keyForOptime(ts);
             ASSERT_OK(expectedId.getStatus());
             // RecordId should be extracted from 'ts' field when inserting into oplog namespace
             ASSERT(expectedId.getValue().compare(id1) == 0);

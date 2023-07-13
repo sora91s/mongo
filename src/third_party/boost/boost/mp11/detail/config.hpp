@@ -47,9 +47,7 @@
 
 # endif
 
-#endif
-
-#if defined(__clang__)
+#elif defined(__clang__)
 
 // Clang
 

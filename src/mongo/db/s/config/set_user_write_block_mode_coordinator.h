@@ -29,9 +29,9 @@
 
 #pragma once
 
+#include "mongo/db/internal_session_pool.h"
 #include "mongo/db/s/config/configsvr_coordinator.h"
 #include "mongo/db/s/config/set_user_write_block_mode_coordinator_document_gen.h"
-#include "mongo/db/session/internal_session_pool.h"
 
 namespace mongo {
 
@@ -42,7 +42,7 @@ public:
 
     explicit SetUserWriteBlockModeCoordinator(const BSONObj& stateDoc)
         : ConfigsvrCoordinator(stateDoc),
-          _doc(StateDoc::parse(IDLParserContext("SetUserWriteBlockModeCoordinatorDocument"),
+          _doc(StateDoc::parse(IDLParserErrorContext("SetUserWriteBlockModeCoordinatorDocument"),
                                stateDoc)) {}
 
     bool hasSameOptions(const BSONObj& participantDoc) const override;
@@ -50,8 +50,6 @@ public:
     boost::optional<BSONObj> reportForCurrentOp(
         MongoProcessInterface::CurrentOpConnectionsMode connMode,
         MongoProcessInterface::CurrentOpSessionsMode sessionMode) noexcept override;
-
-    void checkIfOptionsConflict(const BSONObj& stateDoc) const override {}
 
 private:
     StateDoc _doc;
@@ -62,7 +60,7 @@ private:
     const ConfigsvrCoordinatorMetadata& metadata() const override;
 
     template <typename Func>
-    auto _buildPhaseHandler(const Phase& newPhase, Func&& handlerFn) {
+    auto _executePhase(const Phase& newPhase, Func&& func) {
         return [=] {
             const auto& currPhase = _doc.getPhase();
 
@@ -74,7 +72,7 @@ private:
                 // Persist the new phase if this is the first time we are executing it.
                 _enterPhase(newPhase);
             }
-            return handlerFn();
+            return func();
         };
     }
 

@@ -7,7 +7,7 @@ from buildscripts.resmokelib.testing.testcases import pytest
 
 _IS_WINDOWS = sys.platform == "win32"
 
-# pylint: disable=protected-access
+# pylint: disable=missing-docstring,protected-access
 
 
 def get_filename(filename):

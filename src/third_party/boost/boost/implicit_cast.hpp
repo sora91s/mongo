@@ -6,11 +6,6 @@
 #ifndef BOOST_IMPLICIT_CAST_DWA200356_HPP
 #define BOOST_IMPLICIT_CAST_DWA200356_HPP
 
-#include <boost/config.hpp>
-#ifdef BOOST_HAS_PRAGMA_ONCE
-# pragma once
-#endif
-
 namespace boost {
 
 namespace detail {
@@ -28,7 +23,7 @@ template<class T> struct icast_identity
 // The use of identity creates a non-deduced form, so that the
 // explicit template argument must be supplied
 template <typename T>
-BOOST_CONSTEXPR inline T implicit_cast (typename boost::detail::icast_identity<T>::type x) {
+inline T implicit_cast (typename boost::detail::icast_identity<T>::type x) {
     return x;
 }
 

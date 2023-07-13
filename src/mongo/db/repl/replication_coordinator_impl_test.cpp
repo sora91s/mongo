@@ -27,9 +27,11 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
+#include <boost/optional/optional_io.hpp>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -80,9 +82,6 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 namespace repl {
@@ -470,7 +469,6 @@ TEST_F(ReplCoordTest, InitiateSucceedsWhenQuorumCheckPasses) {
     ASSERT_EQUALS("admin", noi->getRequest().dbname);
     ASSERT_BSONOBJ_EQ(hbArgs.toBSON(), noi->getRequest().cmdObj);
     ReplSetHeartbeatResponse hbResp;
-    hbResp.setSetName("mySet");
     hbResp.setConfigVersion(0);
     hbResp.setAppliedOpTimeAndWallTime({OpTime(Timestamp(100, 1), 0), Date_t() + Seconds(100)});
     hbResp.setDurableOpTimeAndWallTime({OpTime(Timestamp(100, 1), 0), Date_t() + Seconds(100)});
@@ -1178,6 +1176,7 @@ TEST_F(ReplCoordTest, NodeCalculatesDefaultWriteConcernOnStartupExistingLocalCon
                        HostAndPort("node1", 12345));
     auto& rwcDefaults = ReadWriteConcernDefaults::get(getServiceContext());
     ASSERT(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest());
+    ASSERT(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest().get());
 }
 
 
@@ -1197,7 +1196,8 @@ TEST_F(ReplCoordTest,
                                                   << "_id" << 2 << "arbiterOnly" << true))),
                        HostAndPort("node1", 12345));
     auto& rwcDefaults = ReadWriteConcernDefaults::get(getServiceContext());
-    ASSERT_FALSE(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest());
+    ASSERT(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest());
+    ASSERT_FALSE(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest().get());
 }
 
 
@@ -1242,7 +1242,6 @@ TEST_F(ReplCoordTest, NodeCalculatesDefaultWriteConcernOnStartupNewConfigMajorit
     ASSERT_EQUALS("admin", noi->getRequest().dbname);
     ASSERT_BSONOBJ_EQ(hbArgs.toBSON(), noi->getRequest().cmdObj);
     ReplSetHeartbeatResponse hbResp;
-    hbResp.setSetName("mySet");
     hbResp.setConfigVersion(0);
     hbResp.setAppliedOpTimeAndWallTime({OpTime(Timestamp(100, 1), 0), Date_t() + Seconds(100)});
     hbResp.setDurableOpTimeAndWallTime({OpTime(Timestamp(100, 1), 0), Date_t() + Seconds(100)});
@@ -1258,6 +1257,7 @@ TEST_F(ReplCoordTest, NodeCalculatesDefaultWriteConcernOnStartupNewConfigMajorit
 
     auto& rwcDefaults = ReadWriteConcernDefaults::get(getServiceContext());
     ASSERT(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest());
+    ASSERT(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest().get());
 }
 
 
@@ -1302,7 +1302,6 @@ TEST_F(ReplCoordTest, NodeCalculatesDefaultWriteConcernOnStartupNewConfigNoMajor
     ASSERT_EQUALS("admin", noi->getRequest().dbname);
     ASSERT_BSONOBJ_EQ(hbArgs.toBSON(), noi->getRequest().cmdObj);
     ReplSetHeartbeatResponse hbResp;
-    hbResp.setSetName("mySet");
     hbResp.setConfigVersion(0);
     hbResp.setAppliedOpTimeAndWallTime({OpTime(Timestamp(100, 1), 0), Date_t() + Seconds(100)});
     hbResp.setDurableOpTimeAndWallTime({OpTime(Timestamp(100, 1), 0), Date_t() + Seconds(100)});
@@ -1317,7 +1316,8 @@ TEST_F(ReplCoordTest, NodeCalculatesDefaultWriteConcernOnStartupNewConfigNoMajor
     ASSERT_EQUALS(getStorageInterface()->getInitialDataTimestamp(), appliedTS);
 
     auto& rwcDefaults = ReadWriteConcernDefaults::get(getServiceContext());
-    ASSERT_FALSE(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest());
+    ASSERT(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest());
+    ASSERT_FALSE(rwcDefaults.getImplicitDefaultWriteConcernMajority_forTest().get());
 }
 
 
@@ -1708,7 +1708,7 @@ TEST_F(ReplCoordTest, UpdatePositionArgsAdvancesWallTimes) {
 
     // Make sure wall times are propagated through processReplSetUpdatePosition
     auto memberDataVector = repl->getMemberData();
-    for (const auto& member : memberDataVector) {
+    for (auto member : memberDataVector) {
         if (member.getMemberId() == MemberId(1)) {
             ASSERT_EQ(member.getLastAppliedWallTime(), memberOneAppliedWallTime);
             ASSERT_EQ(member.getLastDurableWallTime(), memberOneDurableWallTime);
@@ -2447,91 +2447,6 @@ TEST_F(ReplCoordTest, CancelElectionTimeoutIfSyncSourceKnowsThePrimary) {
 
     // Since we advanced the clock, the new election timeout is after the old one.
     ASSERT_GREATER_THAN(getReplCoord()->getElectionTimeout_forTest(), electionTimeout);
-}
-
-TEST_F(ReplCoordTest, ShouldChangeSyncSource) {
-    init();
-
-    const OID replicaSetId = OID::gen();
-    BSONObj configObj = BSON("_id"
-                             << "mySet"
-                             << "version" << 1 << "members"
-                             << BSON_ARRAY(BSON("_id" << 1 << "host"
-                                                      << "node1:12345")
-                                           << BSON("_id" << 2 << "host"
-                                                         << "node2:12345")
-                                           << BSON("_id" << 3 << "host"
-                                                         << "node3:12345"))
-                             << "protocolVersion" << 1 << "settings"
-                             << BSON("replicaSetId" << replicaSetId));
-    assertStartSuccess(configObj, HostAndPort("node1", 12345));
-    ReplSetConfig config = assertMakeRSConfig(configObj);
-
-    getTopoCoord().updateConfig(config, 1, getNet()->now());
-
-    OplogQueryMetadata opMetaData(
-        OpTimeAndWallTime(), OpTime(Timestamp(1, 1), 1), 1, 0 /* currentPrimaryIndex */, 1, "");
-    ReplSetMetadata rsMeta(
-        0, OpTimeAndWallTime(), OpTime(), 1, 0, replicaSetId, 1, true /* isPrimary */);
-
-    ASSERT_EQ(getReplCoord()->shouldChangeSyncSource(
-                  HostAndPort("node1", 12345), rsMeta, opMetaData, OpTime(), OpTime()),
-              ChangeSyncSourceAction::kContinueSyncing);
-
-    ASSERT_EQ(getReplCoord()->shouldChangeSyncSource(
-                  HostAndPort("node4", 12345), rsMeta, opMetaData, OpTime(), OpTime()),
-              ChangeSyncSourceAction::kStopSyncingAndEnqueueLastBatch);
-}
-
-TEST_F(ReplCoordTest, ServerlessNodeShouldChangeSyncSourceAfterSplit) {
-    // Test that ReplicationCoordinator will correctly stop enqueuing messages from the donor and
-    // change sync source when started in serverless mode and the replicaSetId changes.
-
-    ReplSettings settings;
-    settings.setServerlessMode();
-    init(settings);
-
-    const OID replicaSetId = OID::gen();
-    BSONObj configObj = BSON("_id"
-                             << "mySet"
-                             << "version" << 1 << "members"
-                             << BSON_ARRAY(BSON("_id" << 1 << "host"
-                                                      << "node1:12345")
-                                           << BSON("_id" << 2 << "host"
-                                                         << "node2:12345")
-                                           << BSON("_id" << 3 << "host"
-                                                         << "node3:12345"))
-                             << "protocolVersion" << 1 << "settings"
-                             << BSON("replicaSetId" << replicaSetId));
-
-    assertStartSuccess(configObj, HostAndPort("node1", 12345));
-    ReplSetConfig config = assertMakeRSConfig(configObj);
-
-    getTopoCoord().updateConfig(config, 1, getNet()->now());
-
-    OplogQueryMetadata opMetaData(
-        OpTimeAndWallTime(), OpTime(Timestamp(1, 1), 1), 1, 0 /* currentPrimaryIndex */, 1, "");
-    ReplSetMetadata rsMeta(
-        0, OpTimeAndWallTime(), OpTime(), 1, 0, replicaSetId, 1, true /* isPrimary */);
-
-    // Continue syncing when the node is in the replica set and the replicaSetId is the same.
-    ASSERT_EQ(getReplCoord()->shouldChangeSyncSource(
-                  HostAndPort("node1", 12345), rsMeta, opMetaData, OpTime(), OpTime()),
-              ChangeSyncSourceAction::kContinueSyncing);
-
-    // Enqueue final message but stop syncing when the replicaSetId is the same but the node is not
-    // in the replica set anymore.
-    ASSERT_EQ(getReplCoord()->shouldChangeSyncSource(
-                  HostAndPort("node4", 12345), rsMeta, opMetaData, OpTime(), OpTime()),
-              ChangeSyncSourceAction::kStopSyncingAndEnqueueLastBatch);
-
-    // Discard messages and stop syncing when the node is not in the replica set anymore and the
-    // replicaSetId has changed. This case occurs after a successfull shard split.
-    ReplSetMetadata rsMeta2(
-        0, OpTimeAndWallTime(), OpTime(), 1, 0, OID::gen(), 1, false /* isPrimary */);
-    ASSERT_EQ(getReplCoord()->shouldChangeSyncSource(
-                  HostAndPort("node4", 12345), rsMeta2, opMetaData, OpTime(), OpTime()),
-              ChangeSyncSourceAction::kStopSyncingAndDropLastBatchIfPresent);
 }
 
 TEST_F(ReplCoordTest, SingleNodeReplSetUnfreeze) {
@@ -3617,7 +3532,7 @@ TEST_F(ReplCoordTest, AwaitHelloResponseReturnsOnStepDown) {
         expectedCounter = topologyVersionAfterDisablingWrites->getCounter() + 1;
         deadline = getNet()->now() + maxAwaitTime;
         const auto responseStepdownComplete = awaitHelloWithNewOpCtx(
-            getReplCoord(), topologyVersionAfterDisablingWrites.value(), {}, deadline);
+            getReplCoord(), topologyVersionAfterDisablingWrites.get(), {}, deadline);
         const auto topologyVersionStepDownComplete = responseStepdownComplete->getTopologyVersion();
         ASSERT_EQUALS(topologyVersionStepDownComplete->getCounter(), expectedCounter);
         ASSERT_EQUALS(topologyVersionStepDownComplete->getProcessId(), expectedProcessId);
@@ -4976,7 +4891,7 @@ TEST_F(ReplCoordTest, AwaitHelloResponseReturnsOnElectionWin) {
         // The server TopologyVersion will increment again once we exit drain mode.
         expectedCounter = topologyVersionAfterElection->getCounter() + 1;
         const auto responseAfterDrainComplete = awaitHelloWithNewOpCtx(
-            getReplCoord(), topologyVersionAfterElection.value(), {}, deadline);
+            getReplCoord(), topologyVersionAfterElection.get(), {}, deadline);
         const auto topologyVersionAfterDrainComplete =
             responseAfterDrainComplete->getTopologyVersion();
         ASSERT_EQUALS(topologyVersionAfterDrainComplete->getCounter(), expectedCounter);
@@ -5070,7 +4985,7 @@ TEST_F(ReplCoordTest, AwaitHelloResponseReturnsOnElectionWinWithReconfig) {
         // The server TopologyVersion will increment once we finish reconfig.
         expectedCounter = topologyVersionAfterElection->getCounter() + 1;
         const auto responseAfterReconfig = awaitHelloWithNewOpCtx(
-            getReplCoord(), topologyVersionAfterElection.value(), {}, deadline);
+            getReplCoord(), topologyVersionAfterElection.get(), {}, deadline);
         const auto topologyVersionAfterReconfig = responseAfterReconfig->getTopologyVersion();
         ASSERT_EQUALS(topologyVersionAfterReconfig->getCounter(), expectedCounter);
         ASSERT_EQUALS(topologyVersionAfterReconfig->getProcessId(), expectedProcessId);
@@ -5085,7 +5000,7 @@ TEST_F(ReplCoordTest, AwaitHelloResponseReturnsOnElectionWinWithReconfig) {
         // The server TopologyVersion will increment again once we exit drain mode.
         expectedCounter = topologyVersionAfterReconfig->getCounter() + 1;
         const auto responseAfterDrainComplete = awaitHelloWithNewOpCtx(
-            getReplCoord(), topologyVersionAfterReconfig.value(), {}, deadline);
+            getReplCoord(), topologyVersionAfterReconfig.get(), {}, deadline);
         const auto topologyVersionAfterDrainComplete =
             responseAfterDrainComplete->getTopologyVersion();
         ASSERT_EQUALS(topologyVersionAfterDrainComplete->getCounter(), expectedCounter);
@@ -7312,7 +7227,6 @@ TEST_F(ReplCoordTest, OnlyForwardSyncProgressForOtherNodesWhenTheNodesAreBelieve
 }
 
 TEST_F(ReplCoordTest, UpdatePositionCmdHasMetadata) {
-    const auto replicaSetId = OID::gen();
     assertStartSuccess(
         BSON("_id"
              << "mySet"
@@ -7324,8 +7238,7 @@ TEST_F(ReplCoordTest, UpdatePositionCmdHasMetadata) {
                            << BSON("_id" << 2 << "host"
                                          << "test3:1234"))
              << "protocolVersion" << 1 << "settings"
-             << BSON("electionTimeoutMillis" << 2000 << "heartbeatIntervalMillis" << 40000
-                                             << "replicaSetId" << replicaSetId)),
+             << BSON("electionTimeoutMillis" << 2000 << "heartbeatIntervalMillis" << 40000)),
         HostAndPort("test1", 1234));
     ASSERT_OK(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
 
@@ -7352,7 +7265,6 @@ TEST_F(ReplCoordTest, UpdatePositionCmdHasMetadata) {
     auto metadata = unittest::assertGet(rpc::ReplSetMetadata::readFromMetadata(cmd));
     ASSERT_EQUALS(metadata.getTerm(), getReplCoord()->getTerm());
     ASSERT_EQUALS(metadata.getLastOpVisible(), optime);
-    ASSERT_EQUALS(metadata.getReplicaSetId(), replicaSetId);
 
     auto oqMetadataStatus = rpc::OplogQueryMetadata::readFromMetadata(cmd);
     ASSERT_EQUALS(oqMetadataStatus.getStatus(), ErrorCodes::NoSuchKey);
@@ -8171,7 +8083,6 @@ TEST_F(ReplCoordTest, ShouldChooseNearestNodeAsSyncSourceWhenSecondaryAndChainin
     hbResp.setTerm(1);
     hbResp.setConfigVersion(2);
     hbResp.setConfigTerm(1);
-    hbResp.setSetName("mySet");
 
     const OpTime lastAppliedOpTime = OpTime(Timestamp(50, 0), 1);
     const auto now = getNet()->now();
@@ -8222,7 +8133,6 @@ TEST_F(ReplCoordTest, ShouldChoosePrimaryAsSyncSourceWhenSecondaryAndChainingNot
     hbResp.setTerm(1);
     hbResp.setConfigVersion(2);
     hbResp.setConfigTerm(1);
-    hbResp.setSetName("mySet");
 
     const OpTime lastAppliedOpTime = OpTime(Timestamp(50, 0), 1);
     const auto now = getNet()->now();
@@ -8282,7 +8192,7 @@ TEST_F(ReplCoordTest, ShouldChooseNearestNodeAsSyncSourceWhenPrimaryAndChainingA
     hbResp.setTerm(1);
     hbResp.setConfigVersion(2);
     hbResp.setConfigTerm(1);
-    hbResp.setSetName("mySet");
+
     const OpTime lastAppliedOpTime = OpTime(Timestamp(50, 0), 1);
     const auto now = getNet()->now();
     hbResp.setAppliedOpTimeAndWallTime({lastAppliedOpTime, now});
@@ -8368,7 +8278,7 @@ TEST_F(ReplCoordTest, IgnoreNonNullDurableOpTimeOrWallTimeForArbiterFromReplSetU
 
     // Make sure node 2 is fully caught up but node 3 has null durable optime/walltime.
     auto memberDataVector = repl->getMemberData();
-    for (const auto& member : memberDataVector) {
+    for (auto member : memberDataVector) {
         auto memberId = member.getMemberId();
         if (memberId == MemberId(1) || memberId == MemberId(2)) {
             ASSERT_EQ(member.getLastAppliedOpTime(), opTime2.asOpTime());
@@ -8437,7 +8347,7 @@ TEST_F(ReplCoordTest, IgnoreNonNullDurableOpTimeOrWallTimeForArbiterFromHeartbea
         hbResp.toBSON(), 1 /* targetIndex */, Milliseconds(5) /* ping */);
 
     auto memberDataVector = repl->getMemberData();
-    for (const auto& member : memberDataVector) {
+    for (auto member : memberDataVector) {
         auto memberId = member.getMemberId();
         if (memberId == MemberId(1)) {
             ASSERT_EQ(member.getLastAppliedOpTime(), opTime2.asOpTime());

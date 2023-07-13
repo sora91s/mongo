@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -47,15 +48,11 @@
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/mutex.h"
 #include "mongo/s/grid.h"
-#include "mongo/util/namespace_string_util.h"
 #include "mongo/util/net/socket_utils.h"
 
 #ifndef MONGO_CONFIG_USE_RAW_LATCHES
 #include "mongo/util/diagnostic_info.h"
 #endif
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 
@@ -82,24 +79,11 @@ std::vector<BSONObj> CommonProcessInterface::getCurrentOps(
 
         stdx::lock_guard<Client> lk(*client);
 
-        if (ctxAuth->getAuthorizationManager().isAuthEnabled()) {
-            // If auth is disabled, ignore the allUsers parameter.
-            if (userMode == CurrentOpUserMode::kExcludeOthers &&
-                !ctxAuth->isCoauthorizedWithClient(client, lk)) {
-                continue;
-            }
-
-            // If currOp is being run for a particular tenant, ignore any ops that don't belong to
-            // it.
-            if (auto expCtxTenantId = expCtx->ns.tenantId()) {
-                auto userName = AuthorizationSession::get(client)->getAuthenticatedUserName();
-                if ((userName && userName->getTenant() &&
-                     userName->getTenant() != expCtxTenantId) ||
-                    (userName && !userName->getTenant() &&
-                     !CurOp::currentOpBelongsToTenant(client, *expCtxTenantId))) {
-                    continue;
-                }
-            }
+        // If auth is disabled, ignore the allUsers parameter.
+        if (ctxAuth->getAuthorizationManager().isAuthEnabled() &&
+            userMode == CurrentOpUserMode::kExcludeOthers &&
+            !ctxAuth->isCoauthorizedWithClient(client, lk)) {
+            continue;
         }
 
         // Ignore inactive connections unless 'idleConnections' is true.
@@ -121,7 +105,7 @@ std::vector<BSONObj> CommonProcessInterface::getCurrentOps(
             cursorObj.append("host", getHostNameCachedAndPort());
             // First, extract fields which need to go at the top level out of the GenericCursor.
             auto ns = cursor.getNs();
-            cursorObj.append("ns", ns ? NamespaceStringUtil::serialize(*ns) : "");
+            cursorObj.append("ns", ns->toString());
             if (auto lsid = cursor.getLsid()) {
                 cursorObj.append("lsid", lsid->toBSON());
             }
@@ -149,8 +133,6 @@ std::vector<BSONObj> CommonProcessInterface::getCurrentOps(
             opCtx, sessionMode == MongoProcessInterface::CurrentOpSessionsMode::kIncludeIdle, &ops);
 
         _reportCurrentOpsForPrimaryOnlyServices(opCtx, connMode, sessionMode, &ops);
-
-        _reportCurrentOpsForQueryAnalysis(opCtx, &ops);
     }
 
     return ops;
@@ -158,7 +140,7 @@ std::vector<BSONObj> CommonProcessInterface::getCurrentOps(
 
 std::vector<FieldPath> CommonProcessInterface::collectDocumentKeyFieldsActingAsRouter(
     OperationContext* opCtx, const NamespaceString& nss) const {
-    const auto [cm, _] =
+    const auto cm =
         uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
     if (cm.isSharded()) {
         return _shardKeyToDocumentKeyFields(cm.getShardKeyPattern().getKeyPatternFields());
@@ -208,13 +190,13 @@ bool CommonProcessInterface::keyPatternNamesExactPaths(const BSONObj& keyPattern
     return nFieldsMatched == uniqueKeyPaths.size();
 }
 
-boost::optional<ShardVersion> CommonProcessInterface::refreshAndGetCollectionVersion(
+boost::optional<ChunkVersion> CommonProcessInterface::refreshAndGetCollectionVersion(
     const boost::intrusive_ptr<ExpressionContext>& expCtx, const NamespaceString& nss) const {
-    const auto cri = uassertStatusOK(Grid::get(expCtx->opCtx)
-                                         ->catalogCache()
-                                         ->getCollectionRoutingInfoWithRefresh(expCtx->opCtx, nss));
+    const auto cm = uassertStatusOK(Grid::get(expCtx->opCtx)
+                                        ->catalogCache()
+                                        ->getCollectionRoutingInfoWithRefresh(expCtx->opCtx, nss));
 
-    return cri.cm.isSharded() ? boost::make_optional(cri.getCollectionVersion()) : boost::none;
+    return cm.isSharded() ? boost::make_optional(cm.getVersion()) : boost::none;
 }
 
 std::vector<FieldPath> CommonProcessInterface::_shardKeyToDocumentKeyFields(

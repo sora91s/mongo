@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog_raii.h"
@@ -34,17 +35,14 @@
 #include "mongo/db/s/collection_sharding_runtime.h"
 #include "mongo/db/s/collmod_coordinator.h"
 #include "mongo/db/s/database_sharding_state.h"
+#include "mongo/db/s/recoverable_critical_section_service.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharded_collmod_gen.h"
-#include "mongo/db/s/sharding_recovery_service.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/timeseries/catalog_helper.h"
 #include "mongo/db/timeseries/timeseries_collmod.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -69,10 +67,6 @@ public:
         return Command::AllowedOnSecondary::kNever;
     }
 
-    bool supportsRetryableWrite() const final {
-        return true;
-    }
-
     class Invocation final : public InvocationBase {
     public:
         using InvocationBase::InvocationBase;
@@ -83,7 +77,7 @@ public:
             CommandHelpers::uassertCommandRunWithMajority(Request::kCommandName,
                                                           opCtx->getWriteConcern());
 
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
 
             // If the needsUnblock flag is set, we must have blocked the CRUD operations in the
             // previous phase of collMod operation for granularity updates. Unblock it now after we
@@ -98,17 +92,14 @@ public:
                 try {
                     forceShardFilteringMetadataRefresh(opCtx, bucketNs);
                 } catch (const DBException&) {
-                    // If the refresh fails, then set the placement version to UNKNOWN and let a
-                    // future operation to refresh the metadata.
-                    // TODO (SERVER-71444): Fix to be interruptible or document exception.
-                    UninterruptibleLockGuard noInterrupt(opCtx->lockState());  // NOLINT.
+                    // If the refresh fails, then set the shard version to UNKNOWN and let a future
+                    // operation to refresh the metadata.
+                    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
                     AutoGetCollection autoColl(opCtx, bucketNs, MODE_IX);
-                    CollectionShardingRuntime::assertCollectionLockedAndAcquireExclusive(opCtx,
-                                                                                         bucketNs)
-                        ->clearFilteringMetadata(opCtx);
+                    CollectionShardingRuntime::get(opCtx, bucketNs)->clearFilteringMetadata(opCtx);
                 }
 
-                auto service = ShardingRecoveryService::get(opCtx);
+                auto service = RecoverableCriticalSectionService::get(opCtx);
                 const auto reason = BSON("command"
                                          << "ShardSvrParticipantBlockCommand"
                                          << "ns" << bucketNs.toString());
@@ -125,7 +116,7 @@ public:
             auto performViewChange = request().getPerformViewChange();
             uassertStatusOK(timeseries::processCollModCommandWithTimeSeriesTranslation(
                 opCtx, ns(), cmd, performViewChange, &builder));
-            return CollModReply::parse(IDLParserContext("CollModReply"), builder.obj());
+            return CollModReply::parse(IDLParserErrorContext("CollModReply"), builder.obj());
         }
 
     private:

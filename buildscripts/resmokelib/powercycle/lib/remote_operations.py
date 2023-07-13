@@ -46,11 +46,12 @@ def posix_path(path):
     return "{quote}{path}{quote}".format(quote=path_quote, path=new_path)
 
 
-class RemoteOperations(object):
+class RemoteOperations(object):  # pylint: disable=too-many-instance-attributes
     """Class to support remote operations."""
 
-    def __init__(self, user_host, ssh_connection_options=None, ssh_options=None, scp_options=None,
-                 shell_binary="/bin/bash", use_shell=False, ignore_ret=False, access_retry_count=5):
+    def __init__(  # pylint: disable=too-many-arguments
+            self, user_host, ssh_connection_options=None, ssh_options=None, scp_options=None,
+            shell_binary="/bin/bash", use_shell=False, ignore_ret=False, access_retry_count=5):
         """Initialize RemoteOperations."""
 
         self.user_host = user_host
@@ -124,7 +125,7 @@ class RemoteOperations(object):
         """
         return message.startswith("ssh:")
 
-    # pylint: disable=inconsistent-return-statements
+    # pylint: disable=too-many-branches,too-many-arguments,too-many-locals,inconsistent-return-statements
     def operation(self, operation_type, operation_param, operation_dir=None, retry=False,
                   retry_count=5):
         """Execute Main entry for remote operations. Returns (code, output).

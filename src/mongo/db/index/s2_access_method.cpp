@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
 
 #include "mongo/db/index/s2_access_method.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/db/index_names.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
-
 
 namespace mongo {
 
@@ -143,7 +141,7 @@ void S2AccessMethod::doGetKeys(OperationContext* opCtx,
                                KeyStringSet* keys,
                                KeyStringSet* multikeyMetadataKeys,
                                MultikeyPaths* multikeyPaths,
-                               const boost::optional<RecordId>& id) const {
+                               boost::optional<RecordId> id) const {
     ExpressionKeysPrivate::getS2Keys(pooledBufferBuilder,
                                      obj,
                                      _descriptor->keyPattern(),

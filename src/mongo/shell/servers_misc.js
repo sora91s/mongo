@@ -111,16 +111,16 @@ uncheckedParallelShellPidsString = function() {
 };
 
 startParallelShell = function(jsCode, port, noConnect, ...optionArgs) {
-    var shellPath = MongoRunner.getMongoShellPath();
+    var shellPath = MongoRunner.mongoShellPath;
     var args = [shellPath];
 
-    if (typeof globalThis.db == "object") {
+    if (typeof db == "object") {
         if (!port) {
             // If no port override specified, just passthrough connect string.
-            args.push("--host", globalThis.db.getMongo().host);
+            args.push("--host", db.getMongo().host);
         } else {
             // Strip port numbers from connect string.
-            const uri = new MongoURI(globalThis.db.getMongo().host);
+            const uri = new MongoURI(db.getMongo().host);
             var connString = uri.servers
                                  .map(function(server) {
                                      return server.host;
@@ -148,8 +148,8 @@ startParallelShell = function(jsCode, port, noConnect, ...optionArgs) {
 
     if (noConnect) {
         args.push("--nodb");
-    } else if (typeof (globalThis.db) == "object") {
-        jsCode = "db = db.getSiblingDB('" + globalThis.db.getName() + "');" + jsCode;
+    } else if (typeof (db) == "object") {
+        jsCode = "db = db.getSiblingDB('" + db.getName() + "');" + jsCode;
     }
 
     if (TestData) {

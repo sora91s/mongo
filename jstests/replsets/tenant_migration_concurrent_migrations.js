@@ -1,9 +1,15 @@
 /**
  * Test that multiple concurrent tenant migrations are supported.
  *
+ * Tenant migrations are not expected to be run on servers with ephemeralForTest, and in particular
+ * this test fails on ephemeralForTest because the donor has to wait for the write to set the
+ * migration state to "committed" and "aborted" to be majority committed but it cannot do that on
+ * ephemeralForTest.
+ *
  * Incompatible with shard merge, which can't handle concurrent migrations.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -13,16 +19,18 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {makeX509Options} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+'use strict';
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
-const x509Options0 = makeX509Options("jstests/libs/rs0.pem");
-const x509Options1 = makeX509Options("jstests/libs/rs1.pem");
-const x509Options2 = makeX509Options("jstests/libs/rs2.pem");
+const x509Options0 = TenantMigrationUtil.makeX509Options("jstests/libs/rs0.pem");
+const x509Options1 = TenantMigrationUtil.makeX509Options("jstests/libs/rs1.pem");
+const x509Options2 = TenantMigrationUtil.makeX509Options("jstests/libs/rs2.pem");
 
 const rst0 = new ReplSetTest({nodes: 1, name: 'rst0', nodeOptions: x509Options0});
 const rst1 = new ReplSetTest({nodes: 1, name: 'rst1', nodeOptions: x509Options1});
@@ -150,7 +158,7 @@ const kTenantIdPrefix = "testTenantId";
 
     const connPoolStatsBefore = assert.commandWorked(donorPrimary.adminCommand({connPoolStats: 1}));
 
-    const blockFp = configureFailPoint(
+    let blockFp = configureFailPoint(
         donorPrimary, "pauseTenantMigrationBeforeLeavingBlockingState", {tenantId: tenantId1});
     assert.commandWorked(tenantMigrationTest0.startMigration(migrationOpts0));
     assert.commandWorked(tenantMigrationTest1.startMigration(migrationOpts1));
@@ -191,3 +199,4 @@ const kTenantIdPrefix = "testTenantId";
 rst0.stopSet();
 rst1.stopSet();
 rst2.stopSet();
+})();

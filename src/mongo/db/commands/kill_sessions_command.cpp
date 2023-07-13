@@ -38,13 +38,13 @@
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/kill_sessions.h"
+#include "mongo/db/kill_sessions_common.h"
+#include "mongo/db/kill_sessions_local.h"
+#include "mongo/db/logical_session_cache.h"
+#include "mongo/db/logical_session_id.h"
+#include "mongo/db/logical_session_id_helpers.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/session/kill_sessions.h"
-#include "mongo/db/session/kill_sessions_common.h"
-#include "mongo/db/session/kill_sessions_local.h"
-#include "mongo/db/session/logical_session_cache.h"
-#include "mongo/db/session/logical_session_id.h"
-#include "mongo/db/session/logical_session_id_helpers.h"
 #include "mongo/db/stats/top.h"
 
 namespace mongo {
@@ -58,10 +58,13 @@ KillAllSessionsByPatternSet patternsForLoggedInUser(OperationContext* opCtx) {
     KillAllSessionsByPatternSet patterns;
 
     if (AuthorizationManager::get(serviceContext)->isAuthEnabled()) {
-        auto* as = AuthorizationSession::get(client);
-        if (auto user = as->getAuthenticatedUser()) {
+        auto authzSession = AuthorizationSession::get(client);
+        for (auto iter = authzSession->getAuthenticatedUserNames(); iter.more(); iter.next()) {
+            User* user = authzSession->lookupUser(*iter);
+            invariant(user);
+
             auto item = makeKillAllSessionsByPattern(opCtx);
-            item.pattern.setUid(user.value()->getDigest());
+            item.pattern.setUid(user->getDigest());
             patterns.emplace(std::move(item));
         }
     } else {
@@ -94,9 +97,9 @@ public:
     }
 
     // Any user can kill their own sessions
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
+    Status checkAuthForOperation(OperationContext* opCtx,
+                                 const std::string& dbname,
+                                 const BSONObj& cmdObj) const override {
         return Status::OK();
     }
 
@@ -108,10 +111,10 @@ public:
     }
 
     virtual bool run(OperationContext* opCtx,
-                     const DatabaseName&,
+                     const std::string& db,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) override {
-        IDLParserContext ctx("KillSessionsCmd");
+        IDLParserErrorContext ctx("KillSessionsCmd");
         auto ksc = KillSessionsCmdFromClient::parse(ctx, cmdObj);
 
         KillAllSessionsByPatternSet patterns;

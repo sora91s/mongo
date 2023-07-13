@@ -41,28 +41,6 @@
 #include "mongo/util/str.h"
 
 namespace mongo {
-namespace {
-StatusWith<int> tryCoerceVerbosity(BSONElement elem, StringData parentComponentDottedName) {
-    int newVerbosityLevel;
-    Status coercionStatus = elem.tryCoerce(&newVerbosityLevel);
-    if (!coercionStatus.isOK()) {
-        return {ErrorCodes::BadValue,
-                str::stream() << "Expected " << parentComponentDottedName << '.'
-                              << elem.fieldNameStringData()
-                              << " to be safely cast to integer, but could not: "
-                              << coercionStatus.reason()};
-    } else if (newVerbosityLevel < -1) {
-        return {ErrorCodes::BadValue,
-                str::stream() << "Expected " << parentComponentDottedName << '.'
-                              << elem.fieldNameStringData()
-                              << " to be greater than or equal to -1, but found "
-                              << elem.toString(false, false)};
-    }
-
-    return newVerbosityLevel;
-}
-
-}  // namespace
 
 /*
  * Looks up a component by its short name, or returns kNumLogComponents
@@ -97,12 +75,14 @@ StatusWith<std::vector<LogComponentSetting>> parseLogComponentSettings(const BSO
             continue;
         }
         if (elem.fieldNameStringData() == "verbosity") {
-            auto swVerbosity = tryCoerceVerbosity(elem, parentComponent.getDottedName());
-            if (!swVerbosity.isOK()) {
-                return swVerbosity.getStatus();
+            if (!elem.isNumber()) {
+                return StatusWith<Result>(ErrorCodes::BadValue,
+                                          str::stream()
+                                              << "Expected " << parentComponent.getDottedName()
+                                              << ".verbosity to be a number, but found "
+                                              << typeName(elem.type()));
             }
-
-            levelsToSet.push_back((LogComponentSetting(parentComponent, swVerbosity.getValue())));
+            levelsToSet.push_back((LogComponentSetting(parentComponent, elem.numberInt())));
             continue;
         }
         const StringData shortName = elem.fieldNameStringData();
@@ -115,11 +95,7 @@ StatusWith<std::vector<LogComponentSetting>> parseLogComponentSettings(const BSO
                                           << parentComponent.getDottedName() << "." << shortName);
         }
         if (elem.isNumber()) {
-            auto swVerbosity = tryCoerceVerbosity(elem, parentComponent.getDottedName());
-            if (!swVerbosity.isOK()) {
-                return swVerbosity.getStatus();
-            }
-            levelsToSet.push_back((LogComponentSetting(curr, swVerbosity.getValue())));
+            levelsToSet.push_back(LogComponentSetting(curr, elem.numberInt()));
             continue;
         }
         if (elem.type() != Object) {

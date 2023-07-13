@@ -33,6 +33,11 @@
 #include "mongo/bson/bsonobjbuilder.h"
 
 namespace mongo {
+    
+void initMyCollectionUuidMisInfo() {
+
+}
+
 namespace {
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(CollectionUUIDMismatchInfo);
 
@@ -45,14 +50,14 @@ constexpr StringData kActualCollectionFieldName = "actualCollection"_sd;
 std::shared_ptr<const ErrorExtraInfo> CollectionUUIDMismatchInfo::parse(const BSONObj& obj) {
     auto actualNamespace = obj[kActualCollectionFieldName];
     return std::make_shared<CollectionUUIDMismatchInfo>(
-        DatabaseName(boost::none, obj[kDbFieldName].str()),
+        obj[kDbFieldName].str(),
         UUID::parse(obj[kCollectionUUIDFieldName]).getValue(),
         obj[kExpectedCollectionFieldName].str(),
         actualNamespace.isNull() ? boost::none : boost::make_optional(actualNamespace.str()));
 }
 
 void CollectionUUIDMismatchInfo::serialize(BSONObjBuilder* builder) const {
-    builder->append(kDbFieldName, _dbName.db());
+    builder->append(kDbFieldName, _db);
     _collectionUUID.appendToBuilder(builder, kCollectionUUIDFieldName);
     builder->append(kExpectedCollectionFieldName, _expectedCollection);
     if (_actualCollection) {

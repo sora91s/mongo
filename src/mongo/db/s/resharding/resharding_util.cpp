@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/s/resharding/resharding_util.h"
 
 #include <fmt/format.h>
@@ -34,10 +38,10 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/json.h"
 #include "mongo/bson/util/bson_extract.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/document_source_add_fields.h"
 #include "mongo/db/pipeline/document_source_find_and_modify_image_lookup.h"
@@ -45,7 +49,6 @@
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/resharding/document_source_resharding_add_resume_id.h"
 #include "mongo/db/s/resharding/document_source_resharding_iterate_transaction.h"
-#include "mongo/db/s/resharding/resharding_metrics.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/logv2/log.h"
@@ -56,27 +59,7 @@
 #include "mongo/s/shard_invalidated_for_targeting_exception.h"
 #include "mongo/s/shard_key_pattern.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
-
 namespace mongo {
-namespace resharding {
-
-namespace {
-/**
- * Given a constant rate of time per unit of work:
- *    totalTime / totalWork == elapsedTime / elapsedWork
- * Solve for remaining time.
- *    remainingTime := totalTime - elapsedTime
- *                  == (totalWork * (elapsedTime / elapsedWork)) - elapsedTime
- *                  == elapsedTime * (totalWork / elapsedWork - 1)
- */
-Milliseconds estimateRemainingTime(Milliseconds elapsedTime, double elapsedWork, double totalWork) {
-    elapsedWork = std::min(elapsedWork, totalWork);
-    double remainingMsec = 1.0 * elapsedTime.count() * (totalWork / elapsedWork - 1);
-    return Milliseconds(Milliseconds::rep(std::round(remainingMsec)));
-}
-}  // namespace
-
 using namespace fmt::literals;
 
 BSONObj serializeAndTruncateReshardingErrorIfNeeded(Status originalError) {
@@ -140,7 +123,7 @@ std::set<ShardId> getRecipientShards(OperationContext* opCtx,
                                      const UUID& reshardingUUID) {
     const auto& tempNss = constructTemporaryReshardingNss(sourceNss.db(), reshardingUUID);
     auto* catalogCache = Grid::get(opCtx)->catalogCache();
-    auto [cm, _] = uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, tempNss));
+    auto cm = uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, tempNss));
 
     uassert(ErrorCodes::NamespaceNotSharded,
             str::stream() << "Expected collection " << tempNss << " to be sharded",
@@ -167,11 +150,11 @@ void checkForHolesAndOverlapsInChunks(std::vector<ReshardedChunk>& chunks,
                                                         keyPattern.globalMax()));
 
     boost::optional<BSONObj> prevMax = boost::none;
-    for (const auto& chunk : chunks) {
+    for (auto chunk : chunks) {
         if (prevMax) {
             uassert(ErrorCodes::BadValue,
                     "Chunk ranges must be contiguous",
-                    SimpleBSONObjComparator::kInstance.evaluate(prevMax.value() == chunk.getMin()));
+                    SimpleBSONObjComparator::kInstance.evaluate(prevMax.get() == chunk.getMin()));
         }
         prevMax = boost::optional<BSONObj>(chunk.getMax());
     }
@@ -198,7 +181,7 @@ Timestamp getHighestMinFetchTimestamp(const std::vector<DonorShardEntry>& donorS
         uassert(4957300,
                 "All donors must have a minFetchTimestamp, but donor {} does not."_format(
                     StringData{donor.getId()}),
-                donorFetchTimestamp.has_value());
+                donorFetchTimestamp.is_initialized());
         if (maxMinFetchTimestamp < donorFetchTimestamp.value()) {
             maxMinFetchTimestamp = donorFetchTimestamp.value();
         }
@@ -213,11 +196,11 @@ void checkForOverlappingZones(std::vector<ReshardingZoneType>& zones) {
         });
 
     boost::optional<BSONObj> prevMax = boost::none;
-    for (const auto& zone : zones) {
+    for (auto zone : zones) {
         if (prevMax) {
             uassert(ErrorCodes::BadValue,
                     "Zone ranges must not overlap",
-                    SimpleBSONObjComparator::kInstance.evaluate(prevMax.value() <= zone.getMin()));
+                    SimpleBSONObjComparator::kInstance.evaluate(prevMax.get() <= zone.getMin()));
         }
         prevMax = boost::optional<BSONObj>(zone.getMax());
     }
@@ -272,17 +255,28 @@ std::unique_ptr<Pipeline, PipelineDeleter> createOplogFetchingPipelineForReshard
             .toBson(),
         expCtx));
 
-    // Emits transaction entries chronologically.
-    stages.emplace_back(DocumentSourceReshardingIterateTransaction::create(
-        expCtx, true /* includeCommitTransactionTimestamp */));
+    // TODO (SERVER-62375): Remove upgrade/downgrade code for internal transactions.
+    if (serverGlobalParams.featureCompatibility.isLessThan(
+            multiversion::FeatureCompatibilityVersion::kVersion_6_0)) {
+        // Converts oplog entries with kNeedsRetryImageFieldName into the old style pair of
+        // update/delete oplog and pre/post image no-op oplog.
+        stages.emplace_back(DocumentSourceFindAndModifyImageLookup::create(expCtx));
 
-    // Converts oplog entries with kNeedsRetryImageFieldName into the old style pair of
-    // update/delete oplog and pre/post image no-op oplog.
-    stages.emplace_back(DocumentSourceFindAndModifyImageLookup::create(
-        expCtx, true /* includeCommitTransactionTimestamp */));
+        // Emits transaction entries chronologically, and adds _id to all events in the stream.
+        stages.emplace_back(DocumentSourceReshardingIterateTransaction::create(expCtx));
+    } else {
+        // Emits transaction entries chronologically.
+        stages.emplace_back(DocumentSourceReshardingIterateTransaction::create(
+            expCtx, true /* includeCommitTransactionTimestamp */));
 
-    // Adds _id to all events in the stream.
-    stages.emplace_back(DocumentSourceReshardingAddResumeId::create(expCtx));
+        // Converts oplog entries with kNeedsRetryImageFieldName into the old style pair of
+        // update/delete oplog and pre/post image no-op oplog.
+        stages.emplace_back(DocumentSourceFindAndModifyImageLookup::create(
+            expCtx, true /* includeCommitTransactionTimestamp */));
+
+        // Adds _id to all events in the stream.
+        stages.emplace_back(DocumentSourceReshardingAddResumeId::create(expCtx));
+    }
 
     // Filter out applyOps entries which do not contain any relevant operations.
     stages.emplace_back(DocumentSourceMatch::create(
@@ -348,13 +342,14 @@ bool isFinalOplog(const repl::OplogEntry& oplog, UUID reshardingUUID) {
 }
 
 NamespaceString getLocalOplogBufferNamespace(UUID existingUUID, ShardId donorShardId) {
-    return NamespaceString::makeReshardingLocalOplogBufferNSS(existingUUID,
-                                                              donorShardId.toString());
+    return NamespaceString("config.localReshardingOplogBuffer.{}.{}"_format(
+        existingUUID.toString(), donorShardId.toString()));
 }
 
 NamespaceString getLocalConflictStashNamespace(UUID existingUUID, ShardId donorShardId) {
-    return NamespaceString::makeReshardingLocalConflictStashNSS(existingUUID,
-                                                                donorShardId.toString());
+    return NamespaceString{NamespaceString::kConfigDb,
+                           "localReshardingConflictStash.{}.{}"_format(existingUUID.toString(),
+                                                                       donorShardId.toString())};
 }
 
 void doNoopWrite(OperationContext* opCtx, StringData opStr, const NamespaceString& nss) {
@@ -377,27 +372,4 @@ void doNoopWrite(OperationContext* opCtx, StringData opStr, const NamespaceStrin
     });
 }
 
-boost::optional<Milliseconds> estimateRemainingRecipientTime(bool applyingBegan,
-                                                             int64_t bytesCopied,
-                                                             int64_t bytesToCopy,
-                                                             Milliseconds timeSpentCopying,
-                                                             int64_t oplogEntriesApplied,
-                                                             int64_t oplogEntriesFetched,
-                                                             Milliseconds timeSpentApplying) {
-    if (applyingBegan && oplogEntriesFetched == 0) {
-        return Milliseconds(0);
-    }
-    if (oplogEntriesApplied > 0 && oplogEntriesFetched > 0) {
-        // All fetched oplogEntries must be applied. Some of them already have been.
-        return estimateRemainingTime(timeSpentApplying, oplogEntriesApplied, oplogEntriesFetched);
-    }
-    if (bytesCopied > 0 && bytesToCopy > 0) {
-        // Until the time to apply batches of oplog entries is measured, we assume that applying all
-        // of them will take as long as copying did.
-        return estimateRemainingTime(timeSpentCopying, bytesCopied, 2 * bytesToCopy);
-    }
-    return {};
-}
-
-}  // namespace resharding
 }  // namespace mongo

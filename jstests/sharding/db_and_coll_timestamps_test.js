@@ -8,9 +8,6 @@
  * collection, dropping and creating a collection, or refining the sharding key.
  */
 
-// Cannot run the filtering metadata check on tests that run refineCollectionShardKey.
-TestData.skipCheckShardFilteringMetadata = true;
-
 (function() {
 'use strict';
 

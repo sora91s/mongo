@@ -10,7 +10,6 @@
 // directly more complicated. Skip the hooks since this test doesn't really do migrations.
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 load('jstests/ssl/libs/ssl_helpers.js');
 

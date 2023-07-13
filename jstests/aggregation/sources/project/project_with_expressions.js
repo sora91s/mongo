@@ -21,7 +21,7 @@ function assertProjectionResultForFindAndAgg(projection, expectedResults) {
     function assertResultsEqual(results, expected) {
         assert.eq(results.length, expected.length);
         for (let i = 0; i < results.length; ++i) {
-            assert.docEq(expected[i], results[i]);
+            assert.docEq(results[i], expected[i]);
         }
     }
     assertResultsEqual(aggResults, expectedResults);

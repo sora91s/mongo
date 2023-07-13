@@ -30,14 +30,45 @@ global:
     cpp_namespace: "mongo"
 
 imports:
-    - "mongo/db/basic_types.idl"
-    - "mongo/crypto/fle_stats.idl"
+    - "mongo/idl/basic_types.idl"
 
 structs:
+    ECOCStats:
+        description: "Stats about records in ECOC compact touched"
+        fields:
+            read:
+                type: exactInt64
+                default: 0
+            deleted:
+                type: exactInt64
+                default: 0
+
+    ECStats:
+        description: "Stats about records in ECC & ESC compact touched"
+        fields:
+            read:
+                type: exactInt64
+                default: 0
+            inserted:
+                type: exactInt64
+                default: 0
+            updated:
+                type: exactInt64
+                default: 0
+            deleted:
+                type: exactInt64
+                default: 0
+
+    CompactStats:
+        description: "Stats about records in ECC, ECOC, and ESC compact touched"
+        fields:
+           ecoc: ECOCStats
+           ecc: ECStats
+           esc: ECStats
+
     CompactStructuredEncryptionDataCommandReply:
         description: "Reply from the {compactStructuredEncryptedData: ...} command"
         strict: true
-        is_command_reply: true
         fields:
             stats: CompactStats
 
@@ -51,5 +82,5 @@ commands:
         reply_type: CompactStructuredEncryptionDataCommandReply
         fields:
             compactionTokens:
-                description: "Map of field path to ECOCToken"
+                description: "Map of field path to EOCToken"
                 type: object

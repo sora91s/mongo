@@ -78,14 +78,6 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    Status insertTimeseries(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                            const NamespaceString& ns,
-                            std::vector<BSONObj>&& objs,
-                            const WriteConcernOptions& wc,
-                            boost::optional<OID> targetEpoch) final {
-        MONGO_UNREACHABLE;
-    }
-
     StatusWith<UpdateResult> update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                     const NamespaceString& ns,
                                     BatchedObjects&& batch,
@@ -128,8 +120,7 @@ public:
     Status appendStorageStats(OperationContext* opCtx,
                               const NamespaceString& nss,
                               const StorageStatsSpec& spec,
-                              BSONObjBuilder* builder,
-                              const boost::optional<BSONObj>& filterObj) const final {
+                              BSONObjBuilder* builder) const final {
         MONGO_UNREACHABLE;
     }
 
@@ -150,27 +141,16 @@ public:
     }
 
     void renameIfOptionsAndIndexesHaveNotChanged(OperationContext* opCtx,
-                                                 const NamespaceString& sourceNs,
+                                                 const BSONObj& renameCommandObj,
                                                  const NamespaceString& targetNs,
-                                                 bool dropTarget,
-                                                 bool stayTemp,
-                                                 bool allowBuckets,
                                                  const BSONObj& originalCollectionOptions,
                                                  const std::list<BSONObj>& originalIndexes) final {
         MONGO_UNREACHABLE;
     }
 
     void createCollection(OperationContext* opCtx,
-                          const DatabaseName& dbName,
+                          const std::string& dbName,
                           const BSONObj& cmdObj) final {
-        MONGO_UNREACHABLE;
-    }
-
-
-    void createTimeseries(OperationContext* opCtx,
-                          const NamespaceString& ns,
-                          const BSONObj& options,
-                          bool createView) final {
         MONGO_UNREACHABLE;
     }
 
@@ -191,6 +171,11 @@ public:
         Pipeline* pipeline) final {
         // It is not meaningful to perform a "local read" on mongos.
         MONGO_UNREACHABLE;
+    }
+
+    std::unique_ptr<ShardFilterer> getShardFilterer(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx) const override {
+        return nullptr;
     }
 
     std::string getShardName(OperationContext* opCtx) const final {
@@ -257,11 +242,10 @@ public:
     }
 
     std::pair<std::set<FieldPath>, boost::optional<ChunkVersion>>
-    ensureFieldsUniqueOrResolveDocumentKey(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        boost::optional<std::set<FieldPath>> fieldPaths,
-        boost::optional<ChunkVersion> targetCollectionPlacementVersion,
-        const NamespaceString& outputNs) const override;
+    ensureFieldsUniqueOrResolveDocumentKey(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                           boost::optional<std::set<FieldPath>> fieldPaths,
+                                           boost::optional<ChunkVersion> targetCollectionVersion,
+                                           const NamespaceString& outputNs) const override;
 
     /**
      * If 'allowTargetingShards' is true, splits the pipeline and dispatch half to the shards,
@@ -320,9 +304,6 @@ protected:
                                                  CurrentOpConnectionsMode connMode,
                                                  CurrentOpSessionsMode sessionMode,
                                                  std::vector<BSONObj>* ops) const final;
-
-    void _reportCurrentOpsForQueryAnalysis(OperationContext* opCtx,
-                                           std::vector<BSONObj>* ops) const final;
 };
 
 }  // namespace mongo

@@ -5,28 +5,24 @@ Import("env")
 env = env.Clone()
 
 env.Library(
-    target='cluster_query',
+    target="cluster_query",
     source=[
-        'cluster_client_cursor_impl.cpp',
-        'cluster_find.cpp',
+        "cluster_find.cpp",
         'cluster_query_knobs.idl',
-        'store_possible_cursor.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/commands',
+        '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/curop_failpoint_helpers',
-        '$BUILD_DIR/mongo/db/query/command_request_response',
-        '$BUILD_DIR/mongo/db/query/op_metrics',
         '$BUILD_DIR/mongo/db/query/query_common',
         '$BUILD_DIR/mongo/s/sharding_router_api',
-        'async_results_merger',
-        'cluster_cursor_cleanup_job',
-        'cluster_cursor_manager',
-        'router_exec_stage',
+        "cluster_client_cursor",
+        "cluster_cursor_cleanup_job",
+        "store_possible_cursor",
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/catalog/collection_uuid_mismatch_info',
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/idl/server_parameter',
     ],
 )
 
@@ -41,22 +37,30 @@ env.Library(
         '$BUILD_DIR/mongo/db/pipeline/pipeline',
         '$BUILD_DIR/mongo/db/pipeline/process_interface/mongos_process_interface',
         '$BUILD_DIR/mongo/db/pipeline/sharded_agg_helpers',
-        '$BUILD_DIR/mongo/db/shared_request_handling',
         '$BUILD_DIR/mongo/db/views/view_catalog_helpers',
         '$BUILD_DIR/mongo/db/views/views',
+        '$BUILD_DIR/mongo/s/query/cluster_client_cursor',
         'cluster_query',
-        'router_exec_stage',
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/catalog/collection_uuid_mismatch_info',
         '$BUILD_DIR/mongo/db/timeseries/timeseries_options',
-        'async_results_merger',
-        'cqf_utils',
+    ]
+)
+
+env.Library(
+    target="cluster_client_cursor",
+    source=[
+        "cluster_client_cursor_impl.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/shared_request_handling',
+        "router_exec_stage",
     ],
 )
 
 env.Library(
-    target='router_exec_stage',
+    target="router_exec_stage",
     source=[
         'document_source_merge_cursors.cpp',
         'router_stage_limit.cpp',
@@ -72,34 +76,37 @@ env.Library(
 )
 
 env.Library(
-    target='cqf_utils',
+    target="async_results_merger",
     source=[
-        'cqf_utils.cpp',
-    ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/pipeline/pipeline',
-        'router_exec_stage',
-    ],
-)
-
-env.Library(
-    target='async_results_merger',
-    source=[
-        'async_results_merger.cpp',
-        'blocking_results_merger.cpp',
-        'establish_cursors.cpp',
+        "async_results_merger.cpp",
+        "blocking_results_merger.cpp",
+        "establish_cursors.cpp",
         'async_results_merger_params.idl',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/query/command_request_response',
-        '$BUILD_DIR/mongo/db/query/query_common',
-        '$BUILD_DIR/mongo/executor/task_executor_interface',
-        '$BUILD_DIR/mongo/s/client/sharding_client',
-        '$BUILD_DIR/mongo/s/sharding_router_api',
+        "$BUILD_DIR/mongo/db/query/command_request_response",
+        "$BUILD_DIR/mongo/db/query/query_common",
+        "$BUILD_DIR/mongo/executor/task_executor_interface",
+        '$BUILD_DIR/mongo/s/catalog/sharding_catalog_client_impl',
+        "$BUILD_DIR/mongo/s/client/sharding_client",
+        "$BUILD_DIR/mongo/s/sharding_router_api",
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/catalog/collection_uuid_mismatch_info',
-        '$BUILD_DIR/mongo/executor/async_multicaster',
+    ]
+)
+
+env.Library(
+    target="store_possible_cursor",
+    source=[
+        "store_possible_cursor.cpp"
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/base",
+        "$BUILD_DIR/mongo/db/curop",
+        "$BUILD_DIR/mongo/db/query/command_request_response",
+        "cluster_client_cursor",
+        "cluster_cursor_manager",
     ],
 )
 
@@ -112,12 +119,12 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/auth/auth',
         '$BUILD_DIR/mongo/db/auth/authprivilege',
+        '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/generic_cursor',
-        '$BUILD_DIR/mongo/db/query/op_metrics',
+        '$BUILD_DIR/mongo/db/kill_sessions',
+        '$BUILD_DIR/mongo/db/logical_session_cache',
+        '$BUILD_DIR/mongo/db/logical_session_id',
         '$BUILD_DIR/mongo/db/query/query_knobs',
-        '$BUILD_DIR/mongo/db/session/kill_sessions',
-        '$BUILD_DIR/mongo/db/session/logical_session_cache',
-        '$BUILD_DIR/mongo/db/session/logical_session_id',
     ],
 )
 
@@ -128,7 +135,7 @@ env.Library(
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/db/cursor_server_params",
-        "$BUILD_DIR/mongo/s/grid",
+        "$BUILD_DIR/mongo/s/coreshard",
         "$BUILD_DIR/mongo/util/background_job",
     ],
 )
@@ -152,9 +159,9 @@ env.CppUnitTest(
     LIBDEPS=[
         "$BUILD_DIR/mongo/db/auth/authmocks",
         "$BUILD_DIR/mongo/db/auth/saslauth",
+        "$BUILD_DIR/mongo/db/logical_session_id",
         "$BUILD_DIR/mongo/db/query/query_request",
         "$BUILD_DIR/mongo/db/query/query_test_service_context",
-        "$BUILD_DIR/mongo/db/session/logical_session_id",
         "$BUILD_DIR/mongo/db/shared_request_handling",
         "$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture",
         "$BUILD_DIR/mongo/s/sharding_router_test_fixture",
@@ -162,8 +169,9 @@ env.CppUnitTest(
         "$BUILD_DIR/mongo/util/clock_source_mock",
         "async_results_merger",
         "cluster_aggregate",
+        "cluster_client_cursor",
         "cluster_cursor_manager",
-        "cluster_query",
         "router_exec_stage",
+        "store_possible_cursor",
     ],
 )

@@ -30,13 +30,14 @@
 #include "mongo/db/ops/write_ops.h"
 
 #include "mongo/db/dbmessage.h"
+#include "mongo/db/ops/new_write_error_exception_format_feature_flag_gen.h"
 #include "mongo/db/pipeline/aggregation_request_helper.h"
 #include "mongo/db/update/update_oplog_entry_serialization.h"
 #include "mongo/db/update/update_oplog_entry_version.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/overloaded_visitor.h"
 #include "mongo/util/str.h"
+#include "mongo/util/visit_helper.h"
 
 namespace mongo {
 
@@ -52,15 +53,6 @@ using write_ops::UpdateOpEntry;
 using write_ops::WriteCommandRequestBase;
 
 namespace {
-
-// This constant accounts for the null terminator in each field name and the BSONType byte for
-// each element.
-static constexpr int kPerElementOverhead = 2;
-
-// This constant tracks the overhead for serializing UUIDs. It includes 1 byte for the
-// 'BinDataType', 4 bytes for serializing the integer size of the UUID, and finally, 16 bytes
-// for the UUID itself.
-static const int kUUIDSize = 21;
 
 template <class T>
 void checkOpCountForCommand(const T& op, size_t numOps) {
@@ -151,9 +143,7 @@ int getUpdateSizeEstimate(const BSONObj& q,
                           const bool includeUpsertSupplied,
                           const boost::optional<mongo::BSONObj>& collation,
                           const boost::optional<std::vector<mongo::BSONObj>>& arrayFilters,
-                          const mongo::BSONObj& hint,
-                          const boost::optional<UUID>& sampleId,
-                          const bool includeAllowShardKeyUpdatesWithoutFullShardKeyInQuery) {
+                          const mongo::BSONObj& hint) {
     using UpdateOpEntry = write_ops::UpdateOpEntry;
 
     // This constant accounts for the null terminator in each field name and the BSONType byte for
@@ -201,78 +191,12 @@ int getUpdateSizeEstimate(const BSONObj& q,
         })();
     }
 
-    // Add the size of the 'hint' field, if present.
+    // Add the size of 'hint' field if present.
     if (!hint.isEmpty()) {
         estSize += UpdateOpEntry::kHintFieldName.size() + hint.objsize() + kPerElementOverhead;
     }
 
-    // Add the size of the 'sampleId' field, if present.
-    if (sampleId) {
-        estSize += UpdateOpEntry::kSampleIdFieldName.size() + kUUIDSize + kPerElementOverhead;
-    }
-
-    // Add the size of the '$_allowShardKeyUpdatesWithoutFullShardKeyInQuery' field, if present.
-    if (includeAllowShardKeyUpdatesWithoutFullShardKeyInQuery) {
-        estSize += UpdateOpEntry::kAllowShardKeyUpdatesWithoutFullShardKeyInQueryFieldName.size() +
-            kBoolSize + kPerElementOverhead;
-    }
-
     return estSize;
-}
-
-int getDeleteSizeEstimate(const BSONObj& q,
-                          const boost::optional<mongo::BSONObj>& collation,
-                          const mongo::BSONObj& hint,
-                          const boost::optional<UUID>& sampleId) {
-    using DeleteOpEntry = write_ops::DeleteOpEntry;
-
-    static const int kIntSize = 4;
-    int estSize = static_cast<int>(BSONObj::kMinBSONLength);
-
-    // Add the size of the 'q' field.
-    estSize += DeleteOpEntry::kQFieldName.size() + q.objsize() + kPerElementOverhead;
-
-    // Add the size of the 'collation' field, if present.
-    if (collation) {
-        estSize +=
-            DeleteOpEntry::kCollationFieldName.size() + collation->objsize() + kPerElementOverhead;
-    }
-
-    // Add the size of the 'limit' field.
-    estSize += DeleteOpEntry::kMultiFieldName.size() + kIntSize + kPerElementOverhead;
-
-    // Add the size of the 'hint' field, if present.
-    if (!hint.isEmpty()) {
-        estSize += DeleteOpEntry::kHintFieldName.size() + hint.objsize() + kPerElementOverhead;
-    }
-
-    // Add the size of the 'sampleId' field, if present.
-    if (sampleId) {
-        estSize += DeleteOpEntry::kSampleIdFieldName.size() + kUUIDSize + kPerElementOverhead;
-    }
-
-    return estSize;
-}
-
-bool verifySizeEstimate(const write_ops::UpdateOpEntry& update) {
-    return write_ops::getUpdateSizeEstimate(
-               update.getQ(),
-               update.getU(),
-               update.getC(),
-               update.getUpsertSupplied().has_value(),
-               update.getCollation(),
-               update.getArrayFilters(),
-               update.getHint(),
-               update.getSampleId(),
-               update.getAllowShardKeyUpdatesWithoutFullShardKeyInQuery().has_value()) >=
-        update.toBSON().objsize();
-}
-
-bool verifySizeEstimate(const write_ops::DeleteOpEntry& deleteOp) {
-    return write_ops::getDeleteSizeEstimate(deleteOp.getQ(),
-                                            deleteOp.getCollation(),
-                                            deleteOp.getHint(),
-                                            deleteOp.getSampleId()) >= deleteOp.toBSON().objsize();
 }
 
 bool isClassicalUpdateReplacement(const BSONObj& update) {
@@ -297,16 +221,17 @@ UpdateModification UpdateModification::parseFromOplogEntry(const BSONObj& oField
     BSONElement idField = oField["_id"];
 
     // If _id field is present, we're getting a replacement style update in which $v can be a user
-    // field. Otherwise, $v field has to be $v:2.
+    // field. Otherwise, $v field has to be either missing or be one of the version flag $v:1 /
+    // $v:2.
     uassert(4772600,
-            str::stream() << "Expected _id field or $v:2, but got: " << vField,
-            idField.ok() ||
-                (vField.ok() &&
-                 vField.numberInt() == static_cast<int>(UpdateOplogEntryVersion::kDeltaV2)));
+            str::stream() << "Expected _id field or $v field missing or $v:1/$v:2, but got: "
+                          << vField,
+            idField.ok() || !vField.ok() ||
+                vField.numberInt() == static_cast<int>(UpdateOplogEntryVersion::kUpdateNodeV1) ||
+                vField.numberInt() == static_cast<int>(UpdateOplogEntryVersion::kDeltaV2));
 
-    // It is important to check for '_id' field first, because a replacement style update can still
-    // have a '$v' field in the object.
-    if (!idField.ok()) {
+    if (!idField.ok() && vField.ok() &&
+        vField.numberInt() == static_cast<int>(UpdateOplogEntryVersion::kDeltaV2)) {
         // Make sure there's a diff field.
         BSONElement diff = oField[update_oplog_entry::kDiffObjectFieldName];
         uassert(4772601,
@@ -314,14 +239,15 @@ UpdateModification UpdateModification::parseFromOplogEntry(const BSONObj& oField
                               << diff.type(),
                 diff.type() == BSONType::Object);
 
-        return UpdateModification(doc_diff::Diff{diff.embeddedObject()}, DeltaTag{}, options);
+        return UpdateModification(doc_diff::Diff{diff.embeddedObject()}, options);
     } else {
-        // Treat it as a a full replacement update.
-        return UpdateModification(oField, ReplacementTag{});
+        // Treat it as a "classic" update which can either be a full replacement or a
+        // modifier-style update. Use "_id" field to determine whether which style it is.
+        return UpdateModification(oField, ClassicTag{}, idField.ok());
     }
 }
 
-UpdateModification::UpdateModification(doc_diff::Diff diff, DeltaTag, DiffOptions options)
+UpdateModification::UpdateModification(doc_diff::Diff diff, DiffOptions options)
     : _update(DeltaUpdate{std::move(diff), options}) {}
 
 UpdateModification::UpdateModification(TransformFunc transform)
@@ -330,7 +256,7 @@ UpdateModification::UpdateModification(TransformFunc transform)
 UpdateModification::UpdateModification(BSONElement update) {
     const auto type = update.type();
     if (type == BSONType::Object) {
-        _update = UpdateModification(update.Obj())._update;
+        _update = UpdateModification(update.Obj(), ClassicTag{})._update;
         return;
     }
 
@@ -341,19 +267,21 @@ UpdateModification::UpdateModification(BSONElement update) {
     _update = PipelineUpdate{parsePipelineFromBSON(update)};
 }
 
-UpdateModification::UpdateModification(const BSONObj& update) {
-    if (isClassicalUpdateReplacement(update)) {
+// If we know whether the update is a replacement, use that value. For example, when we're parsing
+// the oplog entry, we know if the update is a replacement by checking whether there's an _id field.
+UpdateModification::UpdateModification(const BSONObj& update, ClassicTag, bool isReplacement) {
+    if (isReplacement) {
         _update = ReplacementUpdate{update};
     } else {
         _update = ModifierUpdate{update};
     }
 }
 
-UpdateModification::UpdateModification(const BSONObj& update, ModifierUpdateTag)
-    : _update{ModifierUpdate{update}} {}
-UpdateModification::UpdateModification(const BSONObj& update, ReplacementTag)
-    : _update{ReplacementUpdate{update}} {}
-
+// If we don't know whether the update is a replacement, for example while we are parsing a user
+// request, we infer this by checking whether the first element is a $-field to distinguish modifier
+// style updates.
+UpdateModification::UpdateModification(const BSONObj& update, ClassicTag)
+    : UpdateModification(update, ClassicTag{}, isClassicalUpdateReplacement(update)) {}
 
 UpdateModification::UpdateModification(std::vector<BSONObj> pipeline)
     : _update{PipelineUpdate{std::move(pipeline)}} {}
@@ -368,7 +296,7 @@ UpdateModification UpdateModification::parseFromBSON(BSONElement elem) {
 
 int UpdateModification::objsize() const {
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             [](const ReplacementUpdate& replacement) -> int { return replacement.bson.objsize(); },
             [](const ModifierUpdate& modifier) -> int { return modifier.bson.objsize(); },
             [](const PipelineUpdate& pipeline) -> int {
@@ -380,21 +308,18 @@ int UpdateModification::objsize() const {
                 return size + kWriteCommandBSONArrayPerElementOverheadBytes;
             },
             [](const DeltaUpdate& delta) -> int { return delta.diff.objsize(); },
-            [](const TransformUpdate& transform) -> int {
-                return 0;
-            }},
+            [](const TransformUpdate& transform) -> int { return 0; }},
         _update);
 }
 
 UpdateModification::Type UpdateModification::type() const {
     return stdx::visit(
-        OverloadedVisitor{[](const ReplacementUpdate& replacement) { return Type::kReplacement; },
-                          [](const ModifierUpdate& modifier) { return Type::kModifier; },
-                          [](const PipelineUpdate& pipelineUpdate) { return Type::kPipeline; },
-                          [](const DeltaUpdate& delta) { return Type::kDelta; },
-                          [](const TransformUpdate& transform) {
-                              return Type::kTransform;
-                          }},
+        visit_helper::Overloaded{
+            [](const ReplacementUpdate& replacement) { return Type::kReplacement; },
+            [](const ModifierUpdate& modifier) { return Type::kModifier; },
+            [](const PipelineUpdate& pipelineUpdate) { return Type::kPipeline; },
+            [](const DeltaUpdate& delta) { return Type::kDelta; },
+            [](const TransformUpdate& transform) { return Type::kTransform; }},
         _update);
 }
 
@@ -404,24 +329,24 @@ UpdateModification::Type UpdateModification::type() const {
  */
 void UpdateModification::serializeToBSON(StringData fieldName, BSONObjBuilder* bob) const {
 
-    stdx::visit(OverloadedVisitor{
-                    [fieldName, bob](const ReplacementUpdate& replacement) {
-                        *bob << fieldName << replacement.bson;
-                    },
-                    [fieldName, bob](const ModifierUpdate& modifier) {
-                        *bob << fieldName << modifier.bson;
-                    },
-                    [fieldName, bob](const PipelineUpdate& pipeline) {
-                        BSONArrayBuilder arrayBuilder(bob->subarrayStart(fieldName));
-                        for (auto&& stage : pipeline) {
-                            arrayBuilder << stage;
-                        }
-                        arrayBuilder.doneFast();
-                    },
-                    [fieldName, bob](const DeltaUpdate& delta) { *bob << fieldName << delta.diff; },
-                    [](const TransformUpdate& transform) {
-                    }},
-                _update);
+    stdx::visit(
+        visit_helper::Overloaded{
+            [fieldName, bob](const ReplacementUpdate& replacement) {
+                *bob << fieldName << replacement.bson;
+            },
+            [fieldName, bob](const ModifierUpdate& modifier) {
+                *bob << fieldName << modifier.bson;
+            },
+            [fieldName, bob](const PipelineUpdate& pipeline) {
+                BSONArrayBuilder arrayBuilder(bob->subarrayStart(fieldName));
+                for (auto&& stage : pipeline) {
+                    arrayBuilder << stage;
+                }
+                arrayBuilder.doneFast();
+            },
+            [fieldName, bob](const DeltaUpdate& delta) { *bob << fieldName << delta.diff; },
+            [](const TransformUpdate& transform) {}},
+        _update);
 }
 
 WriteError::WriteError(int32_t index, Status status) : _index(index), _status(std::move(status)) {}
@@ -432,7 +357,21 @@ WriteError WriteError::parse(const BSONObj& obj) {
         auto code = ErrorCodes::Error(obj[WriteError::kCodeFieldName].Int());
         auto errmsg = obj[WriteError::kErrmsgFieldName].valueStringDataSafe();
 
-        return Status(code, errmsg, obj);
+        // At least up to FCV 5.x, the write commands operation used to convert StaleConfig errors
+        // into StaleShardVersion and store the extra info of StaleConfig in a sub-field called
+        // "errInfo".
+        //
+        // TODO (SERVER-64449): This special parsing should be removed in the stable version
+        // following the resolution of this ticket.
+        if (code == ErrorCodes::OBSOLETE_StaleShardVersion) {
+            return Status(ErrorCodes::StaleConfig,
+                          std::move(errmsg),
+                          obj[WriteError::kErrInfoFieldName].Obj());
+        }
+
+        // All remaining errors have the error stored at the same level as the code and errmsg (in
+        // the same way that Status is serialised as part of regular command response)
+        return Status(code, std::move(errmsg), obj);
     }();
 
     return WriteError(index, std::move(status));
@@ -442,10 +381,28 @@ BSONObj WriteError::serialize() const {
     BSONObjBuilder errBuilder;
     errBuilder.append(WriteError::kIndexFieldName, _index);
 
-    errBuilder.append(WriteError::kCodeFieldName, int32_t(_status.code()));
-    errBuilder.append(WriteError::kErrmsgFieldName, _status.reason());
-    if (auto extraInfo = _status.extraInfo()) {
-        extraInfo->serialize(&errBuilder);
+    // At least up to FCV 5.x, the write commands operation used to convert StaleConfig errors into
+    // StaleShardVersion and store the extra info of StaleConfig in a sub-field called "errInfo".
+    // This logic preserves this for backwards compatibility.
+    //
+    // TODO (SERVER-64449): This special serialisation should be removed in the stable version
+    // following the resolution of this ticket.
+    if (_status == ErrorCodes::StaleConfig &&
+        !feature_flags::gFeatureFlagNewWriteErrorExceptionFormat.isEnabled(
+            serverGlobalParams.featureCompatibility)) {
+        errBuilder.append(WriteError::kCodeFieldName,
+                          int32_t(ErrorCodes::OBSOLETE_StaleShardVersion));
+        errBuilder.append(WriteError::kErrmsgFieldName, _status.reason());
+        auto extraInfo = _status.extraInfo();
+        invariant(extraInfo);
+        BSONObjBuilder extraInfoBuilder(errBuilder.subobjStart(WriteError::kErrInfoFieldName));
+        extraInfo->serialize(&extraInfoBuilder);
+    } else {
+        errBuilder.append(WriteError::kCodeFieldName, int32_t(_status.code()));
+        errBuilder.append(WriteError::kErrmsgFieldName, _status.reason());
+        if (auto extraInfo = _status.extraInfo()) {
+            extraInfo->serialize(&errBuilder);
+        }
     }
 
     return errBuilder.obj();
@@ -454,7 +411,7 @@ BSONObj WriteError::serialize() const {
 }  // namespace write_ops
 
 InsertCommandRequest InsertOp::parse(const OpMsgRequest& request) {
-    auto insertOp = InsertCommandRequest::parse(IDLParserContext("insert"), request);
+    auto insertOp = InsertCommandRequest::parse(IDLParserErrorContext("insert"), request);
 
     validate(insertOp);
     return insertOp;
@@ -489,7 +446,7 @@ InsertCommandRequest InsertOp::parseLegacy(const Message& msgRaw) {
 
 InsertCommandReply InsertOp::parseResponse(const BSONObj& obj) {
     uassertStatusOK(getStatusFromCommandResult(obj));
-    return InsertCommandReply::parse(IDLParserContext("insertReply"), obj);
+    return InsertCommandReply::parse(IDLParserErrorContext("insertReply"), obj);
 }
 
 void InsertOp::validate(const InsertCommandRequest& insertOp) {
@@ -498,7 +455,7 @@ void InsertOp::validate(const InsertCommandRequest& insertOp) {
 }
 
 UpdateCommandRequest UpdateOp::parse(const OpMsgRequest& request) {
-    auto updateOp = UpdateCommandRequest::parse(IDLParserContext("update"), request);
+    auto updateOp = UpdateCommandRequest::parse(IDLParserErrorContext("update"), request);
 
     checkOpCountForCommand(updateOp, updateOp.getUpdates().size());
     return updateOp;
@@ -507,7 +464,7 @@ UpdateCommandRequest UpdateOp::parse(const OpMsgRequest& request) {
 UpdateCommandReply UpdateOp::parseResponse(const BSONObj& obj) {
     uassertStatusOK(getStatusFromCommandResult(obj));
 
-    return UpdateCommandReply::parse(IDLParserContext("updateReply"), obj);
+    return UpdateCommandReply::parse(IDLParserErrorContext("updateReply"), obj);
 }
 
 void UpdateOp::validate(const UpdateCommandRequest& updateOp) {
@@ -517,11 +474,11 @@ void UpdateOp::validate(const UpdateCommandRequest& updateOp) {
 FindAndModifyCommandReply FindAndModifyOp::parseResponse(const BSONObj& obj) {
     uassertStatusOK(getStatusFromCommandResult(obj));
 
-    return FindAndModifyCommandReply::parse(IDLParserContext("findAndModifyReply"), obj);
+    return FindAndModifyCommandReply::parse(IDLParserErrorContext("findAndModifyReply"), obj);
 }
 
 DeleteCommandRequest DeleteOp::parse(const OpMsgRequest& request) {
-    auto deleteOp = DeleteCommandRequest::parse(IDLParserContext("delete"), request);
+    auto deleteOp = DeleteCommandRequest::parse(IDLParserErrorContext("delete"), request);
 
     checkOpCountForCommand(deleteOp, deleteOp.getDeletes().size());
     return deleteOp;
@@ -529,7 +486,7 @@ DeleteCommandRequest DeleteOp::parse(const OpMsgRequest& request) {
 
 DeleteCommandReply DeleteOp::parseResponse(const BSONObj& obj) {
     uassertStatusOK(getStatusFromCommandResult(obj));
-    return DeleteCommandReply::parse(IDLParserContext("deleteReply"), obj);
+    return DeleteCommandReply::parse(IDLParserErrorContext("deleteReply"), obj);
 }
 
 void DeleteOp::validate(const DeleteCommandRequest& deleteOp) {

@@ -32,8 +32,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>  // strlen
 #include <fmt/format.h>
+#include <string.h>  // strlen
 #include <string>
 #include <vector>
 
@@ -115,7 +115,7 @@ public:
     std::string String() const {
         return chk(mongo::String).str();
     }
-    StringData checkAndGetStringData() const {
+    const StringData checkAndGetStringData() const {
         return chk(mongo::String).valueStringData();
     }
     Date_t Date() const {
@@ -318,7 +318,7 @@ public:
         return fieldNameSize_;
     }
 
-    StringData fieldNameStringData() const {
+    const StringData fieldNameStringData() const {
         return StringData(fieldName(), eoo() ? 0 : fieldNameSize() - 1);
     }
 
@@ -574,7 +574,7 @@ public:
      * Returns a StringData pointing into this element's data.  Does not validate that the
      * element is actually of type String.
      */
-    StringData valueStringData() const {
+    const StringData valueStringData() const {
         return StringData(valuestr(), valuestrsize() - 1);
     }
 
@@ -783,7 +783,7 @@ public:
         return (type() == BinData) && (binDataType() == bdt);
     }
 
-    std::array<unsigned char, 16> uuid() const {
+    const std::array<unsigned char, 16> uuid() const {
         int len = 0;
         const char* data = nullptr;
         if (isBinData(BinDataType::newUUID)) {
@@ -797,7 +797,7 @@ public:
         return result;
     }
 
-    std::array<unsigned char, 16> md5() const {
+    const std::array<unsigned char, 16> md5() const {
         int len = 0;
         const char* data = nullptr;
         if (isBinData(BinDataType::MD5Type)) {
@@ -827,7 +827,7 @@ public:
         return value() + 4;
     }
 
-    mongo::OID dbrefOID() const {
+    const mongo::OID dbrefOID() const {
         uassert(10064, "not a dbref", type() == DBRef);
         const char* start = value();
         start += 4 + ConstDataView(start).read<LittleEndian<int>>();

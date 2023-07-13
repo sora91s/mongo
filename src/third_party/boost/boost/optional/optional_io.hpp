@@ -12,7 +12,6 @@
 #ifndef BOOST_OPTIONAL_OPTIONAL_IO_FLC_19NOV2002_HPP
 #define BOOST_OPTIONAL_OPTIONAL_IO_FLC_19NOV2002_HPP
 
-#ifndef BOOST_NO_IOSTREAM
 #include <istream>
 #include <ostream>
 
@@ -32,7 +31,7 @@ operator<<(std::basic_ostream<CharType, CharTrait>& out, none_t)
   {
     out << "--";
   }
-
+   
   return out;
 }
 
@@ -91,5 +90,5 @@ operator>>(std::basic_istream<CharType, CharTrait>& in, optional<T>& v)
 
 } // namespace boost
 
-#endif // BOOST_NO_IOSTREAM
 #endif
+

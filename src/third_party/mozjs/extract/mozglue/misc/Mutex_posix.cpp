@@ -20,8 +20,8 @@
 #define REPORT_PTHREADS_ERROR(result, msg) \
   {                                        \
     errno = result;                        \
-    perror(msg);                           \
-    MOZ_CRASH(msg);                        \
+    /*perror(msg);*/                       \
+    /*MOZ_CRASH(msg);*/                    \
   }
 
 #define TRY_CALL_PTHREADS(call, msg)      \

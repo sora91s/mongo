@@ -35,7 +35,7 @@ void ValidateResults::appendToResultObj(BSONObjBuilder* resultObj, bool debuggin
     resultObj->appendBool("valid", valid);
     resultObj->appendBool("repaired", repaired);
     if (readTimestamp) {
-        resultObj->append("readTimestamp", readTimestamp.value());
+        resultObj->append("readTimestamp", readTimestamp.get());
     }
 
     static constexpr std::size_t kMaxErrorWarningSizeBytes = 2 * 1024 * 1024;

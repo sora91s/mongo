@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -37,16 +38,12 @@
 
 #include "mongo/db/allocate_cursor_id.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/kill_sessions_common.h"
+#include "mongo/db/logical_session_cache.h"
 #include "mongo/db/query/query_knobs_gen.h"
-#include "mongo/db/query/telemetry.h"
-#include "mongo/db/session/kill_sessions_common.h"
-#include "mongo/db/session/logical_session_cache.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -163,7 +160,7 @@ StatusWith<CursorId> ClusterCursorManager::registerCursor(
     const NamespaceString& nss,
     CursorType cursorType,
     CursorLifetime cursorLifetime,
-    const boost::optional<UserName>& authenticatedUser) {
+    UserNameIterator authenticatedUsers) {
     // Read the clock out of the lock.
     const auto now = _clockSource->now();
 
@@ -189,7 +186,7 @@ StatusWith<CursorId> ClusterCursorManager::registerCursor(
                                                              cursorType,
                                                              cursorLifetime,
                                                              now,
-                                                             authenticatedUser,
+                                                             authenticatedUsers,
                                                              opCtx->getClient()->getUUID(),
                                                              opCtx->getOperationKey(),
                                                              nss));
@@ -217,7 +214,7 @@ StatusWith<ClusterCursorManager::PinnedCursor> ClusterCursorManager::checkOutCur
     }
 
     // Check if the user is coauthorized to access this cursor.
-    auto authCheckStatus = authChecker(entry->getAuthenticatedUser());
+    auto authCheckStatus = authChecker(entry->getAuthenticatedUsers());
     if (!authCheckStatus.isOK()) {
         return authCheckStatus.withContext(str::stream()
                                            << "cursor id " << cursorId
@@ -241,7 +238,7 @@ StatusWith<ClusterCursorManager::PinnedCursor> ClusterCursorManager::checkOutCur
     // we pass down to the logical session cache and vivify the record (updating last use).
     if (cursorGuard->getLsid()) {
         auto vivifyCursorStatus =
-            LogicalSessionCache::get(opCtx)->vivify(opCtx, cursorGuard->getLsid().value());
+            LogicalSessionCache::get(opCtx)->vivify(opCtx, cursorGuard->getLsid().get());
         if (!vivifyCursorStatus.isOK()) {
             return vivifyCursorStatus;
         }
@@ -297,9 +294,9 @@ Status ClusterCursorManager::checkAuthForKillCursors(OperationContext* opCtx,
         return cursorNotFoundStatus(cursorId);
     }
 
-    // Note that getAuthenticatedUser() is thread-safe, so it's okay to call even if there's
+    // Note that getAuthenticatedUsers() is thread-safe, so it's okay to call even if there's
     // an operation using the cursor.
-    return authChecker(entry->getAuthenticatedUser());
+    return authChecker(entry->getAuthenticatedUsers());
 }
 
 void ClusterCursorManager::killOperationUsingCursor(WithLock, CursorEntry* entry) {
@@ -353,8 +350,8 @@ void ClusterCursorManager::detachAndKillCursor(stdx::unique_lock<Latch> lk,
 
 std::size_t ClusterCursorManager::killMortalCursorsInactiveSince(OperationContext* opCtx,
                                                                  Date_t cutoff) {
-    auto cursorsKilled =
-        killCursorsSatisfying(opCtx, [cutoff](CursorId cursorId, const CursorEntry& entry) -> bool {
+    return killCursorsSatisfying(
+        opCtx, [cutoff](CursorId cursorId, const CursorEntry& entry) -> bool {
             if (entry.getLifetimeType() == CursorLifetime::Immortal ||
                 entry.getOperationUsingCursor() ||
                 (entry.getLsid() && !enableTimeoutOfInactiveSessionCursors.load())) {
@@ -372,11 +369,6 @@ std::size_t ClusterCursorManager::killMortalCursorsInactiveSince(OperationContex
 
             return res;
         });
-
-    stdx::lock_guard<Latch> lk(_mutex);
-    _cursorsTimedOut += cursorsKilled;
-
-    return cursorsKilled;
 }
 
 void ClusterCursorManager::killAllCursors(OperationContext* opCtx) {
@@ -425,11 +417,6 @@ std::size_t ClusterCursorManager::killCursorsSatisfying(
     }
 
     return nKilled;
-}
-
-size_t ClusterCursorManager::cursorsTimedOut() const {
-    stdx::lock_guard<Latch> lk(_mutex);
-    return _cursorsTimedOut;
 }
 
 ClusterCursorManager::Stats ClusterCursorManager::stats() const {
@@ -508,7 +495,7 @@ std::vector<GenericCursor> ClusterCursorManager::getIdleCursors(
         // permission to see this cursor.
         if (ctxAuth->getAuthorizationManager().isAuthEnabled() &&
             userMode == MongoProcessInterface::CurrentOpUserMode::kExcludeOthers &&
-            !ctxAuth->isCoauthorizedWith(entry.getAuthenticatedUser())) {
+            !ctxAuth->isCoauthorizedWith(entry.getAuthenticatedUsers())) {
             continue;
         }
         if (entry.isKillPending() || entry.getOperationUsingCursor()) {
@@ -587,36 +574,4 @@ StatusWith<ClusterClientCursorGuard> ClusterCursorManager::_detachCursor(WithLoc
 
     return std::move(cursor);
 }
-
-void collectTelemetryMongos(OperationContext* opCtx) {
-    auto&& opDebug = CurOp::get(opCtx)->debug();
-    // If we haven't registered a cursor to prepare for getMore requests, we record
-    // telemetry directly.
-    //
-    // We have to use `elapsedTimeExcludingPauses` to count execution time since
-    // additiveMetrics.queryExecMicros isn't set until curOp is closing out.
-    telemetry::writeTelemetry(opCtx,
-                              opDebug.telemetryStoreKey,
-                              CurOp::get(opCtx)->elapsedTimeExcludingPauses().count(),
-                              opDebug.nreturned);
-}
-
-void collectTelemetryMongos(OperationContext* opCtx, ClusterClientCursorGuard& cursor) {
-    auto&& opDebug = CurOp::get(opCtx)->debug();
-    // We have to use `elapsedTimeExcludingPauses` to count execution time since
-    // additiveMetrics.queryExecMicros isn't set until curOp is closing out.
-    cursor->incrementCursorMetrics(opDebug.additiveMetrics,
-                                   CurOp::get(opCtx)->elapsedTimeExcludingPauses().count(),
-                                   opDebug.nreturned);
-}
-
-void collectTelemetryMongos(OperationContext* opCtx, ClusterCursorManager::PinnedCursor& cursor) {
-    auto&& opDebug = CurOp::get(opCtx)->debug();
-    // We have to use `elapsedTimeExcludingPauses` to count execution time since
-    // additiveMetrics.queryExecMicros isn't set until curOp is closing out.
-    cursor->incrementCursorMetrics(opDebug.additiveMetrics,
-                                   CurOp::get(opCtx)->elapsedTimeExcludingPauses().count(),
-                                   opDebug.nreturned);
-}
-
 }  // namespace mongo

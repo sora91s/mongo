@@ -16,7 +16,7 @@ class _Result(Enum):
 
 
 @dataclass
-class _ResultTableRow:
+class _ResultTableRow:  # pylint: disable=too-many-instance-attributes
     """Representation of result table row."""
 
     test_name: str

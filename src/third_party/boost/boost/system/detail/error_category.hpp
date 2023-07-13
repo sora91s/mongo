@@ -19,7 +19,6 @@
 
 #if defined(BOOST_SYSTEM_HAS_SYSTEM_ERROR)
 # include <system_error>
-# include <atomic>
 #endif
 
 namespace boost
@@ -39,7 +38,11 @@ namespace detail
 
 BOOST_SYSTEM_CONSTEXPR bool failed_impl( int ev, error_category const & cat );
 
-class std_category;
+#if defined(BOOST_SYSTEM_HAS_SYSTEM_ERROR)
+
+std::error_category const & to_std_category( error_category const & cat );
+
+#endif
 
 } // namespace detail
 
@@ -55,8 +58,9 @@ private:
     friend std::size_t hash_value( error_code const & ec );
     friend BOOST_SYSTEM_CONSTEXPR bool detail::failed_impl( int ev, error_category const & cat );
 
-    friend class error_code;
-    friend class error_condition;
+#if defined(BOOST_SYSTEM_HAS_SYSTEM_ERROR)
+    friend std::error_category const & detail::to_std_category( error_category const & cat );
+#endif
 
 #if !defined(BOOST_NO_CXX11_DELETED_FUNCTIONS)
 public:
@@ -76,16 +80,6 @@ private:
 
     boost::ulong_long_type id_;
 
-#if defined(BOOST_SYSTEM_HAS_SYSTEM_ERROR)
-
-    mutable std::atomic< boost::system::detail::std_category* > ps_;
-
-#else
-
-    boost::system::detail::std_category* ps_;
-
-#endif
-
 protected:
 
 #if !defined(BOOST_NO_CXX11_DEFAULTED_FUNCTIONS) && !defined(BOOST_NO_CXX11_NON_PUBLIC_DEFAULTED_FUNCTIONS)
@@ -103,11 +97,11 @@ protected:
 
 #endif
 
-    BOOST_SYSTEM_CONSTEXPR error_category() BOOST_NOEXCEPT: id_( 0 ), ps_()
+    BOOST_SYSTEM_CONSTEXPR error_category() BOOST_NOEXCEPT: id_( 0 )
     {
     }
 
-    explicit BOOST_SYSTEM_CONSTEXPR error_category( boost::ulong_long_type id ) BOOST_NOEXCEPT: id_( id ), ps_()
+    explicit BOOST_SYSTEM_CONSTEXPR error_category( boost::ulong_long_type id ) BOOST_NOEXCEPT: id_( id )
     {
     }
 
@@ -127,24 +121,24 @@ public:
         return ev != 0;
     }
 
-    friend BOOST_SYSTEM_CONSTEXPR bool operator==( error_category const & lhs, error_category const & rhs ) BOOST_NOEXCEPT
+    BOOST_SYSTEM_CONSTEXPR bool operator==( const error_category & rhs ) const BOOST_NOEXCEPT
     {
-        return rhs.id_ == 0? &lhs == &rhs: lhs.id_ == rhs.id_;
+        return rhs.id_ == 0? this == &rhs: id_ == rhs.id_;
     }
 
-    friend BOOST_SYSTEM_CONSTEXPR bool operator!=( error_category const & lhs, error_category const & rhs ) BOOST_NOEXCEPT
+    BOOST_SYSTEM_CONSTEXPR bool operator!=( const error_category & rhs ) const BOOST_NOEXCEPT
     {
-        return !( lhs == rhs );
+        return !( *this == rhs );
     }
 
-    friend BOOST_SYSTEM_CONSTEXPR bool operator<( error_category const & lhs, error_category const & rhs ) BOOST_NOEXCEPT
+    BOOST_SYSTEM_CONSTEXPR bool operator<( const error_category & rhs ) const BOOST_NOEXCEPT
     {
-        if( lhs.id_ < rhs.id_ )
+        if( id_ < rhs.id_ )
         {
             return true;
         }
 
-        if( lhs.id_ > rhs.id_ )
+        if( id_ > rhs.id_ )
         {
             return false;
         }
@@ -154,15 +148,13 @@ public:
             return false; // equal
         }
 
-        return std::less<error_category const *>()( &lhs, &rhs );
+        return std::less<error_category const *>()( this, &rhs );
     }
 
 #if defined(BOOST_SYSTEM_HAS_SYSTEM_ERROR)
-# if defined(__SUNPRO_CC) // trailing __global is not supported
+
     operator std::error_category const & () const;
-# else
-    operator std::error_category const & () const BOOST_SYMBOL_VISIBLE;
-# endif
+
 #endif
 };
 
@@ -173,9 +165,8 @@ public:
 namespace detail
 {
 
-static const boost::ulong_long_type generic_category_id = ( boost::ulong_long_type( 0xB2AB117A ) << 32 ) + 0x257EDFD0;
-static const boost::ulong_long_type system_category_id = generic_category_id + 1;
-static const boost::ulong_long_type interop_category_id = generic_category_id + 2;
+static const boost::ulong_long_type generic_category_id = ( boost::ulong_long_type( 0xB2AB117A ) << 32 ) + 0x257EDF0D;
+static const boost::ulong_long_type system_category_id = ( boost::ulong_long_type( 0x8FAFD21E ) << 32 ) + 0x25C5E09B;
 
 BOOST_SYSTEM_CONSTEXPR inline bool failed_impl( int ev, error_category const & cat )
 {

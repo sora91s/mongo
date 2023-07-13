@@ -26,18 +26,29 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-import os, wiredtiger, wttest
-from helper_tiered import TieredConfigMixin, gen_tiered_storage_sources, get_conn_config, get_check
+from helper_tiered import generate_s3_prefix, get_auth_token, get_bucket1_name
 from wtscenario import make_scenarios
+import os, wiredtiger, wttest
 StorageSource = wiredtiger.StorageSource  # easy access to constants
 
 # test_tiered10.py
 #    Test tiered storage with simultaneous connections using different
 # prefixes to the same bucket directory but different local databases.
-class test_tiered10(wttest.WiredTigerTestCase, TieredConfigMixin):
-
-    storage_sources = gen_tiered_storage_sources(wttest.getss_random_prefix(), 'test_tiered10', tiered_only=True)
-
+class test_tiered10(wttest.WiredTigerTestCase):
+    storage_sources = [
+        ('dir_store', dict(auth_token = get_auth_token('dir_store'),
+            bucket = get_bucket1_name('dir_store'),
+            prefix1 = '1_',
+            prefix2 = '2_',
+            ss_name = 'dir_store')),
+        # FIXME-WT-8896 The S3 extension gets stuck during initialization if more than one
+        # simultaneous WT connection is created. Enable once we have fixed this issue.
+        #('s3', dict(auth_token = get_auth_token('s3_store'),
+        #    bucket = get_bucket1_name('s3_store'),
+        #    prefix1 = generate_s3_prefix(),
+        #    prefix2 = generate_s3_prefix(),
+        #    ss_name = 's3_store')),
+    ]
     # Make scenarios for different cloud service providers
     scenarios = make_scenarios(storage_sources)
 
@@ -50,8 +61,9 @@ class test_tiered10(wttest.WiredTigerTestCase, TieredConfigMixin):
     conn2_dir = "second_dir"
     retention = 1
     saved_conn = ''
-
     def conn_config(self):
+        if self.ss_name == 'dir_store' and not os.path.exists(self.bucket):
+            os.mkdir(self.bucket)
         os.mkdir(self.conn1_dir)
         os.mkdir(self.conn2_dir)
         # Use this to create the directories and set up for the others.
@@ -62,17 +74,36 @@ class test_tiered10(wttest.WiredTigerTestCase, TieredConfigMixin):
         if self.ss_name == 'dir_store':
             bucket = '../'
         bucket += self.bucket
-        self.saved_conn = get_conn_config(self) + 'bucket=%s,' % bucket + \
-          'local_retention=%d),create' % self.retention
+
+        self.saved_conn = \
+          'debug_mode=(flush_checkpoint=true),' + \
+          'create,statistics=(all),' + \
+          'tiered_storage=(auth_token=%s,' % self.auth_token + \
+          'bucket=%s,' % bucket + \
+          'local_retention=%d,' % self.retention + \
+          'name=%s),' % self.ss_name 
         return dummy_conn
 
     # Load the storage store extension.
     def conn_extensions(self, extlist):
-        TieredConfigMixin.conn_extensions(self, extlist)
+        config = ''
+        # S3 store is built as an optional loadable extension, not all test environments build S3.
+        if self.ss_name == 's3_store':
+            #config = '=(config=\"(verbose=1)\")'
+            extlist.skip_if_missing = True
+        #if self.ss_name == 'dir_store':
+            #config = '=(config=\"(verbose=1,delay_ms=200,force_delay=3)\")'
+        # Windows doesn't support dynamically loaded extension libraries.
+        if os.name == 'nt':
+            extlist.skip_if_missing = True
+        extlist.extension('storage_sources', self.ss_name + config)
 
     def check(self, tc, base, n):
-        get_check(self, tc, base, n)
-    
+        for i in range(base, n):
+            self.assertEqual(tc[str(i)], str(i))
+        tc.set_key(str(n))
+        self.assertEquals(tc.search(), wiredtiger.WT_NOTFOUND)
+
     # Test calling the flush_tier API.
     def test_tiered(self):
         # Have two connections running in different directories, but sharing
@@ -86,10 +117,10 @@ class test_tiered10(wttest.WiredTigerTestCase, TieredConfigMixin):
         # We open two connections manually so that they both have the same relative
         # pathnames. The standard connection is just a dummy for this test.
         ext = self.extensionsConfig()
-        conn1_params = self.saved_conn + ext + ',tiered_storage=(bucket_prefix=%s)' % self.bucket_prefix
+        conn1_params = self.saved_conn + ext + ',tiered_storage=(bucket_prefix=%s)' % self.prefix1
         conn1 = self.wiredtiger_open(self.conn1_dir, conn1_params)
         session1 = conn1.open_session()
-        conn2_params = self.saved_conn + ext + ',tiered_storage=(bucket_prefix=%s)' % self.bucket_prefix1
+        conn2_params = self.saved_conn + ext + ',tiered_storage=(bucket_prefix=%s)' % self.prefix2
         conn2 = self.wiredtiger_open(self.conn2_dir, conn2_params)
         session2 = conn2.open_session()
 
@@ -105,17 +136,14 @@ class test_tiered10(wttest.WiredTigerTestCase, TieredConfigMixin):
         self.check(c2, 20, 1)
         c1.close()
         c2.close()
-        # Use force to make sure the new object is created. Otherwise there is no
-        # existing checkpoint yet and the flush will think there is no work to do.
-        session1.checkpoint('flush_tier=(enabled,force=true)')
-        session2.checkpoint('flush_tier=(enabled,force=true)')
-        conn1_obj1 = os.path.join(self.bucket, self.bucket_prefix + self.obj1file)
-        conn2_obj1 = os.path.join(self.bucket, self.bucket_prefix1 + self.obj1file)
-
-        if self.ss_name == 'dir_store':
-            self.assertTrue(os.path.exists(conn1_obj1))
-            self.assertTrue(os.path.exists(conn2_obj1))
-
+        session1.checkpoint()
+        session1.flush_tier(None)
+        session2.checkpoint()
+        session2.flush_tier(None)
+        conn1_obj1 = os.path.join(self.bucket, self.prefix1 + self.obj1file)
+        conn2_obj1 = os.path.join(self.bucket, self.prefix2 + self.obj1file)
+        self.assertTrue(os.path.exists(conn1_obj1))
+        self.assertTrue(os.path.exists(conn2_obj1))
         conn1.close()
         conn2.close()
 

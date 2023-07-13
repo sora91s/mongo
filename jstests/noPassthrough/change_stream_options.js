@@ -1,14 +1,12 @@
 // Tests setClusterParameter and getClusterParameter for changeStreamOptions on standalone, replica
 // set and sharded cluster configurations.
 // @tags: [
+//  requires_fcv_60,
+//  featureFlagClusterWideConfig,
 //  requires_replication,
-//  requires_sharding,
 // ]
 (function() {
 "use strict";
-
-// For ChangeStreamMultitenantReplicaSetTest.
-load("jstests/serverless/libs/change_collection_util.js");
 
 const testDBName = jsTestName();
 
@@ -72,11 +70,13 @@ function testChangeStreamOptionsWithAdminDB(conn) {
     const standalone = MongoRunner.runMongod();
     const adminDB = standalone.getDB("admin");
 
-    // Verify that the set command cannot be issued on a standalone server.
+    // Verify that the set and get commands cannot be issued on a standalone server.
     assert.commandFailedWithCode(adminDB.runCommand({
         setClusterParameter:
             {changeStreamOptions: {preAndPostImages: {expireAfterSeconds: NumberLong(10)}}}
     }),
+                                 ErrorCodes.IllegalOperation);
+    assert.commandFailedWithCode(adminDB.runCommand({getClusterParameter: "changeStreamOptions"}),
                                  ErrorCodes.IllegalOperation);
 
     MongoRunner.stopMongod(standalone);
@@ -178,22 +178,6 @@ function testChangeStreamOptionsWithAdminDB(conn) {
     assert.commandWorked(
         primary.getDB("admin").runCommand({getClusterParameter: "changeStreamOptions"}));
     primary.getDB("admin").logout();
-
-    replSetTest.stopSet();
-})();
-
-// Tests that 'changeStreamOptions.preAndPostImages.expireAfterSeconds' is not available in
-// serverless.
-(function testChangeStreamOptionsInServerless() {
-    const replSetTest = new ChangeStreamMultitenantReplicaSetTest({nodes: 1});
-
-    const primary = replSetTest.getPrimary();
-    const adminDB = primary.getDB("admin");
-    assert.commandFailedWithCode(adminDB.runCommand({
-        setClusterParameter:
-            {changeStreamOptions: {preAndPostImages: {expireAfterSeconds: NumberLong(40)}}}
-    }),
-                                 ErrorCodes.CommandNotSupported);
 
     replSetTest.stopSet();
 })();

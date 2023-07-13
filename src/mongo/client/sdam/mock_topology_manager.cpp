@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/client/sdam/mock_topology_manager.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/client/sdam/topology_state_machine.h"
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/topology_version_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo::sdam {
 
@@ -48,7 +46,7 @@ bool MockTopologyManager::onServerDescription(const HelloOutcome& helloOutcome) 
     return true;
 }
 
-std::shared_ptr<TopologyDescription> MockTopologyManager::getTopologyDescription() const {
+const std::shared_ptr<TopologyDescription> MockTopologyManager::getTopologyDescription() const {
     stdx::lock_guard<mongo::Mutex> lock(_mutex);
     return _topologyDescription;
 }

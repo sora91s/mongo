@@ -31,8 +31,6 @@
 
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/query/optimizer/node.h"
-#include "mongo/db/query/optimizer/utils/utils.h"
-
 
 namespace mongo::optimizer {
 
@@ -41,7 +39,7 @@ namespace mongo::optimizer {
  */
 ABT generateMatchExpression(const MatchExpression* expr,
                             bool allowAggExpressions,
-                            const ProjectionName& rootProjection,
-                            PrefixId& prefixId);
+                            const std::string& rootProjection,
+                            const std::string& uniqueIdPrefix);
 
 }  // namespace mongo::optimizer

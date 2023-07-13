@@ -27,33 +27,31 @@
  *    it in the license file.
  */
 
-#include "mongo/db/catalog/catalog_test_fixture.h"
-#include "mongo/db/catalog/collection_write_path.h"
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/catalog/validate_state.h"
+
+#include "mongo/db/catalog/catalog_test_fixture.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builds_coordinator.h"
-#include "mongo/db/op_observer/op_observer_impl.h"
-#include "mongo/db/op_observer/op_observer_registry.h"
-#include "mongo/db/op_observer/oplog_writer_mock.h"
+#include "mongo/db/op_observer_impl.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/storage/durable_catalog.h"
 #include "mongo/db/storage/snapshot_manager.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_global_options.h"
 #include "mongo/util/fail_point.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
 namespace {
 
-const NamespaceString kNss = NamespaceString::createNamespaceString_forTest("fooDB.fooColl");
+const NamespaceString kNss = NamespaceString("fooDB.fooColl");
 
 class ValidateStateTest : public CatalogTestFixture {
-protected:
-    ValidateStateTest(Options options = {}) : CatalogTestFixture(std::move(options)) {}
-
+public:
     /**
      * Create collection 'nss'. It will possess a default _id index.
      */
@@ -66,12 +64,6 @@ protected:
 
 private:
     void setUp() override;
-};
-
-// Background validation opens checkpoint cursors which requires reading from the disk.
-class ValidateStateDiskTest : public ValidateStateTest {
-protected:
-    ValidateStateDiskTest() : ValidateStateTest(Options{}.ephemeral(false)) {}
 };
 
 void ValidateStateTest::createCollection(OperationContext* opCtx, const NamespaceString& nss) {
@@ -92,8 +84,8 @@ void ValidateStateTest::createCollectionAndPopulateIt(OperationContext* opCtx,
     OpDebug* const nullOpDebug = nullptr;
     for (int i = 0; i < 10; i++) {
         WriteUnitOfWork wuow(opCtx);
-        ASSERT_OK(collection_internal::insertDocument(
-            opCtx, *collection, InsertStatement(BSON("_id" << i)), nullOpDebug));
+        ASSERT_OK(
+            collection->insertDocument(opCtx, InsertStatement(BSON("_id" << i)), nullOpDebug));
         wuow.commit();
     }
 }
@@ -106,8 +98,7 @@ void ValidateStateTest::setUp() {
     // Set up OpObserver so that we will append actual oplog entries to the oplog using
     // repl::logOp(). This supports index builds that have to look up the last oplog entry.
     auto opObserverRegistry = dynamic_cast<OpObserverRegistry*>(service->getOpObserver());
-    opObserverRegistry->addObserver(
-        std::make_unique<OpObserverImpl>(std::make_unique<OplogWriterMock>()));
+    opObserverRegistry->addObserver(std::make_unique<OpObserverImpl>());
 
     // Index builds expect a non-empty oplog and a valid committed snapshot.
     auto opCtx = operationContext();
@@ -166,8 +157,7 @@ TEST_F(ValidateStateTest, NonExistentCollectionShouldThrowNamespaceNotFoundError
         CollectionValidation::ValidateState(opCtx,
                                             kNss,
                                             CollectionValidation::ValidateMode::kForeground,
-                                            CollectionValidation::RepairMode::kNone,
-                                            /*logDiagnostics=*/false),
+                                            CollectionValidation::RepairMode::kNone),
         AssertionException,
         ErrorCodes::NamespaceNotFound);
 
@@ -175,14 +165,12 @@ TEST_F(ValidateStateTest, NonExistentCollectionShouldThrowNamespaceNotFoundError
         CollectionValidation::ValidateState(opCtx,
                                             kNss,
                                             CollectionValidation::ValidateMode::kBackground,
-                                            CollectionValidation::RepairMode::kNone,
-                                            /*logDiagnostics=*/false),
+                                            CollectionValidation::RepairMode::kNone),
         AssertionException,
         ErrorCodes::NamespaceNotFound);
 }
 
-// Validate with {background:true} should fail to find an uncheckpoint'ed collection.
-TEST_F(ValidateStateDiskTest, UncheckpointedCollectionShouldThrowCursorNotFoundError) {
+TEST_F(ValidateStateTest, UncheckpointedCollectionShouldBeAbleToInitializeCursors) {
     auto opCtx = operationContext();
 
     // Disable periodic checkpoint'ing thread so we can control when checkpoints occur.
@@ -191,17 +179,16 @@ TEST_F(ValidateStateDiskTest, UncheckpointedCollectionShouldThrowCursorNotFoundE
     // Checkpoint of all of the data.
     opCtx->recoveryUnit()->waitUntilUnjournaledWritesDurable(opCtx, /*stableCheckpoint*/ false);
 
-    // Create the collection, which will not be in the checkpoint, and check that a CursorNotFound
-    // error is thrown when attempting to open cursors.
     createCollectionAndPopulateIt(opCtx, kNss);
     CollectionValidation::ValidateState validateState(
         opCtx,
         kNss,
         CollectionValidation::ValidateMode::kBackground,
-        CollectionValidation::RepairMode::kNone,
-        /*logDiagnostics=*/false);
-    ASSERT_THROWS_CODE(
-        validateState.initializeCursors(opCtx), AssertionException, ErrorCodes::CursorNotFound);
+        CollectionValidation::RepairMode::kNone);
+    // Assert that cursors are able to created on the new collection.
+    validateState.initializeCursors(opCtx);
+    // There should only be a first record id if cursors were initialized successfully.
+    ASSERT(!validateState.getFirstRecordId().isNull());
 }
 
 // Basic test with {background:false} to open cursors against all collection indexes.
@@ -224,8 +211,7 @@ TEST_F(ValidateStateTest, OpenCursorsOnAllIndexes) {
             opCtx,
             kNss,
             CollectionValidation::ValidateMode::kForeground,
-            CollectionValidation::RepairMode::kNone,
-            /*logDiagnostics=*/false);
+            CollectionValidation::RepairMode::kNone);
         validateState.initializeCursors(opCtx);
 
         // Make sure all of the indexes were found and cursors opened against them. Including the
@@ -243,14 +229,13 @@ TEST_F(ValidateStateTest, OpenCursorsOnAllIndexes) {
         opCtx,
         kNss,
         CollectionValidation::ValidateMode::kForeground,
-        CollectionValidation::RepairMode::kNone,
-        /*logDiagnostics=*/false);
+        CollectionValidation::RepairMode::kNone);
     validateState.initializeCursors(opCtx);
     ASSERT_EQ(validateState.getIndexes().size(), 5);
 }
 
-// Open cursors against checkpoint'ed indexes with {background:true}.
-TEST_F(ValidateStateDiskTest, OpenCursorsOnCheckpointedIndexes) {
+// Open cursors against all indexes with {background:true}.
+TEST_F(ValidateStateTest, OpenCursorsOnAllIndexesWithBackground) {
     auto opCtx = operationContext();
     createCollectionAndPopulateIt(opCtx, kNss);
 
@@ -271,18 +256,17 @@ TEST_F(ValidateStateDiskTest, OpenCursorsOnCheckpointedIndexes) {
         opCtx,
         kNss,
         CollectionValidation::ValidateMode::kBackground,
-        CollectionValidation::RepairMode::kNone,
-        /*logDiagnostics=*/false);
+        CollectionValidation::RepairMode::kNone);
     validateState.initializeCursors(opCtx);
 
-    // Make sure the uncheckpoint'ed indexes are not found.
-    // (Note the _id index was create with collection creation, so we have 3 indexes.)
-    ASSERT_EQ(validateState.getIndexes().size(), 3);
+    // We should be able to open a cursor on each index.
+    // (Note the _id index was create with collection creation, so we have 5 indexes.)
+    ASSERT_EQ(validateState.getIndexes().size(), 5);
 }
 
 // Indexes in the checkpoint that were dropped in the present should not have cursors opened against
 // them.
-TEST_F(ValidateStateDiskTest, CursorsAreNotOpenedAgainstCheckpointedIndexesThatWereLaterDropped) {
+TEST_F(ValidateStateTest, CursorsAreNotOpenedAgainstCheckpointedIndexesThatWereLaterDropped) {
     auto opCtx = operationContext();
     createCollectionAndPopulateIt(opCtx, kNss);
 
@@ -309,8 +293,7 @@ TEST_F(ValidateStateDiskTest, CursorsAreNotOpenedAgainstCheckpointedIndexesThatW
             opCtx,
             kNss,
             CollectionValidation::ValidateMode::kBackground,
-            CollectionValidation::RepairMode::kNone,
-            /*logDiagnostics=*/false);
+            CollectionValidation::RepairMode::kNone);
         validateState.initializeCursors(opCtx);
         ASSERT_EQ(validateState.getIndexes().size(), 3);
     }
@@ -323,8 +306,7 @@ TEST_F(ValidateStateDiskTest, CursorsAreNotOpenedAgainstCheckpointedIndexesThatW
         opCtx,
         kNss,
         CollectionValidation::ValidateMode::kBackground,
-        CollectionValidation::RepairMode::kNone,
-        /*logDiagnostics=*/false);
+        CollectionValidation::RepairMode::kNone);
     validateState.initializeCursors(opCtx);
     ASSERT_EQ(validateState.getIndexes().size(), 3);
 }

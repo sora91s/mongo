@@ -70,10 +70,6 @@ public:
             return _maxMemoryBytes;
         }
 
-        bool withinMemoryLimit() const {
-            return _currentMemoryBytes <= static_cast<long long>(base->_maxAllowedMemoryUsageBytes);
-        }
-
         MemoryUsageTracker* base = nullptr;
 
     private:

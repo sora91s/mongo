@@ -26,55 +26,20 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/feature_compatibility_version_parser.h"
 #include "mongo/db/commands/tenant_migration_donor_cmds_gen.h"
 #include "mongo/db/commands/tenant_migration_recipient_cmds_gen.h"
-#include "mongo/db/feature_compatibility_version_parser.h"
 #include "mongo/db/repl/primary_only_service.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/tenant_migration_recipient_service.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 namespace {
-
-// This function requires the definition of MigrationDecision. It cannot be moved to
-// tenant_migration_util.h as this would cause a dependency cycle.
-inline TenantMigrationRecipientStateEnum protocolCheckRecipientForgetDecision(
-    const MigrationProtocolEnum protocol, const boost::optional<MigrationDecisionEnum>& decision) {
-    switch (protocol) {
-        case MigrationProtocolEnum::kShardMerge: {
-            uassert(ErrorCodes::InvalidOptions,
-                    str::stream() << "'decision' is required for protocol '"
-                                  << MigrationProtocol_serializer(protocol) << "'",
-                    decision.has_value());
-
-            // For 'shard merge', return 'kAborted' or 'kCommitted' to allow garbage collection to
-            // proceed.
-            if (decision == MigrationDecisionEnum::kCommitted) {
-                return TenantMigrationRecipientStateEnum::kCommitted;
-            } else {
-                return TenantMigrationRecipientStateEnum::kAborted;
-            }
-        }
-        case MigrationProtocolEnum::kMultitenantMigrations: {
-            // For 'multitenant migration' simply return kDone.
-            uassert(ErrorCodes::InvalidOptions,
-                    str::stream() << "'decision' must be empty for protocol '"
-                                  << MigrationProtocol_serializer(protocol) << "'",
-                    !decision.has_value());
-            return TenantMigrationRecipientStateEnum::kDone;
-        }
-        default:
-            MONGO_UNREACHABLE;
-    }
-}
-
 
 MONGO_FAIL_POINT_DEFINE(returnResponseOkForRecipientSyncDataCmd);
 MONGO_FAIL_POINT_DEFINE(returnResponseOkForRecipientForgetMigrationCmd);
@@ -96,7 +61,8 @@ public:
         Response typedRun(OperationContext* opCtx) {
             uassert(ErrorCodes::IllegalOperation,
                     "tenant migrations are not available on config servers",
-                    serverGlobalParams.clusterRole != ClusterRole::ConfigServer);
+                    serverGlobalParams.clusterRole == ClusterRole::None ||
+                        serverGlobalParams.clusterRole == ClusterRole::ShardServer);
 
             // (Generic FCV reference): This FCV reference should exist across LTS binary versions.
             uassert(
@@ -106,24 +72,18 @@ public:
 
             const auto& cmd = request();
             const auto migrationProtocol = cmd.getProtocol().value_or(kDefaultMigrationProtocol);
-            const auto& tenantId = cmd.getTenantId();
-            const auto& tenantIds = cmd.getTenantIds();
 
-            tenant_migration_util::protocolTenantIdCompatibilityCheck(migrationProtocol, tenantId);
-            tenant_migration_util::protocolTenantIdsCompatibilityCheck(migrationProtocol,
-                                                                       tenantIds);
+            uassertStatusOK(tenant_migration_util::protocolTenantIdCompatibilityCheck(
+                migrationProtocol, cmd.getTenantId().toString()));
             tenant_migration_util::protocolStorageOptionsCompatibilityCheck(opCtx,
                                                                             migrationProtocol);
-            tenant_migration_util::protocolReadPreferenceCompatibilityCheck(
-                opCtx, migrationProtocol, cmd.getReadPreference());
 
-            // tenantId will be set to empty string for the "shard merge" protocol.
             TenantMigrationRecipientDocument stateDoc(cmd.getMigrationId(),
                                                       cmd.getDonorConnectionString().toString(),
-                                                      tenantId.value_or("").toString(),
+                                                      cmd.getTenantId().toString(),
                                                       cmd.getStartMigrationDonorTimestamp(),
                                                       cmd.getReadPreference());
-            stateDoc.setTenantIds(tenantIds);
+
 
             if (!repl::tenantMigrationDisableX509Auth) {
                 uassert(ErrorCodes::InvalidOptions,
@@ -151,6 +111,12 @@ public:
                                               kTenantMigrationRecipientServiceName);
             auto recipientInstance = repl::TenantMigrationRecipientService::Instance::getOrCreate(
                 opCtx, recipientService, stateDocBson);
+
+            // Ensure that the options (e.g. tenantId, recipientConnectionString, or readPreference)
+            // received by this migration match the options it was created with. If there is a
+            // conflict, it means there exists a migration with the same migrationId, but different
+            // options.
+            uassertStatusOK(recipientInstance->checkIfOptionsConflict(stateDoc));
 
             auto returnAfterReachingDonorTs = cmd.getReturnAfterReachingDonorTimestamp();
 
@@ -276,20 +242,16 @@ public:
         void typedRun(OperationContext* opCtx) {
             uassert(ErrorCodes::IllegalOperation,
                     "tenant migrations are not available on config servers",
-                    serverGlobalParams.clusterRole != ClusterRole::ConfigServer);
+                    serverGlobalParams.clusterRole == ClusterRole::None ||
+                        serverGlobalParams.clusterRole == ClusterRole::ShardServer);
 
             const auto& cmd = request();
             const auto migrationProtocol = cmd.getProtocol().value_or(kDefaultMigrationProtocol);
-            const auto& tenantId = cmd.getTenantId();
-            const auto& tenantIds = cmd.getTenantIds();
 
-            tenant_migration_util::protocolTenantIdCompatibilityCheck(migrationProtocol, tenantId);
-            tenant_migration_util::protocolTenantIdsCompatibilityCheck(migrationProtocol,
-                                                                       tenantIds);
-            auto nextState =
-                protocolCheckRecipientForgetDecision(migrationProtocol, cmd.getDecision());
+            uassertStatusOK(tenant_migration_util::protocolTenantIdCompatibilityCheck(
+                migrationProtocol, cmd.getTenantId().toString()));
 
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
             auto recipientService =
                 repl::PrimaryOnlyServiceRegistry::get(opCtx->getServiceContext())
                     ->lookupServiceByName(repl::TenantMigrationRecipientService::
@@ -300,14 +262,11 @@ public:
             // and persist a state document that's marked garbage collectable (which is done by the
             // main chain).
             const Timestamp kUnusedStartMigrationTimestamp(1, 1);
-
-            // tenantId will be set to empty string for the "shard merge" protocol.
             TenantMigrationRecipientDocument stateDoc(cmd.getMigrationId(),
                                                       cmd.getDonorConnectionString().toString(),
-                                                      tenantId.value_or("").toString(),
+                                                      cmd.getTenantId().toString(),
                                                       kUnusedStartMigrationTimestamp,
                                                       cmd.getReadPreference());
-            stateDoc.setTenantIds(tenantIds);
             if (!repl::tenantMigrationDisableX509Auth) {
                 uassert(ErrorCodes::InvalidOptions,
                         str::stream() << "'" << Request::kRecipientCertificateForDonorFieldName
@@ -316,11 +275,11 @@ public:
                 stateDoc.setRecipientCertificateForDonor(cmd.getRecipientCertificateForDonor());
             }
             stateDoc.setProtocol(migrationProtocol);
-            // Set the state to 'kDone' for 'multitenant migration' or 'kCommitted'/'kAborted' for
-            // 'shard merge' so that we don't create a recipient access blocker unnecessarily if
-            // this recipientForgetMigration command is received before a recipientSyncData command
-            // or after the state doc is garbage collected.
-            stateDoc.setState(nextState);
+            // Set the state to 'kDone' so that we don't create a recipient access blocker
+            // unnecessarily if this recipientForgetMigration command is received before a
+            // recipientSyncData command or after the state doc is garbage collected.
+            stateDoc.setState(TenantMigrationRecipientStateEnum::kDone);
+
 
             if (MONGO_unlikely(returnResponseOkForRecipientForgetMigrationCmd.shouldFail())) {
                 LOGV2(5949502,
@@ -331,11 +290,11 @@ public:
             }
 
             auto recipientInstance = repl::TenantMigrationRecipientService::Instance::getOrCreate(
-                opCtx, recipientService, stateDoc.toBSON(), false);
+                opCtx, recipientService, stateDoc.toBSON());
 
             // Instruct the instance run() function to mark this migration garbage collectable.
-            recipientInstance->onReceiveRecipientForgetMigration(opCtx, nextState);
-            recipientInstance->getForgetMigrationDurableFuture().get(opCtx);
+            recipientInstance->onReceiveRecipientForgetMigration(opCtx);
+            recipientInstance->getCompletionFuture().get(opCtx);
         }
 
     private:

@@ -72,7 +72,7 @@ public:
 
     void debugString(StringBuilder& debug, int indentationLevel = 0) const final;
 
-    void serialize(BSONObjBuilder* out, SerializationOptions opts) const final;
+    void serialize(BSONObjBuilder* out, bool includePath) const final;
 
     bool equivalent(const MatchExpression* other) const final;
 
@@ -81,7 +81,7 @@ public:
     }
 
     MatchExpression* getChild(size_t i) const final {
-        MONGO_UNREACHABLE_TASSERT(6400218);
+        MONGO_UNREACHABLE;
     }
 
     void resetChild(size_t i, MatchExpression*) final override {
@@ -104,11 +104,14 @@ public:
         visitor->visit(this);
     }
 
+protected:
+    void _doAddDependencies(DepsTracker* deps) const final {
+        deps->needWholeDocument = true;
+    }
+
 private:
     ExpressionOptimizerFunc getOptimizer() const final {
-        return [](std::unique_ptr<MatchExpression> expression) {
-            return expression;
-        };
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
     }
 
     UnorderedFieldsBSONObjComparator _objCmp;

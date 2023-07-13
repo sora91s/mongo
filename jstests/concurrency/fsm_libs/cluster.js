@@ -231,21 +231,23 @@ var Cluster = function(options) {
                 replSets.push(rs);
             }
 
-            if (options.sharded.enableBalancer === true) {
-                st._configServers.forEach((conn) => {
-                    const configDb = conn.getDB('admin');
+            // SERVER-43099 Reenable random chunk migration failpoint for concurrency with_balancer
+            // suites
+            // if (options.sharded.enableBalancer === true) {
+            //     st._configServers.forEach((conn) => {
+            //         const configDb = conn.getDB('admin');
 
-                    configDb.adminCommand({
-                        configureFailPoint: 'balancerShouldReturnRandomMigrations',
-                        mode: 'alwaysOn'
-                    });
-                    configDb.adminCommand({
-                        configureFailPoint: 'overrideBalanceRoundInterval',
-                        mode: 'alwaysOn',
-                        data: {intervalMs: 100}
-                    });
-                });
-            }
+            //         configDb.adminCommand({
+            //             configureFailPoint: 'balancerShouldReturnRandomMigrations',
+            //             mode: 'alwaysOn'
+            //         });
+            //         configDb.adminCommand({
+            //             configureFailPoint: 'overrideBalanceRoundInterval',
+            //             mode: 'alwaysOn',
+            //             data: {intervalMs: 100}
+            //         });
+            //     });
+            // }
 
         } else if (options.replication.enabled) {
             rst = new ReplSetTest(db.getMongo().host);
@@ -392,6 +394,33 @@ var Cluster = function(options) {
         assert(initialized, 'cluster must be initialized first');
         assert(this.isSharded(), 'cluster is not sharded');
 
+        // If we are continuously stepping down shards, the config server may have stale view of the
+        // cluster, so retry on retryable errors, e.g. NotWritablePrimary.
+        if (this.shouldPerformContinuousStepdowns()) {
+            assert.soon(() => {
+                try {
+                    st.shardColl.apply(st, arguments);
+                    return true;
+                } catch (e) {
+                    // The shardCollection command requires the config server primary to call
+                    // listCollections and listIndexes on shards before sharding the collection,
+                    // both of which can fail with a retryable error if the config server's view of
+                    // the cluster is stale. This is safe to retry because no actual work has been
+                    // done.
+                    //
+                    // TODO SERVER-30949: Remove this try catch block once listCollections and
+                    // listIndexes automatically retry on NotWritablePrimary errors.
+                    if (e.code === 18630 ||  // listCollections failure
+                        e.code === 18631) {  // listIndexes failure
+                        print("Caught retryable error from shardCollection, retrying: " +
+                              tojson(e));
+                        return false;
+                    }
+                    throw e;
+                }
+            });
+        }
+
         st.shardColl.apply(st, arguments);
     };
 
@@ -455,8 +484,8 @@ var Cluster = function(options) {
             if (shard.name.includes('/')) {
                 // If the shard is a replica set, the format of st.shard(0).name in ShardingTest is
                 // "test-rs0/localhost:20006,localhost:20007,localhost:20008".
-                var [_, shards] = shard.name.split('/');
-                cluster.shards[shard.shardName] = shards.split(',');
+                var [setName, shards] = shard.name.split('/');
+                cluster.shards[setName] = shards.split(',');
             } else {
                 // If the shard is a standalone mongod, the format of st.shard(0).name in
                 // ShardingTest is "localhost:20006".
@@ -485,6 +514,18 @@ var Cluster = function(options) {
             var res = db.adminCommand({listDatabases: 1});
             assert.commandWorked(res);
             res.databases.forEach(dbInfo => {
+                // Don't perform listCollections on the admin or config database through a mongos
+                // connection when stepping down the config server primary, because both are stored
+                // on the config server, and listCollections may return a NotPrimaryError if the
+                // mongos is stale.
+                //
+                // TODO SERVER-30949: listCollections through mongos should automatically retry on
+                // NotWritablePrimary errors. Once that is true, remove this check.
+                if (isSteppingDownConfigServers && isMongos &&
+                    (dbInfo.name === "admin" || dbInfo.name === "config")) {
+                    return;
+                }
+
                 const validateOptions = {full: true, enforceFastCount: true};
                 // TODO (SERVER-24266): Once fast counts are tolerant to unclean shutdowns, remove
                 // the check for TestData.allowUncleanShutdowns.
@@ -558,11 +599,9 @@ var Cluster = function(options) {
 
         // We record the contents of the 'lockpings' and 'locks' collections to make it easier to
         // debug issues with distributed locks in the sharded cluster.
-        // TODO SERVER-68551: remove once 7.0 becomes last-lts
         data.lockpings = configDB.lockpings.find({ping: {$gte: clusterStartTime}}).toArray();
 
         // We suppress some fields from the result set to reduce the amount of data recorded.
-        // TODO SERVER-68551: remove once 7.0 becomes last-lts
         data.locks =
             configDB.locks.find({when: {$gte: clusterStartTime}}, {process: 0, ts: 0}).toArray();
 

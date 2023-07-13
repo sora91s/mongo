@@ -39,6 +39,8 @@
 
 namespace mongo {
 
+void initMyFtsIndexFormat();
+
 namespace fts {
 
 class FTSSpec;
@@ -51,7 +53,7 @@ public:
                         KeyStringSet* keys,
                         KeyString::Version keyStringVersion,
                         Ordering ordering,
-                        const boost::optional<RecordId>& id = boost::none);
+                        boost::optional<RecordId> id = boost::none);
 
     /**
      * Helper method to get return entry from the FTSIndex as a BSONObj

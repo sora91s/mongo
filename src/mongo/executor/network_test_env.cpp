@@ -56,7 +56,8 @@ void NetworkTestEnv::onCommands(std::vector<OnCommandFunction> funcs) {
 
         auto resultStatus = func(request);
 
-        if (request.options.fireAndForget) {
+        if (request.fireAndForgetMode ==
+            executor::RemoteCommandRequestBase::FireAndForgetMode::kOn) {
             _mockNetwork->blackHole(noi);
         } else if (resultStatus.isOK()) {
             BSONObjBuilder result(std::move(resultStatus.getValue()));
@@ -81,7 +82,7 @@ void NetworkTestEnv::onCommandWithMetadata(OnCommandWithMetadataFunction func) {
 
     auto cmdResponseStatus = func(request);
 
-    if (request.options.fireAndForget) {
+    if (request.fireAndForgetMode == executor::RemoteCommandRequestBase::FireAndForgetMode::kOn) {
         _mockNetwork->blackHole(noi);
     } else if (cmdResponseStatus.isOK()) {
         BSONObjBuilder result(std::move(cmdResponseStatus.data));
@@ -112,7 +113,7 @@ void NetworkTestEnv::onFindCommand(OnFindCommandFunction func) {
         const NamespaceString nss =
             NamespaceString(request.dbname, request.cmdObj.firstElement().String());
         BSONObjBuilder result;
-        appendCursorResponseObject(0LL, nss, arr.arr(), boost::none, &result);
+        appendCursorResponseObject(0LL, nss.toString(), arr.arr(), boost::none, &result);
 
         return result.obj();
     });
@@ -138,7 +139,7 @@ void NetworkTestEnv::onFindWithMetadataCommand(OnFindCommandWithMetadataFunction
         const NamespaceString nss =
             NamespaceString(request.dbname, request.cmdObj.firstElement().String());
         BSONObjBuilder resultBuilder(std::move(metadata));
-        appendCursorResponseObject(0LL, nss, arr.arr(), boost::none, &resultBuilder);
+        appendCursorResponseObject(0LL, nss.toString(), arr.arr(), boost::none, &resultBuilder);
 
         return RemoteCommandResponse(resultBuilder.obj(), Milliseconds(1));
     });

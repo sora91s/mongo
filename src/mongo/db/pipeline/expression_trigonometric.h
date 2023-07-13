@@ -33,6 +33,8 @@
 
 namespace mongo {
 
+void initMyExpressionTrigonometric();
+
 /**
  * InclusiveBoundType defines the necessary configuration for inclusively bounded trig functions.
  */

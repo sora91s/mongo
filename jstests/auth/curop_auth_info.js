@@ -46,14 +46,14 @@ const runTest = function(conn, failPointConn) {
     print(tojson(authedUsers), tojson(impersonators));
     if (impersonators) {
         assert.eq(authedUsers.length, 1);
-        assert.docEq({user: "testuser", db: "admin"}, authedUsers[0]);
+        assert.docEq(authedUsers[0], {user: "testuser", db: "admin"});
         assert(impersonators);
         assert.eq(impersonators.length, 1);
-        assert.docEq({user: "__system", db: "local"}, impersonators[0]);
+        assert.docEq(impersonators[0], {user: "__system", db: "local"});
     } else {
         assert(authedUsers);
         assert.eq(authedUsers.length, 1);
-        assert.docEq({user: "testuser", db: "admin"}, authedUsers[0]);
+        assert.docEq(authedUsers[0], {user: "testuser", db: "admin"});
     }
 };
 
@@ -61,7 +61,7 @@ const m = MongoRunner.runMongod();
 runTest(m, m);
 MongoRunner.stopMongod(m);
 
-if (jsTestOptions().storageEngine != "inMemory") {
+if (!jsTestOptions().noJournal) {
     const st = new ShardingTest({shards: 1, mongos: 1, config: 1, keyFile: 'jstests/libs/key1'});
     runTest(st.s0, st.shard0);
     st.stop();

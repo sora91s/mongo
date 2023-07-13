@@ -66,19 +66,11 @@ public:
         UASSERT_NOT_IMPLEMENTED;
     }
 
-    Status hasValidAuthSchemaVersionDocumentForInitialSync(OperationContext* opCtx) override {
-        UASSERT_NOT_IMPLEMENTED;
-    }
-
     bool hasAnyPrivilegeDocuments(OperationContext*) override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
     Status getUserDescription(OperationContext*, const UserName&, BSONObj*) override {
-        UASSERT_NOT_IMPLEMENTED;
-    }
-
-    bool hasUser(OperationContext* opCtx, const boost::optional<TenantId>& tenantId) override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
@@ -108,7 +100,7 @@ public:
     }
 
     Status getRoleDescriptionsForDB(OperationContext*,
-                                    const DatabaseName&,
+                                    const StringData,
                                     PrivilegeFormat,
                                     AuthenticationRestrictionsFormat,
                                     bool,
@@ -116,7 +108,7 @@ public:
         UASSERT_NOT_IMPLEMENTED;
     }
 
-    StatusWith<UserHandle> acquireUser(OperationContext*, const UserRequest&) override {
+    StatusWith<UserHandle> acquireUser(OperationContext*, const UserName&) override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
@@ -128,11 +120,11 @@ public:
         UASSERT_NOT_IMPLEMENTED;
     }
 
-    void invalidateUsersFromDB(OperationContext*, const DatabaseName& dbname) override {
+    void invalidateUsersFromDB(OperationContext*, const StringData dbname) override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
-    void invalidateUsersByTenant(OperationContext*, const boost::optional<TenantId>&) override {
+    void invalidateUsersByTenant(OperationContext*, const TenantId&) override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
@@ -156,6 +148,10 @@ public:
     }
 
     std::vector<AuthorizationManager::CachedUserInfo> getUserCacheInfo() const override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    void updatePinnedUsersList(std::vector<UserName>) override {
         UASSERT_NOT_IMPLEMENTED;
     }
 

@@ -35,6 +35,9 @@
 #include "mongo/bson/bsonobjbuilder.h"
 
 namespace mongo {
+void initMyShardCannotRefreshDueToLocksHeldInfo() {
+
+}
 namespace {
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(ShardCannotRefreshDueToLocksHeldInfo);

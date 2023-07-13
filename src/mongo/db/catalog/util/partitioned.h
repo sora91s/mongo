@@ -102,7 +102,7 @@ struct Partitioner {
 
 namespace partitioned_detail {
 
-using CacheExclusiveMutex = CacheExclusive<stdx::mutex>;
+using CacheAlignedMutex = CacheAligned<stdx::mutex>;
 
 template <typename Key, typename Value>
 Key getKey(const std::pair<Key, Value>& pair) {
@@ -300,7 +300,7 @@ public:
      */
     Partitioned(std::size_t nPartitions, const AssociativeContainer& container)
         : _mutexes(nPartitions),
-          _partitions(nPartitions, CacheExclusiveAssociativeContainer(container)) {
+          _partitions(nPartitions, CacheAlignedAssociativeContainer(container)) {
         invariant(nPartitions > 0);
     }
 
@@ -383,14 +383,14 @@ public:
     }
 
 private:
-    using CacheExclusiveAssociativeContainer = CacheExclusive<AssociativeContainer>;
+    using CacheAlignedAssociativeContainer = CacheAligned<AssociativeContainer>;
 
     template <typename T>
     using AlignedVector = std::vector<T, boost::alignment::aligned_allocator<T>>;
 
     // These two vectors parallel each other, but we keep them separate so that we can return an
     // iterator over `_partitions` from within All.
-    mutable AlignedVector<partitioned_detail::CacheExclusiveMutex> _mutexes;
-    AlignedVector<CacheExclusiveAssociativeContainer> _partitions;
+    mutable AlignedVector<partitioned_detail::CacheAlignedMutex> _mutexes;
+    AlignedVector<CacheAlignedAssociativeContainer> _partitions;
 };
 }  // namespace mongo

@@ -185,4 +185,6 @@ public:
  */
 void registerHTTPClientProvider(HttpClientProvider* factory);
 
+void initMyHttpClient();
+
 }  // namespace mongo

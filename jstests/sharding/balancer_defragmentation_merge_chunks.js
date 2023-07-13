@@ -1,16 +1,13 @@
 /**
  * Test the configureCollectionBalancing command and balancerCollectionStatus command
  *
+ * // TODO (SERVER-63036): remove the 'does_not_support_stepdowns' tag
  * @tags: [
- *  # This test does not support stepdowns of CSRS because of how it uses failpoints
- *  # to control phase transition
+ *  requires_fcv_53,
+ *  featureFlagPerCollBalancingSettings,
  *  does_not_support_stepdowns,
- *  requires_fcv_61,
  * ]
  */
-
-// Cannot run the filtering metadata check on tests that run refineCollectionShardKey.
-TestData.skipCheckShardFilteringMetadata = true;
 
 (function() {
 'use strict';
@@ -100,6 +97,67 @@ function clearFailPointOnConfigNodes(failpoint) {
     });
 }
 
+function waitForFailpointOnConfigNodes(failpoint, timesEntered) {
+    jsTest.log("Waiting for failpoint " + failpoint + ", times entered " + timesEntered);
+    assert.soon(function() {
+        let hitFailpoint = false;
+        let csrs_nodes = [st.configRS.getPrimary()];
+        csrs_nodes.concat(st.configRS.getSecondaries());
+
+        csrs_nodes.forEach((config) => {
+            let res = assert.commandWorkedOrFailedWithCode(config.adminCommand({
+                waitForFailPoint: failpoint,
+                timesEntered: timesEntered + 1,
+                maxTimeMS: kDefaultWaitForFailPointTimeout / 10
+            }),
+                                                           ErrorCodes.MaxTimeMSExpired);
+            hitFailpoint = hitFailpoint || res["ok"] === 1;
+        });
+        return hitFailpoint;
+    });
+    jsTest.log("Failpoint " + failpoint + " hit " + timesEntered + " times");
+}
+
+jsTest.log("Split chunks while defragmenting");
+{
+    st.stopBalancer();
+    const coll = getNewColl();
+    const nss = coll.getFullName();
+    assert.commandWorked(st.s.adminCommand({shardCollection: nss, key: {skey: 1}}));
+
+    const chunks = findChunksUtil.findChunksByNs(st.config, nss).toArray();
+    assert.eq(1, chunks.length);
+    assert.commandWorked(st.s.adminCommand({split: nss, middle: {skey: 0}}));
+
+    const primaryShard = st.getPrimaryShard(coll.getDB().getName());
+    assert.eq(st.normalize(primaryShard.name), st.normalize(chunks[0]['shard']));
+    assert.commandWorked(
+        st.s.adminCommand({moveChunk: nss, find: {skey: 0}, to: st.getOther(primaryShard).name}));
+
+    // Pause defragmentation after initialization but before phase 1 runs
+    setFailPointOnConfigNodes("afterBuildingNextDefragmentationPhase", {skip: 1});
+    assert.commandWorked(st.s.adminCommand({
+        configureCollectionBalancing: nss,
+        defragmentCollection: true,
+        chunkSize: targetChunkSizeMB,
+    }));
+    st.startBalancer();
+
+    waitForFailpointOnConfigNodes("afterBuildingNextDefragmentationPhase", 0);
+
+    assert.eq('moveAndMergeChunks',
+              st.config.collections.findOne({_id: nss})['defragmentationPhase']);
+    assert.eq(2, findChunksUtil.countChunksForNs(st.config, nss));
+    assert.commandWorked(st.s.adminCommand({split: nss, middle: {skey: -10}}));
+    assert.commandWorked(st.s.adminCommand({split: nss, middle: {skey: 10}}));
+    assert.eq(4, findChunksUtil.countChunksForNs(st.config, nss));
+
+    clearFailPointOnConfigNodes("afterBuildingNextDefragmentationPhase");
+    defragmentationUtil.waitForEndOfDefragmentation(st.s, nss);
+    // Ensure the defragmentation succeeded
+    assert.eq(1, findChunksUtil.countChunksForNs(st.config, nss));
+}
+
 // Setup collection for first tests
 const coll1 = setupCollection();
 const coll1Name = coll1.getFullName();
@@ -130,41 +188,6 @@ jsTest.log("Test command chunk size bounds.");
         chunkSize: -1,
     }),
                                  ErrorCodes.InvalidOptions);
-}
-
-jsTest.log("Test command - apply default value to chunkSize");
-{
-    st.stopBalancer();
-    let getMaxChunkSizeFor = (nss) => {
-        return st.s.getDB("config").collections.findOne({_id: nss}).maxChunkSizeBytes;
-    };
-
-    // Generic Behavior
-    assert.commandWorked(st.s.adminCommand({
-        configureCollectionBalancing: coll1Name,
-        chunkSize: 1024,
-    }));
-    assert.eq(1024 * 1024 * 1024, getMaxChunkSizeFor(coll1Name));
-
-    assert.commandWorked(st.s.adminCommand({
-        configureCollectionBalancing: coll1Name,
-        chunkSize: 0,
-    }));
-    assert.eq(undefined, getMaxChunkSizeFor(coll1Name));
-
-    // Specific treatment for config.system.sessions
-    const sessionsCollName = "config.system.sessions";
-    assert.commandWorked(st.s.adminCommand({
-        configureCollectionBalancing: sessionsCollName,
-        chunkSize: 1024,
-    }));
-    assert.eq(1024 * 1024 * 1024, getMaxChunkSizeFor(sessionsCollName));
-
-    assert.commandWorked(st.s.adminCommand({
-        configureCollectionBalancing: sessionsCollName,
-        chunkSize: 0,
-    }));
-    assert.eq(200000, getMaxChunkSizeFor(sessionsCollName));
 }
 
 jsTest.log("Begin and end defragmentation with balancer off.");

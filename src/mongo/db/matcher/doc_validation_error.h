@@ -34,6 +34,9 @@
 #include "mongo/db/query/query_knobs_gen.h"
 
 namespace mongo::doc_validation_error {
+
+void initMyDocVailDationError();
+
 // The default maximum allowed size for a single doc validation error.
 constexpr static int kDefaultMaxDocValidationErrorSize = 12 * 1024 * 1024;
 

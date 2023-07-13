@@ -27,8 +27,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationInitialSync
 
-#include "mongo/db/service_context.h"
 #include "mongo/platform/basic.h"
 
 #include "mongo/base/string_data.h"
@@ -36,17 +36,13 @@
 #include "mongo/db/repl/database_cloner.h"
 #include "mongo/db/repl/database_cloner_common.h"
 #include "mongo/db/repl/database_cloner_gen.h"
-#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationInitialSync
-
 
 namespace mongo {
 namespace repl {
 
-DatabaseCloner::DatabaseCloner(const DatabaseName& dbName,
+DatabaseCloner::DatabaseCloner(const std::string& dbName,
                                InitialSyncSharedData* sharedData,
                                const HostAndPort& source,
                                DBClientConnection* client,
@@ -56,7 +52,7 @@ DatabaseCloner::DatabaseCloner(const DatabaseName& dbName,
           "DatabaseCloner"_sd, sharedData, source, client, storageInterface, dbPool),
       _dbName(dbName),
       _listCollectionsStage("listCollections", this, &DatabaseCloner::listCollectionsStage) {
-    invariant(!dbName.db().empty());
+    invariant(!dbName.empty());
     _stats.dbname = dbName;
 }
 
@@ -73,14 +69,13 @@ BaseCloner::AfterStageBehavior DatabaseCloner::listCollectionsStage() {
     BSONObj res;
     auto collectionInfos =
         getClient()->getCollectionInfos(_dbName, ListCollectionsFilter::makeTypeCollectionFilter());
-    const auto storageEngine = getGlobalServiceContext()->getStorageEngine();
 
     stdx::unordered_set<std::string> seen;
     for (auto&& info : collectionInfos) {
         ListCollectionResult result;
         try {
             result = ListCollectionResult::parse(
-                IDLParserContext("DatabaseCloner::listCollectionsStage"), info);
+                IDLParserErrorContext("DatabaseCloner::listCollectionsStage"), info);
         } catch (const DBException& e) {
             uasserted(
                 ErrorCodes::FailedToParse,
@@ -88,7 +83,6 @@ BaseCloner::AfterStageBehavior DatabaseCloner::listCollectionsStage() {
                     .withContext(str::stream() << "Collection info could not be parsed : " << info)
                     .reason());
         }
-
         NamespaceString collectionNamespace(_dbName, result.getName());
         if (collectionNamespace.isSystem() && !collectionNamespace.isReplicated()) {
             LOGV2_DEBUG(21146,
@@ -110,13 +104,6 @@ BaseCloner::AfterStageBehavior DatabaseCloner::listCollectionsStage() {
                               << "'" << result.getName() << "': " << info,
                 isDuplicate);
 
-        // Sanitize storage engine options to remove options which might not apply to this node. See
-        // SERVER-68122.
-        auto sanitizedStorageOptions =
-            uassertStatusOK(storageEngine->getSanitizedStorageOptionsForSecondaryReplication(
-                result.getOptions().storageEngine));
-        result.getOptions().storageEngine = sanitizedStorageOptions;
-
         // While UUID is a member of CollectionOptions, listCollections does not return the
         // collectionUUID there as part of the options, but instead places it in the 'info' field.
         // We need to move it back to CollectionOptions to create the collection properly.
@@ -127,8 +114,7 @@ BaseCloner::AfterStageBehavior DatabaseCloner::listCollectionsStage() {
 }
 
 bool DatabaseCloner::isMyFailPoint(const BSONObj& data) const {
-    return data["database"].str() == _dbName.toStringWithTenantId() &&
-        BaseCloner::isMyFailPoint(data);
+    return data["database"].str() == _dbName && BaseCloner::isMyFailPoint(data);
 }
 
 void DatabaseCloner::postStage() {
@@ -138,7 +124,7 @@ void DatabaseCloner::postStage() {
         _stats.collectionStats.reserve(_collections.size());
         for (const auto& coll : _collections) {
             _stats.collectionStats.emplace_back();
-            _stats.collectionStats.back().nss = coll.first;
+            _stats.collectionStats.back().ns = coll.first.ns();
         }
     }
     for (const auto& coll : _collections) {
@@ -202,7 +188,7 @@ std::string DatabaseCloner::Stats::toString() const {
 
 BSONObj DatabaseCloner::Stats::toBSON() const {
     BSONObjBuilder bob;
-    bob.append("dbname", DatabaseNameUtil::serialize(dbname));
+    bob.append("dbname", dbname);
     append(&bob);
     return bob.obj();
 }
@@ -221,8 +207,7 @@ void DatabaseCloner::Stats::append(BSONObjBuilder* builder) const {
     }
 
     for (auto&& collection : collectionStats) {
-        BSONObjBuilder collectionBuilder(
-            builder->subobjStart(NamespaceStringUtil::serialize(collection.nss)));
+        BSONObjBuilder collectionBuilder(builder->subobjStart(collection.ns));
         collection.append(&collectionBuilder);
         collectionBuilder.doneFast();
     }

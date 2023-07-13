@@ -38,7 +38,9 @@
 #include "mongo/transport/message_compressor_zstd.h"
 
 namespace mongo {
+void initMyZstdMessageCompressor() {
 
+}
 ZstdMessageCompressor::ZstdMessageCompressor() : MessageCompressorBase(MessageCompressor::kZstd) {}
 
 std::size_t ZstdMessageCompressor::getMaxCompressedSize(size_t inputSize) {

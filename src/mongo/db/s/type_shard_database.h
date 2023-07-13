@@ -29,23 +29,17 @@
 
 #pragma once
 
-#include "mongo/db/s/type_shard_database_gen.h"
+#include "mongo/s/catalog/type_database_gen.h"
 
 namespace mongo {
 
-class ShardDatabaseType : private ShardDatabaseTypeBase {
+class ShardDatabaseType : public DatabaseType {
 public:
-    // Make field names accessible.
-    using ShardDatabaseTypeBase::kEnterCriticalSectionCounterFieldName;
-    using ShardDatabaseTypeBase::kNameFieldName;
+    static constexpr StringData kEnterCriticalSectionCounterFieldName =
+        "enterCriticalSectionCounter"_sd;
 
-    // Make getters and setters accessible.
-    using ShardDatabaseTypeBase::getName;
-    using ShardDatabaseTypeBase::getPrimary;
-    using ShardDatabaseTypeBase::getSharded;
-    using ShardDatabaseTypeBase::getVersion;
-
-    explicit ShardDatabaseType(const BSONObj& obj);
+    ShardDatabaseType(const DatabaseType& other) : DatabaseType(other) {}
+    ShardDatabaseType(DatabaseType&& other) : DatabaseType(other) {}
 };
 
 }  // namespace mongo

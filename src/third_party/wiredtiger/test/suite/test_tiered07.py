@@ -26,27 +26,28 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-import os, wiredtiger, wttest
-from helper_tiered import  TieredConfigMixin, gen_tiered_storage_sources, get_check
+from helper_tiered import get_auth_token, get_bucket1_name
 from wtscenario import make_scenarios
-
+import os, wiredtiger, wttest
 StorageSource = wiredtiger.StorageSource  # easy access to constants
 
 # test_tiered07.py
 #    Basic tiered storage API for schema operations.
-class test_tiered07(wttest.WiredTigerTestCase, TieredConfigMixin):
-
-    storage_sources = gen_tiered_storage_sources(wttest.getss_random_prefix(), 'test_tiered07', tiered_only=True)
-
-    # FIXME-WT-8897 Disabled S3 (only indexing dirstore in storage sources) as S3 directory listing 
-    # is interpreting a directory to end in a '/', whereas the code in the tiered storage doesn't 
-    # expect that. Enable when fixed.
+class test_tiered07(wttest.WiredTigerTestCase):
+    storage_sources = [
+        ('dir_store', dict(auth_token = get_auth_token('dir_store'),
+            bucket = get_bucket1_name('dir_store'),
+            bucket_prefix = "pfx_",
+            ss_name = 'dir_store')),
+        # FIXME-WT-8897 Disabled as S3 directory listing is interpreting a directory to end in a '/',
+        # whereas the code in the tiered storage doesn't expect that. Enable when fixed.
+        #('s3', dict(auth_token = get_auth_token('s3_store'),
+        #    bucket = get_bucket1_name('s3_store'),
+        #    bucket_prefix = generate_s3_prefix(),
+        #    ss_name = 's3_store'))
+    ]
     # Make scenarios for different cloud service providers
-    flush_obj = [('ckpt', dict(first_ckpt=True)),
-                 ('no_ckpt', dict(first_ckpt=False)),
-                ]
-    tiered_storage_dirstore_source = storage_sources[:1]
-    scenarios = make_scenarios(flush_obj, tiered_storage_dirstore_source)
+    scenarios = make_scenarios(storage_sources)
 
     uri = "table:abc"
     uri2 = "table:ab"
@@ -55,15 +56,36 @@ class test_tiered07(wttest.WiredTigerTestCase, TieredConfigMixin):
     localuri = "table:local"
     newuri = "table:tier_new"
 
-    # Load the storage store extension.
     def conn_extensions(self, extlist):
-        TieredConfigMixin.conn_extensions(self, extlist)
-    
+        config = ''
+        # S3 store is built as an optional loadable extension, not all test environments build S3.
+        if self.ss_name == 's3_store':
+            #config = '=(config=\"(verbose=1)\")'
+            extlist.skip_if_missing = True
+        #if self.ss_name == 'dir_store':
+            #config = '=(config=\"(verbose=1,delay_ms=200,force_delay=3)\")'
+        # Windows doesn't support dynamically loaded extension libraries.
+        if os.name == 'nt':
+            extlist.skip_if_missing = True
+        extlist.extension('storage_sources', self.ss_name + config)
+
     def conn_config(self):
-        return TieredConfigMixin.conn_config(self)
-        
-    def check(self, tc, base, n):
-        get_check(self, tc, 0, n)
+        if self.ss_name == 'dir_store' and not os.path.exists(self.bucket):
+            os.mkdir(self.bucket)
+        #  'verbose=(tiered),' + \
+
+        return \
+          'debug_mode=(flush_checkpoint=true),' + \
+          'tiered_storage=(auth_token=%s,' % self.auth_token + \
+          'bucket=%s,' % self.bucket + \
+          'bucket_prefix=%s,' % self.bucket_prefix + \
+          'name=%s)' % self.ss_name 
+
+    def check(self, tc, n):
+        for i in range(0, n):
+            self.assertEqual(tc[str(i)], str(i))
+        tc.set_key(str(n))
+        self.assertEquals(tc.search(), wiredtiger.WT_NOTFOUND)
 
     # Test calling schema APIs with a tiered table.
     def test_tiered(self):
@@ -86,25 +108,22 @@ class test_tiered07(wttest.WiredTigerTestCase, TieredConfigMixin):
         self.pr('add one item to all tables')
         c = self.session.open_cursor(self.uri)
         c["0"] = "0"
-        self.check(c, 0, 1)
+        self.check(c, 1)
         c.close()
         c = self.session.open_cursor(self.uri2)
         c["0"] = "0"
-        self.check(c, 0, 1)
+        self.check(c, 1)
         c.close()
         c = self.session.open_cursor(self.uri3)
         c["0"] = "0"
-        self.check(c, 0, 1)
+        self.check(c, 1)
         c.close()
         c = self.session.open_cursor(self.localuri)
         c["0"] = "0"
         c.close()
-        if (self.first_ckpt):
-            self.session.checkpoint()
+        self.session.checkpoint()
         self.pr('After data, call flush_tier')
-        self.session.checkpoint('flush_tier=(enabled)')
-        if (not self.first_ckpt):
-            self.session.checkpoint()
+        self.session.flush_tier(None)
 
         # Drop table.
         self.pr('call drop')
@@ -118,7 +137,6 @@ class test_tiered07(wttest.WiredTigerTestCase, TieredConfigMixin):
         self.assertFalse(os.path.isfile("abc-0000000002.wtobj"))
 
         # Dropping a table using the force setting should succeed even if the table does not exist.
-        self.pr('drop with force')
         self.session.drop(self.localuri, 'force=true')
         self.session.drop(self.uri, 'force=true')
 
@@ -131,24 +149,18 @@ class test_tiered07(wttest.WiredTigerTestCase, TieredConfigMixin):
             lambda: self.session.drop("table:random_non_existent", None))
 
         # Create new table with same name. This should error.
-        self.session.create(self.newuri, 'key_format=S')
-
-        # If we didn't do a checkpoint before the flush_tier then creating with the same name
-        # will succeed because no bucket objects were created. 
-        if (self.first_ckpt):
-            self.pr('check cannot create with same name')
-            self.assertRaises(wiredtiger.WiredTigerError,
-                lambda:self.session.create(self.uri, 'key_format=S'))
-        else:
-            self.session.create(self.uri, 'key_format=S')
+        msg = "/already exists/"
+        self.pr('check cannot create with same name')
+        self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
+            lambda:self.assertEquals(self.session.create(self.uri, 'key_format=S'), 0), msg)
 
         # Make sure there was no problem with overlapping table names.
         self.pr('check original similarly named tables')
         c = self.session.open_cursor(self.uri2)
-        self.check(c, 0, 1)
+        self.check(c, 1)
         c.close()
         c = self.session.open_cursor(self.uri3)
-        self.check(c, 0, 1)
+        self.check(c, 1)
         c.close()
 
         # Create new table with new name.

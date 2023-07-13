@@ -1,5 +1,8 @@
 // Verifies the serverStatus output and FTDC output for the read write concern defaults.
 //
+// TODO SERVER-45052: Split this test into the appropriate suites for replica sets, sharded
+// clusters, and standalone servers.
+//
 // @tags: [requires_sharding]
 (function() {
 "use strict";
@@ -125,16 +128,7 @@ function testFTDC(conn, ftdcDirPath, expectNothingOnRotation = false) {
     // Read from the first non-interim file.
     const firstFullFile =
         ftdcFiles.filter(fileDesc => fileDesc.baseName.indexOf("interim") == -1)[0];
-    var ftdcData;
-    assert.soon(() => {
-        try {
-            ftdcData = _readDumpFile(firstFullFile.name);
-            return true;
-        } catch (error) {
-            jsTestLog(`Caught unexpected error: ${tojson(error)}`);
-            return false;
-        }
-    });
+    const ftdcData = _readDumpFile(firstFullFile.name);
     assert.hasFields(ftdcData[0], ["doc"], tojson(ftdcData));
 
     // Look for the defaults in the first metadata object.

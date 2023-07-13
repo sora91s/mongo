@@ -3,6 +3,7 @@
  *
  * @tags: [
  *   requires_replication,
+ *   requires_wiredtiger,
  * ]
  */
 (function() {
@@ -163,7 +164,7 @@ let nextId = nDocs;
         assert.gt(metrics[dbName].primaryMetrics.docUnitsRead, 0);
         assert.gt(metrics[dbName].primaryMetrics.cursorSeeks, 0);
         // Returns one large document
-        assert.eq(metrics[dbName].primaryMetrics.docUnitsReturned, 4);
+        assert.eq(metrics[dbName].primaryMetrics.docUnitsReturned, 3);
     });
 
     // Update the document and ensure the metrics are aggregated.

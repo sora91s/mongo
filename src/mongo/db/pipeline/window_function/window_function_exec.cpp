@@ -77,7 +77,7 @@ std::unique_ptr<WindowFunctionExec> translateDocumentWindow(
     auto inputExpr = translateInputExpression(expr, sortBy);
 
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             [&](const WindowBounds::Unbounded&) -> std::unique_ptr<WindowFunctionExec> {
                 // A left unbounded window will always be non-removable regardless of the upper
                 // bound.
@@ -145,7 +145,7 @@ std::unique_ptr<WindowFunctionExec> WindowFunctionExec::create(
     WindowBounds bounds = functionStmt.expr->bounds();
 
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             [&](const WindowBounds::DocumentBased& docBounds) {
                 return translateDocumentWindow(
                     iter, functionStmt.expr, sortBy, docBounds, &functionMemTracker);

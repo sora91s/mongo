@@ -74,7 +74,7 @@ public:
             _group->noteKill();
     }
     void interrupt() {}
-    bool isKillPending() {
+    const bool isKillPending() {
         return killPending;
     }
     TaskGroup* _group;

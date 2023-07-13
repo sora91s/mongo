@@ -74,9 +74,8 @@ using boost::intrusive_ptr;
 using std::string;
 using std::vector;
 
-const NamespaceString kTestNss = NamespaceString::createNamespaceString_forTest("a.collection");
-const NamespaceString kAdminCollectionlessNss =
-    NamespaceString::createNamespaceString_forTest("admin.$cmd.aggregate");
+const NamespaceString kTestNss = NamespaceString("a.collection");
+const NamespaceString kAdminCollectionlessNss = NamespaceString("admin.$cmd.aggregate");
 
 constexpr size_t getChangeStreamStageSize() {
     return 6;
@@ -140,9 +139,8 @@ void assertPipelineOptimizesAndSerializesTo(std::string inputPipeJson,
 
     // For $graphLookup and $lookup, we have to populate the resolvedNamespaces so that the
     // operations will be able to have a resolved view definition.
-    NamespaceString lookupCollNs =
-        NamespaceString::createNamespaceString_forTest("a", "lookupColl");
-    NamespaceString unionCollNs = NamespaceString::createNamespaceString_forTest("b", "unionColl");
+    NamespaceString lookupCollNs("a", "lookupColl");
+    NamespaceString unionCollNs("b", "unionColl");
     ctx->setResolvedNamespace(lookupCollNs, {lookupCollNs, std::vector<BSONObj>{}});
     ctx->setResolvedNamespace(unionCollNs, {unionCollNs, std::vector<BSONObj>{}});
 
@@ -1004,24 +1002,6 @@ TEST(PipelineOptimizationTest, RemoveMultipleEmptyMatches) {
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
 }
 
-TEST(PipelineOptimizationTest, RemoveEmptyMatchesAndKeepNonEmptyMatches) {
-    string inputPipe = "[{$match: {}}, {$match: {}}, {$match: {a: 1}}]";
-    string outputPipe = "[{$match: {a: {$eq: 1}}}]";
-    string serializedPipe = "[{$match: {$and: [{}, {}, {a: 1}]}}]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-TEST(PipelineOptimizationTest, RemoveEmptyMatchesAndKeepOtherStages) {
-    assertPipelineOptimizesTo("[{$match: {}}, {$skip: 1}, {$match: {}}]", "[{$skip: 1}]");
-}
-
-TEST(PipelineOptimizationTest, KeepEmptyMatchWithComment) {
-    string inputPipe = "[{$match: {$comment: 'foo'}}]";
-    string outputPipe = "[{$match: {}}]";
-    string serializedPipe = "[{$match: {$comment: 'foo'}}]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
 TEST(PipelineOptimizationTest, DoNotRemoveNonEmptyMatch) {
     string inputPipe = "[{$match: {_id: 1}}]";
 
@@ -1030,32 +1010,6 @@ TEST(PipelineOptimizationTest, DoNotRemoveNonEmptyMatch) {
     string serializedPipe = "[{$match: {_id: 1}}]";
 
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-TEST(PipelineOptimizationTest, RemoveMatchWithTrueConstExpr) {
-    string inputPipe = "[{$match: {$expr: true}}]";
-    string outputPipe = "[{$match: {}}]";
-    string serializedPipe = "[{$match: {$expr: true}}]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-TEST(PipelineOptimizationTest, RemoveMultipleMatchesWithTrueConstExpr) {
-    string inputPipe = "[{$match: {$expr: true}}, {$match: {$expr: true}}]";
-    string outputPipe = "[{$match: {}}]";
-    string serializedPipe = "[{$match: {$and: [{$expr: true}, {$expr: true}]}}]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-TEST(PipelineOptimizationTest, RemoveMatchWithTruthyConstExpr) {
-    string inputPipe = "[{$match: {$expr: {$concat: ['a', 'b']}}}]";
-    string outputPipe = "[{$match: {}}]";
-    string serializedPipe = "[{$match: {$expr: {$concat: ['a', 'b']}}}]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-TEST(PipelineOptimizationTest, KeepMatchWithNonConstExpr) {
-    assertPipelineOptimizesTo("[{$match: {$expr: {$concat: ['$a', '$b']}}}]",
-                              "[{$match: {$expr: {$concat: ['$a', '$b']}}}]");
 }
 
 TEST(PipelineOptimizationTest, MoveMatchBeforeSort) {
@@ -1738,9 +1692,7 @@ TEST(PipelineOptimizationTest, MatchShouldSplitOnUnwind) {
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
-// The 'a.b' path is a modified one by $unwind and $elemMatch is dependent on it and so we can't
-// swap $elemMatch in this case.
-TEST(PipelineOptimizationTest, MatchShouldNotOptimizeWithElemMatchOnModifiedPathByUnwind) {
+TEST(PipelineOptimizationTest, MatchShouldNotOptimizeWithElemMatch) {
     string inputPipe =
         "[{$unwind: {path: '$a.b'}}, "
         "{$match: {a: {$elemMatch: {b: {d: 1}}}}}]";
@@ -1749,51 +1701,6 @@ TEST(PipelineOptimizationTest, MatchShouldNotOptimizeWithElemMatchOnModifiedPath
         "{$match: {a: {$elemMatch: {b: {$eq : {d: 1}}}}}}]";
     string serializedPipe =
         "[{$unwind : {path : '$a.b'}}, {$match : {a : {$elemMatch : {b : {d : 1}}}}}]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-// The 'a.b' path is a modified one by $project and $elemMatch is dependent on it and so we can't
-// swap $elemMatch in this case.
-TEST(PipelineOptimizationTest, MatchShouldNotOptimizeWithElemMatchOnModifiedPathByProject1) {
-    string inputPipe =
-        "[{$project: {x: '$a.b', _id: false}}, "
-        "{$match: {x: {$elemMatch: {d: 1}}}}]";
-    string outputPipe =
-        "[{$project: {x: '$a.b', _id: false}}, "
-        "{$match: {x: {$elemMatch: {d: {$eq: 1}}}}}]";
-    string serializedPipe =
-        "[{$project: {x: '$a.b', _id: false}}, "
-        "{$match: {x: {$elemMatch: {d: 1}}}}]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-// The 'a.b' path is a modified one by $project and $elemMatch is dependent on it and so we can't
-// swap $elemMatch in this case.
-TEST(PipelineOptimizationTest, MatchShouldNotOptimizeWithElemMatchOnModifiedPathByProject2) {
-    string inputPipe =
-        "[{$project: {x: {y: '$a.b'}, _id: false}}, "
-        "{$match: {'x.y': {$elemMatch: {d: 1}}}}]";
-    string outputPipe =
-        "[{$project: {x: {y: '$a.b'}, _id: false}}, "
-        "{$match: {'x.y': {$elemMatch: {d: {$eq: 1}}}}}]";
-    string serializedPipe =
-        "[{$project: {x: {y: '$a.b'}, _id: false}}, "
-        "{$match: {'x.y': {$elemMatch: {d: 1}}}}]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-// The 'a.b' path is a modified one by $project and $elemMatch is dependent on it and so we can't
-// swap $elemMatch in this case.
-TEST(PipelineOptimizationTest, MatchShouldNotOptimizeWithElemMatchOnModifiedPathByProject3) {
-    string inputPipe =
-        "[{$project: {x: {y: {z: '$a.b'}}, _id: false}}, "
-        "{$match: {'x.y.z': {$elemMatch: {d: 1}}}}]";
-    string outputPipe =
-        "[{$project: {x: {y: {z: '$a.b'}}, _id: false}}, "
-        "{$match: {'x.y.z': {$elemMatch: {d: {$eq: 1}}}}}]";
-    string serializedPipe =
-        "[{$project: {x: {y: {z: '$a.b'}}, _id: false}}, "
-        "{$match: {'x.y.z': {$elemMatch: {d: 1}}}}]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
 }
 
@@ -1960,97 +1867,6 @@ TEST(PipelineOptimizationTest, GraphLookupShouldSwapWithMatch) {
         "   startWith: '$startVal'"
         " }}]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-TEST(PipelineOptimizationTest, GraphLookupShouldSwapWithSortNotOnAs) {
-    string inputPipe =
-        "["
-        "   {$graphLookup: {"
-        "       from: 'lookupColl',"
-        "       as: 'out',"
-        "       connectToField: 'to',"
-        "       connectFromField: 'from',"
-        "       startWith: '$start'"
-        "   }},"
-        "   {$sort: {from: 1}}"
-        "]";
-    string outputPipe =
-        "["
-        "   {$sort: {sortKey: {from: 1}}},"
-        "   {$graphLookup: {"
-        "       from: 'lookupColl',"
-        "       as: 'out',"
-        "       connectToField: 'to',"
-        "       connectFromField: 'from',"
-        "       startWith: '$start'"
-        "   }}"
-        "]";
-    string serializedPipe =
-        "["
-        "   {$sort: {from: 1}},"
-        "   {$graphLookup: {"
-        "       from: 'lookupColl',"
-        "       as: 'out',"
-        "       connectToField: 'to',"
-        "       connectFromField: 'from',"
-        "       startWith: '$start'"
-        "   }}"
-        "]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-TEST(PipelineOptimizationTest, GraphLookupWithInternalUnwindShouldNotSwapWithSortNotOnAs) {
-    string inputPipe =
-        "["
-        "   {$graphLookup: {"
-        "       from: 'lookupColl',"
-        "       as: 'out',"
-        "       connectToField: 'to',"
-        "       connectFromField: 'from',"
-        "       startWith: '$start'"
-        "   }},"
-        "   {$unwind: {path: '$out', includeArrayIndex: 'index'}},"
-        "   {$sort: {from: 1}}"
-        "]";
-    string outputPipe =
-        "["
-        "   {$graphLookup: {"
-        "       from: 'lookupColl',"
-        "       as: 'out',"
-        "       connectToField: 'to',"
-        "       connectFromField: 'from',"
-        "       startWith: '$start',"
-        "       unwinding: {preserveNullAndEmptyArrays: false, includeArrayIndex: 'index'}"
-        "   }},"
-        "   {$sort: {sortKey: {from: 1}}}"
-        "]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, inputPipe);
-}
-
-TEST(PipelineOptimizationTest, GraphLookupShouldNotSwapWithSortOnAs) {
-    string inputPipe =
-        "["
-        "   {$graphLookup: {"
-        "       from: 'lookupColl',"
-        "       as: 'out',"
-        "       connectToField: 'to',"
-        "       connectFromField: 'from',"
-        "       startWith: '$start'"
-        "   }},"
-        "   {$sort: {out: 1}}"
-        "]";
-    string outputPipe =
-        "["
-        "   {$graphLookup: {"
-        "       from: 'lookupColl',"
-        "       as: 'out',"
-        "       connectToField: 'to',"
-        "       connectFromField: 'from',"
-        "       startWith: '$start'"
-        "   }},"
-        "   {$sort: {sortKey: {out: 1}}}"
-        "]";
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, inputPipe);
 }
 
 TEST(PipelineOptimizationTest, ExclusionProjectShouldSwapWithIndependentMatch) {
@@ -2305,135 +2121,6 @@ TEST(PipelineOptimizationTest, MatchOnArrayFieldCanSplitAcrossRenameWithMapAndPr
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
-TEST(PipelineOptimizationTest,
-     MatchElemMatchValueOnArrayFieldCanSplitAcrossRenameWithMapAndProject) {
-    // The $project simply renames 'a.b' & 'a.c' to 'd.e' & 'd.f' and the $match with $elemMatch on
-    // the leaf value can be swapped with $project.
-    string inputPipe = R"(
-[
-    {
-        $project: {
-            d: {
-                $map: {input: '$a', as: 'iter', in : {e: '$$iter.b', f: '$$iter.c'}}
-            }
-        }
-    },
-    {$match: {"d.e": {$elemMatch: {$eq: 1}}, "d.f": {$elemMatch: {$eq: 1}}}}
-]
-        )";
-    string outputPipe = R"(
-[
-    {
-        $match: {$and: [{"a.b": {$elemMatch: {$eq: 1}}}, {"a.c": {$elemMatch: {$eq: 1}}}]}
-    },
-    {
-        $project: {
-            _id: true,
-            d: {
-                $map: {input: '$a', as: 'iter', in : {e: '$$iter.b', f: '$$iter.c'}}
-            }
-        }
-    }
-]
-        )";
-
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
-}
-
-// TODO SERVER-74298 The $match can be swapped with $project after renaming.
-TEST(PipelineOptimizationTest,
-     MatchElemMatchObjectOnArrayFieldCanNotSplitAcrossRenameWithMapAndProject) {
-    // The $project simply renames 'a.b' & 'a.c' to 'd.e' & 'd.f' but the dependency tracker reports
-    // the 'd' for $elemMatch as a modified dependency and so $match cannot be swapped with
-    // $project.
-    string inputPipe = R"(
-[
-    {
-        $project: {
-            d: {
-                $map: {input: '$a', as: 'iter', in : {e: '$$iter.b', f: '$$iter.c'}}
-            }
-        }
-    },
-    {$match: {d: {$elemMatch: {e: 1, f: 1}}}}
-]
-        )";
-    string outputPipe = R"(
-[
-    {
-        $project: {
-            _id: true,
-            d: {
-                $map: {input: "$a", as: "iter", in : {e: "$$iter.b", f: "$$iter.c"}}
-            }
-        }
-    },
-    {$match: {d: {$elemMatch: {$and: [{e: {$eq: 1}}, {f: {$eq: 1}}]}}}}
-]
-        )";
-    string serializedPipe = R"(
-[
-    {
-        $project: {
-            _id: true,
-            d: {
-                $map: {input: '$a', as: 'iter', in : {e: '$$iter.b', f: '$$iter.c'}}
-            }
-        }
-    },
-    {$match: {d: {$elemMatch: {e: 1, f: 1}}}}
-]
-        )";
-
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
-// TODO SERVER-74298 The $match can be swapped with $project after renaming.
-TEST(PipelineOptimizationTest, MatchEqObjectCanNotSplitAcrossRenameWithMapAndProject) {
-    // The $project simply renames 'a.b' & 'a.c' to 'd.e' & 'd.f' but the dependency tracker reports
-    // the 'd' for $eq as a modified dependency and so $match cannot be swapped with $project.
-    string inputPipe = R"(
-[
-    {
-        $project: {
-            d: {
-                $map: {input: '$a', as: 'i', in : {e: '$$i.b', f: '$$i.c'}}
-            }
-        }
-    },
-    {$match: {d: {$eq: {e: 1, f: 1}}}}
-]
-        )";
-    string outputPipe = R"(
-[
-    {
-        $project: {
-            _id: true,
-            d: {
-                $map: {input: "$a", as: "i", in : {e: "$$i.b", f: "$$i.c"}}
-            }
-        }
-    },
-    {$match: {d: {$eq: {e: 1, f: 1}}}}
-]
-        )";
-    string serializedPipe = R"(
-[
-    {
-        $project: {
-            _id: true,
-            d: {
-                $map: {input: '$a', as: 'i', in : {e: '$$i.b', f: '$$i.c'}}
-            }
-        }
-    },
-    {$match: {d: {$eq: {e: 1, f: 1}}}}
-]
-        )";
-
-    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
-}
-
 TEST(PipelineOptimizationTest, MatchOnArrayFieldCanSplitAcrossRenameWithMapAndAddFields) {
     string inputPipe =
         "[{$addFields: {d: {$map: {input: '$a', as: 'iter', in: {e: '$$iter.b', f: {$add: "
@@ -2455,59 +2142,48 @@ TEST(PipelineOptimizationTest, MatchCannotSwapWithSortLimit) {
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, inputPipe);
 }
 
-TEST(PipelineOptimizationTest, MatchOnMinItemsShouldSwapSinceCategoryIsArrayMatching) {
+// Descriptive test. The following internal match expression *could* participate in pipeline
+// optimizations, but it currently does not.
+TEST(PipelineOptimizationTest, MatchOnMinItemsShouldNotSwapSinceCategoryIsArrayMatching) {
     string inputPipe =
         "[{$project: {_id: true, a: '$b'}}, "
         "{$match: {a: {$_internalSchemaMinItems: 1}}}]";
-    string outputPipe =
-        "[{$match: {b: {$_internalSchemaMinItems: 1}}}, "
-        "{$project: {_id: true, a: '$b'}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 
     inputPipe =
         "[{$project: {redacted: false, _id: true}}, "
         "{$match: {a: {$_internalSchemaMinItems: 1}}}]";
-    outputPipe =
-        "[{$match: {a: {$_internalSchemaMinItems: 1}}}, "
-        "{$project: {redacted: false, _id: true}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 
     inputPipe =
         "[{$addFields : {a : {$const: 1}}}, "
         "{$match: {b: {$_internalSchemaMinItems: 1}}}]";
-    outputPipe =
-        "[{$match: {b: {$_internalSchemaMinItems: 1}}}, "
-        "{$addFields : {a : {$const: 1}}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 }
 
-TEST(PipelineOptimizationTest, MatchOnMaxItemsShouldSwapSinceCategoryIsArrayMatching) {
+// Descriptive test. The following internal match expression *could* participate in pipeline
+// optimizations, but it currently does not.
+TEST(PipelineOptimizationTest, MatchOnMaxItemsShouldNotSwapSinceCategoryIsArrayMatching) {
     string inputPipe =
         "[{$project: {_id: true, a: '$b'}}, "
         "{$match: {a: {$_internalSchemaMaxItems: 1}}}]";
-    string outputPipe =
-        "[{$match: {b: {$_internalSchemaMaxItems: 1}}}, "
-        "{$project: {_id: true, a: '$b'}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 
     inputPipe =
         "[{$project: {redacted: false, _id: true}}, "
         "{$match: {a: {$_internalSchemaMaxItems: 1}}}]";
-    outputPipe =
-        "[{$match: {a: {$_internalSchemaMaxItems: 1}}}, "
-        "{$project: {redacted: false, _id: true}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 
     inputPipe =
         "[{$addFields : {a : {$const: 1}}}, "
         "{$match: {b: {$_internalSchemaMaxItems: 1}}}]";
-    outputPipe =
-        "[{$match: {b: {$_internalSchemaMaxItems: 1}}}, "
-        "{$addFields : {a : {$const: 1}}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 }
 
-TEST(PipelineOptimizationTest, MatchOnAllElemMatchFromIndexShouldNotSwapBecauseOfNamePlaceHolder) {
+// Descriptive test. The following internal match expression *could* participate in pipeline
+// optimizations, but it currently does not.
+TEST(PipelineOptimizationTest,
+     MatchOnAllElemMatchFromIndexShouldNotSwapSinceCategoryIsArrayMatching) {
     string inputPipe =
         "[{$project: {_id: true, a: '$b'}}, "
         "{$match: {a: {$_internalSchemaAllElemMatchFromIndex: [1, {b: {$gt: 0}}]}}}]";
@@ -2516,21 +2192,17 @@ TEST(PipelineOptimizationTest, MatchOnAllElemMatchFromIndexShouldNotSwapBecauseO
     inputPipe =
         "[{$project: {redacted: false, _id: true}}, "
         "{$match: {a: {$_internalSchemaAllElemMatchFromIndex: [1, {b: {$gt: 0}}]}}}]";
-    string outputPipe =
-        "[{$match: {a: {$_internalSchemaAllElemMatchFromIndex: [1, {b: {$gt: 0}}]}}}, "
-        "{$project: {redacted: false, _id: true}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 
     inputPipe =
         "[{$addFields : {a : {$const: 1}}}, "
-        "{$match: {b: {$_internalSchemaAllElemMatchFromIndex: [1, {b: {$gt: 0}}]}}}]";
-    outputPipe =
-        "[{$match: {b: {$_internalSchemaAllElemMatchFromIndex: [1, {b: {$gt: 0}}]}}}, "
-        "{$addFields : {a : {$const: 1}}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+        "{$match: {a: {$_internalSchemaAllElemMatchFromIndex: [1, {b: {$gt: 0}}]}}}]";
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 }
 
-TEST(PipelineOptimizationTest, MatchOnArrayIndexShouldNotSwapBecauseOfNamePlaceHolder) {
+// Descriptive test. The following internal match expression *could* participate in pipeline
+// optimizations, but it currently does not.
+TEST(PipelineOptimizationTest, MatchOnArrayIndexShouldNotSwapSinceCategoryIsArrayMatching) {
     string inputPipe = R"(
         [{$project: {_id: true, a: '$b'}},
         {$match: {a: {$_internalSchemaMatchArrayIndex:
@@ -2541,47 +2213,32 @@ TEST(PipelineOptimizationTest, MatchOnArrayIndexShouldNotSwapBecauseOfNamePlaceH
         [{$project: {redacted: false, _id: true}},
         {$match: {a: {$_internalSchemaMatchArrayIndex:
            {index: 0, namePlaceholder: 'i', expression: {i: {$lt: 0}}}}}}])";
-    string outputPipe = R"(
-        [{$match: {a: {$_internalSchemaMatchArrayIndex:
-           {index: 0, namePlaceholder: 'i', expression: {i: {$lt: 0}}}}}},
-        {$project: {redacted: false, _id: true}}])";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 
     inputPipe = R"(
         [{$addFields : {a : {$const: 1}}},
-        {$match: {b: {$_internalSchemaMatchArrayIndex:
+        {$match: {a: {$_internalSchemaMatchArrayIndex:
            {index: 0, namePlaceholder: 'i', expression: {i: {$lt: 0}}}}}}])";
-    outputPipe = R"(
-        [{$match: {b: {$_internalSchemaMatchArrayIndex:
-           {index: 0, namePlaceholder: 'i', expression: {i: {$lt: 0}}}}}},
-        {$addFields : {a : {$const: 1}}}])";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 }
 
-TEST(PipelineOptimizationTest, MatchOnUniqueItemsShouldSwapSinceCategoryIsArrayMatching) {
+// Descriptive test. The following internal match expression *could* participate in pipeline
+// optimizations, but it currently does not.
+TEST(PipelineOptimizationTest, MatchOnUniqueItemsShouldNotSwapSinceCategoryIsArrayMatching) {
     string inputPipe =
         "[{$project: {_id: true, a: '$b'}}, "
         "{$match: {a: {$_internalSchemaUniqueItems: true}}}]";
-    string outputPipe =
-        "[{$match: {b: {$_internalSchemaUniqueItems: true}}}, "
-        "{$project: {_id: true, a: '$b'}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 
     inputPipe =
         "[{$project: {redacted: false, _id: true}}, "
         "{$match: {a: {$_internalSchemaUniqueItems: true}}}]";
-    outputPipe =
-        "[{$match: {a: {$_internalSchemaUniqueItems: true}}}, "
-        "{$project: {redacted: false, _id: true}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 
     inputPipe =
         "[{$addFields : {a : {$const: 1}}}, "
-        "{$match: {b: {$_internalSchemaUniqueItems: true}}}]";
-    outputPipe =
-        "[{$match: {b: {$_internalSchemaUniqueItems: true}}}, "
-        "{$addFields : {a : {$const: 1}}}]";
-    assertPipelineOptimizesTo(inputPipe, outputPipe);
+        "{$match: {a: {$_internalSchemaUniqueItems: true}}}]";
+    assertPipelineOptimizesTo(inputPipe, inputPipe);
 }
 
 // Descriptive test. The following internal match expression *could* participate in pipeline
@@ -2800,40 +2457,40 @@ TEST(PipelineOptimizationTest, MatchOnRootDocEqShouldNotSwapSinceCategoryIsOther
     assertPipelineOptimizesTo(inputPipe, inputPipe);
 }
 
-// Descriptive test. The following internal match expression can participate in pipeline
-// optimizations.
-TEST(PipelineOptimizationTest, MatchOnInternalSchemaTypeShouldSwap) {
+// Descriptive test. The following internal match expression *could* participate in pipeline
+// optimizations, but it currently does not.
+TEST(PipelineOptimizationTest, MatchOnInternalSchemaTypeShouldNotSwapSinceCategoryIsOther) {
     string inputPipe =
         "[{$project: {_id: true, a: '$b'}}, "
         "{$match: {a: {$_internalSchemaType: 1}}}]";
     string outputPipe =
-        "[{$match: {b: {$_internalSchemaType: [1]}}}, "
-        "{$project: {_id: true, a: '$b'}}]";
+        "[{$project: {_id: true, a: '$b'}}, "
+        " {$match: {a: {$_internalSchemaType: [1]}}}]";
     string serializedPipe =
-        "[{$match: {b: {$_internalSchemaType: [1]}}}, "
-        "{$project: {_id: true, a: '$b'}}]";
+        "[{$project: {_id: true, a: '$b'}}, "
+        "{$match: {a: {$_internalSchemaType: 1}}}]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
 
     inputPipe =
         "[{$project: {redacted: false}}, "
         "{$match: {a: {$_internalSchemaType: 1}}}]";
     outputPipe =
-        "[{$match: {a: {$_internalSchemaType: [1]}}}, "
-        "{$project: {redacted: false, _id: true}}]";
+        "[{$project: {redacted: false, _id: true}}, "
+        " {$match: {a: {$_internalSchemaType: [1]}}}]";
     serializedPipe =
-        "[{$match: {a: {$_internalSchemaType: 1}}}, "
-        "{$project: {redacted: false, _id: true}}]";
+        "[{$project: {redacted: false, _id: true}}, "
+        "{$match: {a: {$_internalSchemaType: 1}}}]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
 
     inputPipe =
         "[{$addFields : {a : {$const: 1}}}, "
         "{$match: {b: {$_internalSchemaType: 1}}}]";
     outputPipe =
-        "[{$match: {b: {$_internalSchemaType: [1]}}}, "
-        "{$addFields : {a : {$const: 1}}}]";
+        "[{$addFields : {a : {$const: 1}}}, "
+        " {$match: {b: {$_internalSchemaType: [1]}}}]";
     serializedPipe =
-        "[{$match: {b: {$_internalSchemaType: 1}}}, "
-        "{$addFields : {a : {$const: 1}}}]";
+        "[{$addFields : {a : {$const: 1}}}, "
+        "{$match: {b: {$_internalSchemaType: 1}}}]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
 }
 
@@ -3500,7 +3157,7 @@ void assertTwoPipelinesOptimizeAndMergeTo(const std::string inputPipe1,
     auto pipeline2 = getOptimizedPipeline(input2Bson);
 
     // Merge the pipelines
-    for (const auto& source : pipeline2->getSources()) {
+    for (auto source : pipeline2->getSources()) {
         pipeline1->pushBack(source);
     }
     pipeline1->optimizePipeline();
@@ -3591,7 +3248,7 @@ public:
 
     // Allows tests to override the default resolvedNamespaces.
     virtual NamespaceString getLookupCollNs() {
-        return NamespaceString::createNamespaceString_forTest("a", "lookupColl");
+        return NamespaceString("a", "lookupColl");
     }
 
     BSONObj pipelineFromJsonArray(const string& array) {
@@ -4509,7 +4166,7 @@ TEST_F(PipelineDeferredMergeSortTest, StageWithDeferredSortDoesNotSplit) {
 
     // Verify the sort is correct.
     ASSERT(splitPipeline.shardCursorsSortSpec);
-    ASSERT_BSONOBJ_EQ(splitPipeline.shardCursorsSortSpec.value(), BSON("a" << 1));
+    ASSERT_BSONOBJ_EQ(splitPipeline.shardCursorsSortSpec.get(), BSON("a" << 1));
 }
 
 TEST_F(PipelineDeferredMergeSortTest, EarliestSortIsSelectedIfDeferred) {
@@ -4533,7 +4190,7 @@ TEST_F(PipelineDeferredMergeSortTest, EarliestSortIsSelectedIfDeferred) {
 
     // Verify the sort is correct.
     ASSERT(splitPipeline.shardCursorsSortSpec);
-    ASSERT_BSONOBJ_EQ(splitPipeline.shardCursorsSortSpec.value(), BSON("a" << 1));
+    ASSERT_BSONOBJ_EQ(splitPipeline.shardCursorsSortSpec.get(), BSON("a" << 1));
 }
 
 TEST_F(PipelineDeferredMergeSortTest, StageThatCantSwapGoesToMergingHalf) {
@@ -4556,7 +4213,7 @@ TEST_F(PipelineDeferredMergeSortTest, StageThatCantSwapGoesToMergingHalf) {
 
     // Verify the sort is correct.
     ASSERT(splitPipeline.shardCursorsSortSpec);
-    ASSERT_BSONOBJ_EQ(splitPipeline.shardCursorsSortSpec.value(), BSON("a" << 1));
+    ASSERT_BSONOBJ_EQ(splitPipeline.shardCursorsSortSpec.get(), BSON("a" << 1));
 }
 }  // namespace DeferredSort
 }  // namespace Sharded
@@ -4567,9 +4224,7 @@ TEST(PipelineInitialSource, GeoNearInitialQuery) {
     const std::vector<BSONObj> rawPipeline = {
         fromjson("{$geoNear: {distanceField: 'd', near: [0, 0], query: {a: 1}}}")};
     intrusive_ptr<ExpressionContextForTest> ctx = new ExpressionContextForTest(
-        &_opCtx,
-        AggregateCommandRequest(NamespaceString::createNamespaceString_forTest("a.collection"),
-                                rawPipeline));
+        &_opCtx, AggregateCommandRequest(NamespaceString("a.collection"), rawPipeline));
     auto pipe = Pipeline::parse(rawPipeline, ctx);
     ASSERT_BSONOBJ_EQ(pipe->getInitialQuery(), BSON("a" << 1));
 }
@@ -4578,9 +4233,7 @@ TEST(PipelineInitialSource, MatchInitialQuery) {
     OperationContextNoop _opCtx;
     const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {'a': 4}}")};
     intrusive_ptr<ExpressionContextForTest> ctx = new ExpressionContextForTest(
-        &_opCtx,
-        AggregateCommandRequest(NamespaceString::createNamespaceString_forTest("a.collection"),
-                                rawPipeline));
+        &_opCtx, AggregateCommandRequest(NamespaceString("a.collection"), rawPipeline));
 
     auto pipe = Pipeline::parse(rawPipeline, ctx);
     ASSERT_BSONOBJ_EQ(pipe->getInitialQuery(), BSON("a" << 4));
@@ -4620,7 +4273,7 @@ TEST_F(PipelineValidateTest, AggregateOneNSNotValidForEmptyPipeline) {
     const std::vector<BSONObj> rawPipeline = {};
     auto ctx = getExpCtx();
 
-    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "a"));
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
 
     ASSERT_THROWS_CODE(
         Pipeline::parse(rawPipeline, ctx), AssertionException, ErrorCodes::InvalidNamespace);
@@ -4630,7 +4283,7 @@ TEST_F(PipelineValidateTest, AggregateOneNSNotValidIfInitialStageRequiresCollect
     const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {}}")};
     auto ctx = getExpCtx();
 
-    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "a"));
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
 
     ASSERT_THROWS_CODE(
         Pipeline::parse(rawPipeline, ctx), AssertionException, ErrorCodes::InvalidNamespace);
@@ -4640,7 +4293,7 @@ TEST_F(PipelineValidateTest, AggregateOneNSValidIfInitialStageIsCollectionless) 
     auto ctx = getExpCtx();
     auto collectionlessSource = DocumentSourceCollectionlessMock::create(ctx);
 
-    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "a"));
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
 
     Pipeline::create({collectionlessSource}, ctx);
 }
@@ -4661,8 +4314,7 @@ TEST_F(PipelineValidateTest, AggregateOneNSValidForFacetPipelineRegardlessOfInit
     const std::vector<BSONObj> rawPipeline = {fromjson("{$facet: {subPipe: [{$match: {}}]}}")};
     auto ctx = getExpCtx();
 
-    ctx->ns =
-        NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "unittests"));
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("unittests");
 
     ASSERT_THROWS_CODE(
         Pipeline::parse(rawPipeline, ctx), AssertionException, ErrorCodes::InvalidNamespace);
@@ -4672,7 +4324,7 @@ TEST_F(PipelineValidateTest, ChangeStreamIsValidAsFirstStage) {
     const std::vector<BSONObj> rawPipeline = {fromjson("{$changeStream: {}}")};
     auto ctx = getExpCtx();
     setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
-    ctx->ns = NamespaceString::createNamespaceString_forTest("a.collection");
+    ctx->ns = NamespaceString("a.collection");
     Pipeline::parse(rawPipeline, ctx);
 }
 
@@ -4681,7 +4333,7 @@ TEST_F(PipelineValidateTest, ChangeStreamIsNotValidIfNotFirstStage) {
                                               fromjson("{$changeStream: {}}")};
     auto ctx = getExpCtx();
     setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
-    ctx->ns = NamespaceString::createNamespaceString_forTest("a.collection");
+    ctx->ns = NamespaceString("a.collection");
     ASSERT_THROWS_CODE(Pipeline::parse(rawPipeline, ctx), AssertionException, 40602);
 }
 
@@ -4691,7 +4343,7 @@ TEST_F(PipelineValidateTest, ChangeStreamIsNotValidIfNotFirstStageInFacet) {
 
     auto ctx = getExpCtx();
     setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
-    ctx->ns = NamespaceString::createNamespaceString_forTest("a.collection");
+    ctx->ns = NamespaceString("a.collection");
     ASSERT_THROWS_CODE(Pipeline::parse(rawPipeline, ctx), AssertionException, 40600);
 }
 
@@ -5014,7 +4666,7 @@ public:
      * Returns a description which communicate that this stage modifies nothing.
      */
     GetModPathsReturn getModifiedPaths() const final {
-        return {GetModPathsReturn::Type::kFiniteSet, OrderedPathSet(), {}};
+        return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>(), {}};
     }
 };
 
@@ -5091,7 +4743,7 @@ public:
      * Returns a description which communicate that this stage modifies nothing.
      */
     GetModPathsReturn getModifiedPaths() const final {
-        return {GetModPathsReturn::Type::kNotSupported, OrderedPathSet(), {}};
+        return {GetModPathsReturn::Type::kNotSupported, std::set<std::string>(), {}};
     }
 };
 
@@ -5127,7 +4779,7 @@ public:
         return new RenamesAToB(expCtx);
     }
     GetModPathsReturn getModifiedPaths() const final {
-        return {GetModPathsReturn::Type::kFiniteSet, OrderedPathSet{}, {{"b", "a"}}};
+        return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>{}, {{"b", "a"}}};
     }
 };
 
@@ -5251,7 +4903,7 @@ public:
         return new RenamesBToC(expCtx);
     }
     GetModPathsReturn getModifiedPaths() const final {
-        return {GetModPathsReturn::Type::kFiniteSet, OrderedPathSet{}, {{"c", "b"}}};
+        return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>{}, {{"c", "b"}}};
     }
 };
 
@@ -5294,7 +4946,7 @@ public:
         return new RenamesBToA(expCtx);
     }
     GetModPathsReturn getModifiedPaths() const final {
-        return {GetModPathsReturn::Type::kFiniteSet, OrderedPathSet{}, {{"a", "b"}}};
+        return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>{}, {{"a", "b"}}};
     }
 };
 
@@ -5344,9 +4996,8 @@ TEST_F(InvolvedNamespacesTest, NoInvolvedNamespacesForMatchSortProject) {
 
 TEST_F(InvolvedNamespacesTest, IncludesLookupNamespace) {
     auto expCtx = getExpCtx();
-    const NamespaceString lookupNss = NamespaceString::createNamespaceString_forTest("test", "foo");
-    const NamespaceString resolvedNss =
-        NamespaceString::createNamespaceString_forTest("test", "bar");
+    const NamespaceString lookupNss{"test", "foo"};
+    const NamespaceString resolvedNss{"test", "bar"};
     expCtx->setResolvedNamespace(lookupNss, {resolvedNss, vector<BSONObj>{}});
     auto lookupSpec =
         fromjson("{$lookup: {from: 'foo', as: 'x', localField: 'foo_id', foreignField: '_id'}}");
@@ -5362,9 +5013,8 @@ TEST_F(InvolvedNamespacesTest, IncludesLookupNamespace) {
 
 TEST_F(InvolvedNamespacesTest, IncludesGraphLookupNamespace) {
     auto expCtx = getExpCtx();
-    const NamespaceString lookupNss = NamespaceString::createNamespaceString_forTest("test", "foo");
-    const NamespaceString resolvedNss =
-        NamespaceString::createNamespaceString_forTest("test", "bar");
+    const NamespaceString lookupNss{"test", "foo"};
+    const NamespaceString resolvedNss{"test", "bar"};
     expCtx->setResolvedNamespace(lookupNss, {resolvedNss, vector<BSONObj>{}});
     auto graphLookupSpec = fromjson(
         "{$graphLookup: {"
@@ -5386,14 +5036,10 @@ TEST_F(InvolvedNamespacesTest, IncludesGraphLookupNamespace) {
 
 TEST_F(InvolvedNamespacesTest, IncludesLookupSubpipelineNamespaces) {
     auto expCtx = getExpCtx();
-    const NamespaceString outerLookupNss =
-        NamespaceString::createNamespaceString_forTest("test", "foo_outer");
-    const NamespaceString outerResolvedNss =
-        NamespaceString::createNamespaceString_forTest("test", "bar_outer");
-    const NamespaceString innerLookupNss =
-        NamespaceString::createNamespaceString_forTest("test", "foo_inner");
-    const NamespaceString innerResolvedNss =
-        NamespaceString::createNamespaceString_forTest("test", "bar_inner");
+    const NamespaceString outerLookupNss{"test", "foo_outer"};
+    const NamespaceString outerResolvedNss{"test", "bar_outer"};
+    const NamespaceString innerLookupNss{"test", "foo_inner"};
+    const NamespaceString innerResolvedNss{"test", "bar_inner"};
     expCtx->setResolvedNamespace(outerLookupNss, {outerResolvedNss, vector<BSONObj>{}});
     expCtx->setResolvedNamespace(innerLookupNss, {innerResolvedNss, vector<BSONObj>{}});
     auto lookupSpec = fromjson(
@@ -5415,14 +5061,10 @@ TEST_F(InvolvedNamespacesTest, IncludesLookupSubpipelineNamespaces) {
 
 TEST_F(InvolvedNamespacesTest, IncludesGraphLookupSubPipeline) {
     auto expCtx = getExpCtx();
-    const NamespaceString outerLookupNss =
-        NamespaceString::createNamespaceString_forTest("test", "foo_outer");
-    const NamespaceString outerResolvedNss =
-        NamespaceString::createNamespaceString_forTest("test", "bar_outer");
-    const NamespaceString innerLookupNss =
-        NamespaceString::createNamespaceString_forTest("test", "foo_inner");
-    const NamespaceString innerResolvedNss =
-        NamespaceString::createNamespaceString_forTest("test", "bar_inner");
+    const NamespaceString outerLookupNss{"test", "foo_outer"};
+    const NamespaceString outerResolvedNss{"test", "bar_outer"};
+    const NamespaceString innerLookupNss{"test", "foo_inner"};
+    const NamespaceString innerResolvedNss{"test", "bar_inner"};
     expCtx->setResolvedNamespace(outerLookupNss, {outerResolvedNss, vector<BSONObj>{}});
     expCtx->setResolvedNamespace(
         outerLookupNss,
@@ -5450,13 +5092,10 @@ TEST_F(InvolvedNamespacesTest, IncludesGraphLookupSubPipeline) {
 
 TEST_F(InvolvedNamespacesTest, IncludesAllCollectionsWhenResolvingViews) {
     auto expCtx = getExpCtx();
-    const NamespaceString normalCollectionNss =
-        NamespaceString::createNamespaceString_forTest("test", "collection");
-    const NamespaceString lookupNss = NamespaceString::createNamespaceString_forTest("test", "foo");
-    const NamespaceString resolvedNss =
-        NamespaceString::createNamespaceString_forTest("test", "bar");
-    const NamespaceString nssIncludedInResolvedView =
-        NamespaceString::createNamespaceString_forTest("test", "extra_backer_of_bar");
+    const NamespaceString normalCollectionNss{"test", "collection"};
+    const NamespaceString lookupNss{"test", "foo"};
+    const NamespaceString resolvedNss{"test", "bar"};
+    const NamespaceString nssIncludedInResolvedView{"test", "extra_backer_of_bar"};
     expCtx->setResolvedNamespace(
         lookupNss,
         {resolvedNss,

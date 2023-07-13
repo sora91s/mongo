@@ -113,7 +113,7 @@ std::unique_ptr<SortedDataInterfaceHarnessHelper> newSortedDataInterfaceHarnessH
 
 KeyString::Value makeKeyString(SortedDataInterface* sorted,
                                BSONObj bsonKey,
-                               const boost::optional<RecordId>& rid = boost::none);
+                               boost::optional<RecordId> rid = boost::none);
 
 KeyString::Value makeKeyStringForSeek(SortedDataInterface* sorted,
                                       BSONObj bsonKey,

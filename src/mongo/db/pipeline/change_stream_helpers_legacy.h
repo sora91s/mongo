@@ -35,12 +35,45 @@
 namespace mongo::change_stream_legacy {
 
 /**
+ * Transforms a given user requested change stream 'spec' into a list of executable internal
+ * pipeline stages.
+ */
+std::list<boost::intrusive_ptr<DocumentSource>> buildPipeline(
+    const boost::intrusive_ptr<ExpressionContext>& expCtx, DocumentSourceChangeStreamSpec spec);
+
+/**
  * Looks up and returns a pre-image document at the specified opTime in the oplog. Asserts that if
  * an oplog entry with the given opTime is found, it is a no-op entry with a valid non-empty
  * pre-image document.
  */
 boost::optional<Document> legacyLookupPreImage(boost::intrusive_ptr<ExpressionContext> pExpCtx,
                                                const Document& preImageId);
+
+/**
+ * Maintains a document key cache. The cache will be used when the insert oplog entry does not
+ * contain the documentKey. This can happen when reading an oplog entry written by an older version
+ * of the server. Extracts the documentKey from the resume token on construction, and consults the
+ * sharding catalog as needed when getDocumentKeyForOplogInsert is called.
+ * TODO SERVER-64992: remove documentKey caching after branching for 6.0.
+ */
+class DocumentKeyCache {
+public:
+    using DocumentKeyCacheEntry = std::pair<std::vector<FieldPath>, bool>;
+
+    DocumentKeyCache(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                     const ResumeTokenData& token);
+
+    Value getDocumentKeyForOplogInsert(Document oplogInsert);
+
+private:
+    DocumentKeyCacheEntry _collectDocumentKeyFieldsForHostedCollection(const NamespaceString& nss,
+                                                                       const UUID& uuid) const;
+    std::vector<FieldPath> _shardKeyToDocumentKeyFields(
+        const std::vector<std::unique_ptr<FieldRef>>& keyPatternFields) const;
+
+    boost::intrusive_ptr<ExpressionContext> _expCtx;
+    std::map<UUID, DocumentKeyCacheEntry> _cache;
+};
 
 /**
  * Represents the change stream operation types that are NOT guarded behind the 'showExpandedEvents'
@@ -58,20 +91,5 @@ static const std::set<StringData> kClassicOperationTypes =
                          DocumentSourceChangeStream::kReshardBeginOpType,
                          DocumentSourceChangeStream::kReshardDoneCatchUpOpType,
                          DocumentSourceChangeStream::kNewShardDetectedOpType};
-
-/**
- * Adds filtering for legacy-format {op: 'n'} oplog messages, which used the "o2.type" field to
- * indicate the message type.
- */
-void populateInternalOperationFilter(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                     BSONArrayBuilder* filter);
-
-/**
- * Converts legacy-format oplog o2 fields of type {type: <op name>, ...} to
- * {..., <op name>: <namespace>}. Does nothing if the 'type' field is not present inside 'o2'.
- */
-Document convertFromLegacyOplogFormat(const Document& legacyO2Entry, const NamespaceString& nss);
-
-StringData getNewShardDetectedOpName(const boost::intrusive_ptr<ExpressionContext>& expCtx);
 
 }  // namespace mongo::change_stream_legacy

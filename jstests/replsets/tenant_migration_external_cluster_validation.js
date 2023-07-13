@@ -3,6 +3,7 @@
  * cluster times.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -11,11 +12,12 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {makeX509OptionsForTest} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 
 // Multiple users cannot be authenticated on one connection within a session.
 TestData.disableImplicitSessions = true;
@@ -46,12 +48,12 @@ function createUsers(rst) {
     rst.awaitReplication();
 }
 
-const kTenantId = ObjectId().str;
+const kTenantId = "testTenantId";
 const kDbName = kTenantId + "_" +
     "testDb";
 const kCollName = "testColl";
 
-const x509Options = makeX509OptionsForTest();
+const x509Options = TenantMigrationUtil.makeX509OptionsForTest();
 const donorRst = new ReplSetTest({
     nodes: 2,
     name: "donor",
@@ -173,3 +175,4 @@ recipientSecondaryTestDB.logout();
 tenantMigrationTest.stop();
 donorRst.stopSet();
 recipientRst.stopSet();
+})();

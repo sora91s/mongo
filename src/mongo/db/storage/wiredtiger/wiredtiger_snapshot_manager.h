@@ -67,8 +67,7 @@ public:
     Timestamp beginTransactionOnCommittedSnapshot(
         WT_SESSION* session,
         PrepareConflictBehavior prepareConflictBehavior,
-        RoundUpPreparedTimestamps roundUpPreparedTimestamps,
-        WiredTigerBeginTxnBlock::UntimestampedWriteAssertion untimestampedWriteAssertion) const;
+        RoundUpPreparedTimestamps roundUpPreparedTimestamps) const;
 
     /**
      * Returns lowest SnapshotName that could possibly be used by a future call to

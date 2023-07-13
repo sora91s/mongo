@@ -31,9 +31,10 @@
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/s/balancer/balancer_policy.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/executor/task_executor.h"
+#include "mongo/s/request_types/move_chunk_request.h"
 #include "mongo/s/request_types/move_range_request_gen.h"
+#include "mongo/s/shard_id.h"
 
 namespace mongo {
 
@@ -69,6 +70,27 @@ struct MoveChunkSettings {
     bool waitForDelete;
 };
 
+struct SplitVectorSettings {
+    SplitVectorSettings()
+        : force(false),
+          maxSplitPoints(boost::none),
+          maxChunkObjects(boost::none),
+          maxChunkSizeBytes(boost::none) {}
+    SplitVectorSettings(boost::optional<long long> maxSplitPoints,
+                        boost::optional<long long> maxChunkObjects,
+                        boost::optional<long long> maxChunkSizeBytes,
+                        bool force)
+        : force(force),
+          maxSplitPoints(maxSplitPoints),
+          maxChunkObjects(maxChunkObjects),
+          maxChunkSizeBytes(maxChunkSizeBytes) {}
+
+    bool force;
+    boost::optional<long long> maxSplitPoints;
+    boost::optional<long long> maxChunkObjects;
+    boost::optional<long long> maxChunkSizeBytes;
+};
+
 /**
  * Interface for the asynchronous submission of chunk-related commands.
  * Every method assumes that the ChunkType input parameter is filled up with information about
@@ -102,23 +124,36 @@ public:
                                                 const ChunkRange& chunkRange,
                                                 const ChunkVersion& version) = 0;
 
+    virtual SemiFuture<AutoSplitVectorResponse> requestAutoSplitVector(
+        OperationContext* opCtx,
+        const NamespaceString& nss,
+        const ShardId& shardId,
+        const BSONObj& keyPattern,
+        const BSONObj& minKey,
+        const BSONObj& maxKey,
+        int64_t maxChunkSizeBytes) = 0;
+
+    virtual SemiFuture<void> requestSplitChunk(OperationContext* opCtx,
+                                               const NamespaceString& nss,
+                                               const ShardId& shardId,
+                                               const ChunkVersion& collectionVersion,
+                                               const KeyPattern& keyPattern,
+                                               const BSONObj& minKey,
+                                               const BSONObj& maxKey,
+                                               const SplitPoints& splitPoints) = 0;
+
     virtual SemiFuture<DataSizeResponse> requestDataSize(OperationContext* opCtx,
                                                          const NamespaceString& nss,
                                                          const ShardId& shardId,
                                                          const ChunkRange& chunkRange,
-                                                         const ShardVersion& version,
+                                                         const ChunkVersion& version,
                                                          const KeyPattern& keyPattern,
-                                                         bool estimatedValue,
-                                                         int64_t maxSize) = 0;
+                                                         bool estimatedValue) = 0;
 
     virtual SemiFuture<void> requestMoveRange(OperationContext* opCtx,
                                               const ShardsvrMoveRange& request,
                                               const WriteConcernOptions& secondaryThrottleWC,
                                               bool issuedByRemoteUser) = 0;
-
-    virtual SemiFuture<NumMergedChunks> requestMergeAllChunksOnShard(OperationContext* opCtx,
-                                                                     const NamespaceString& nss,
-                                                                     const ShardId& shardId) = 0;
 };
 
 }  // namespace mongo

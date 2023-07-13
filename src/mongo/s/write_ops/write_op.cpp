@@ -29,7 +29,6 @@
 
 #include "mongo/s/write_ops/write_op.h"
 
-#include "mongo/s/query_analysis_sampler_util.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/util/assert_util.h"
 
@@ -37,7 +36,10 @@ namespace mongo {
 namespace {
 
 bool isRetryErrCode(int errCode) {
-    return errCode == ErrorCodes::StaleConfig || errCode == ErrorCodes::StaleDbVersion ||
+    return
+        // TODO (SERVER-64449): Get rid of this exception
+        errCode == ErrorCodes::OBSOLETE_StaleShardVersion || errCode == ErrorCodes::StaleConfig ||
+        errCode == ErrorCodes::StaleDbVersion ||
         errCode == ErrorCodes::ShardCannotRefreshDueToLocksHeld ||
         errCode == ErrorCodes::TenantMigrationAborted;
 }
@@ -53,56 +55,24 @@ bool errorsAllSame(const std::vector<ChildWriteOp const*>& errOps) {
     return false;
 }
 
-bool hasOnlyOneNonRetryableError(const std::vector<ChildWriteOp const*>& errOps) {
-    return std::count_if(errOps.begin(), errOps.end(), [](ChildWriteOp const* errOp) {
-               return !isRetryErrCode(errOp->error->getStatus().code());
-           }) == 1;
-}
-
-bool hasAnyNonRetryableError(const std::vector<ChildWriteOp const*>& errOps) {
-    return std::count_if(errOps.begin(), errOps.end(), [](ChildWriteOp const* errOp) {
-               return !isRetryErrCode(errOp->error->getStatus().code());
-           }) > 0;
-}
-
-write_ops::WriteError getFirstNonRetryableError(const std::vector<ChildWriteOp const*>& errOps) {
-    auto nonRetryableErr =
-        std::find_if(errOps.begin(), errOps.end(), [](ChildWriteOp const* errOp) {
-            return !isRetryErrCode(errOp->error->getStatus().code());
-        });
-
-    dassert(nonRetryableErr != errOps.end());
-
-    return *(*nonRetryableErr)->error;
-}
-
 // Aggregate a bunch of errors for a single op together
 write_ops::WriteError combineOpErrors(const std::vector<ChildWriteOp const*>& errOps) {
-    // Special case single response, all errors are the same, or a single non-retryable error
+    // Special case single response or all errors are the same
     if (errOps.size() == 1 || errorsAllSame(errOps)) {
         return *errOps.front()->error;
-    } else if (hasOnlyOneNonRetryableError(errOps)) {
-        return getFirstNonRetryableError(errOps);
     }
-
-    bool skipRetryableErrors = hasAnyNonRetryableError(errOps);
 
     // Generate the multi-error message below
     std::stringstream msg("multiple errors for op : ");
 
-    bool firstError = true;
     BSONArrayBuilder errB;
     for (std::vector<ChildWriteOp const*>::const_iterator it = errOps.begin(); it != errOps.end();
          ++it) {
         const ChildWriteOp* errOp = *it;
-        if (!skipRetryableErrors || !isRetryErrCode(errOp->error->getStatus().code())) {
-            if (firstError) {
-                msg << " :: and :: ";
-                firstError = false;
-            }
-            msg << errOp->error->getStatus().reason();
-            errB.append(errOp->error->serialize());
-        }
+        if (it != errOps.begin())
+            msg << " :: and :: ";
+        msg << errOp->error->getStatus().reason();
+        errB.append(errOp->error->serialize());
     }
 
     return write_ops::WriteError(errOps.front()->error->getIndex(),
@@ -148,9 +118,6 @@ void WriteOp::targetWrites(OperationContext* opCtx,
         endpoints = targeter.targetAllShards(opCtx);
     }
 
-    const auto targetedSampleId = analyze_shard_key::tryGenerateTargetedSampleId(
-        opCtx, targeter.getNS(), _itemRef.getOpType(), endpoints);
-
     for (auto&& endpoint : endpoints) {
         // If the operation was already successfull on that shard, do not repeat it
         if (_successfulShardSet.count(endpoint.shardName))
@@ -163,15 +130,10 @@ void WriteOp::targetWrites(OperationContext* opCtx,
         // Outside of a transaction, multiple endpoints currently imply no versioning, since we
         // can't retry half a regular multi-write.
         if (endpoints.size() > 1u && !inTransaction) {
-            endpoint.shardVersion = ShardVersion::IGNORED();
+            endpoint.shardVersion = ChunkVersion::IGNORED();
         }
 
-        const auto sampleId = targetedSampleId && targetedSampleId->isFor(endpoint)
-            ? boost::make_optional(targetedSampleId->getId())
-            : boost::none;
-
-        targetedWrites->push_back(
-            std::make_unique<TargetedWrite>(std::move(endpoint), ref, std::move(sampleId)));
+        targetedWrites->push_back(std::make_unique<TargetedWrite>(std::move(endpoint), ref));
 
         _childOps.back().pendingWrite = targetedWrites->back().get();
         _childOps.back().state = WriteOpState_Pending;
@@ -280,11 +242,6 @@ void WriteOp::setOpError(const write_ops::WriteError& error) {
     _error->setIndex(_itemRef.getItemIndex());
     _state = WriteOpState_Error;
     // No need to updateOpState, set directly
-}
-
-void TargetedWriteBatch::addWrite(std::unique_ptr<TargetedWrite> targetedWrite, int estWriteSize) {
-    _writes.push_back(std::move(targetedWrite));
-    _estimatedSizeBytes += estWriteSize;
 }
 
 }  // namespace mongo

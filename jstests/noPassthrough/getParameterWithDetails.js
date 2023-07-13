@@ -33,7 +33,7 @@
 
             assert.eq(resultsPlain[parameter["name"]], expectedValue, plainErrMsg);
             assert.docEq(
-                expectedDetailedResultObj, resultsWithDetail[parameter["name"]], detailErrMsg);
+                resultsWithDetail[parameter["name"]], expectedDetailedResultObj, detailErrMsg);
         });
     }
 
@@ -97,8 +97,8 @@
     ];
     const specificParametersMongosOnly = [
         {
-            name: "activeFaultDurationSecs",
-            result: {value: 120, settableAtRuntime: true, settableAtStartup: true}
+            name: "taskExecutorPoolSize",
+            result: {value: 1, settableAtRuntime: true, settableAtStartup: true}
         },
         {
             name: "userCacheInvalidationIntervalSecs",

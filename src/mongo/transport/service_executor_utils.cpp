@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/transport/service_executor_utils.h"
 
 #include <fmt/format.h>
@@ -43,21 +47,17 @@
 
 #if !defined(_WIN32)
 #include <sys/resource.h>
-#include <unistd.h>
 #endif
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 #if !defined(__has_feature)
 #define __has_feature(x) 0
 #endif
 
-namespace mongo::transport {
-
-namespace {
 using namespace fmt::literals;
 
+namespace mongo {
+
+namespace {
 void* runFunc(void* ctx) {
     auto taskPtr =
         std::unique_ptr<unique_function<void()>>(static_cast<unique_function<void()>*>(ctx));
@@ -67,7 +67,7 @@ void* runFunc(void* ctx) {
 }
 }  // namespace
 
-Status launchServiceWorkerThread(unique_function<void()> task) {
+Status launchServiceWorkerThread(unique_function<void()> task) noexcept {
 
     try {
 #if defined(_WIN32)
@@ -84,31 +84,15 @@ Status launchServiceWorkerThread(unique_function<void()> task) {
         struct rlimit limits;
         invariant(getrlimit(RLIMIT_STACK, &limits) == 0);
         if (limits.rlim_cur >= kStackSize) {
-
-            size_t stackSizeToSet = kStackSize;
-
-#if !defined(_WIN32) && (__SANITIZE_ADDRESS__ || __has_feature(address_sanitizer))
-            // If we are using address sanitizer, we set the stack at
-            // ~75% (rounded up to a multiple of the page size) of our
-            // usual desired. Since ASAN is known to use stack more
-            // aggressively and should positively detect stack overflow,
-            // this gives us increased confidence during testing that we
-            // aren't flirting with our real 1MB limit for any tested
-            // workloads. Note: This calculation only works on POSIX
-            // platforms. If we ever decide to use the MSVC
-            // implementation of ASAN, we will need to revisit it.
-            long page_size = sysconf(_SC_PAGE_SIZE);
-            stackSizeToSet =
-                ((((stackSizeToSet * 3) >> 2) + page_size - 1) / page_size) * page_size;
-#endif
-            int failed = pthread_attr_setstacksize(&attrs, stackSizeToSet);
+            int failed = pthread_attr_setstacksize(&attrs, kStackSize);
             if (failed) {
+                const auto ewd = errnoWithDescription(failed);
                 LOGV2_WARNING(22949,
                               "pthread_attr_setstacksize failed: {error}",
                               "pthread_attr_setstacksize failed",
-                              "error"_attr = errorMessage(posixError(failed)));
+                              "error"_attr = ewd);
             }
-        } else {
+        } else if (limits.rlim_cur < kStackSize) {
             LOGV2_WARNING(22950,
                           "Stack size set to {stackSizeKiB}KiB. We suggest 1024KiB",
                           "Stack size not set to suggested 1024KiB",
@@ -132,17 +116,17 @@ Status launchServiceWorkerThread(unique_function<void()> task) {
                                 {logv2::UserAssertAfterLog()},
                                 "pthread_create failed: error: {error}",
                                 "pthread_create failed",
-                                "error"_attr = errorMessage(posixError(failed)));
+                                "error"_attr = errnoWithDescription(failed));
         } else if (failed < 0) {
-            auto ec = lastPosixError();
+            auto savedErrno = errno;
             LOGV2_ERROR_OPTIONS(4850901,
                                 {logv2::UserAssertAfterLog()},
                                 "pthread_create failed with a negative return code: {code}, errno: "
                                 "{errno}, error: {error}",
                                 "pthread_create failed with a negative return code",
                                 "code"_attr = failed,
-                                "errno"_attr = ec.value(),
-                                "error"_attr = errorMessage(ec));
+                                "errno"_attr = savedErrno,
+                                "error"_attr = errnoWithDescription(savedErrno));
         }
 
         ctx.release();
@@ -157,4 +141,20 @@ Status launchServiceWorkerThread(unique_function<void()> task) {
     return Status::OK();
 }
 
-}  // namespace mongo::transport
+void scheduleCallbackOnDataAvailable(const transport::SessionHandle& session,
+                                     unique_function<void(Status)> callback,
+                                     transport::ServiceExecutor* executor) noexcept {
+    invariant(session);
+    executor->schedule([session, callback = std::move(callback), executor](Status status) {
+        executor->yieldIfAppropriate();
+
+        if (!status.isOK()) {
+            callback(std::move(status));
+            return;
+        }
+
+        callback(session->waitForData());
+    });
+}
+
+}  // namespace mongo

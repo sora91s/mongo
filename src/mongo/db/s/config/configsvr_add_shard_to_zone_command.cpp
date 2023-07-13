@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/s/request_types/add_shard_to_zone_request_type.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -82,19 +80,18 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::internal)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::internal)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& unusedDbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         uassert(ErrorCodes::IllegalOperation,

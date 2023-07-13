@@ -2,12 +2,17 @@
  * Test to validate the privileges of using $shardedDataDistribution stage.
  *
  * @tags: [
- *   requires_fcv_62,
+ *   requires_fcv_60,
  * ]
  */
 
 (function() {
 'use strict';
+
+if (!TestData.auth) {
+    jsTestLog("Skipping testing authorization since auth is not enabled");
+    return;
+}
 
 // Test privileges
 function testPrivileges() {
@@ -51,7 +56,7 @@ function testPrivileges() {
 }
 
 // Configure initial sharding cluster
-const st = new ShardingTest({shards: 1, keyFile: 'jstests/libs/key1'});
+const st = new ShardingTest({shards: 1});
 const mongos = st.s;
 
 const ns1 = "test.foo";

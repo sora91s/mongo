@@ -34,7 +34,8 @@ function assertFailsInTransaction(pipeline, errorCode) {
     session.endSession();
 }
 
-// $lookup and $graphLookup against a sharded foreign collection in a transaction should fail.
+// $lookup and $graphLookup against a sharded foreign collection in a transaction should fail even
+// when featureFlagShardedLookup is enabled.
 assertFailsInTransaction([{
     $lookup: {
         from: fromColl.getName(),

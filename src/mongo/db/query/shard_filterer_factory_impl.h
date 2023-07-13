@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/query/shard_filterer_factory_interface.h"
 
@@ -44,5 +46,4 @@ public:
 private:
     const CollectionPtr& _collection;
 };
-
 }  // namespace mongo

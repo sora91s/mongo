@@ -32,8 +32,12 @@
 #include "mongo/db/commands/server_status_metric.h"
 
 namespace mongo {
-CounterMetric planCacheTotalSizeEstimateBytes("query.planCacheTotalSizeEstimateBytes");
-CounterMetric planCacheEntries("query.planCacheTotalQueryShapes");
+namespace {
+ServerStatusMetricField<Counter64> totalPlanCacheSizeEstimateBytesMetric(
+    "query.planCacheTotalSizeEstimateBytes", &mongo::planCacheTotalSizeEstimateBytes);
+}  // namespace
+
+Counter64 planCacheTotalSizeEstimateBytes;
 
 std::ostream& operator<<(std::ostream& stream, const PlanCacheKey& key) {
     stream << key.toString();
@@ -122,15 +126,11 @@ std::string SolutionCacheData::toString() const {
 }
 
 bool shouldCacheQuery(const CanonicalQuery& query) {
-    if (internalQueryDisablePlanCache.load()) {
-        return false;
-    }
-
     const FindCommandRequest& findCommand = query.getFindCommandRequest();
     const MatchExpression* expr = query.root();
 
     if (!query.getSortPattern() && expr->matchType() == MatchExpression::AND &&
-        expr->numChildren() == 0 && !query.isSbeCompatible()) {
+        expr->numChildren() == 0) {
         return false;
     }
 
@@ -152,8 +152,8 @@ bool shouldCacheQuery(const CanonicalQuery& query) {
     //
     // There is one exception: $lookup's implementation in the DocumentSource engine relies on
     // caching the plan on the inner side in order to avoid repeating the planning process for every
-    // document on the outer side. To ensure that the 'executionTime' value is accurate for $lookup,
-    // we allow the inner side to use the cache even if the query is an explain.
+    // document on the outer side. To ensure that the 'executionTimeMillis' value is accurate for
+    // $lookup, we allow the inner side to use the cache even if the query is an explain.
     tassert(6497600, "expCtx is null", query.getExpCtxRaw());
     if (query.getExplain() && !query.getExpCtxRaw()->inLookup) {
         return false;

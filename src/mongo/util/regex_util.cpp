@@ -58,7 +58,7 @@ pcrecpp::RE_Options flagsToPcreOptions(StringData optionFlags, StringData opName
                 // must accept this flag without an error as some drivers send it by default.
                 continue;
             default:
-                uasserted(6716200,
+                uasserted(51108,
                           str::stream() << opName << " invalid flag in regex options: " << flag);
         }
     }

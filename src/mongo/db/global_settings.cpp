@@ -61,24 +61,22 @@ void ClusterNetworkRestrictionManager::set(
 }
 
 void AllowListedClusterNetworkSetting::append(OperationContext*,
-                                              BSONObjBuilder* b,
-                                              StringData name,
-                                              const boost::optional<TenantId>&) {
+                                              BSONObjBuilder& b,
+                                              const std::string& name) {
     auto allowlistedClusterNetwork =
         std::atomic_load(&mongodGlobalParams.allowlistedClusterNetwork);  // NOLINT
     if (allowlistedClusterNetwork) {
-        BSONArrayBuilder bb(b->subarrayStart(name));
+        BSONArrayBuilder bb(b.subarrayStart(name));
         for (const auto& acn : *allowlistedClusterNetwork) {
             bb << acn;
         }
         bb.doneFast();
     } else {
-        *b << name << BSONNULL;
+        b << name << BSONNULL;
     }
 }
 
-Status AllowListedClusterNetworkSetting::set(const mongo::BSONElement& e,
-                                             const boost::optional<TenantId>&) {
+Status AllowListedClusterNetworkSetting::set(const mongo::BSONElement& e) {
     std::shared_ptr<std::vector<std::string>> allowlistedClusterNetwork;
     if (e.isNull()) {
         // noop
@@ -105,8 +103,7 @@ Status AllowListedClusterNetworkSetting::set(const mongo::BSONElement& e,
     return Status::OK();
 }
 
-Status AllowListedClusterNetworkSetting::setFromString(StringData s,
-                                                       const boost::optional<TenantId>&) {
+Status AllowListedClusterNetworkSetting::setFromString(const std::string& s) {
     return {ErrorCodes::InternalError, "Cannot invoke this method"};
 }
 

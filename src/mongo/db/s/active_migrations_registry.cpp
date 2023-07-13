@@ -27,18 +27,19 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kShardingMigration
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/s/active_migrations_registry.h"
 
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/s/collection_sharding_runtime.h"
-#include "mongo/db/s/migration_destination_manager.h"
 #include "mongo/db/s/migration_session_id.h"
 #include "mongo/db/s/migration_source_manager.h"
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kShardingMigration
 
 namespace mongo {
 namespace {
@@ -62,8 +63,6 @@ ActiveMigrationsRegistry& ActiveMigrationsRegistry::get(OperationContext* opCtx)
 }
 
 void ActiveMigrationsRegistry::lock(OperationContext* opCtx, StringData reason) {
-    // The method requires the requesting operation to be interruptible
-    invariant(opCtx->shouldAlwaysInterruptAtStepDownOrUp());
     stdx::unique_lock<Latch> lock(_mutex);
 
     // This wait is to hold back additional lock requests while there is already one in progress
@@ -80,17 +79,6 @@ void ActiveMigrationsRegistry::lock(OperationContext* opCtx, StringData reason) 
     opCtx->waitForConditionOrInterrupt(_chunkOperationsStateChangedCV, lock, [this] {
         return !(_activeMoveChunkState || _activeReceiveChunkState);
     });
-
-    // lock() may be called while the node is still completing its draining mode; if so, reject the
-    // request with a retriable error and allow the draining mode to invoke registerReceiveChunk()
-    // as part of its recovery sequence.
-    {
-        AutoGetDb autoDB(opCtx, DatabaseName::kAdmin, MODE_IS);
-        uassert(ErrorCodes::NotWritablePrimary,
-                "Cannot lock the registry while the node is in draining mode",
-                repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesForDatabase(
-                    opCtx, DatabaseName::kAdmin.toString()));
-    }
 
     unblockMigrationsOnError.dismiss();
 }
@@ -109,7 +97,8 @@ StatusWith<ScopedDonateChunk> ActiveMigrationsRegistry::registerDonateChunk(
     stdx::unique_lock<Latch> ul(_mutex);
 
     opCtx->waitForConditionOrInterrupt(_chunkOperationsStateChangedCV, ul, [&] {
-        return !_activeSplitMergeChunkStates.count(args.getCommandParameter());
+        return !_migrationsBlocked &&
+            !_activeSplitMergeChunkStates.count(args.getCommandParameter());
     });
 
     if (_activeReceiveChunkState) {
@@ -138,12 +127,6 @@ StatusWith<ScopedDonateChunk> ActiveMigrationsRegistry::registerDonateChunk(
         return _activeMoveChunkState->constructErrorStatus();
     }
 
-    if (_migrationsBlocked) {
-        return {ErrorCodes::ConflictingOperationInProgress,
-                "Unable to start new balancer operation because the ActiveMigrationsRegistry of "
-                "this shard is temporarily locked"};
-    }
-
     _activeMoveChunkState.emplace(args);
 
     return {ScopedDonateChunk(this, true, _activeMoveChunkState->notification)};
@@ -154,14 +137,17 @@ StatusWith<ScopedReceiveChunk> ActiveMigrationsRegistry::registerReceiveChunk(
     const NamespaceString& nss,
     const ChunkRange& chunkRange,
     const ShardId& fromShardId,
-    bool waitForCompletionOfConflictingOps) {
+    bool waitForOngoingMigrations) {
     stdx::unique_lock<Latch> ul(_mutex);
 
-    if (waitForCompletionOfConflictingOps) {
+    if (waitForOngoingMigrations) {
         opCtx->waitForConditionOrInterrupt(_chunkOperationsStateChangedCV, ul, [this] {
             return !_migrationsBlocked && !_activeMoveChunkState && !_activeReceiveChunkState;
         });
     } else {
+        opCtx->waitForConditionOrInterrupt(
+            _chunkOperationsStateChangedCV, ul, [this] { return !_migrationsBlocked; });
+
         if (_activeReceiveChunkState) {
             return _activeReceiveChunkState->constructErrorStatus();
         }
@@ -173,16 +159,10 @@ StatusWith<ScopedReceiveChunk> ActiveMigrationsRegistry::registerReceiveChunk(
                   "runningMigration"_attr = _activeMoveChunkState->args.toBSON({}));
             return _activeMoveChunkState->constructErrorStatus();
         }
-
-        if (_migrationsBlocked) {
-            return {
-                ErrorCodes::ConflictingOperationInProgress,
-                "Unable to start new balancer operation because the ActiveMigrationsRegistry of "
-                "this shard is temporarily locked"};
-        }
     }
 
     _activeReceiveChunkState.emplace(nss, chunkRange, fromShardId);
+
     return {ScopedReceiveChunk(this)};
 }
 
@@ -219,26 +199,21 @@ BSONObj ActiveMigrationsRegistry::getActiveMigrationStatusReport(OperationContex
 
         if (_activeMoveChunkState) {
             nss = _activeMoveChunkState->args.getCommandParameter();
-        } else if (_activeReceiveChunkState) {
-            nss = _activeReceiveChunkState->nss;
         }
     }
 
-    // The state of the MigrationSourceManager or the MigrationDestinationManager could change
-    // between taking and releasing the mutex above and then taking the collection lock here, but
-    // that's fine because it isn't important to return information on a migration that just ended
-    // or started. This is just best effort and desireable for reporting, and then diagnosing,
-    // migrations that are stuck.
+    // The state of the MigrationSourceManager could change between taking and releasing the mutex
+    // above and then taking the collection lock here, but that's fine because it isn't important to
+    // return information on a migration that just ended or started. This is just best effort and
+    // desireable for reporting, and then diagnosing, migrations that are stuck.
     if (nss) {
         // Lock the collection so nothing changes while we're getting the migration report.
-        AutoGetCollection autoColl(opCtx, nss.value(), MODE_IS);
-        const auto scopedCsr =
-            CollectionShardingRuntime::assertCollectionLockedAndAcquireShared(opCtx, nss.value());
+        AutoGetCollection autoColl(opCtx, nss.get(), MODE_IS);
+        auto csr = CollectionShardingRuntime::get(opCtx, nss.get());
+        auto csrLock = CollectionShardingRuntime::CSRLock::lockShared(opCtx, csr);
 
-        if (auto msm = MigrationSourceManager::get(*scopedCsr)) {
-            return msm->getMigrationStatusReport(scopedCsr);
-        } else if (auto mdm = MigrationDestinationManager::get(opCtx)) {
-            return mdm->getMigrationStatusReport(scopedCsr);
+        if (auto msm = MigrationSourceManager::get(csr, csrLock)) {
+            return msm->getMigrationStatusReport();
         }
     }
 
@@ -262,7 +237,7 @@ void ActiveMigrationsRegistry::_clearReceiveChunk() {
     stdx::lock_guard<Latch> lk(_mutex);
     invariant(_activeReceiveChunkState);
     LOGV2(5004703,
-          "clearReceiveChunk",
+          "clearReceiveChunk ",
           "currentKeys"_attr = ChunkRange(_activeReceiveChunkState->range.getMin(),
                                           _activeReceiveChunkState->range.getMax())
                                    .toString());

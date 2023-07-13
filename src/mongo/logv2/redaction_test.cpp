@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/logv2/redaction.h"
 
@@ -36,9 +37,6 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/logv2/log_util.h"
 #include "mongo/unittest/unittest.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 namespace {
@@ -51,7 +49,7 @@ TEST(RedactStringTest, NoRedact) {
     logv2::setShouldRedactLogs(false);
 
     std::string toRedact[] = {"", "abc", "*&$@!_\\\\\\\"*&$@!_\"*&$@!_\"*&$@!_"};
-    for (const auto& s : toRedact) {
+    for (auto s : toRedact) {
         ASSERT_EQ(redact(s), s);
     }
 }
@@ -60,7 +58,7 @@ TEST(RedactStringTest, BasicStrings) {
     logv2::setShouldRedactLogs(true);
 
     std::string toRedact[] = {"", "abc", "*&$@!_\\\\\\\"*&$@!_\"*&$@!_\"*&$@!_"};
-    for (const auto& s : toRedact) {
+    for (auto s : toRedact) {
         ASSERT_EQ(redact(s), kRedactionDefaultMask);
     }
 }
@@ -84,20 +82,15 @@ TEST(RedactStatusTest, StatusOK) {
 
 TEST(RedactExceptionTest, NoRedact) {
     logv2::setShouldRedactLogs(false);
-    ASSERT_THROWS_WITH_CHECK(
-        [] {
-            uasserted(ErrorCodes::InternalError, kMsg);
-        }(),
-        DBException,
-        [](const DBException& ex) { ASSERT_EQ(redact(ex), ex.toString()); });
+    ASSERT_THROWS_WITH_CHECK([] { uasserted(ErrorCodes::InternalError, kMsg); }(),
+                             DBException,
+                             [](const DBException& ex) { ASSERT_EQ(redact(ex), ex.toString()); });
 }
 
 TEST(RedactExceptionTest, BasicException) {
     logv2::setShouldRedactLogs(true);
     ASSERT_THROWS_WITH_CHECK(
-        [] {
-            uasserted(ErrorCodes::InternalError, kMsg);
-        }(),
+        [] { uasserted(ErrorCodes::InternalError, kMsg); }(),
         DBException,
         [](const DBException& ex) { ASSERT_EQ(redact(ex), "InternalError ###"); });
 }
@@ -109,7 +102,7 @@ TEST(RedactBSONTest, NoRedact) {
 }
 
 void testBSONCases(std::initializer_list<BSONStringPair> testCases) {
-    for (const auto& m : testCases) {
+    for (auto m : testCases) {
         ASSERT_EQ(redact(m.first).toString(), m.second);
     }
 }
@@ -157,7 +150,7 @@ TEST(RedactEncryptedStringTest, BasicStrings) {
 }
 
 void testBSONCases(std::vector<BSONStringPair>& testCases) {
-    for (const auto& m : testCases) {
+    for (auto m : testCases) {
         ASSERT_EQ(redact(m.first).toString(), m.second);
     }
 }

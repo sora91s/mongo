@@ -75,7 +75,7 @@ public:
      * @return the pointer to MockRemoteDBServer for the given hostname if available in
      * the registry. Otherwise, returns nullptr.
      */
-    MockRemoteDBServer* getMockRemoteDBServer(const std::string& hostName) const;
+    MockRemoteDBServer* const getMockRemoteDBServer(const std::string& hostName) const;
 
     /**
      * Clears the registry.

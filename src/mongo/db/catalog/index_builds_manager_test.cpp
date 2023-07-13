@@ -50,7 +50,7 @@ public:
     void createCollection(const NamespaceString& nss);
 
     const UUID _buildUUID = UUID::gen();
-    const NamespaceString _nss = NamespaceString::createNamespaceString_forTest("test.foo");
+    const NamespaceString _nss = NamespaceString("test.foo");
     IndexBuildsManager _indexBuildsManager;
 };
 
@@ -72,7 +72,7 @@ void IndexBuildsManagerTest::createCollection(const NamespaceString& nss) {
 std::vector<BSONObj> makeSpecs(const NamespaceString& nss, std::vector<std::string> keys) {
     ASSERT(keys.size());
     std::vector<BSONObj> indexSpecs;
-    for (const auto& keyName : keys) {
+    for (auto keyName : keys) {
         indexSpecs.push_back(
             BSON("v" << 2 << "key" << BSON(keyName << 1) << "name" << (keyName + "_1")));
     }
@@ -89,7 +89,7 @@ TEST_F(IndexBuildsManagerTest, IndexBuildsManagerSetUpAndTearDown) {
 
     _indexBuildsManager.abortIndexBuild(
         operationContext(), collection, _buildUUID, MultiIndexBlock::kNoopOnCleanUpFn);
-    _indexBuildsManager.tearDownAndUnregisterIndexBuild(_buildUUID);
+    _indexBuildsManager.unregisterIndexBuild(_buildUUID);
 }
 }  // namespace
 

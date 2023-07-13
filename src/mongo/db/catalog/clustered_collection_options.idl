@@ -30,7 +30,7 @@ global:
     cpp_namespace: "mongo"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 server_parameters:
     supportArbitraryClusterKeyIndex:
@@ -52,19 +52,19 @@ structs:
                 description: 'Index spec version'
                 type: safeInt
                 default: 2
-                stability: stable
+                unstable: false
             key:
                 description: 'Key to index on'
                 type: object_owned
-                stability: stable
+                unstable: false
             name:
                 description: 'Descriptive name for the index'
                 type: string
                 optional: true
-                stability: stable
+                unstable: false
             unique:
                 type: safeBool
-                stability: stable
+                unstable: false
 
     ClusteredCollectionInfo:
         description: "Information on how a collection is clustered. For internal use only"

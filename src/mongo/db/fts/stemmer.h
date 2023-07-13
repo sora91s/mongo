@@ -30,14 +30,13 @@
 
 #pragma once
 
-#include <libstemmer.h>
-#include <memory>
-
 #include "mongo/base/string_data.h"
 #include "mongo/db/fts/fts_language.h"
+#include "third_party/libstemmer_c/include/libstemmer.h"
 
+namespace mongo {
 
-namespace mongo::fts {
+namespace fts {
 
 /**
  * maintains case
@@ -45,11 +44,12 @@ namespace mongo::fts {
  * running/Running -> run/Run
  */
 class Stemmer {
+    Stemmer(const Stemmer&) = delete;
+    Stemmer& operator=(const Stemmer&) = delete;
+
 public:
-    explicit Stemmer(const FTSLanguage* language);
+    Stemmer(const FTSLanguage* language);
     ~Stemmer();
-    Stemmer(Stemmer&&) = default;
-    Stemmer& operator=(Stemmer&&) = default;
 
     /**
      * Stems an input word.
@@ -61,8 +61,7 @@ public:
     StringData stem(StringData word) const;
 
 private:
-    class Impl;
-    std::unique_ptr<Impl> _impl;
+    struct sb_stemmer* _stemmer;
 };
-
-}  // namespace mongo::fts
+}  // namespace fts
+}  // namespace mongo

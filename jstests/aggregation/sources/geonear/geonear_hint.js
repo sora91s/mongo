@@ -1,7 +1,4 @@
 // Verify that an aggregate with $geoNear always uses the index hinted to the aggregate command.
-// @tags: [
-//  does_not_support_repeated_reads,
-// ]
 (function() {
 "use strict";
 

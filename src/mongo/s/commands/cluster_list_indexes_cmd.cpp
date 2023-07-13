@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -35,25 +36,22 @@
 #include "mongo/db/list_indexes_gen.h"
 #include "mongo/db/timeseries/timeseries_commands_conversion_helper.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/s/chunk_manager_targeter.h"
 #include "mongo/s/cluster_commands_helpers.h"
-#include "mongo/s/collection_routing_info_targeter.h"
 #include "mongo/s/query/store_possible_cursor.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
 
 ListIndexesReply cursorCommandPassthroughShardWithMinKeyChunk(OperationContext* opCtx,
                                                               const NamespaceString& nss,
-                                                              const CollectionRoutingInfo& cri,
+                                                              const ChunkManager& cm,
                                                               const BSONObj& cmdObj,
                                                               const PrivilegeVector& privileges) {
     auto response = executeCommandAgainstShardWithMinKeyChunk(
         opCtx,
         nss,
-        cri,
+        cm,
         CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
         ReadPreferenceSetting::get(opCtx),
         Shard::RetryPolicy::kIdempotent);
@@ -74,7 +72,7 @@ ListIndexesReply cursorCommandPassthroughShardWithMinKeyChunk(OperationContext* 
     const auto& resultObj = out.obj();
     uassertStatusOK(getStatusFromCommandResult(resultObj));
     // The reply syntax must conform to its IDL definition.
-    return ListIndexesReply::parse(IDLParserContext{"listIndexes"}, resultObj);
+    return ListIndexesReply::parse({"listIndexes"}, resultObj);
 }
 
 class CmdListIndexes final : public ListIndexesCmdVersion1Gen<CmdListIndexes> {
@@ -101,7 +99,7 @@ public:
             const auto& nss = request().getNamespaceOrUUID().nss();
             uassert(
                 ErrorCodes::BadValue, "Mongos requires a namespace for listIndexes command", nss);
-            return nss.value();
+            return nss.get();
         }
 
         void doCheckAuthorization(OperationContext* opCtx) const final {
@@ -118,8 +116,8 @@ public:
 
             // The command's IDL definition permits namespace or UUID, but mongos requires a
             // namespace.
-            auto targeter = CollectionRoutingInfoTargeter(opCtx, ns());
-            auto cri = targeter.getRoutingInfo();
+            auto targeter = ChunkManagerTargeter(opCtx, ns());
+            auto cm = targeter.getRoutingInfo();
             auto cmdToBeSent = request().toBSON({});
             if (targeter.timeseriesNamespaceNeedsRewrite(ns())) {
                 cmdToBeSent =
@@ -132,7 +130,7 @@ public:
             return cursorCommandPassthroughShardWithMinKeyChunk(
                 opCtx,
                 targeter.getNS(),
-                cri,
+                cm,
                 applyReadWriteConcern(opCtx, this, cmdToBeSent),
                 {Privilege(ResourcePattern::forExactNamespace(ns()), ActionType::listIndexes)});
         }

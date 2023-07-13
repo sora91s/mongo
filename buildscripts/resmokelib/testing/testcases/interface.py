@@ -21,7 +21,7 @@ def make_test_case(test_kind, *args, **kwargs):
     return _TEST_CASES[test_kind](*args, **kwargs)
 
 
-class TestCase(unittest.TestCase, metaclass=registry.make_registry_metaclass(_TEST_CASES)):  # pylint: disable=invalid-metaclass
+class TestCase(unittest.TestCase, metaclass=registry.make_registry_metaclass(_TEST_CASES)):  # pylint: disable=too-many-instance-attributes, invalid-metaclass
     """A test case to execute."""
 
     REGISTERED_NAME = registry.LEAVE_UNREGISTERED
@@ -105,12 +105,12 @@ class TestCase(unittest.TestCase, metaclass=registry.make_registry_metaclass(_TE
         """Run the specified test."""
         raise NotImplementedError("run_test must be implemented by TestCase subclasses")
 
-    def as_command(self):
+    def as_command(self):  # pylint: disable=no-self-use
         """Return the command invocation used to run the test or None."""
         return None
 
 
-class UndoDBUtilsMixin:
+class UndoDBUtilsMixin:  # pylint: disable=abstract-method
     """Utility functions for interacting with UndoDB."""
 
     def __init__(self, logger, *args, **kwargs):  # pylint: disable=unused-argument
@@ -127,7 +127,7 @@ class UndoDBUtilsMixin:
             os.rename(recording, recording + '.tokeep')
 
 
-class ProcessTestCase(TestCase, UndoDBUtilsMixin):
+class ProcessTestCase(TestCase, UndoDBUtilsMixin):  # pylint: disable=abstract-method
     """Base class for TestCases that executes an external process."""
 
     def run_test(self):

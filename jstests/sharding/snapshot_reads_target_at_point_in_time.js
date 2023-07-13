@@ -28,6 +28,7 @@ const ns = dbName + '.' + collName;
 const st = new ShardingTest({
     shards: 3,
     mongos: 1,
+    config: 1,
     other: {
         rs0: {nodes: 2},
         rs1: {nodes: 2},

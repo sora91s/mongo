@@ -107,7 +107,7 @@ SaslConversation::SaslConversation(std::string mech)
 
     ASSERT_OK(authManagerExternalState->updateOne(
         opCtx.get(),
-        NamespaceString::kServerConfigurationNamespace,
+        AuthorizationManager::versionCollectionNamespace,
         AuthorizationManager::versionDocumentQuery,
         BSON("$set" << BSON(AuthorizationManager::schemaVersionFieldName
                             << AuthorizationManager::schemaVersion26Final)),
@@ -128,8 +128,7 @@ SaslConversation::SaslConversation(std::string mech)
 
     ASSERT_OK(
         authManagerExternalState->insert(opCtx.get(),
-                                         NamespaceString::createNamespaceString_forTest(
-                                             "admin.system.users"),
+                                         NamespaceString("admin.system.users"),
                                          BSON("_id"
                                               << "test.andy"
                                               << "user"

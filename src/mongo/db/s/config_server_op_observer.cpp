@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/cluster_identity_loader.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 
 ConfigServerOpObserver::ConfigServerOpObserver() = default;
@@ -51,10 +49,11 @@ ConfigServerOpObserver::ConfigServerOpObserver() = default;
 ConfigServerOpObserver::~ConfigServerOpObserver() = default;
 
 void ConfigServerOpObserver::onDelete(OperationContext* opCtx,
-                                      const CollectionPtr& coll,
+                                      const NamespaceString& nss,
+                                      const UUID& uuid,
                                       StmtId stmtId,
                                       const OplogDeleteEntryArgs& args) {
-    if (coll->ns() == VersionType::ConfigNS) {
+    if (nss == VersionType::ConfigNS) {
         if (!repl::ReplicationCoordinator::get(opCtx)->getMemberState().rollback()) {
             uasserted(40302, "cannot delete config.version document while in --configsvr mode");
         } else {
@@ -95,8 +94,7 @@ void ConfigServerOpObserver::_onReplicationRollback(OperationContext* opCtx,
         ClusterIdentityLoader::get(opCtx)->discardCachedClusterId();
     }
 
-    if (rbInfo.rollbackNamespaces.find(NamespaceString::kConfigsvrShardsNamespace) !=
-        rbInfo.rollbackNamespaces.end()) {
+    if (rbInfo.rollbackNamespaces.find(ShardType::ConfigNS) != rbInfo.rollbackNamespaces.end()) {
         // If some entries were rollbacked from config.shards we might need to discard some tick
         // points from the TopologyTimeTicker
         const auto lastApplied = repl::ReplicationCoordinator::get(opCtx)->getMyLastAppliedOpTime();
@@ -105,11 +103,12 @@ void ConfigServerOpObserver::_onReplicationRollback(OperationContext* opCtx,
 }
 
 void ConfigServerOpObserver::onInserts(OperationContext* opCtx,
-                                       const CollectionPtr& coll,
+                                       const NamespaceString& nss,
+                                       const UUID& uuid,
                                        std::vector<InsertStatement>::const_iterator begin,
                                        std::vector<InsertStatement>::const_iterator end,
                                        bool fromMigrate) {
-    if (coll->ns() != NamespaceString::kConfigsvrShardsNamespace) {
+    if (nss != ShardType::ConfigNS) {
         return;
     }
 
@@ -126,8 +125,7 @@ void ConfigServerOpObserver::onInserts(OperationContext* opCtx,
 
         if (maxTopologyTime) {
             opCtx->recoveryUnit()->onCommit(
-                [maxTopologyTime](OperationContext* opCtx,
-                                  boost::optional<Timestamp> commitTime) mutable {
+                [opCtx, maxTopologyTime](boost::optional<Timestamp> commitTime) mutable {
                     invariant(commitTime);
                     TopologyTimeTicker::get(opCtx).onNewLocallyCommittedTopologyTimeAvailable(
                         *commitTime, *maxTopologyTime);
@@ -136,39 +134,73 @@ void ConfigServerOpObserver::onInserts(OperationContext* opCtx,
     }
 }
 
-void ConfigServerOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArgs& args) {
-    if (args.coll->ns() != NamespaceString::kConfigsvrShardsNamespace) {
+void ConfigServerOpObserver::onApplyOps(OperationContext* opCtx,
+                                        const std::string& dbName,
+                                        const BSONObj& applyOpCmd) {
+    if (dbName != ShardType::ConfigNS.db()) {
         return;
     }
 
-    const auto& updateDoc = args.updateArgs->update;
+    if (topology_time_ticker_utils::inRecoveryMode(opCtx)) {
+        return;
+    }
 
-    if (update_oplog_entry::extractUpdateType(updateDoc) ==
+    if (applyOpCmd.firstElementFieldNameStringData() != "applyOps") {
+        return;
+    }
+
+    const auto& updatesElem = applyOpCmd["applyOps"];
+    if (updatesElem.type() != Array) {
+        return;
+    }
+
+    auto updates = updatesElem.Array();
+    if (updates.size() != 2) {
+        return;
+    }
+
+    if (updates[0].type() != Object) {
+        return;
+    }
+    auto removeShard = updates[0].Obj();
+    if (removeShard["op"].str() != "d") {
+        return;
+    }
+    if (removeShard["ns"].str() != ShardType::ConfigNS.ns()) {
+        return;
+    }
+
+    if (updates[1].type() != Object) {
+        return;
+    }
+    auto updateShard = updates[1].Obj();
+    if (updateShard["op"].str() != "u") {
+        return;
+    }
+    if (updateShard["ns"].str() != ShardType::ConfigNS.ns()) {
+        return;
+    }
+
+    auto updateElem = updateShard["o"];
+    if (updateElem.type() != BSONType::Object) {
+        return;
+    }
+
+    auto updateObj = updateElem.embeddedObject();
+    if (update_oplog_entry::extractUpdateType(updateObj) ==
         update_oplog_entry::UpdateType::kReplacement) {
         return;
     }
 
-    auto topologyTimeValue =
-        update_oplog_entry::extractNewValueForField(updateDoc, ShardType::topologyTime());
-    if (!topologyTimeValue.ok()) {
-        return;
-    }
+    auto newTopologyTime =
+        update_oplog_entry::extractNewValueForField(updateObj, ShardType::topologyTime())
+            .timestamp();
 
-    auto topologyTime = topologyTimeValue.timestamp();
-    if (topologyTime == Timestamp()) {
-        return;
-    }
-
-    // Updates to config.shards are always done inside a transaction. This implies that the callback
-    // from onCommit can be called in a different thread. Since the TopologyTimeTicker is associated
-    // to the mongod instance and not to the OperationContext, we can safely obtain a reference at
-    // this point and passed it to the onCommit callback.
-    auto& topologyTicker = TopologyTimeTicker::get(opCtx);
     opCtx->recoveryUnit()->onCommit(
-        [&topologyTicker, topologyTime](OperationContext*,
-                                        boost::optional<Timestamp> commitTime) mutable {
+        [opCtx, newTopologyTime](boost::optional<Timestamp> commitTime) mutable {
             invariant(commitTime);
-            topologyTicker.onNewLocallyCommittedTopologyTimeAvailable(*commitTime, topologyTime);
+            TopologyTimeTicker::get(opCtx).onNewLocallyCommittedTopologyTimeAvailable(
+                *commitTime, newTopologyTime);
         });
 }
 

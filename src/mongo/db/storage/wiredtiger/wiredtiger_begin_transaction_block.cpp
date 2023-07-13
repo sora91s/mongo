@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -38,9 +39,6 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
 #include "mongo/util/errno_util.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 using namespace fmt::literals;
 
@@ -48,8 +46,7 @@ WiredTigerBeginTxnBlock::WiredTigerBeginTxnBlock(
     WT_SESSION* session,
     PrepareConflictBehavior prepareConflictBehavior,
     RoundUpPreparedTimestamps roundUpPreparedTimestamps,
-    RoundUpReadTimestamp roundUpReadTimestamp,
-    UntimestampedWriteAssertion allowUntimestampedWrite)
+    RoundUpReadTimestamp roundUpReadTimestamp)
     : _session(session) {
     invariant(!_rollback);
 
@@ -69,9 +66,6 @@ WiredTigerBeginTxnBlock::WiredTigerBeginTxnBlock(
             builder << "read=true";
         }
         builder << "),";
-    }
-    if (allowUntimestampedWrite == UntimestampedWriteAssertion::kSuppress) {
-        builder << "no_timestamp=true,";
     }
 
     const std::string beginTxnConfigString = builder;

@@ -170,7 +170,7 @@ Array.shuffle = function(arr) {
     return arr;
 };
 
-Array.tojson = function(a, indent, nolint, depth, sortKeys) {
+Array.tojson = function(a, indent, nolint, depth) {
     if (!Array.isArray(a)) {
         throw new Error("The first argument to Array.tojson must be an array");
     }
@@ -200,7 +200,7 @@ Array.tojson = function(a, indent, nolint, depth, sortKeys) {
         indent += "\t";
 
     for (var i = 0; i < a.length; i++) {
-        s += indent + tojson(a[i], indent, nolint, depth + 1, sortKeys);
+        s += indent + tojson(a[i], indent, nolint, depth + 1);
         if (i < a.length - 1) {
             s += "," + elementSeparator;
         }
@@ -212,10 +212,6 @@ Array.tojson = function(a, indent, nolint, depth, sortKeys) {
 
     s += elementSeparator + indent + "]";
     return s;
-};
-
-Set.tojson = function(s, indent, nolint, depth) {
-    return Array.tojson(Array.from(s), indent, nolint, depth);
 };
 
 Array.fetchRefs = function(arr, coll) {
@@ -403,7 +399,7 @@ if (typeof NumberDecimal !== 'undefined') {
     };
 
     NumberDecimal.prototype.equals = function(other) {
-        return numberDecimalsEqual(this, other);
+        return compareNumberDecimals(this, other);
     };
 }
 
@@ -412,7 +408,8 @@ if (!ObjectId.prototype)
     ObjectId.prototype = {};
 
 ObjectId.prototype.toString = function() {
-    return "ObjectId(" + tojson(this.str) + ")";
+    // return "ObjectId(" + tojson(this.str) + ")";
+    return "\"ObjectId(" + tojson(this.str) + ")\"";
 };
 
 ObjectId.prototype.tojson = function() {
@@ -469,7 +466,7 @@ if (typeof (DBPointer) != "undefined") {
     DBPointer.prototype.fetch = function() {
         assert(this.ns, "need a ns");
         assert(this.id, "need an id");
-        return globalThis.db[this.ns].findOne({_id: this.id});
+        return db[this.ns].findOne({_id: this.id});
     };
 
     DBPointer.prototype.tojson = function(indent) {
@@ -485,7 +482,7 @@ if (typeof (DBPointer) != "undefined") {
     };
 
     DBPointer.prototype.toString = function() {
-        return "DBPointer(" + tojson(this.ns) + ", " + tojson(this.id) + ")";
+        return tojson(this.ns) + ", " + tojson(this.id);
     };
 } else {
     print("warning: no DBPointer");
@@ -496,8 +493,7 @@ if (typeof (DBRef) != "undefined") {
     DBRef.prototype.fetch = function() {
         assert(this.$ref, "need a ns");
         assert(this.$id, "need an id");
-        var coll = this.$db ? globalThis.db.getSiblingDB(this.$db).getCollection(this.$ref)
-                            : globalThis.db[this.$ref];
+        var coll = this.$db ? db.getSiblingDB(this.$db).getCollection(this.$ref) : db[this.$ref];
         return coll.findOne({_id: this.$id});
     };
 
@@ -522,8 +518,8 @@ if (typeof (DBRef) != "undefined") {
     };
 
     DBRef.prototype.toString = function() {
-        return "DBRef(" + tojson(this.$ref) + ", " + tojson(this.$id) +
-            (this.$db ? ", " + tojson(this.$db) : "") + ")";
+        return tojson(this.$ref) + ", " + tojson(this.$id) +
+            (this.$db ? ", " + tojson(this.$db) : "");
     };
 } else {
     print("warning: no DBRef");
@@ -622,7 +618,7 @@ tojsononeline = function(x) {
     return tojson(x, " ", true);
 };
 
-tojson = function(x, indent, nolint, depth, sortKeys) {
+tojson = function(x, indent, nolint, depth) {
     if (x === null)
         return "null";
 
@@ -643,7 +639,7 @@ tojson = function(x, indent, nolint, depth, sortKeys) {
         case "boolean":
             return "" + x;
         case "object": {
-            var s = tojsonObject(x, indent, nolint, depth, sortKeys);
+            var s = tojsonObject(x, indent, nolint, depth);
             if ((nolint == null || nolint == true) && s.length < 80 &&
                 (indent == null || indent.length == 0)) {
                 s = s.replace(/[\t\r\n]+/gm, " ");
@@ -660,7 +656,7 @@ tojson = function(x, indent, nolint, depth, sortKeys) {
 };
 tojson.MAX_DEPTH = 100;
 
-tojsonObject = function(x, indent, nolint, depth, sortKeys) {
+tojsonObject = function(x, indent, nolint, depth) {
     if (typeof depth !== 'number') {
         depth = 0;
     }
@@ -672,12 +668,12 @@ tojsonObject = function(x, indent, nolint, depth, sortKeys) {
         indent = "";
 
     if (typeof (x.tojson) == "function" && x.tojson != tojson) {
-        return x.tojson(indent, nolint, depth, sortKeys);
+        return x.tojson(indent, nolint, depth);
     }
 
     if (x.constructor && typeof (x.constructor.tojson) == "function" &&
         x.constructor.tojson != tojson) {
-        return x.constructor.tojson(x, indent, nolint, depth, sortKeys);
+        return x.constructor.tojson(x, indent, nolint, depth);
     }
 
     if (x instanceof Error) {
@@ -703,15 +699,8 @@ tojsonObject = function(x, indent, nolint, depth, sortKeys) {
     var keys = x;
     if (typeof (x._simpleKeys) == "function")
         keys = x._simpleKeys();
-    let keyNames = [];
-    for (var k in keys) {
-        keyNames.push(k);
-    }
-    if (sortKeys)
-        keyNames.sort();
-
     var fieldStrings = [];
-    for (const k of keyNames) {
+    for (var k in keys) {
         var val = x[k];
 
         // skip internal DB types to avoid issues with interceptors
@@ -720,8 +709,7 @@ tojsonObject = function(x, indent, nolint, depth, sortKeys) {
         if (typeof DBCollection != 'undefined' && val == DBCollection.prototype)
             continue;
 
-        fieldStrings.push(indent + "\"" + k +
-                          "\" : " + tojson(val, indent, nolint, depth + 1, sortKeys));
+        fieldStrings.push(indent + "\"" + k + "\" : " + tojson(val, indent, nolint, depth + 1));
     }
 
     if (fieldStrings.length > 0) {

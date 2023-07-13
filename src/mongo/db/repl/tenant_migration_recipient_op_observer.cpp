@@ -27,29 +27,58 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/db/repl/tenant_migration_recipient_op_observer.h"
 
 #include <fmt/format.h>
 
-#include "mongo/db/multitenancy_gen.h"
 #include "mongo/db/repl/tenant_file_importer_service.h"
 #include "mongo/db/repl/tenant_migration_access_blocker_util.h"
-#include "mongo/db/repl/tenant_migration_decoration.h"
 #include "mongo/db/repl/tenant_migration_recipient_access_blocker.h"
 #include "mongo/db/repl/tenant_migration_recipient_service.h"
 #include "mongo/db/repl/tenant_migration_shard_merge_util.h"
 #include "mongo/db/repl/tenant_migration_state_machine_gen.h"
 #include "mongo/db/repl/tenant_migration_util.h"
-#include "mongo/db/serverless/serverless_operation_lock_registry.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 namespace mongo {
 namespace repl {
 using namespace fmt;
 namespace {
+
+// For "multitenant migration" migrations.
+const auto tenantIdToDeleteDecoration =
+    OperationContext::declareDecoration<boost::optional<std::string>>();
+// For "shard merge" migrations.
+const auto migrationIdToDeleteDecoration =
+    OperationContext::declareDecoration<boost::optional<UUID>>();
+
+/**
+ * Initializes the TenantMigrationRecipientAccessBlocker for the tenant migration denoted by the
+ * given state doc.
+ *
+ * TODO (SERVER-64616): Skip for protocol kShardMerge.
+ */
+void createAccessBlockerIfNeeded(OperationContext* opCtx,
+                                 const TenantMigrationRecipientDocument& recipientStateDoc) {
+    if (tenant_migration_access_blocker::getTenantMigrationRecipientAccessBlocker(
+            opCtx->getServiceContext(), recipientStateDoc.getTenantId())) {
+        // The migration failed part-way on the recipient with a retryable error, and got retried
+        // internally.
+        return;
+    }
+
+    auto mtab = std::make_shared<TenantMigrationRecipientAccessBlocker>(
+        opCtx->getServiceContext(),
+        recipientStateDoc.getId(),
+        recipientStateDoc.getTenantId().toString(),
+        recipientStateDoc.getProtocol().value_or(MigrationProtocolEnum::kMultitenantMigrations),
+        recipientStateDoc.getDonorConnectionString().toString());
+
+    TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
+        .add(recipientStateDoc.getTenantId(), mtab);
+}
 
 /**
  * Transitions the TenantMigrationRecipientAccessBlocker to the rejectBefore state.
@@ -63,99 +92,12 @@ void onSetRejectReadsBeforeTimestamp(OperationContext* opCtx,
         auto mtab = tenant_migration_access_blocker::getTenantMigrationRecipientAccessBlocker(
             opCtx->getServiceContext(), recipientStateDoc.getTenantId());
         invariant(mtab);
-        mtab->startRejectingReadsBefore(recipientStateDoc.getRejectReadsBeforeTimestamp().value());
-    } else {
-        auto mtab = tenant_migration_access_blocker::getRecipientAccessBlockerForMigration(
-            opCtx->getServiceContext(), recipientStateDoc.getId());
-        invariant(mtab);
         mtab->startRejectingReadsBefore(recipientStateDoc.getRejectReadsBeforeTimestamp().get());
-    }
-}
-
-void handleMTMStateChange(OperationContext* opCtx,
-                          const TenantMigrationRecipientDocument& recipientStateDoc) {
-    auto state = recipientStateDoc.getState();
-
-    switch (state) {
-        case TenantMigrationRecipientStateEnum::kUninitialized:
-            break;
-        case TenantMigrationRecipientStateEnum::kStarted:
-            tenant_migration_access_blocker::addTenantMigrationRecipientAccessBlocker(
-                opCtx->getServiceContext(),
-                recipientStateDoc.getTenantId(),
-                recipientStateDoc.getId());
-            break;
-        case TenantMigrationRecipientStateEnum::kConsistent:
-            if (recipientStateDoc.getRejectReadsBeforeTimestamp()) {
-                onSetRejectReadsBeforeTimestamp(opCtx, recipientStateDoc);
-            }
-            break;
-        case TenantMigrationRecipientStateEnum::kDone:
-        case TenantMigrationRecipientStateEnum::kCommitted:
-        case TenantMigrationRecipientStateEnum::kAborted:
-            break;
-        default:
-            MONGO_UNREACHABLE_TASSERT(6112900);
-    }
-}
-
-void handleShardMergeStateChange(OperationContext* opCtx,
-                                 const TenantMigrationRecipientDocument& recipientStateDoc) {
-    auto state = recipientStateDoc.getState();
-
-    auto fileImporter = repl::TenantFileImporterService::get(opCtx->getServiceContext());
-
-    switch (state) {
-        case TenantMigrationRecipientStateEnum::kUninitialized:
-            break;
-        case TenantMigrationRecipientStateEnum::kStarted:
-            fileImporter->startMigration(recipientStateDoc.getId());
-            break;
-        case TenantMigrationRecipientStateEnum::kLearnedFilenames:
-            fileImporter->learnedAllFilenames(recipientStateDoc.getId());
-            break;
-        case TenantMigrationRecipientStateEnum::kConsistent:
-            if (recipientStateDoc.getRejectReadsBeforeTimestamp()) {
-                onSetRejectReadsBeforeTimestamp(opCtx, recipientStateDoc);
-            }
-            break;
-        case TenantMigrationRecipientStateEnum::kDone:
-        case TenantMigrationRecipientStateEnum::kCommitted:
-        case TenantMigrationRecipientStateEnum::kAborted:
-            break;
-    }
-}
-
-void handleShardMergeDocInsertion(const TenantMigrationRecipientDocument& doc,
-                                  OperationContext* opCtx) {
-    switch (doc.getState()) {
-        case TenantMigrationRecipientStateEnum::kUninitialized:
-        case TenantMigrationRecipientStateEnum::kLearnedFilenames:
-        case TenantMigrationRecipientStateEnum::kConsistent:
-            uasserted(ErrorCodes::IllegalOperation,
-                      str::stream() << "Inserting the TenantMigrationRecipient document in state "
-                                    << TenantMigrationRecipientState_serializer(doc.getState())
-                                    << " is illegal");
-            break;
-        case TenantMigrationRecipientStateEnum::kStarted: {
-            invariant(doc.getTenantIds());
-            auto mtab = std::make_shared<TenantMigrationRecipientAccessBlocker>(
-                opCtx->getServiceContext(), doc.getId());
-            TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
-                .add(*doc.getTenantIds(), mtab);
-
-            opCtx->recoveryUnit()->onRollback([migrationId = doc.getId()](OperationContext* opCtx) {
-                TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
-                    .removeAccessBlockersForMigration(
-                        migrationId, TenantMigrationAccessBlocker::BlockerType::kRecipient);
-            });
-        } break;
-        case TenantMigrationRecipientStateEnum::kDone:
-        case TenantMigrationRecipientStateEnum::kAborted:
-        case TenantMigrationRecipientStateEnum::kCommitted:
-            break;
-        default:
-            MONGO_UNREACHABLE;
+    } else {
+        tenant_migration_access_blocker::startRejectingReadsBefore(
+            opCtx,
+            recipientStateDoc.getId(),
+            recipientStateDoc.getRejectReadsBeforeTimestamp().get());
     }
 }
 }  // namespace
@@ -167,9 +109,8 @@ void TenantMigrationRecipientOpObserver::onCreateCollection(OperationContext* op
                                                             const BSONObj& idIndex,
                                                             const OplogSlot& createOpTime,
                                                             bool fromMigrate) {
-    if (!shard_merge_utils::isDonatedFilesCollection(collectionName)) {
+    if (!shard_merge_utils::isDonatedFilesCollection(collectionName))
         return;
-    }
 
     auto collString = collectionName.coll().toString();
     auto migrationUUID = uassertStatusOK(UUID::parse(collString.substr(collString.find('.') + 1)));
@@ -202,152 +143,167 @@ void TenantMigrationRecipientOpObserver::onCreateCollection(OperationContext* op
 
 void TenantMigrationRecipientOpObserver::onInserts(
     OperationContext* opCtx,
-    const CollectionPtr& coll,
+    const NamespaceString& nss,
+    const UUID& uuid,
     std::vector<InsertStatement>::const_iterator first,
     std::vector<InsertStatement>::const_iterator last,
     bool fromMigrate) {
-    if (coll->ns() == NamespaceString::kTenantMigrationRecipientsNamespace &&
-        !tenant_migration_access_blocker::inRecoveryMode(opCtx)) {
-        for (auto it = first; it != last; it++) {
-            auto recipientStateDoc = TenantMigrationRecipientDocument::parse(
-                IDLParserContext("recipientStateDoc"), it->doc);
-            if (!recipientStateDoc.getExpireAt()) {
-                ServerlessOperationLockRegistry::get(opCtx->getServiceContext())
-                    .acquireLock(ServerlessOperationLockRegistry::LockType::kTenantRecipient,
-                                 recipientStateDoc.getId());
-            }
 
-            if (auto protocol = recipientStateDoc.getProtocol().value_or(kDefaultMigrationProtocol);
-                protocol == MigrationProtocolEnum::kShardMerge) {
-                handleShardMergeDocInsertion(recipientStateDoc, opCtx);
-            }
-        }
-    }
-
-    if (!shard_merge_utils::isDonatedFilesCollection(coll->ns())) {
+    if (!shard_merge_utils::isDonatedFilesCollection(nss)) {
         return;
     }
 
-    auto fileImporter = repl::TenantFileImporterService::get(opCtx->getServiceContext());
-    for (auto it = first; it != last; it++) {
-        const auto& metadataDoc = it->doc;
-        auto migrationId =
-            uassertStatusOK(UUID::parse(metadataDoc[shard_merge_utils::kMigrationIdFieldName]));
-        fileImporter->learnedFilename(migrationId, metadataDoc);
+    try {
+        auto fileImporter = repl::TenantFileImporterService::get(opCtx->getServiceContext());
+        for (auto it = first; it != last; it++) {
+            const auto& metadataDoc = it->doc;
+            auto migrationId =
+                uassertStatusOK(UUID::parse(metadataDoc[shard_merge_utils::kMigrationIdFieldName]));
+            fileImporter->learnedFilename(migrationId, metadataDoc);
+        }
+    } catch (const DBException& exc) {
+        LOGV2_ERROR(
+            8423349, "TenantMigrationRecipientOpObserver::onInserts", "exception"_attr = exc);
     }
 }
 
 void TenantMigrationRecipientOpObserver::onUpdate(OperationContext* opCtx,
                                                   const OplogUpdateEntryArgs& args) {
-    if (args.coll->ns() == NamespaceString::kTenantMigrationRecipientsNamespace &&
+    if (args.nss == NamespaceString::kTenantMigrationRecipientsNamespace &&
         !tenant_migration_access_blocker::inRecoveryMode(opCtx)) {
         auto recipientStateDoc = TenantMigrationRecipientDocument::parse(
-            IDLParserContext("recipientStateDoc"), args.updateArgs->updatedDoc);
-        opCtx->recoveryUnit()->onCommit([recipientStateDoc](OperationContext* opCtx,
-                                                            boost::optional<Timestamp>) {
-            if (recipientStateDoc.getExpireAt()) {
-                repl::TenantFileImporterService::get(opCtx->getServiceContext())
-                    ->interrupt(recipientStateDoc.getId());
+            IDLParserErrorContext("recipientStateDoc"), args.updateArgs->updatedDoc);
+        opCtx->recoveryUnit()->onCommit([opCtx, recipientStateDoc](boost::optional<Timestamp>) {
+            auto mtab = tenant_migration_access_blocker::getTenantMigrationRecipientAccessBlocker(
+                opCtx->getServiceContext(), recipientStateDoc.getTenantId());
 
-                ServerlessOperationLockRegistry::get(opCtx->getServiceContext())
-                    .releaseLock(ServerlessOperationLockRegistry::LockType::kTenantRecipient,
-                                 recipientStateDoc.getId());
-
-                std::vector<std::string> tenantIdsToRemove;
-                auto cleanUpBlockerIfGarbage =
-                    [&](std::string tenantId, std::shared_ptr<TenantMigrationAccessBlocker>& mtab) {
-                        if (recipientStateDoc.getId() != mtab->getMigrationId()) {
-                            return;
-                        }
-
-                        auto recipientMtab =
-                            checked_pointer_cast<TenantMigrationRecipientAccessBlocker>(mtab);
-                        if (recipientMtab->inStateReject()) {
-                            // The TenantMigrationRecipientAccessBlocker entry needs to be removed
-                            // to re-allow reads and future migrations with the same tenantId as
-                            // this migration has already been aborted and forgotten.
-                            tenantIdsToRemove.push_back(tenantId);
-                            return;
-                        }
-                        // Once the state doc is marked garbage collectable the TTL deletions should
-                        // be unblocked.
-                        recipientMtab->stopBlockingTTL();
-                    };
-
-                // TODO SERVER-68799 Simplify cleanup logic for shard merge as the tenants share a
-                // single RTAB
-                TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
-                    .applyAll(TenantMigrationAccessBlocker::BlockerType::kRecipient,
-                              cleanUpBlockerIfGarbage);
-
-                for (const auto& tenantId : tenantIdsToRemove) {
-                    // TODO SERVER-68799: Remove TenantMigrationAccessBlocker removal logic.
+            if (recipientStateDoc.getExpireAt() && mtab) {
+                if (mtab->inStateReject()) {
+                    // The TenantMigrationRecipientAccessBlocker entry needs to be removed to
+                    // re-allow reads and future migrations with the same tenantId as this migration
+                    // has already been aborted and forgotten.
                     TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
-                        .remove(tenantId, TenantMigrationAccessBlocker::BlockerType::kRecipient);
+                        .remove(recipientStateDoc.getTenantId(),
+                                TenantMigrationAccessBlocker::BlockerType::kRecipient);
+                    return;
                 }
+                // Once the state doc is marked garbage collectable the TTL deletions should be
+                // unblocked.
+                mtab->stopBlockingTTL();
             }
 
+            auto state = recipientStateDoc.getState();
             auto protocol = recipientStateDoc.getProtocol().value_or(kDefaultMigrationProtocol);
-            switch (protocol) {
-                case MigrationProtocolEnum::kMultitenantMigrations:
-                    handleMTMStateChange(opCtx, recipientStateDoc);
+            if (state == TenantMigrationRecipientStateEnum::kLearnedFilenames) {
+                tassert(6112900,
+                        "Bad state '{}' for protocol '{}'"_format(
+                            TenantMigrationRecipientState_serializer(state),
+                            MigrationProtocol_serializer(protocol)),
+                        protocol == MigrationProtocolEnum::kShardMerge);
+            }
+
+            switch (state) {
+                case TenantMigrationRecipientStateEnum::kUninitialized:
                     break;
-                case MigrationProtocolEnum::kShardMerge:
-                    handleShardMergeStateChange(opCtx, recipientStateDoc);
+                case TenantMigrationRecipientStateEnum::kStarted:
+                    createAccessBlockerIfNeeded(opCtx, recipientStateDoc);
+                    repl::TenantFileImporterService::get(opCtx->getServiceContext())
+                        ->startMigration(recipientStateDoc.getId(),
+                                         recipientStateDoc.getDonorConnectionString());
                     break;
-                default:
-                    MONGO_UNREACHABLE;
+                case TenantMigrationRecipientStateEnum::kLearnedFilenames:
+                    break;
+                case TenantMigrationRecipientStateEnum::kConsistent:
+                    if (recipientStateDoc.getRejectReadsBeforeTimestamp()) {
+                        onSetRejectReadsBeforeTimestamp(opCtx, recipientStateDoc);
+                    }
+                    break;
+                case TenantMigrationRecipientStateEnum::kDone:
+                    repl::TenantFileImporterService::get(opCtx->getServiceContext())
+                        ->reset(recipientStateDoc.getId());
+                    break;
             }
         });
+
+        // Perform TenantFileImporterService::learnedAllFilenames work outside of the above onCommit
+        // hook because of work done in a WriteUnitOfWork.
+        // TODO SERVER-63789: Revisit this when we make file import async and move
+        // within onCommit hook.
+        auto state = recipientStateDoc.getState();
+        auto protocol = recipientStateDoc.getProtocol().value_or(kDefaultMigrationProtocol);
+        if (state == TenantMigrationRecipientStateEnum::kLearnedFilenames) {
+            tassert(6114400,
+                    "Bad state '{}' for protocol '{}'"_format(
+                        TenantMigrationRecipientState_serializer(state),
+                        MigrationProtocol_serializer(protocol)),
+                    protocol == MigrationProtocolEnum::kShardMerge);
+
+            try {
+                repl::TenantFileImporterService::get(opCtx->getServiceContext())
+                    ->learnedAllFilenames(recipientStateDoc.getId());
+            } catch (const DBException& exc) {
+                LOGV2_ERROR(6114104,
+                            "Calling TenantFileImporterService::learnedAllFilenames",
+                            "exception"_attr = exc);
+            }
+        }
     }
 }
 
 void TenantMigrationRecipientOpObserver::aboutToDelete(OperationContext* opCtx,
-                                                       const CollectionPtr& coll,
+                                                       NamespaceString const& nss,
+                                                       const UUID& uuid,
                                                        BSONObj const& doc) {
-    if (coll->ns() == NamespaceString::kTenantMigrationRecipientsNamespace &&
+    if (nss == NamespaceString::kTenantMigrationRecipientsNamespace &&
         !tenant_migration_access_blocker::inRecoveryMode(opCtx)) {
-        auto recipientStateDoc =
-            TenantMigrationRecipientDocument::parse(IDLParserContext("recipientStateDoc"), doc);
+        auto recipientStateDoc = TenantMigrationRecipientDocument::parse(
+            IDLParserErrorContext("recipientStateDoc"), doc);
         uassert(ErrorCodes::IllegalOperation,
                 str::stream() << "cannot delete a recipient's state document " << doc
                               << " since it has not been marked as garbage collectable",
                 recipientStateDoc.getExpireAt());
 
-        // TenantMigrationRecipientAccessBlocker is created at the start of a migration (in this
-        // case the recipient state will be kStarted). If the recipient primary receives
-        // recipientForgetMigration before receiving recipientSyncData, we set recipient state to
-        // kDone in order to avoid creating an unnecessary TenantMigrationRecipientAccessBlocker.
-        // In this case, the TenantMigrationRecipientAccessBlocker will not exist for a given
-        // tenant.
-        tenantMigrationInfo(opCtx) =
-            boost::make_optional(TenantMigrationInfo(recipientStateDoc.getId()));
+        // TenantMigrationRecipientAccessBlocker is created only after cloning finishes so it
+        // would not exist if the state doc is deleted prior to that (e.g. in the case where
+        // recipientForgetMigration is received before recipientSyncData).
+        if (recipientStateDoc.getProtocol() == MigrationProtocolEnum::kMultitenantMigrations) {
+            auto mtab = tenant_migration_access_blocker::getTenantMigrationRecipientAccessBlocker(
+                opCtx->getServiceContext(), recipientStateDoc.getTenantId());
+            tenantIdToDeleteDecoration(opCtx) = mtab
+                ? boost::make_optional(recipientStateDoc.getTenantId().toString())
+                : boost::none;
+        } else {
+            migrationIdToDeleteDecoration(opCtx) = recipientStateDoc.getId();
+        }
     }
 }
 
 void TenantMigrationRecipientOpObserver::onDelete(OperationContext* opCtx,
-                                                  const CollectionPtr& coll,
+                                                  const NamespaceString& nss,
+                                                  const UUID& uuid,
                                                   StmtId stmtId,
                                                   const OplogDeleteEntryArgs& args) {
-    if (coll->ns() == NamespaceString::kTenantMigrationRecipientsNamespace &&
+    if (nss == NamespaceString::kTenantMigrationRecipientsNamespace &&
         !tenant_migration_access_blocker::inRecoveryMode(opCtx)) {
-        auto tmi = tenantMigrationInfo(opCtx);
-        if (!tmi) {
-            return;
+        if (tenantIdToDeleteDecoration(opCtx)) {
+            LOGV2_INFO(8423337, "Removing expired 'multitenant migration' migration");
+            opCtx->recoveryUnit()->onCommit([opCtx](boost::optional<Timestamp>) {
+                TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
+                    .remove(tenantIdToDeleteDecoration(opCtx).get(),
+                            TenantMigrationAccessBlocker::BlockerType::kRecipient);
+            });
         }
 
-        auto migrationId = tmi->uuid;
-        opCtx->recoveryUnit()->onCommit(
-            [migrationId](OperationContext* opCtx, boost::optional<Timestamp>) {
-                LOGV2_INFO(6114101,
-                           "Removing expired migration access blocker",
-                           "migrationId"_attr = migrationId);
-                repl::TenantFileImporterService::get(opCtx->getServiceContext())
-                    ->interrupt(migrationId);
-                TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
-                    .removeAccessBlockersForMigration(
-                        migrationId, TenantMigrationAccessBlocker::BlockerType::kRecipient);
-            });
+        if (migrationIdToDeleteDecoration(opCtx)) {
+            auto migrationId = migrationIdToDeleteDecoration(opCtx).get();
+            LOGV2_INFO(6114101,
+                       "Removing expired 'shard merge' migration",
+                       "migrationId"_attr = migrationId);
+            TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
+                .removeRecipientAccessBlockersForMigration(
+                    migrationIdToDeleteDecoration(opCtx).get());
+            repl::TenantFileImporterService::get(opCtx->getServiceContext())->reset(migrationId);
+        }
     }
 }
 
@@ -358,13 +314,9 @@ repl::OpTime TenantMigrationRecipientOpObserver::onDropCollection(
     std::uint64_t numRecords,
     const CollectionDropType dropType) {
     if (collectionName == NamespaceString::kTenantMigrationRecipientsNamespace) {
-        opCtx->recoveryUnit()->onCommit([](OperationContext* opCtx, boost::optional<Timestamp>) {
-            repl::TenantFileImporterService::get(opCtx->getServiceContext())->interruptAll();
+        opCtx->recoveryUnit()->onCommit([opCtx](boost::optional<Timestamp>) {
             TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
                 .removeAll(TenantMigrationAccessBlocker::BlockerType::kRecipient);
-
-            ServerlessOperationLockRegistry::get(opCtx->getServiceContext())
-                .onDropStateCollection(ServerlessOperationLockRegistry::LockType::kTenantRecipient);
         });
     }
     return {};

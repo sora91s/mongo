@@ -32,9 +32,8 @@
 #include "mongo/db/query/plan_yield_policy.h"
 
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/util/assert_util.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/time_support.h"
 
@@ -49,12 +48,7 @@ PlanYieldPolicy::PlanYieldPolicy(YieldPolicy policy,
     : _policy(policy),
       _yieldable(yieldable),
       _callbacks(std::move(callbacks)),
-      _elapsedTracker(cs, yieldIterations, yieldPeriod) {
-    invariant(!_yieldable || _yieldable->yieldable() ||
-              policy == YieldPolicy::WRITE_CONFLICT_RETRY_ONLY || policy == YieldPolicy::NO_YIELD ||
-              policy == YieldPolicy::INTERRUPT_ONLY || policy == YieldPolicy::ALWAYS_TIME_OUT ||
-              policy == YieldPolicy::ALWAYS_MARK_KILLED);
-}
+      _elapsedTracker(cs, yieldIterations, yieldPeriod) {}
 
 bool PlanYieldPolicy::shouldYieldOrInterrupt(OperationContext* opCtx) {
     if (_policy == YieldPolicy::INTERRUPT_ONLY) {
@@ -95,7 +89,7 @@ Status PlanYieldPolicy::yieldOrInterrupt(OperationContext* opCtx,
 
     for (int attempt = 1; true; attempt++) {
         try {
-            // Saving and restoring can modify '_yieldable', so we make a copy before we start.
+            // Saving and restoring can modifies '_yieldable', so we make a copy before we start.
             const Yieldable* yieldable = _yieldable;
 
             try {
@@ -127,8 +121,7 @@ Status PlanYieldPolicy::yieldOrInterrupt(OperationContext* opCtx,
                 invariant(!opCtx->isLockFreeReadsOp());
                 opCtx->recoveryUnit()->abandonSnapshot();
             } else {
-                invariant(yieldable);
-                performYield(opCtx, *yieldable, whileYieldingFn);
+                performYield(opCtx, yieldable, whileYieldingFn);
             }
 
             restoreState(opCtx, yieldable);
@@ -137,7 +130,7 @@ Status PlanYieldPolicy::yieldOrInterrupt(OperationContext* opCtx,
             if (_callbacks) {
                 _callbacks->handledWriteConflict(opCtx);
             }
-            logWriteConflictAndBackoff(attempt, "query yield", ""_sd);
+            WriteConflictException::logAndBackoff(attempt, "query yield", ""_sd);
             // Retry the yielding process.
         } catch (...) {
             // Errors other than write conflicts don't get retried, and should instead result in
@@ -150,7 +143,7 @@ Status PlanYieldPolicy::yieldOrInterrupt(OperationContext* opCtx,
 }
 
 void PlanYieldPolicy::performYield(OperationContext* opCtx,
-                                   const Yieldable& yieldable,
+                                   const Yieldable* yieldable,
                                    std::function<void()> whileYieldingFn) {
     // Things have to happen here in a specific order:
     //   * Release 'yieldable'.
@@ -168,7 +161,9 @@ void PlanYieldPolicy::performYield(OperationContext* opCtx,
 
     // Since the locks are not recursively held, this is a top level operation and we can safely
     // clear the 'yieldable' state before unlocking and then re-establish it after re-locking.
-    yieldable.yield();
+    if (yieldable) {
+        yieldable->yield();
+    }
 
     Locker::LockSnapshot snapshot;
     auto unlocked = locker->saveLockStateAndUnlock(&snapshot);
@@ -183,7 +178,9 @@ void PlanYieldPolicy::performYield(OperationContext* opCtx,
     if (!unlocked) {
         // Nothing was unlocked. Recursively held locks are not the only reason locks cannot be
         // released. Restore the 'yieldable' state before returning.
-        yieldable.restore();
+        if (yieldable) {
+            yieldable->restore();
+        }
         return;
     }
 
@@ -201,10 +198,15 @@ void PlanYieldPolicy::performYield(OperationContext* opCtx,
 
     locker->restoreLockState(opCtx, snapshot);
 
-    // A yield has occurred, but there still may not be a 'yieldable' if the PlanExecutor
-    // has a 'locks internally' lock policy.
-    // Yieldable restore may set a new read source if necessary.
-    yieldable.restore();
+    // A yield has occurred, but there still may not be a 'yieldable'. This is true, for example,
+    // when executing a getMore for the slot-based execution engine. SBE uses the "locks internally"
+    // lock policy, and therefore the getMore code path does not acquire any db_raii object. As a
+    // result, there is no db_raii object to restore here when executing a getMore against a cursor
+    // using SBE.
+    if (yieldable) {
+        // Yieldable restore may set a new read source if necessary.
+        yieldable->restore();
+    }
 }
 
 }  // namespace mongo

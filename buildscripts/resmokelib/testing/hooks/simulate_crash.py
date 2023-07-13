@@ -21,7 +21,7 @@ from buildscripts.resmokelib.testing.hooks import bghook
 
 def validate(mdb, logger, acceptable_err_codes):
     """Return true if all collections are valid."""
-    for db in mdb.list_database_names():
+    for db in mdb.database_names():
         for coll in mdb.get_database(db).list_collection_names():
             res = mdb.get_database(db).command({"validate": coll}, check=False)
 
@@ -107,13 +107,14 @@ class SimulateCrash(bghook.BGHook):
 
             mdb = process.Process(self.logger, [
                 node.mongod_executable, "--dbpath", path, "--port",
-                str(self.validate_port), "--setParameter", "enableTestCommands=1", "--setParameter",
-                "testingDiagnosticsEnabled=1"
+                str(self.validate_port), "--logpath",
+                node.get_dbpath_prefix() + "/simulateCrashes/validate.log", "--setParameter",
+                "enableTestCommands=1", "--setParameter", "testingDiagnosticsEnabled=1"
             ])
             mdb.start()
 
             client = pymongo.MongoClient(host="localhost", port=self.validate_port, connect=True,
-                                         connectTimeoutMS=300000, serverSelectionTimeoutMS=300000,
+                                         connectTimeoutMS=120000, serverSelectionTimeoutMS=120000,
                                          directConnection=True)
             is_valid = validate(client, self.logger, self.acceptable_err_codes)
 

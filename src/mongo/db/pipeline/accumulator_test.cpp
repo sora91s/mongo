@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -38,7 +39,6 @@
 #include "mongo/db/pipeline/accumulation_statement.h"
 #include "mongo/db/pipeline/accumulator.h"
 #include "mongo/db/pipeline/accumulator_for_window_functions.h"
-#include "mongo/db/pipeline/accumulator_js_reduce.h"
 #include "mongo/db/pipeline/accumulator_multi.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
@@ -46,9 +46,6 @@
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/idl/server_parameter_test_util.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace AccumulatorTests {
 
@@ -209,6 +206,7 @@ TEST(Accumulators, First) {
 }
 
 TEST(Accumulators, FirstN) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = ExpressionContextForTest{};
     auto n = Value(2);
 
@@ -283,6 +281,7 @@ TEST(Accumulators, Last) {
 }
 
 TEST(Accumulators, LastN) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = ExpressionContextForTest{};
     auto n = Value(2);
     assertExpectedResults<AccumulatorLastN>(
@@ -383,6 +382,7 @@ TEST(Accumulators, MinRespectsCollation) {
 }
 
 TEST(Accumulators, MinN) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = ExpressionContextForTest{};
     const auto n = Value(3);
     assertExpectedResults<AccumulatorMinN>(
@@ -416,6 +416,7 @@ TEST(Accumulators, MinN) {
 }
 
 TEST(Accumulators, MinNRespectsCollation) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = ExpressionContextForTest{};
     auto collator =
         std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
@@ -430,6 +431,7 @@ TEST(Accumulators, MinNRespectsCollation) {
 }
 
 TEST(Accumulators, MaxN) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = ExpressionContextForTest{};
     const auto n = Value(3);
     assertExpectedResults<AccumulatorMaxN>(
@@ -463,6 +465,7 @@ TEST(Accumulators, MaxN) {
 }
 
 TEST(Accumulators, MaxNRespectsCollation) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = ExpressionContextForTest{};
     auto collator =
         std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
@@ -593,6 +596,7 @@ TEST(Accumulators, Sum) {
 }
 
 TEST(Accumulators, TopBottomNRespectsCollation) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = make_intrusive<ExpressionContextForTest>();
     auto collator =
         std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
@@ -656,6 +660,7 @@ TEST(Accumulators, TopBottomNRespectsCollation) {
 }
 
 TEST(Accumulators, TopNDescendingBottomNAscending) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = make_intrusive<ExpressionContextForTest>();
     const auto n3 = Value(3);
     const auto n1 = Value(1);
@@ -794,6 +799,7 @@ TEST(Accumulators, TopNDescendingBottomNAscending) {
 }
 
 TEST(Accumulators, TopNAscendingBottomNDescending) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = make_intrusive<ExpressionContextForTest>();
     const auto n3 = Value(3);
     const auto n1 = Value(1);
@@ -965,6 +971,7 @@ void testSingle(OperationsType cases, ExpressionContext* const expCtx, const BSO
 }
 
 TEST(Accumulators, TopBottomSingle) {
+    RAIIServerParameterControllerForTest controller("featureFlagExactTopNAccumulator", true);
     auto expCtx = make_intrusive<ExpressionContextForTest>();
     const auto n = Value(1);
     auto mkdoc = [](Value a) {
@@ -1735,146 +1742,6 @@ TEST(Accumulators, CovarianceWithRandomVariables) {
     assertCovariance<AccumulatorCovariancePop>(&expCtx, randomVariables, boost::none);
     assertCovariance<AccumulatorCovarianceSamp>(&expCtx, randomVariables, boost::none);
 }
-// Test serialization with redaction
-std::string redactFieldNameForTest(StringData s) {
-    return str::stream() << "HASH(" << s << ")";
-}
-
-Value parseAndSerializeAccumExpr(
-    const BSONObj& obj,
-    std::function<boost::intrusive_ptr<Expression>(
-        ExpressionContext* expCtx, BSONElement, const VariablesParseState&)> func) {
-    SerializationOptions options;
-    std::string replacementChar = "?";
-    options.replacementForLiteralArgs = replacementChar;
-    options.redactFieldNames = true;
-    options.redactFieldNamesStrategy = redactFieldNameForTest;
-    auto expCtx = make_intrusive<ExpressionContextForTest>();
-    auto expr = func(expCtx.get(), obj.firstElement(), expCtx->variablesParseState);
-    return expr->serialize(options);
-}
-
-Document parseAndSerializeAccum(
-    const BSONElement elem,
-    std::function<AccumulationExpression(
-        ExpressionContext* const expCtx, BSONElement, VariablesParseState)> func) {
-    SerializationOptions options;
-    std::string replacementChar = "?";
-    options.replacementForLiteralArgs = replacementChar;
-    options.redactFieldNames = true;
-    options.redactFieldNamesStrategy = redactFieldNameForTest;
-    auto expCtx = make_intrusive<ExpressionContextForTest>();
-    VariablesParseState vps = expCtx->variablesParseState;
-
-    auto expr = func(expCtx.get(), elem, vps);
-    auto accum = expr.factory();
-    return accum->serialize(expr.initializer, expr.argument, false, options);
-}
-
-TEST(Accumulators, SerializeWithRedaction) {
-
-    auto jsReduce =
-        BSON("$accumulator" << BSON("init"
-                                    << "function() {}"
-                                    << "accumulateArgs"
-                                    << BSON_ARRAY("$a"
-                                                  << "$b")
-                                    << "accumulate"
-                                    << "function(state, str1, str2) {return str1 + str2;}"
-                                    << "merge"
-                                    << "function(s1, s2) {return s1 || s2;}"
-                                    << "lang"
-                                    << "js"));
-    ASSERT_VALUE_EQ_AUTO(  // NOLINT
-        "{$accumulator: {init: \"?\", initArgs: {$const: \"?\"}, accumulate: \"?\", "
-        "accumulateArgs: [\"$HASH(a)\", \"$HASH(b)\"], merge: \"?\", lang: \"js\"}}",  // NOLINT
-                                                                                       // (test
-                                                                                       // auto-update)
-        parseAndSerializeAccum(jsReduce.firstElement(), &AccumulatorJs::parse));
-
-    auto topN = BSON("$topN" << BSON("n" << 3 << "output"
-                                         << "$output"
-                                         << "sortBy" << BSON("sortKey" << 1)));
-    ASSERT_VALUE_EQ_AUTO(  // NOLINT
-        "{$topN: {n: {$const: \"?\"}, output: {HASH(output): \"$HASH(output)\", HASH(sortFields): "
-        "[\"$HASH(sortKey)\"]}, sortBy: {HASH(sortKey): 1}}}",  // NOLINT (test auto-update)
-        parseAndSerializeAccum(
-            topN.firstElement(),
-            &AccumulatorTopBottomN<TopBottomSense::kTop, false>::parseTopBottomN));
-
-    auto addToSet = BSON("$addToSet" << BSON("a" << 5));
-    ASSERT_VALUE_EQ_AUTO(
-        "{$addToSet: {$const: \"?\"}}",
-        parseAndSerializeAccum(addToSet.firstElement(),
-                               &genericParseSingleExpressionAccumulator<AccumulatorAddToSet>));
-
-    auto sum = BSON("$sum" << BSON_ARRAY("$a" << 5 << 3 << BSON("$sum" << BSON_ARRAY(4 << 6))));
-    ASSERT_VALUE_EQ_AUTO(  // NOLINT
-        "{$sum: [\"$HASH(a)\", {$const: \"?\"}, {$const: \"?\"}, {$sum: [{$const: \"?\"}, {$const: "
-        "\"?\"}]}]}",  // NOLINT (test auto-update)
-        parseAndSerializeAccum(sum.firstElement(),
-                               &genericParseSingleExpressionAccumulator<AccumulatorSum>));
-
-    auto mergeObjs = BSON("$mergeObjects" << BSON_ARRAY("$a" << BSON("b"
-                                                                     << "null")));
-    ASSERT_VALUE_EQ_AUTO(                                    // NOLINT
-        "{$mergeObjects: [\"$HASH(a)\", {$const: \"?\"}]}",  // NOLINT (test auto-update)
-        parseAndSerializeAccum(mergeObjs.firstElement(),
-                               &genericParseSingleExpressionAccumulator<AccumulatorMergeObjects>));
-
-    auto push = BSON("$push" << BSON("$eq" << BSON_ARRAY("$str"
-                                                         << "str2")));
-    ASSERT_VALUE_EQ_AUTO(
-        "{$push: {$eq: [\"$HASH(str)\", {$const: \"?\"}]}}",
-        parseAndSerializeAccum(push.firstElement(),
-                               &genericParseSingleExpressionAccumulator<AccumulatorPush>));
-
-    auto top = BSON("$top" << BSON("output"
-                                   << "$b"
-                                   << "sortBy" << BSON("sales" << 1)));
-    ASSERT_VALUE_EQ_AUTO(  // NOLINT
-        "{$top: {output: {HASH(output): \"$HASH(b)\", HASH(sortFields): [\"$HASH(sales)\"]}, "
-        "sortBy: {HASH(sales): 1}}}",  // NOLINT (test auto-update)
-        parseAndSerializeAccum(
-            top.firstElement(),
-            &AccumulatorTopBottomN<TopBottomSense::kTop, true>::parseTopBottomN));
-
-    auto max = BSON("$max" << BSON_ARRAY(
-                        "$a" << 2 << 3 << BSON("$max" << BSON_ARRAY(BSON_ARRAY("$b" << 4 << 5)))));
-    ASSERT_VALUE_EQ_AUTO(  // NOLINT
-        "{$max: [\"$HASH(a)\", {$const: \"?\"}, {$const: \"?\"}, {$max: [[\"$HASH(b)\", {$const: "
-        "\"?\"}, {$const: \"?\"}]]}]}",  // NOLINT (test auto-update)
-        parseAndSerializeAccum(max.firstElement(),
-                               &genericParseSingleExpressionAccumulator<AccumulatorMax>));
-
-    auto internalJsReduce = BSON(
-        "$_internalJsReduce" << BSON("data"
-                                     << "$emits"
-                                     << "eval"
-                                     << "function(key, values) {\n return Array.sum(values);\n"));
-    ASSERT_VALUE_EQ_AUTO(  // NOLINT
-        "{$_internalJsReduce: {data: \"$HASH(emits)\", eval: \"?\"}}",
-        parseAndSerializeAccum(internalJsReduce.firstElement(),
-                               &AccumulatorInternalJsReduce::parseInternalJsReduce));
-}
-
-TEST(AccumulatorsToExpression, SerializeWithRedaction) {
-    auto maxN = BSON("$maxN" << BSON("n" << 3 << "input" << BSON_ARRAY(19 << 7 << 28 << 3 << 5)));
-    using Sense = AccumulatorMinMax::Sense;
-    ASSERT_VALUE_EQ_AUTO(                                         // NOLINT
-        "{$maxN: {n: {$const: \"?\"}, input: {$const: \"?\"}}}",  // NOLINT (test auto-update)
-        parseAndSerializeAccumExpr(maxN, &AccumulatorMinMaxN::parseExpression<Sense::kMax>));
-
-    auto firstN = BSON("$firstN" << BSON("input"
-                                         << "$sales"
-                                         << "n"
-                                         << "\'string\'"));
-    using FirstLastSense = AccumulatorFirstLastN::Sense;
-    ASSERT_VALUE_EQ_AUTO(                                            // NOLINT
-        "{$firstN: {n: {$const: \"?\"}, input: \"$HASH(sales)\"}}",  // NOLINT (test auto-update)
-        parseAndSerializeAccumExpr(
-            firstN, &AccumulatorFirstLastN::parseExpression<FirstLastSense::kFirst>));
-}
 
 /* ------------------------- AccumulatorMergeObjects -------------------------- */
 
@@ -1926,6 +1793,5 @@ TEST(AccumulatorMergeObjects, MergingWithEmptyDocumentShouldIgnore) {
     auto expected = Value(Document({{"a", 0}, {"b", 1}, {"c", 1}}));
     assertExpectedResults<AccumulatorMergeObjects>(&expCtx, {{{first, second}, expected}});
 }
-
 
 }  // namespace AccumulatorTests

@@ -85,9 +85,7 @@ TEST(UpdateSerialization, IncrementSerializesExactly) {
 }
 
 TEST(UpdateSerialization, MinimumSerializesExactly) {
-    auto myTrip = [](std::string foo) {
-        return updateRoundTrip(foo.c_str());
-    };
+    auto myTrip = [](std::string foo) { return updateRoundTrip(foo.c_str()); };
     ASSERT_IDENTITY(R"({ "$min" : { "e" : 2, "i" : -2 } })", myTrip);
 }
 

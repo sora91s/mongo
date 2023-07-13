@@ -29,16 +29,20 @@
 
 #pragma once
 
-#include <string>
-
-#include "mongo/base/status.h"
-#include "mongo/base/string_data.h"
+#include "mongo/s/shard_id.h"
 
 namespace mongo {
 
 inline Status validateDatabaseName(const std::string& value) {
     if (value.empty()) {
         return {ErrorCodes::NoSuchKey, "Database name cannot be empty"};
+    }
+    return Status::OK();
+}
+
+inline Status validateShardId(const ShardId& value) {
+    if (!value.isValid()) {
+        return {ErrorCodes::NoSuchKey, "Shard ID cannot be empty"};
     }
     return Status::OK();
 }

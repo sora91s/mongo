@@ -29,27 +29,28 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/query/projection_ast_path_tracking_visitor.h"
 #include "mongo/db/query/projection_ast_util.h"
-#include "mongo/db/query/serialization_options.h"
+
+#include "mongo/db/query/projection_ast_path_tracking_visitor.h"
 #include "mongo/db/query/tree_walker.h"
 
 namespace mongo::projection_ast {
 namespace {
 struct BSONVisitorContext {
     std::stack<BSONObjBuilder> builders;
-    bool underElemMatch = false;
 };
 
 class BSONPreVisitor : public ProjectionASTConstVisitor {
 public:
-    using ProjectionASTConstVisitor::visit;
-    BSONPreVisitor(PathTrackingVisitorContext<BSONVisitorContext>* context,
-                   const SerializationOptions& options)
-        : _context(context), _builders(context->data().builders), _options(options) {}
+    BSONPreVisitor(PathTrackingVisitorContext<BSONVisitorContext>* context)
+        : _context(context), _builders(context->data().builders) {}
 
+    virtual void visit(const MatchExpressionASTNode* node) {
+        static_cast<const MatchExpressionASTNode*>(node)->matchExpression()->serialize(
+            &_builders.top(), true);
+    }
 
-    void visit(const ProjectionPathASTNode* node) override {
+    virtual void visit(const ProjectionPathASTNode* node) {
         if (!node->parent()) {
             // No root of the tree, thus this node has no field name.
             _builders.push(BSONObjBuilder());
@@ -58,53 +59,47 @@ public:
         }
     }
 
-    void visit(const ProjectionSliceASTNode* node) override {
+    virtual void visit(const ProjectionPositionalASTNode* node) {
+        // ProjectionPositional always has the original query's match expression node as its
+        // child. Serialize as: {"positional.projection.field.$": <original match expression>}.
+        _context->data().builders.push(_builders.top().subobjStart(getFieldName() + ".$"));
+    }
+
+    virtual void visit(const ProjectionSliceASTNode* node) {
         BSONObjBuilder sub(_builders.top().subobjStart(getFieldName()));
         if (node->skip()) {
-            if (_options.replacementForLiteralArgs) {
-                const auto rep = _options.replacementForLiteralArgs.value();
-                sub.appendArray("$slice", BSON_ARRAY(rep << rep));
-            } else {
-                sub.appendArray("$slice", BSON_ARRAY(*node->skip() << node->limit()));
-            }
+            sub.appendArray("$slice", BSON_ARRAY(*node->skip() << node->limit()));
         } else {
-            if (_options.replacementForLiteralArgs) {
-                sub.append("$slice", _options.replacementForLiteralArgs.value());
-            } else {
-                sub.appendNumber("$slice", node->limit());
-            }
+            sub.appendNumber("$slice", node->limit());
         }
     }
 
-
-    void visit(const ExpressionASTNode* node) override {
-        node->expression()->serialize(_options).addToBsonObj(&_builders.top(), getFieldName());
+    virtual void visit(const ProjectionElemMatchASTNode* node) {
+        // Defer to the child, match expression node.
     }
 
-    void visit(const BooleanConstantASTNode* node) override {
+    virtual void visit(const ExpressionASTNode* node) {
+        node->expression()->serialize(false).addToBsonObj(&_builders.top(), getFieldName());
+    }
+
+    virtual void visit(const BooleanConstantASTNode* node) {
         _builders.top().append(getFieldName(), node->value());
     }
 
-    void visit(const ProjectionPositionalASTNode* node) override = 0;
-    void visit(const ProjectionElemMatchASTNode* node) override = 0;
-    void visit(const MatchExpressionASTNode* node) override = 0;
-
-protected:
+private:
     std::string getFieldName() {
-        return _options.serializeFieldName(_context->childPath());
+        return _context->childPath();
     }
 
     PathTrackingVisitorContext<BSONVisitorContext>* _context;
     std::stack<BSONObjBuilder>& _builders;
-    SerializationOptions _options;
 };
 
 class BSONPostVisitor : public ProjectionASTConstVisitor {
 public:
-    using ProjectionASTConstVisitor::visit;
     BSONPostVisitor(BSONVisitorContext* context) : _context(context) {}
 
-    void visit(const ProjectionPathASTNode* node) override {
+    virtual void visit(const ProjectionPathASTNode* node) {
         // Don't pop the top builder.
         if (node->parent()) {
             // Pop the BSONObjBuilder that was added in the pre visitor.
@@ -112,111 +107,28 @@ public:
         }
     }
 
-    void visit(const ProjectionSliceASTNode* node) override {}
-    void visit(const ExpressionASTNode* node) override {}
-    void visit(const BooleanConstantASTNode* node) override {}
-    void visit(const MatchExpressionASTNode* node) override {}
-
-    void visit(const ProjectionPositionalASTNode* node) override = 0;
-    void visit(const ProjectionElemMatchASTNode* node) override = 0;
-
-protected:
-    BSONVisitorContext* _context;
-};
-
-class DebugPreVisitor : public BSONPreVisitor {
-public:
-    using BSONPreVisitor::visit;
-    DebugPreVisitor(PathTrackingVisitorContext<BSONVisitorContext>* context)
-        : BSONPreVisitor(context, SerializationOptions{}) {}
-
-    void visit(const ProjectionPositionalASTNode* node) override {
-        // ProjectionPositional always has the original query's match expression node as its
-        // child. Serialize as: {"positional.projection.field.$": <original match expression>}.
-        _context->data().builders.push(_builders.top().subobjStart(getFieldName() + ".$"));
-    }
-
-    void visit(const ProjectionElemMatchASTNode* node) override {
-        // Defer to the child, match expression node.
-    }
-
-    void visit(const MatchExpressionASTNode* node) override {
-        static_cast<const MatchExpressionASTNode*>(node)->matchExpression()->serialize(
-            &_builders.top(), {});
-    }
-};
-
-class DebugPostVisitor : public BSONPostVisitor {
-public:
-    using BSONPostVisitor::visit;
-    DebugPostVisitor(BSONVisitorContext* context) : BSONPostVisitor(context) {}
-
-    void visit(const ProjectionPositionalASTNode* node) override {
+    virtual void visit(const ProjectionPositionalASTNode* node) {
         _context->builders.pop();
     }
 
-    void visit(const ProjectionElemMatchASTNode* node) override {}
+    virtual void visit(const MatchExpressionASTNode* node) {}
+    virtual void visit(const ProjectionSliceASTNode* node) {}
+    virtual void visit(const ProjectionElemMatchASTNode* node) {}
+    virtual void visit(const ExpressionASTNode* node) {}
+    virtual void visit(const BooleanConstantASTNode* node) {}
+
+private:
+    BSONVisitorContext* _context;
 };
-
-class SerializationPreVisitor : public BSONPreVisitor {
-public:
-    using BSONPreVisitor::visit;
-    SerializationPreVisitor(PathTrackingVisitorContext<BSONVisitorContext>* context,
-                            SerializationOptions options)
-        : BSONPreVisitor(context, options) {}
-
-    void visit(const ProjectionPositionalASTNode* node) override {
-        tassert(73488,
-                "Positional projection should not appear below an $elemMatch projection.",
-                !_context->data().underElemMatch);
-        _builders.top().append(getFieldName() + ".$", true);
-    }
-
-    void visit(const ProjectionElemMatchASTNode* node) override {
-        // The child match expression node should begin with $elemMatch.
-        _context->data().underElemMatch = true;
-    }
-
-    void visit(const MatchExpressionASTNode* node) override {
-        if (_context->data().underElemMatch) {
-            static_cast<const MatchExpressionASTNode*>(node)->matchExpression()->serialize(
-                &_builders.top(), _options);
-        }
-    }
-};
-
-class SerializationPostVisitor : public BSONPostVisitor {
-public:
-    using BSONPostVisitor::visit;
-    SerializationPostVisitor(BSONVisitorContext* context) : BSONPostVisitor(context) {}
-
-    void visit(const ProjectionPositionalASTNode* node) override {}
-    void visit(const ProjectionElemMatchASTNode* node) override {
-        _context->underElemMatch = false;
-    }
-};
-
 }  // namespace
 
 BSONObj astToDebugBSON(const ASTNode* root) {
     PathTrackingVisitorContext<BSONVisitorContext> context;
-    DebugPreVisitor preVisitor{&context};
-    DebugPostVisitor postVisitor{&context.data()};
+    BSONPreVisitor preVisitor{&context};
+    BSONPostVisitor postVisitor{&context.data()};
     PathTrackingWalker walker{&context, {&preVisitor}, {&postVisitor}};
 
     tree_walker::walk<true, projection_ast::ASTNode>(root, &walker);
-
-    invariant(context.data().builders.size() == 1);
-    return context.data().builders.top().obj();
-}
-
-BSONObj serialize(const Projection& ast, SerializationOptions options) {
-    PathTrackingVisitorContext<BSONVisitorContext> context;
-    SerializationPreVisitor preVisitor{&context, options};
-    SerializationPostVisitor postVisitor{&context.data()};
-    PathTrackingWalker walker{&context, {&preVisitor}, {&postVisitor}};
-
-    tree_walker::walk<true, projection_ast::ASTNode>(ast.root(), &walker);
 
     invariant(context.data().builders.size() == 1);
     return context.data().builders.top().obj();

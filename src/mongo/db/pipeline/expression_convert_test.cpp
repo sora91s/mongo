@@ -276,7 +276,7 @@ TEST_F(ExpressionConvertTest, UnsupportedConversionShouldThrowUnlessOnErrorProvi
     };
 
     // Attempt all of the unsupported conversions listed above.
-    for (const auto& conversion : unsupportedConversions) {
+    for (auto conversion : unsupportedConversions) {
         auto inputValue = conversion.first;
         auto targetTypeName = conversion.second;
 
@@ -299,7 +299,7 @@ TEST_F(ExpressionConvertTest, UnsupportedConversionShouldThrowUnlessOnErrorProvi
     }
 
     // Attempt them again, this time with an "onError" value.
-    for (const auto& conversion : unsupportedConversions) {
+    for (auto conversion : unsupportedConversions) {
         auto inputValue = conversion.first;
         auto targetTypeName = conversion.second;
 

@@ -31,6 +31,10 @@
  * Tests for json.{h,cpp} code and BSONObj::jsonString()
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
+
+#include "mongo/platform/basic.h"
+
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <fmt/format.h>
@@ -43,12 +47,10 @@
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/logv2/log.h"
 #include "mongo/platform/decimal128.h"
+#include "mongo/unittest/unittest.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
-namespace mongo {
 namespace {
-
 std::string makeJsonEquvalent(const std::string& json) {
     boost::property_tree::ptree tree;
 
@@ -400,8 +402,7 @@ public:
         char* _oldTimezonePtr = getenv("TZ");
         _oldTimezone = std::string(_oldTimezonePtr ? _oldTimezonePtr : "");
         if (-1 == putenv(tzEnvString)) {
-            auto ec = lastSystemError();
-            FAIL(errorMessage(ec));
+            FAIL(errnoWithDescription());
         }
         tzset();
     }
@@ -417,8 +418,7 @@ public:
             }
 #else
             if (-1 == setenv("TZ", _oldTimezone.c_str(), 1)) {
-                auto ec = lastSystemError();
-                FAIL(errorMessage(ec));
+                FAIL(errnoWithDescription());
             }
 #endif
         } else {
@@ -431,8 +431,7 @@ public:
             }
 #else
             if (-1 == unsetenv("TZ")) {
-                auto ec = lastSystemError();
-                FAIL(errorMessage(ec));
+                FAIL(errnoWithDescription());
             }
 #endif
         }
@@ -625,7 +624,7 @@ void assertEquals(const std::string& json,
 }
 
 void checkEquivalence(const std::string& json, const BSONObj& bson) {
-    ASSERT(validateBSON(fromjson(json)).isOK());
+    ASSERT(fromjson(json).valid());
     assertEquals(json, bson, fromjson(json), "mode: json-to-bson");
     assertEquals(json, bson, fromjson(tojson(bson)), "mode: <default>");
     assertEquals(json, bson, fromjson(tojson(bson, LegacyStrict)), "mode: strict");
@@ -984,35 +983,6 @@ TEST(FromJsonTest, TimestampObjectTest) {
     });
 }
 
-TEST(FromJsonTest, JSUUIDTest) {
-    BSONObjBuilder uuidObjBuilder;
-    UUID uuid = assertGet(UUID::parse("5fc51c8b-9a77-49ff-9f94-0a7e96173aa0"));
-    uuid.appendToBuilder(&uuidObjBuilder, "a");
-    checkEquivalence(R"({ "a" : UUID( "5fc51c8b-9a77-49ff-9f94-0a7e96173aa0" ) })",
-                     uuidObjBuilder.obj());
-    checkRejectionEach({
-        R"({ "a" : UUID( 20 ) })",                                       // Not a string
-        R"({ "a" : UUID() })",                                           // NoArgs
-        R"({ "a" : UUID( "a" ) })",                                      // Wrong input size
-        R"({ "a" : UUID( "/5fc51c8b-9a77-49ff-9f94-0a7e96173aa0" ) })",  // Right size, but wrong
-                                                                         // character set
-    });
-}
-
-TEST(FromJsonTest, UUIDObjectTest) {
-    BSONObjBuilder uuidObjBuilder;
-    UUID uuid = assertGet(UUID::parse("5fc51c8b-9a77-49ff-9f94-0a7e96173aa0"));
-    uuid.appendToBuilder(&uuidObjBuilder, "a");
-    checkEquivalence(R"({ "a" : {"$uuid": "5fc51c8b-9a77-49ff-9f94-0a7e96173aa0" } })",
-                     uuidObjBuilder.obj());
-    checkRejectionEach({
-        R"({ "a" : {"$uuid": 20} })",                                       // Not a string
-        R"({ "a" : {"$uuid": "a"} })",                                      // Wrong input size
-        R"({ "a" : {"$uuid": "/5fc51c8b-9a77-49ff-9f94-0a7e96173aa0"} })",  // Right size, but wrong
-                                                                            // character set
-    });
-}
-
 BSONObj re(const std::string& name, const std::string& re, const std::string& options) {
     BSONObjBuilder b;
     b.appendRegex(name, re, options);
@@ -1186,9 +1156,7 @@ TEST(FromJsonTest, NumericTypes) {
 TEST(FromJsonTest, EmbeddedDates) {
     const long long kMin = 1257829200000;
     const long long kMax = 1257829200100;
-    auto makeDate = [](long long ms) {
-        return Date_t::fromMillisSinceEpoch(ms);
-    };
+    auto makeDate = [](long long ms) { return Date_t::fromMillisSinceEpoch(ms); };
     const BSONObj bson =
         B().append("time.valid",
                    B().appendDate("$gt", makeDate(kMin)).appendDate("$lt", makeDate(kMax)).obj())
@@ -1227,4 +1195,3 @@ TEST(FromJsonTest, MinMaxKey) {
 
 }  // namespace FromJsonTests
 }  // namespace
-}  // namespace mongo

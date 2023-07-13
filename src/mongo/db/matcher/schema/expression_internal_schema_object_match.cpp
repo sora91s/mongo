@@ -36,7 +36,7 @@ namespace mongo {
 constexpr StringData InternalSchemaObjectMatchExpression::kName;
 
 InternalSchemaObjectMatchExpression::InternalSchemaObjectMatchExpression(
-    boost::optional<StringData> path,
+    StringData path,
     std::unique_ptr<MatchExpression> expr,
     clonable_ptr<ErrorAnnotation> annotation)
     : PathMatchExpression(INTERNAL_SCHEMA_OBJECT_MATCH,
@@ -61,12 +61,10 @@ void InternalSchemaObjectMatchExpression::debugString(StringBuilder& debug,
     _sub->debugString(debug, indentationLevel + 1);
 }
 
-BSONObj InternalSchemaObjectMatchExpression::getSerializedRightHandSide(
-    SerializationOptions opts) const {
-    // TODO SERVER-73678 respect 'replacementForLiteralArgs'.
+BSONObj InternalSchemaObjectMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder objMatchBob;
     BSONObjBuilder subBob(objMatchBob.subobjStart(kName));
-    _sub->serialize(&subBob, opts);
+    _sub->serialize(&subBob, true);
     subBob.doneFast();
     return objMatchBob.obj();
 }

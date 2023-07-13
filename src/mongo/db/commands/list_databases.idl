@@ -32,7 +32,7 @@ global:
 imports:
     - "mongo/db/auth/access_checks.idl"
     - "mongo/db/auth/action_type.idl"
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 structs:
     ListDatabasesReplyItem:
@@ -40,35 +40,34 @@ structs:
         fields:
             name:
                 type: string
-                stability: stable
+                unstable: false
             sizeOnDisk:
                 type: long
                 optional: true
-                stability: stable
+                unstable: false
             empty:
                 type: bool
                 optional: true
-                stability: stable
+                unstable: false
             shards:
                 type: object_owned
                 optional: true
-                stability: stable
+                unstable: false
 
     ListDatabasesReply:
         description: "The listDatabases command's reply."
-        is_command_reply: true
         fields:
             databases:
                 type: array<ListDatabasesReplyItem>
-                stability: stable
+                unstable: false
             totalSize:
                 type: long
                 optional: true
-                stability: stable
+                unstable: false
             totalSizeMb:
                 type: long
                 optional: true
-                stability: stable
+                unstable: false
 
 commands:
     listDatabases:
@@ -89,15 +88,15 @@ commands:
                 description: "Return just the database name without metadata"
                 type: safeBool
                 default: false
-                stability: stable
+                unstable: false
             authorizedDatabases:
                 description: "Only return those databases for which the user is authorized"
                 type: bool
                 optional: true
-                stability: stable
+                unstable: false
             filter:
                 description: "Filter description to limit results"
                 type: object
                 optional: true
-                stability: stable
+                unstable: false
         reply_type: ListDatabasesReply

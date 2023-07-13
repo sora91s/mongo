@@ -31,13 +31,11 @@
 
 #include <functional>
 #include <memory>
+#include <random>
 #include <vector>
 
 #include "mongo/db/repl/hello_response.h"
-#include "mongo/platform/random.h"
 #include "mongo/util/net/hostandport.h"
-#include "mongo/util/static_immortal.h"
-#include "mongo/util/synchronized_value.h"
 
 namespace mongo {
 
@@ -50,14 +48,8 @@ class MirroringSampler final {
 public:
     using RandomFunc = std::function<int()>;
 
-    static int threadSafeRandom() {
-        static StaticImmortal<synchronized_value<PseudoRandom>> random{
-            PseudoRandom{SecureRandom{}.nextInt64()}};
-        return (*random)->nextInt32(defaultRandomMax());
-    }
-
     static RandomFunc defaultRandomFunc() {
-        return threadSafeRandom;
+        return std::rand;
     }
 
     static constexpr int defaultRandomMax() {

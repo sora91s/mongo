@@ -41,8 +41,7 @@
 namespace mongo {
 namespace {
 
-static const NamespaceString testns =
-    NamespaceString::createNamespaceString_forTest("testdb.testcoll");
+static const NamespaceString testns("testdb.testcoll");
 static const bool isExplain = true;
 
 TEST(ParsedDistinctTest, ConvertToAggregationNoQuery) {

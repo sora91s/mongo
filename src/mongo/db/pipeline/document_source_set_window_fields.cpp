@@ -41,7 +41,7 @@
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/db/query/sort_pattern.h"
-#include "mongo/util/overloaded_visitor.h"
+#include "mongo/util/visit_helper.h"
 
 using boost::intrusive_ptr;
 using boost::optional;
@@ -75,15 +75,19 @@ bool modifiedSortPaths(const SortPattern& pat, const DocumentSource::GetModPaths
 }
 }  // namespace
 
-REGISTER_DOCUMENT_SOURCE(setWindowFields,
-                         LiteParsedDocumentSourceDefault::parse,
-                         document_source_set_window_fields::createFromBson,
-                         AllowedWithApiStrict::kAlways);
+REGISTER_DOCUMENT_SOURCE_WITH_MIN_VERSION(
+    setWindowFields,
+    LiteParsedDocumentSourceDefault::parse,
+    document_source_set_window_fields::createFromBson,
+    AllowedWithApiStrict::kAlways,
+    multiversion::FeatureCompatibilityVersion::kFullyDowngradedTo_5_0);
 
-REGISTER_DOCUMENT_SOURCE(_internalSetWindowFields,
-                         LiteParsedDocumentSourceDefault::parse,
-                         DocumentSourceInternalSetWindowFields::createFromBson,
-                         AllowedWithApiStrict::kAlways);
+REGISTER_DOCUMENT_SOURCE_WITH_MIN_VERSION(
+    _internalSetWindowFields,
+    LiteParsedDocumentSourceDefault::parse,
+    DocumentSourceInternalSetWindowFields::createFromBson,
+    AllowedWithApiStrict::kAlways,
+    multiversion::FeatureCompatibilityVersion::kFullyDowngradedTo_5_0);
 
 list<intrusive_ptr<DocumentSource>> document_source_set_window_fields::createFromBson(
     BSONElement elem, const intrusive_ptr<ExpressionContext>& expCtx) {
@@ -93,7 +97,8 @@ list<intrusive_ptr<DocumentSource>> document_source_set_window_fields::createFro
                           << typeName(elem.type()),
             elem.type() == BSONType::Object);
 
-    auto spec = SetWindowFieldsSpec::parse(IDLParserContext(kStageName), elem.embeddedObject());
+    auto spec =
+        SetWindowFieldsSpec::parse(IDLParserErrorContext(kStageName), elem.embeddedObject());
     auto partitionBy = [&]() -> boost::optional<boost::intrusive_ptr<Expression>> {
         if (auto partitionBy = spec.getPartitionBy())
             return Expression::parseOperand(
@@ -239,7 +244,7 @@ list<intrusive_ptr<DocumentSource>> document_source_set_window_fields::create(
         combined.emplace_back(std::move(part));
     }
     if (sortBy) {
-        for (const auto& part : *sortBy) {
+        for (auto part : *sortBy) {
             combined.push_back(part);
         }
     }
@@ -329,7 +334,8 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceInternalSetWindowFields::crea
                           << typeName(elem.type()),
             elem.type() == BSONType::Object);
 
-    auto spec = SetWindowFieldsSpec::parse(IDLParserContext(kStageName), elem.embeddedObject());
+    auto spec =
+        SetWindowFieldsSpec::parse(IDLParserErrorContext(kStageName), elem.embeddedObject());
     auto partitionBy = [&]() -> boost::optional<boost::intrusive_ptr<Expression>> {
         if (auto partitionBy = spec.getPartitionBy())
             return Expression::parseOperand(
@@ -458,12 +464,8 @@ DocumentSource::GetNextResult DocumentSourceInternalSetWindowFields::doGetNext()
         return DocumentSource::GetNextResult::makeEOF();
 
     auto curDoc = _iterator.current();
+    // The only way we hit this case is if there are no documents, since otherwise _eof will be set.
     if (!curDoc) {
-        if (_iterator.isPaused()) {
-            return DocumentSource::GetNextResult::makePauseExecution();
-        }
-        // The only way we hit this case is if there are no documents, since otherwise _eof will be
-        // set.
         _eof = true;
         return DocumentSource::GetNextResult::makeEOF();
     }
@@ -483,11 +485,14 @@ DocumentSource::GetNextResult DocumentSourceInternalSetWindowFields::doGetNext()
             throw;
         }
 
-        if (!_memoryTracker.withinMemoryLimit() && _memoryTracker._allowDiskUse) {
+        if (_memoryTracker.currentMemoryBytes() >=
+                static_cast<long long>(_memoryTracker._maxAllowedMemoryUsageBytes) &&
+            _memoryTracker._allowDiskUse) {
             // Attempt to spill where possible.
             _iterator.spillToDisk();
         }
-        if (!_memoryTracker.withinMemoryLimit()) {
+        if (_memoryTracker.currentMemoryBytes() >
+            static_cast<long long>(_memoryTracker._maxAllowedMemoryUsageBytes)) {
             _iterator.finalize();
             uasserted(5414201,
                       str::stream()

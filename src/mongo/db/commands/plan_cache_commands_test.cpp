@@ -38,12 +38,11 @@
 namespace mongo {
 namespace {
 
-static const NamespaceString nss =
-    NamespaceString::createNamespaceString_forTest("test.collection"_sd);
+static const NamespaceString nss{"test.collection"_sd};
 
-PlanCacheKey makeClassicKey(const CanonicalQuery& cq) {
+PlanCacheKey makeKey(const CanonicalQuery& cq) {
     CollectionMock coll(nss);
-    return plan_cache_key_factory::make<PlanCacheKey>(cq, CollectionPtr(&coll));
+    return plan_cache_key_factory::make<PlanCacheKey>(cq, &coll);
 }
 
 TEST(PlanCacheCommandsTest, CannotCanonicalizeWithMissingQueryField) {
@@ -107,7 +106,7 @@ TEST(PlanCacheCommandsTest, CanCanonicalizeWithValidQuery) {
         plan_cache_commands::canonicalize(opCtx.get(), nss.ns(), fromjson("{query: {b: 3, a: 4}}"));
     ASSERT_OK(statusWithCQ.getStatus());
     std::unique_ptr<CanonicalQuery> equivQuery = std::move(statusWithCQ.getValue());
-    ASSERT_EQUALS(makeClassicKey(*query), makeClassicKey(*equivQuery));
+    ASSERT_EQUALS(makeKey(*query), makeKey(*equivQuery));
 }
 
 TEST(PlanCacheCommandsTest, SortQueryResultsInDifferentPlanCacheKeyFromUnsorted) {
@@ -125,7 +124,7 @@ TEST(PlanCacheCommandsTest, SortQueryResultsInDifferentPlanCacheKeyFromUnsorted)
         opCtx.get(), nss.ns(), fromjson("{query: {a: 1, b: 1}, sort: {a: 1, b: 1}}"));
     ASSERT_OK(statusWithCQ.getStatus());
     std::unique_ptr<CanonicalQuery> sortQuery = std::move(statusWithCQ.getValue());
-    ASSERT_NOT_EQUALS(makeClassicKey(*query), makeClassicKey(*sortQuery));
+    ASSERT_NOT_EQUALS(makeKey(*query), makeKey(*sortQuery));
 }
 
 // Regression test for SERVER-17158.
@@ -144,7 +143,7 @@ TEST(PlanCacheCommandsTest, SortsAreProperlyDelimitedInPlanCacheKey) {
         opCtx.get(), nss.ns(), fromjson("{query: {a: 1, b: 1}, sort: {aab: 1}}"));
     ASSERT_OK(statusWithCQ.getStatus());
     std::unique_ptr<CanonicalQuery> sortQuery2 = std::move(statusWithCQ.getValue());
-    ASSERT_NOT_EQUALS(makeClassicKey(*sortQuery1), makeClassicKey(*sortQuery2));
+    ASSERT_NOT_EQUALS(makeKey(*sortQuery1), makeKey(*sortQuery2));
 }
 
 TEST(PlanCacheCommandsTest, ProjectQueryResultsInDifferentPlanCacheKeyFromUnprojected) {
@@ -161,7 +160,7 @@ TEST(PlanCacheCommandsTest, ProjectQueryResultsInDifferentPlanCacheKeyFromUnproj
         opCtx.get(), nss.ns(), fromjson("{query: {a: 1, b: 1}, projection: {_id: 0, a: 1}}"));
     ASSERT_OK(statusWithCQ.getStatus());
     std::unique_ptr<CanonicalQuery> projectionQuery = std::move(statusWithCQ.getValue());
-    ASSERT_NOT_EQUALS(makeClassicKey(*query), makeClassicKey(*projectionQuery));
+    ASSERT_NOT_EQUALS(makeKey(*query), makeKey(*projectionQuery));
 }
 
 }  // namespace

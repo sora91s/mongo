@@ -38,7 +38,9 @@
 #include <zlib.h>
 
 namespace mongo {
+void initMyZlibMessageCompressor() {
 
+}
 ZlibMessageCompressor::ZlibMessageCompressor() : MessageCompressorBase(MessageCompressor::kZlib) {}
 
 std::size_t ZlibMessageCompressor::getMaxCompressedSize(size_t inputSize) {

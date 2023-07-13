@@ -48,7 +48,6 @@
 #include "mongo/db/query/collection_query_info.h"
 #include "mongo/db/query/explain_common.h"
 #include "mongo/db/query/get_executor.h"
-#include "mongo/db/query/multiple_collection_accessor.h"
 #include "mongo/db/query/plan_cache_key_factory.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/plan_executor_impl.h"
@@ -59,12 +58,11 @@
 #include "mongo/db/query/query_settings_decoration.h"
 #include "mongo/db/query/stage_builder.h"
 #include "mongo/db/server_options.h"
-#include "mongo/db/stats/resource_consumption_metrics.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/net/socket_utils.h"
-#include "mongo/util/overloaded_visitor.h"
 #include "mongo/util/str.h"
 #include "mongo/util/version.h"
+#include "mongo/util/visit_helper.h"
 
 namespace mongo {
 namespace {
@@ -81,36 +79,39 @@ namespace {
  * - 'out' is a builder for the explain output.
  */
 void generatePlannerInfo(PlanExecutor* exec,
-                         const MultipleCollectionAccessor& collections,
+                         const CollectionPtr& collection,
                          BSONObj extraInfo,
                          BSONObjBuilder* out) {
     BSONObjBuilder plannerBob(out->subobjStart("queryPlanner"));
 
-    plannerBob.append("namespace", NamespaceStringUtil::serialize(exec->nss()));
+    plannerBob.append("namespace", exec->nss().ns());
 
     // Find whether there is an index filter set for the query shape. The 'indexFilterSet' field
     // will always be false in the case of EOF or idhack plans.
     bool indexFilterSet = false;
     boost::optional<uint32_t> queryHash;
     boost::optional<uint32_t> planCacheKeyHash;
-    const auto& mainCollection = collections.getMainCollection();
-    if (mainCollection && exec->getCanonicalQuery()) {
+    if (collection && exec->getCanonicalQuery()) {
         const QuerySettings* querySettings =
-            QuerySettingsDecoration::get(mainCollection->getSharedDecorations());
+            QuerySettingsDecoration::get(collection->getSharedDecorations());
         if (exec->getCanonicalQuery()->isSbeCompatible() &&
-            !exec->getCanonicalQuery()->getForceClassicEngine()) {
-            const auto planCacheKeyInfo =
-                plan_cache_key_factory::make(*exec->getCanonicalQuery(), collections);
+            feature_flags::gFeatureFlagSbePlanCache.isEnabledAndIgnoreFCV() &&
+            !exec->getCanonicalQuery()->getForceClassicEngine() &&
+            // TODO(SERVER-61507): Remove pipeline check once lowered pipelines are integrated with
+            // SBE plan cache.
+            exec->getCanonicalQuery()->pipeline().empty()) {
+            const auto planCacheKeyInfo = plan_cache_key_factory::make<sbe::PlanCacheKey>(
+                *exec->getCanonicalQuery(), collection);
             planCacheKeyHash = planCacheKeyInfo.planCacheKeyHash();
             queryHash = planCacheKeyInfo.queryHash();
         } else {
-            const auto planCacheKeyInfo = plan_cache_key_factory::make<PlanCacheKey>(
-                *exec->getCanonicalQuery(), mainCollection);
+            const auto planCacheKeyInfo =
+                plan_cache_key_factory::make<PlanCacheKey>(*exec->getCanonicalQuery(), collection);
             planCacheKeyHash = planCacheKeyInfo.planCacheKeyHash();
             queryHash = planCacheKeyInfo.queryHash();
         }
         if (auto allowedIndicesFilter = querySettings->getAllowedIndicesFilter(
-                exec->getCanonicalQuery()->encodeKeyForPlanCacheCommand())) {
+                exec->getCanonicalQuery()->encodeKeyForIndexFilters())) {
             // Found an index filter set on the query shape.
             indexFilterSet = true;
         }
@@ -123,7 +124,7 @@ void generatePlannerInfo(PlanExecutor* exec,
     auto query = exec->getCanonicalQuery();
     if (nullptr != query) {
         BSONObjBuilder parsedQueryBob(plannerBob.subobjStart("parsedQuery"));
-        query->root()->serialize(&parsedQueryBob, {});
+        query->root()->serialize(&parsedQueryBob);
         parsedQueryBob.doneFast();
 
         if (query->getCollator()) {
@@ -188,21 +189,7 @@ void generateSinglePlanExecutionInfo(const PlanExplainer::PlanStatsDetails& deta
     if (totalTimeMillis) {
         out->appendNumber("executionTimeMillis", *totalTimeMillis);
     } else {
-        if (summary->executionTime.precision == QueryExecTimerPrecision::kNanos) {
-            out->appendNumber(
-                "executionTimeMillisEstimate",
-                durationCount<Milliseconds>(summary->executionTime.executionTimeEstimate));
-            out->appendNumber(
-                "executionTimeMicros",
-                durationCount<Microseconds>(summary->executionTime.executionTimeEstimate));
-            out->appendNumber(
-                "executionTimeNanos",
-                durationCount<Nanoseconds>(summary->executionTime.executionTimeEstimate));
-        } else if (summary->executionTime.precision == QueryExecTimerPrecision::kMillis) {
-            out->appendNumber(
-                "executionTimeMillisEstimate",
-                durationCount<Milliseconds>(summary->executionTime.executionTimeEstimate));
-        }
+        out->appendNumber("executionTimeMillisEstimate", summary->executionTimeMillisEstimate);
     }
 
     out->appendNumber("totalKeysExamined", static_cast<long long>(summary->totalKeysExamined));
@@ -220,18 +207,6 @@ void generateSinglePlanExecutionInfo(const PlanExplainer::PlanStatsDetails& deta
 
     // Add the tree of stages, with individual execution stats for each stage.
     out->append("executionStages", stats);
-}
-
-void generateOperationMetrics(PlanExecutor* exec, BSONObjBuilder* out) {
-    if (ResourceConsumption::isMetricsProfilingEnabled()) {
-        auto& metricsCollector = ResourceConsumption::MetricsCollector::get(exec->getOpCtx());
-        if (metricsCollector.hasCollectedMetrics()) {
-            BSONObjBuilder metricsBuilder(out->subobjStart("operationMetrics"));
-            auto& metrics = metricsCollector.getMetrics();
-            metrics.toBsonNonZeroFields(&metricsBuilder);
-            metricsBuilder.doneFast();
-        }
-    }
 }
 
 /**
@@ -299,7 +274,7 @@ void generateExecutionInfo(PlanExecutor* exec,
         }
         allPlansBob.doneFast();
     }
-    generateOperationMetrics(exec, &execBob);
+
     execBob.doneFast();
 }
 
@@ -335,7 +310,7 @@ void appendBasicPlanCacheEntryInfoToBSON(const EntryType& entry, BSONObjBuilder*
 }  // namespace
 
 void Explain::explainStages(PlanExecutor* exec,
-                            const MultipleCollectionAccessor& collections,
+                            const CollectionPtr& collection,
                             ExplainOptions::Verbosity verbosity,
                             Status executePlanStatus,
                             boost::optional<PlanExplainer::PlanStatsDetails> winningPlanTrialStats,
@@ -350,7 +325,7 @@ void Explain::explainStages(PlanExecutor* exec,
     out->appendElements(explainVersionToBson(explainer.getVersion()));
 
     if (verbosity >= ExplainOptions::Verbosity::kQueryPlanner) {
-        generatePlannerInfo(exec, collections, extraInfo, out);
+        generatePlannerInfo(exec, collection, extraInfo, out);
     }
 
     if (verbosity >= ExplainOptions::Verbosity::kExecStats) {
@@ -389,7 +364,7 @@ void Explain::explainPipeline(PlanExecutor* exec,
 }
 
 void Explain::explainStages(PlanExecutor* exec,
-                            const MultipleCollectionAccessor& collections,
+                            const CollectionPtr& collection,
                             ExplainOptions::Verbosity verbosity,
                             BSONObj extraInfo,
                             const BSONObj& command,
@@ -397,10 +372,9 @@ void Explain::explainStages(PlanExecutor* exec,
     auto&& explainer = exec->getPlanExplainer();
     auto winningPlanTrialStats = explainer.getWinningPlanTrialStats();
     Status executePlanStatus = Status::OK();
-    const MultipleCollectionAccessor* collectionsPtr = &collections;
+    const CollectionPtr* collectionPtr = &collection;
 
     // If we need execution stats, then run the plan in order to gather the stats.
-    const MultipleCollectionAccessor emptyCollections;
     if (verbosity >= ExplainOptions::Verbosity::kExecStats) {
         try {
             executePlan(exec);
@@ -412,12 +386,12 @@ void Explain::explainStages(PlanExecutor* exec,
         // then the collection may no longer be valid. We conservatively set our collection pointer
         // to null in case it is invalid.
         if (!executePlanStatus.isOK() && executePlanStatus != ErrorCodes::NoQueryExecutionPlans) {
-            collectionsPtr = &emptyCollections;
+            collectionPtr = &CollectionPtr::null;
         }
     }
 
     explainStages(exec,
-                  *collectionsPtr,
+                  *collectionPtr,
                   verbosity,
                   executePlanStatus,
                   winningPlanTrialStats,
@@ -427,15 +401,6 @@ void Explain::explainStages(PlanExecutor* exec,
 
     explain_common::generateServerInfo(out);
     explain_common::generateServerParameters(out);
-}
-
-void Explain::explainStages(PlanExecutor* exec,
-                            const CollectionPtr& collection,
-                            ExplainOptions::Verbosity verbosity,
-                            BSONObj extraInfo,
-                            const BSONObj& command,
-                            BSONObjBuilder* out) {
-    explainStages(exec, MultipleCollectionAccessor(collection), verbosity, extraInfo, command, out);
 }
 
 void Explain::planCacheEntryToBSON(const PlanCacheEntry& entry, BSONObjBuilder* out) {
@@ -459,14 +424,15 @@ void Explain::planCacheEntryToBSON(const PlanCacheEntry& entry, BSONObjBuilder* 
             }
         }
 
-        auto explainer = stdx::visit(
-            OverloadedVisitor{[](const plan_ranker::StatsDetails&) {
-                                  return plan_explainer_factory::make(nullptr);
-                              },
-                              [](const plan_ranker::SBEStatsDetails&) {
-                                  return plan_explainer_factory::make(nullptr, nullptr, nullptr);
-                              }},
-            debugInfo.decision->stats);
+        auto explainer =
+            stdx::visit(visit_helper::Overloaded{[](const plan_ranker::StatsDetails&) {
+                                                     return plan_explainer_factory::make(nullptr);
+                                                 },
+                                                 [](const plan_ranker::SBEStatsDetails&) {
+                                                     return plan_explainer_factory::make(
+                                                         nullptr, nullptr, nullptr);
+                                                 }},
+                        debugInfo.decision->stats);
         auto plannerStats =
             explainer->getCachedPlanStats(debugInfo, ExplainOptions::Verbosity::kQueryPlanner);
         auto execStats =

@@ -15,9 +15,6 @@ Random.setRandomSeed();
 
 const st = new ShardingTest({shards: 2, rs: {nodes: 2}});
 
-// TODO SERVER-68008 remove error codes 6235600, 6235601, 6235602 and 6235603 from all the
-// assertions contained by this test.
-
 const dbName = 'test';
 assert.commandWorked(st.s.adminCommand({enableSharding: dbName}));
 const sDB = st.s.getDB(dbName);
@@ -65,7 +62,7 @@ if (TimeseriesTest.shardedtimeseriesCollectionsEnabled(st.shard0)) {
                 key: {'hostId': 1},
                 timeseries: {timeField: 'time'},
             }),
-                                         [5731500, 6235601]);
+                                         5731500);
         }
 
         assert.commandWorked(
@@ -245,28 +242,28 @@ if (TimeseriesTest.shardedtimeseriesCollectionsEnabled(st.shard0)) {
                 key: {_id: 1},
                 timeseries: {timeField: 'time', metaField: 'hostId'},
             }),
-                                         [5914001, 6235603]);
+                                         5914001);
 
             assert.commandFailedWithCode(st.s.adminCommand({
                 shardCollection: 'test.ts',
                 key: {_id: 1, time: 1},
                 timeseries: {timeField: 'time', metaField: 'hostId'},
             }),
-                                         [5914001, 6235603]);
+                                         5914001);
 
             assert.commandFailedWithCode(st.s.adminCommand({
                 shardCollection: 'test.ts',
                 key: {_id: 1, hostId: 1},
                 timeseries: {timeField: 'time', metaField: 'hostId'},
             }),
-                                         [5914001, 6235603]);
+                                         5914001);
 
             assert.commandFailedWithCode(st.s.adminCommand({
                 shardCollection: 'test.ts',
                 key: {a: 1},
                 timeseries: {timeField: 'time', metaField: 'hostId'},
             }),
-                                         [5914001, 6235603]);
+                                         5914001);
 
             // Shared key where time is not the last field in shard key should fail.
             assert.commandFailedWithCode(st.s.adminCommand({
@@ -274,7 +271,7 @@ if (TimeseriesTest.shardedtimeseriesCollectionsEnabled(st.shard0)) {
                 key: {time: 1, hostId: 1},
                 timeseries: {timeField: 'time', metaField: 'hostId'}
             }),
-                                         [5914000, 6235602]);
+                                         5914000);
             assert(sDB.getCollection("ts").drop());
         })();
 
@@ -288,14 +285,14 @@ if (TimeseriesTest.shardedtimeseriesCollectionsEnabled(st.shard0)) {
                 key: {_id: 1},
                 timeseries: {timeField: 'time'},
             }),
-                                         [5914001, 6235603]);
+                                         5914001);
 
             assert.commandFailedWithCode(st.s.adminCommand({
                 shardCollection: 'test.ts',
                 key: {a: 1},
                 timeseries: {timeField: 'time'},
             }),
-                                         [5914001, 6235603]);
+                                         5914001);
 
             assert.commandWorked(st.s.adminCommand(
                 {shardCollection: 'test.ts', key: {time: 1}, timeseries: {timeField: 'time'}}));
@@ -315,11 +312,11 @@ if (TimeseriesTest.shardedtimeseriesCollectionsEnabled(st.shard0)) {
         shardCollection: 'test.ts',
         key: {time: 1},
     }),
-                                 [6159000, 6235600]);
+                                 6159000);
     assert.commandFailedWithCode(
         st.s.adminCommand(
             {shardCollection: 'test.ts', key: {time: 1}, timeseries: {timeField: 'time'}}),
-        [6159000, 6235600]);
+        6159000);
 
     // Cannot shard a system namespace.
     assert.commandFailedWithCode(st.s.adminCommand({

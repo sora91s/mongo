@@ -119,7 +119,7 @@ public:
     // Define valid transitions.
     // Must be called prior to starting the state machine.
     void validTransitions(const TransitionsContainer& transitions) noexcept {
-        for (const auto& [from, toStates] : transitions) {
+        for (auto [from, toStates] : transitions) {
             for (auto to : toStates) {
                 validTransition(from, to);
             }
@@ -266,7 +266,6 @@ protected:
     using StateContexts = stdx::unordered_map<State, StateContext>;
 
     void setState(State s, const OptionalMessageType& message) {
-        stdx::lock_guard<stdx::recursive_mutex> lk(_mutex);
         tassertStarted();
 
         invariant(_current);

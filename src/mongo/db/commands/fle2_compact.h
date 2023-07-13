@@ -30,6 +30,7 @@
 #pragma once
 
 #include "mongo/base/status_with.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/commands/fle2_compact_gen.h"
 #include "mongo/db/fle_crud.h"
 

@@ -58,12 +58,6 @@ public:
     static CollectionQueryInfo& get(Collection* collection) {
         return CollectionQueryInfo::getCollectionQueryInfo(collection);
     }
-    /**
-     * Populate the outData structure using the index keys found in the index definition.
-     */
-    static void computeUpdateIndexData(const IndexCatalogEntry* entry,
-                                       const IndexAccessMethod* accessMethod,
-                                       UpdateIndexData* outData);
 
     /**
      * Gets the PlanCache for this collection.
@@ -151,7 +145,7 @@ private:
         PlanCacheIndexabilityState planCacheIndexabilityState;
     };
 
-    void computeUpdateIndexData(OperationContext* opCtx, const CollectionPtr& coll);
+    void computeIndexKeys(OperationContext* opCtx, const CollectionPtr& coll);
     void updatePlanCacheIndexEntries(OperationContext* opCtx, const CollectionPtr& coll);
 
     // ---  index keys cache

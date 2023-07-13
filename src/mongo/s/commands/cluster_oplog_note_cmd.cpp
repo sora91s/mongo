@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -42,8 +43,6 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/s/cluster_commands_helpers.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 
 namespace mongo {
@@ -72,25 +71,24 @@ public:
         return "Performs a no-op entry on the oplog on each shard";
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::appendOplogNote)) {
+    virtual Status checkAuthForCommand(Client* client,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj) const {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::appendOplogNote)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
     virtual bool run(OperationContext* opCtx,
-                     const DatabaseName& dbName,
+                     const string& dbname,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
 
         auto shardResponses = scatterGatherUnversionedTargetAllShards(
             opCtx,
-            dbName.toStringWithTenantId(),
+            dbname,
             applyReadWriteConcern(
                 opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
             ReadPreferenceSetting::get(opCtx),

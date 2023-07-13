@@ -3,6 +3,7 @@
  * migration.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -11,24 +12,24 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    getTenantMigrationAccessBlocker,
-    makeX509OptionsForTest
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
 load("jstests/libs/write_concern_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 load('jstests/libs/parallel_shell_helpers.js');
 
+const kTenantIdPrefix = "testTenantId";
 // During "shard merge" tenant migrations, writes to internal DBs are still allowed.
 const kUnrelatedDbName = "admin";
 const collName = "foo";
-const migrationX509Options = makeX509OptionsForTest();
+const migrationX509Options = TenantMigrationUtil.makeX509OptionsForTest();
 
+let counter = 0;
 let makeTenantId = function() {
-    return ObjectId().str;
+    return kTenantIdPrefix + "-" + counter++;
 };
 
 function makeTestParams() {
@@ -51,7 +52,8 @@ function advanceClusterTime(conn, dbName, collName) {
 }
 
 function getBlockTimestamp(conn, tenantId) {
-    const mtabServerStatus = getTenantMigrationAccessBlocker({donorNode: conn, tenantId}).donor;
+    const mtabServerStatus =
+        TenantMigrationUtil.getTenantMigrationAccessBlocker({donorNode: conn, tenantId}).donor;
     assert(mtabServerStatus.blockTimestamp, tojson(mtabServerStatus));
     return mtabServerStatus.blockTimestamp;
 }
@@ -233,3 +235,4 @@ function setup() {
     awaitReadOnDonor();
     teardown();
 }
+})();

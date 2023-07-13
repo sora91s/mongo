@@ -29,9 +29,16 @@
 
 #pragma once
 
+#include "mongo/db/change_stream_options_gen.h"
 #include "mongo/db/service_context.h"
 
 namespace mongo {
+namespace preImageRemoverInternal {
+
+boost::optional<Date_t> getPreImageExpirationTime(OperationContext* opCtx, Date_t currentTime);
+
+}  // namespace preImageRemoverInternal
+
 /**
  * Starts a periodic background job to remove expired documents from 'system.preimages' collection.
  */

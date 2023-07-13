@@ -31,7 +31,7 @@
 
 #include <fmt/format.h>
 
-#include "mongo/db/feature_compatibility_version_documentation.h"
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/process_interface/mongo_process_interface.h"
@@ -43,10 +43,11 @@ namespace mongo {
 
 using boost::intrusive_ptr;
 
-REGISTER_DOCUMENT_SOURCE(listCatalog,
-                         DocumentSourceListCatalog::LiteParsed::parse,
-                         DocumentSourceListCatalog::createFromBson,
-                         AllowedWithApiStrict::kNeverInVersion1);
+REGISTER_DOCUMENT_SOURCE_WITH_MIN_VERSION(listCatalog,
+                                          DocumentSourceListCatalog::LiteParsed::parse,
+                                          DocumentSourceListCatalog::createFromBson,
+                                          AllowedWithApiStrict::kNeverInVersion1,
+                                          multiversion::FeatureCompatibilityVersion::kVersion_6_0);
 
 const char* DocumentSourceListCatalog::getSourceName() const {
     return kStageName.rawData();
@@ -108,12 +109,26 @@ intrusive_ptr<DocumentSource> DocumentSourceListCatalog::createFromBson(
     uassert(
         ErrorCodes::InvalidNamespace,
         "Collectionless $listCatalog must be run against the 'admin' database with {aggregate: 1}",
-        nss.db() == DatabaseName::kAdmin.db() || !nss.isCollectionlessAggregateNS());
+        nss.db() == NamespaceString::kAdminDb || !nss.isCollectionlessAggregateNS());
 
     uassert(ErrorCodes::QueryFeatureNotAllowed,
             fmt::format("The {} aggregation stage is not enabled", kStageName),
             feature_flags::gDocumentSourceListCatalog.isEnabled(
                 serverGlobalParams.featureCompatibility));
+
+    // We declare this stage with a min version but the base class DocumentSource checks the
+    // minimum version only if pExpCtx->maxFeatureCompatibilityVersion is provided.
+    if (!pExpCtx->maxFeatureCompatibilityVersion) {
+        const auto& globalFcv = serverGlobalParams.featureCompatibility;
+        using FCV = multiversion::FeatureCompatibilityVersion;
+        uassert(ErrorCodes::QueryFeatureNotAllowed,
+                fmt::format("The {} aggregation stage is not allowed in the current feature "
+                            "compatibility version. See {} for more information.",
+                            kStageName,
+                            feature_compatibility_version_documentation::kCompatibilityLink),
+                !globalFcv.isVersionInitialized() ||
+                    globalFcv.isGreaterThanOrEqualTo(FCV::kVersion_5_3));
+    }
 
     return new DocumentSourceListCatalog(pExpCtx);
 }

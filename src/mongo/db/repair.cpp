@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
+
+#include "mongo/platform/basic.h"
+
 #include <algorithm>
 #include <fmt/format.h>
 
@@ -39,10 +43,12 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/collection_validation.h"
+#include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/catalog/multi_index_block.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builds_coordinator.h"
@@ -57,8 +63,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/scopeguard.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 namespace mongo {
 
 using namespace fmt::literals;
@@ -66,13 +70,6 @@ using namespace fmt::literals;
 Status rebuildIndexesForNamespace(OperationContext* opCtx,
                                   const NamespaceString& nss,
                                   StorageEngine* engine) {
-    if (opCtx->recoveryUnit()->isActive()) {
-        // This function is shared by multiple callers. Some of which have opened a transaction to
-        // perform reads. This function may make mixed-mode writes. Mixed-mode assertions can only
-        // be suppressed when beginning a fresh transaction.
-        opCtx->recoveryUnit()->abandonSnapshot();
-    }
-
     opCtx->checkForInterrupt();
     auto collection = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
     auto swIndexNameObjs = getIndexNameObjs(collection);
@@ -103,15 +100,7 @@ Status dropUnfinishedIndexes(OperationContext* opCtx, Collection* collection) {
             WriteUnitOfWork wuow(opCtx);
             // There are no concurrent users of the index while --repair is running, so it is OK to
             // pass in a nullptr for the index 'ident', promising that the index is not in use.
-            catalog::removeIndex(
-                opCtx,
-                indexName,
-                collection,
-                nullptr /*ident */,
-                // Unfinished indexes do not need two-phase drop because the incomplete index will
-                // never be recovered. This is an optimization that will return disk space to the
-                // user more quickly.
-                catalog::DataRemoval::kImmediate);
+            catalog::removeIndex(opCtx, indexName, collection, nullptr /*ident */);
             wuow.commit();
 
             StorageRepairObserver::get(opCtx->getServiceContext())
@@ -125,8 +114,8 @@ Status dropUnfinishedIndexes(OperationContext* opCtx, Collection* collection) {
 
 Status repairCollections(OperationContext* opCtx,
                          StorageEngine* engine,
-                         const DatabaseName& dbName) {
-    auto colls = CollectionCatalog::get(opCtx)->getAllCollectionNamesFromDb(opCtx, dbName);
+                         const TenantDatabaseName& tenantDbName) {
+    auto colls = CollectionCatalog::get(opCtx)->getAllCollectionNamesFromDb(opCtx, tenantDbName);
 
     for (const auto& nss : colls) {
         auto status = repair::repairCollection(opCtx, engine, nss);
@@ -139,38 +128,39 @@ Status repairCollections(OperationContext* opCtx,
 }  // namespace
 
 namespace repair {
-Status repairDatabase(OperationContext* opCtx, StorageEngine* engine, const DatabaseName& dbName) {
+Status repairDatabase(OperationContext* opCtx,
+                      StorageEngine* engine,
+                      const TenantDatabaseName& tenantDbName) {
     DisableDocumentValidation validationDisabler(opCtx);
 
     // We must hold some form of lock here
     invariant(opCtx->lockState()->isW());
-    invariant(dbName.db().find('.') == std::string::npos);
+    invariant(tenantDbName.dbName().find('.') == std::string::npos);
 
-    LOGV2(21029, "repairDatabase", "db"_attr = dbName);
+    LOGV2(21029, "repairDatabase", "db"_attr = tenantDbName);
 
 
     opCtx->checkForInterrupt();
 
     // Close the db and invalidate all current users and caches.
     auto databaseHolder = DatabaseHolder::get(opCtx);
-    databaseHolder->close(opCtx, dbName);
+    databaseHolder->close(opCtx, tenantDbName);
 
     // Reopening db is necessary for repairCollections.
-    databaseHolder->openDb(opCtx, dbName);
+    databaseHolder->openDb(opCtx, tenantDbName);
 
-    auto status = repairCollections(opCtx, engine, dbName);
+    auto status = repairCollections(opCtx, engine, tenantDbName);
     if (!status.isOK()) {
         LOGV2_FATAL_CONTINUE(21030,
                              "Failed to repair database {dbName}: {status_reason}",
                              "Failed to repair database",
-                             "db"_attr = dbName,
+                             "db"_attr = tenantDbName,
                              "error"_attr = status);
     }
 
     try {
         // Ensure that we don't trigger an exception when attempting to take locks.
-        // TODO (SERVER-71610): Fix to be interruptible or document exception.
-        UninterruptibleLockGuard noInterrupt(opCtx->lockState());  // NOLINT.
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
 
         // Restore oplog Collection pointer cache.
         repl::acquireOplogCollectionForLogging(opCtx);
@@ -240,8 +230,7 @@ Status repairCollection(OperationContext* opCtx,
                                        CollectionValidation::ValidateMode::kForegroundFullIndexOnly,
                                        CollectionValidation::RepairMode::kFixErrors,
                                        &validateResults,
-                                       &output,
-                                       /*logDiagnostics=*/false);
+                                       &output);
     if (!status.isOK()) {
         return status;
     }

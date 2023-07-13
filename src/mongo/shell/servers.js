@@ -72,42 +72,15 @@ var createMongoArgs = function(binaryName, args) {
     return fullArgs;
 };
 
-// A path.join-like thing for paths that must work
-// on Windows (\-separated) and *nix (/-separated).
-function pathJoin(...parts) {
-    const separator = _isWindows() ? '\\' : '/';
-    return parts.join(separator);
-}
-
 MongoRunner = function() {};
 
 MongoRunner.dataDir = "/data/db";
 MongoRunner.dataPath = "/data/db/";
 
-function getMongoSuffixPath(binary_name) {
-    let installDir = _getEnv("INSTALL_DIR");
-    if (installDir && !jsTestOptions().inEvergreen) {
-        return pathJoin(installDir, binary_name);
-    }
-    return binary_name;
-}
-
-MongoRunner.getMongodPath = function() {
-    return getMongoSuffixPath("mongod");
-};
-
-MongoRunner.getMongosPath = function() {
-    return getMongoSuffixPath("mongos");
-};
-
-MongoRunner.getMongoqPath = function() {
-    return getMongoSuffixPath("mongoqd");
-};
-
-MongoRunner.getMongoShellPath = function() {
-    let shellPath = getMongoSuffixPath("mongo");
-    return shellPath;
-};
+MongoRunner.mongodPath = "mongod";
+MongoRunner.mongosPath = "mongos";
+MongoRunner.mongoqPath = "mongoqd";
+MongoRunner.mongoShellPath = "mongo";
 
 MongoRunner.VersionSub = function(pattern, version) {
     this.pattern = pattern;
@@ -124,6 +97,13 @@ function getPids() {
     }
     pids = pids.concat(MongoRunner.runningChildPids());
     return pids;
+}
+
+// A path.join-like thing for paths that must work
+// on Windows (\-separated) and *nix (/-separated).
+function pathJoin(...parts) {
+    const separator = _isWindows() ? '\\' : '/';
+    return parts.join(separator);
 }
 
 // Internal state to determine if the hang analyzer should be enabled or not.
@@ -351,6 +331,7 @@ MongoRunner.logicalOptions = {
     noReplSet: true,
     forgetPort: true,
     arbiter: true,
+    noJournal: true,
     binVersion: true,
     waitForConnect: true,
     bridgeOptions: true,
@@ -685,6 +666,7 @@ var _removeSetParameterIfBeforeVersion = function(
  *     useLogFiles {boolean}: use with logFile option.
  *     logFile {string}: path to the log file. If not specified and useLogFiles
  *       is true, automatically creates a log file inside dbpath.
+ *     noJournal {boolean}
  *     keyFile
  *     replSet
  *     oplogSize
@@ -721,9 +703,8 @@ MongoRunner.mongodOptions = function(opts = {}) {
         opts, "enableDefaultWriteConcernUpdatesForInitiate", "5.0.0");
     _removeSetParameterIfBeforeVersion(opts, "enableReconfigRollbackCommittedWritesCheck", "5.0.0");
     _removeSetParameterIfBeforeVersion(opts, "featureFlagRetryableFindAndModify", "5.0.0");
+    _removeSetParameterIfBeforeVersion(opts, "internalQueryForceClassicEngine", "5.1.0");
     _removeSetParameterIfBeforeVersion(opts, "allowMultipleArbiters", "5.3.0");
-    _removeSetParameterIfBeforeVersion(
-        opts, "internalQueryDisableExclusionProjectionFastPath", "6.2.0");
 
     if (!opts.logFile && opts.useLogFiles) {
         opts.logFile = opts.dbpath + "/mongod.log";
@@ -733,6 +714,11 @@ MongoRunner.mongodOptions = function(opts = {}) {
 
     if (opts.logFile !== undefined) {
         opts.logpath = opts.logFile;
+    }
+
+    if ((jsTestOptions().noJournal || opts.noJournal) && !('journal' in opts) &&
+        !('configsvr' in opts)) {
+        opts.nojournal = "";
     }
 
     if (jsTestOptions().keyFile && !opts.keyFile) {
@@ -792,14 +778,6 @@ MongoRunner.mongodOptions = function(opts = {}) {
     if (opts.hasOwnProperty("auditPath")) {
         // We need to reformat the auditPath to include the proper port
         opts.auditPath = MongoRunner.toRealPath(opts.auditPath, opts);
-    }
-
-    if (opts.hasOwnProperty("setParameter")) {
-        if (((typeof opts.setParameter === "string") &&
-             opts.setParameter.includes("multitenancySupport") &&
-             opts.setParameter.includes("true")) ||
-            (opts.setParameter.multitenancySupport))
-            opts.noscripting = "";
     }
 
     if (opts.noReplSet)
@@ -1007,7 +985,7 @@ MongoRunner.runMongod = function(opts) {
             }
         }
 
-        var mongodProgram = MongoRunner.getMongodPath();
+        var mongodProgram = MongoRunner.mongodPath;
         opts = MongoRunner.arrOptions(mongodProgram, opts);
     }
 
@@ -1045,7 +1023,7 @@ MongoRunner.runMongos = function(opts) {
         runId = opts.runId;
         waitForConnect = opts.waitForConnect;
         env = opts.env;
-        var mongosProgram = MongoRunner.getMongosPath();
+        var mongosProgram = MongoRunner.mongosPath;
         opts = MongoRunner.arrOptions(mongosProgram, opts);
     }
 
@@ -1082,7 +1060,7 @@ MongoRunner.runMongoq = function(opts) {
         runId = opts.runId;
         waitForConnect = opts.waitForConnect;
         env = opts.env;
-        var mongoqProgram = MongoRunner.getMongoqPath();
+        var mongoqProgram = MongoRunner.mongoqPath;
         opts = MongoRunner.arrOptions(mongoqProgram, opts);
     }
 
@@ -1114,7 +1092,7 @@ MongoRunner.StopError.prototype.constructor = MongoRunner.StopError;
 
 // Constants for exit codes of MongoDB processes
 // On Windows, std::abort causes the process to exit with return code 14.
-MongoRunner.EXIT_ABORT = _isWindows() ? 14 : 6;
+MongoRunner.EXIT_ABORT = _isWindows() ? 14 : -6;
 MongoRunner.EXIT_CLEAN = 0;
 MongoRunner.EXIT_BADOPTIONS = 2;
 MongoRunner.EXIT_REPLICATION_ERROR = 3;
@@ -1122,7 +1100,7 @@ MongoRunner.EXIT_NEED_UPGRADE = 4;
 MongoRunner.EXIT_SHARDING_ERROR = 5;
 // SIGKILL is translated to TerminateProcess() on Windows, which causes the program to
 // terminate with exit code 1.
-MongoRunner.EXIT_SIGKILL = _isWindows() ? 1 : 9;
+MongoRunner.EXIT_SIGKILL = _isWindows() ? 1 : -9;
 MongoRunner.EXIT_KILL = 12;
 MongoRunner.EXIT_ABRUPT = 14;
 MongoRunner.EXIT_NTSERVICE_ERROR = 20;
@@ -1172,7 +1150,7 @@ var stopMongoProgram = function(conn, signal, opts, waitpid) {
                         "it is usually the object returned from MongoRunner.runMongod/s");
     }
 
-    signal = parseInt(signal) || SIGTERM;
+    signal = parseInt(signal) || 15;
     opts = opts || {};
     waitpid = (waitpid === undefined) ? true : waitpid;
 
@@ -1514,7 +1492,7 @@ function appendSetParameterArgs(argArray) {
             }
 
             // Since options may not be backward compatible, mongod options are not
-            // set on older versions, e.g., mongod-3.0.
+            // set on older versions, e.g., mongod-4.4.
             if (baseProgramName === 'mongod' &&
                 programMajorMinorVersion == lastestMajorMinorVersion) {
                 if (jsTest.options().storageEngine === "wiredTiger" ||
@@ -1774,7 +1752,7 @@ startMongoProgramNoConnect = function() {
 };
 
 myPort = function() {
-    const hosts = globalThis.db.getMongo().host.split(',');
+    const hosts = db.getMongo().host.split(',');
 
     const ip6Numeric = hosts[0].match(/^\[[0-9A-Fa-f:]+\]:(\d+)$/);
     if (ip6Numeric) {

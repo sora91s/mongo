@@ -3,15 +3,20 @@
  * results to be created.
  *
  * @tags: [
- *     # Explain of a resolved view must be executed by mongos.
- *     directly_against_shardsvrs_incompatible,
- *     # This complicates aggregation extraction.
- *     do_not_wrap_aggregations_in_facets,
+ *     requires_fcv_60,
+ *     # We need a timeseries collection.
+ *     assumes_no_implicit_collection_creation_after_drop,
+ *     # Cannot insert into a time-series collection in a multi-document transaction.
+ *     does_not_support_transactions,
  *     # Refusing to run a test that issues an aggregation command with explain because it may
  *     # return incomplete results if interrupted by a stepdown.
  *     does_not_support_stepdowns,
+ *     # This complicates aggregation extraction.
+ *     do_not_wrap_aggregations_in_facets,
  *     # We need a timeseries collection.
  *     requires_timeseries,
+ *     # Explain of a resolved view must be executed by mongos.
+ *     directly_against_shardsvrs_incompatible,
  * ]
  */
 (function() {
@@ -207,7 +212,7 @@ const runRewritesTest = (sortSpec,
     const ogExplainFull = testColl.explain().aggregate(ogPipeline, options);
 
     // Assert correct
-    assert.docEq(ogResults, optResults);
+    assert.docEq(optResults, ogResults);
     // Make sure we're not testing trivial / empty queries.
     assert.gt(ogResults.length, 0, 'Expected the queries in this test to have nonempty results');
 
@@ -242,7 +247,7 @@ const runRewritesTest = (sortSpec,
     let foundMatch = findFirstMatch(optExplain);
     if (!precise) {
         assert.docEq(
-            bucketSpanMatch, foundMatch, 'Expected an extra $match to check the bucket span');
+            foundMatch, bucketSpanMatch, 'Expected an extra $match to check the bucket span');
     } else {
         // (We don't have a 'assert.notDocEq' helper, but docEq is 'eq' + 'sortDoc'.)
         assert.neq(sortDoc(foundMatch),

@@ -28,7 +28,9 @@ var $config = extendWorkload($config, function($config, $super) {
 
     $config.states.mapReduce = function mapReduce(db, collName) {
         var outCollName = uniqueCollectionName(this.prefix, this.tid);
-        db[outCollName].drop();
+        var fullName = db[outCollName].getFullName();
+        assertAlways.isnull(db[outCollName].exists(),
+                            "output collection '" + fullName + "' should not exist");
 
         var options = {
             finalize: this.finalizer,

@@ -2,9 +2,11 @@
  * Checks that set/getClusterParameter runs as expected on replica set nodes.
  *
  * @tags: [
+ *   # Requires all nodes to be running the latest binary.
+ *   requires_fcv_60,
+ *   featureFlagClusterWideConfig,
  *   does_not_support_stepdowns,
- *   requires_replication,
- *   multiversion_incompatible
+ *   requires_replication
  *  ]
  */
 (function() {

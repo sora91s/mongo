@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -36,20 +37,16 @@
 #include <memory>
 
 #include "mongo/client/remote_command_targeter.h"
-#include "mongo/db/curop.h"
-#include "mongo/executor/hedge_options_util.h"
 #include "mongo/executor/remote_command_request.h"
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/hedge_options_util.h"
 #include "mongo/transport/baton.h"
 #include "mongo/transport/transport_layer.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 using namespace fmt::literals;
 
@@ -60,6 +57,7 @@ namespace {
 // Maximum number of retries for network and replication NotPrimary errors (per host).
 const int kMaxNumFailedHostRetryAttempts = 3;
 
+MONGO_FAIL_POINT_DEFINE(hangBeforeSchedulingRemoteCommand);
 MONGO_FAIL_POINT_DEFINE(hangBeforePollResponse);
 
 }  // namespace
@@ -89,8 +87,6 @@ AsyncRequestsSender::AsyncRequestsSender(OperationContext* opCtx,
         // Kick off requests immediately.
         _remotes.emplace_back(this, request.shardId, request.cmdObj).executeRequest();
     }
-
-    CurOp::get(_opCtx)->ensureRecordRemoteOpWait();
 }
 
 AsyncRequestsSender::Response AsyncRequestsSender::next() noexcept {
@@ -121,22 +117,9 @@ AsyncRequestsSender::Response AsyncRequestsSender::next() noexcept {
             _resourceYielder->yield(_opCtx);
         }
 
-        auto curOp = CurOp::get(_opCtx);
-        // Calculating the total wait time for remote operations relies on the CurOp's timing
-        // measurement facility and we can't use such facility when the current operation is marked
-        // as done. Some commands such as 'analyzeShardKey' command may send remote operations using
-        // AsyncRequestsSender even after marking the current operation done and so we need to check
-        // whether the current operation is still in progress.
-        auto curOpInProgress = !curOp->isDone();
-        if (curOpInProgress) {
-            curOp->startRemoteOpWaitTimer();
-        }
         // Only wait for the next result without popping it, so an error unyielding doesn't
         // discard an already popped response.
         auto waitStatus = _responseQueue.waitForNonEmptyNoThrow(_opCtx);
-        if (curOpInProgress) {
-            curOp->stopRemoteOpWaitTimer();
-        }
 
         auto unyieldStatus =
             _resourceYielder ? _resourceYielder->unyieldNoThrow(_opCtx) : Status::OK();
@@ -227,10 +210,28 @@ auto AsyncRequestsSender::RemoteData::scheduleRequest()
 
 auto AsyncRequestsSender::RemoteData::scheduleRemoteCommand(std::vector<HostAndPort>&& hostAndPorts)
     -> SemiFuture<RemoteCommandOnAnyCallbackArgs> {
-    HedgeOptions options =
-        getHedgeOptions(_cmdObj.firstElementFieldNameStringData(), _ars->_readPreference);
-    executor::RemoteCommandRequestOnAny request(
-        std::move(hostAndPorts), _ars->_db, _cmdObj, _ars->_metadataObj, _ars->_opCtx, options);
+    hangBeforeSchedulingRemoteCommand.executeIf(
+        [&](const BSONObj& data) {
+            while (MONGO_unlikely(hangBeforeSchedulingRemoteCommand.shouldFail())) {
+                LOGV2(4625505,
+                      "Hanging in ARS due to "
+                      "'hangBeforeSchedulingRemoteCommand' failpoint");
+                sleepmillis(100);
+            }
+        },
+        [&](const BSONObj& data) {
+            return MONGO_unlikely(std::count(hostAndPorts.begin(),
+                                             hostAndPorts.end(),
+                                             HostAndPort(data.getStringField("hostAndPort"))));
+        });
+
+    auto hedgeOptions = extractHedgeOptions(_cmdObj, _ars->_readPreference);
+    executor::RemoteCommandRequestOnAny request(std::move(hostAndPorts),
+                                                _ars->_db,
+                                                _cmdObj,
+                                                _ars->_metadataObj,
+                                                _ars->_opCtx,
+                                                hedgeOptions);
 
     // We have to make a promise future pair because the TaskExecutor doesn't currently support a
     // future returning variant of scheduleRemoteCommand

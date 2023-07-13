@@ -8,10 +8,9 @@ import pymongo
 import pymongo.errors
 
 import buildscripts.resmokelib.testing.fixtures.interface as interface
-import buildscripts.resmokelib.testing.fixtures.external as external
 
 
-class ShardedClusterFixture(interface.Fixture):
+class ShardedClusterFixture(interface.Fixture):  # pylint: disable=too-many-instance-attributes
     """Fixture which provides JSTests with a sharded cluster to run against."""
 
     _CONFIGSVR_REPLSET_NAME = "config-rs"
@@ -19,12 +18,12 @@ class ShardedClusterFixture(interface.Fixture):
 
     AWAIT_SHARDING_INITIALIZATION_TIMEOUT_SECS = 60
 
-    def __init__(self, logger, job_num, fixturelib, mongos_executable=None, mongos_options=None,
-                 mongod_executable=None, mongod_options=None, dbpath_prefix=None,
-                 preserve_dbpath=False, num_shards=1, num_rs_nodes_per_shard=1, num_mongos=1,
-                 enable_sharding=None, enable_balancer=True, enable_autosplit=True,
-                 auth_options=None, configsvr_options=None, shard_options=None,
-                 cluster_logging_prefix=None, catalog_shard=None):
+    def __init__(  # pylint: disable=too-many-arguments,too-many-locals
+            self, logger, job_num, fixturelib, mongos_executable=None, mongos_options=None,
+            mongod_executable=None, mongod_options=None, dbpath_prefix=None, preserve_dbpath=False,
+            num_shards=1, num_rs_nodes_per_shard=1, num_mongos=1, enable_sharding=None,
+            enable_balancer=True, enable_autosplit=True, auth_options=None, configsvr_options=None,
+            shard_options=None, cluster_logging_prefix=None):
         """Initialize ShardedClusterFixture with different options for the cluster processes."""
 
         interface.Fixture.__init__(self, logger, job_num, fixturelib, dbpath_prefix=dbpath_prefix)
@@ -42,7 +41,6 @@ class ShardedClusterFixture(interface.Fixture):
             mongod_options.get("set_parameters", {})).copy()
         self.mongod_options["set_parameters"]["migrationLockAcquisitionMaxWaitMS"] = \
                 self.mongod_options["set_parameters"].get("migrationLockAcquisitionMaxWaitMS", 30000)
-        self.catalog_shard = catalog_shard
         self.preserve_dbpath = preserve_dbpath
         self.num_shards = num_shards
         self.num_rs_nodes_per_shard = num_rs_nodes_per_shard
@@ -92,8 +90,7 @@ class ShardedClusterFixture(interface.Fixture):
 
     def setup(self):
         """Set up the sharded cluster."""
-        if self.catalog_shard is None:
-            self.configsvr.setup()
+        self.configsvr.setup()
 
         # Start up each of the shards
         for shard in self.shards:
@@ -113,7 +110,8 @@ class ShardedClusterFixture(interface.Fixture):
 
     def get_shard_ids(self):
         """Get the list of shard ids in the cluster."""
-        client = interface.build_client(self, self.auth_options)
+        client = self.mongo_client()
+        interface.authenticate(client, self.auth_options)
         res = client.admin.command("listShards")
         return [shard_info["_id"] for shard_info in res["shards"]]
 
@@ -136,7 +134,8 @@ class ShardedClusterFixture(interface.Fixture):
             # Wait for the mongos.
             mongos.await_ready()
 
-        client = interface.build_client(self, self.auth_options)
+        client = self.mongo_client()
+        interface.authenticate(client, self.auth_options)
 
         # Turn off the balancer if it is not meant to be enabled.
         if not self.enable_balancer:
@@ -149,8 +148,8 @@ class ShardedClusterFixture(interface.Fixture):
             coll.update_one({"_id": "autosplit"}, {"$set": {"enabled": False}}, upsert=True)
 
         # Inform mongos about each of the shards
-        for idx, shard in enumerate(self.shards):
-            self._add_shard(client, shard, self.catalog_shard == idx)
+        for shard in self.shards:
+            self._add_shard(client, shard)
 
         # Ensure that all CSRS nodes are up to date. This is strictly needed for tests that use
         # multiple mongoses. In those cases, the first mongos initializes the contents of the config
@@ -180,34 +179,36 @@ class ShardedClusterFixture(interface.Fixture):
             ) + ShardedClusterFixture.AWAIT_SHARDING_INITIALIZATION_TIMEOUT_SECS
             timeout_occurred = lambda: deadline - time.time() <= 0.0
 
-            for shard in self.shards:
-                for mongod in shard.nodes:
+            mongod_clients = [(mongod.mongo_client(), mongod.port) for shard in self.shards
+                              for mongod in shard.nodes]
 
-                    client = interface.build_client(mongod, self.auth_options)
-                    port = mongod.port
+            for client, port in mongod_clients:
+                interface.authenticate(client, self.auth_options)
 
-                    while True:
-                        # The choice of namespace (local.fooCollection) does not affect the output.
-                        get_shard_version_result = client.admin.command(
-                            "getShardVersion", "local.fooCollection", check=False)
-                        if get_shard_version_result["ok"]:
-                            break
+                while True:
+                    # The choice of namespace (local.fooCollection) does not affect the output.
+                    get_shard_version_result = client.admin.command(
+                        "getShardVersion", "local.fooCollection", check=False)
+                    if get_shard_version_result["ok"]:
+                        break
 
-                        if timeout_occurred():
-                            raise self.fixturelib.ServerFailure(
-                                "mongod on port: {} failed waiting for getShardVersion success after {} seconds"
-                                .format(port, interface.Fixture.AWAIT_READY_TIMEOUT_SECS))
-                        time.sleep(0.1)
+                    if timeout_occurred():
+                        raise self.fixturelib.ServerFailure(
+                            "mongod on port: {} failed waiting for getShardVersion success after {} seconds"
+                            .format(port, interface.Fixture.AWAIT_READY_TIMEOUT_SECS))
+                    time.sleep(0.1)
 
     def stop_balancer(self, timeout_ms=60000):
         """Stop the balancer."""
-        client = interface.build_client(self, self.auth_options)
+        client = self.mongo_client()
+        interface.authenticate(client, self.auth_options)
         client.admin.command({"balancerStop": 1}, maxTimeMS=timeout_ms)
         self.logger.info("Stopped the balancer")
 
     def start_balancer(self, timeout_ms=60000):
         """Start the balancer."""
-        client = interface.build_client(self, self.auth_options)
+        client = self.mongo_client()
+        interface.authenticate(client, self.auth_options)
         client.admin.command({"balancerStart": 1}, maxTimeMS=timeout_ms)
         self.logger.info("Started the balancer")
 
@@ -232,8 +233,6 @@ class ShardedClusterFixture(interface.Fixture):
             teardown_handler.teardown(mongos, "mongos", mode=mode)
 
         for shard in self.shards:
-            if shard is self.configsvr:
-                continue
             teardown_handler.teardown(shard, "shard", mode=mode)
 
         if self.configsvr is not None:
@@ -335,23 +334,6 @@ class ShardedClusterFixture(interface.Fixture):
         mongod_options["dbpath"] = os.path.join(self._dbpath_prefix, "shard{}".format(index))
         mongod_options["replSet"] = self._SHARD_REPLSET_NAME_PREFIX + str(index)
 
-        if self.catalog_shard == index:
-            del mongod_options["shardsvr"]
-            mongod_options["configsvr"] = ""
-            replset_config_options["configsvr"] = True
-            mongod_options["set_parameters"]["featureFlagCatalogShard"] = "true"
-
-            configsvr_options = self.configsvr_options.copy()
-            for option, value in configsvr_options.items():
-                if option == "num_nodes":
-                    continue
-                if option in shard_options:
-                    if shard_options[option] != value:
-                        raise Exception(
-                            "Conflicting values when combining shard and configsvr options")
-                else:
-                    shard_options[option] = value
-
         shard_logging_prefix = self._get_rs_shard_logging_prefix(index)
 
         return {
@@ -375,16 +357,13 @@ class ShardedClusterFixture(interface.Fixture):
         """Return options that may be passed to a mongos."""
         mongos_options = self.mongos_options.copy()
         mongos_options["configdb"] = self.configsvr.get_internal_connection_string()
-        mongos_options["set_parameters"] = mongos_options.get("set_parameters",
-                                                              self.fixturelib.make_historic(
-                                                                  {})).copy()
         return {"dbpath_prefix": self._dbpath_prefix, "mongos_options": mongos_options}
 
     def install_mongos(self, mongos):
         """Install a mongos. Called by a builder."""
         self.mongos.append(mongos)
 
-    def _add_shard(self, client, shard, is_catalog_shard):
+    def _add_shard(self, client, shard):
         """
         Add the specified program as a shard by executing the addShard command.
 
@@ -392,64 +371,14 @@ class ShardedClusterFixture(interface.Fixture):
         """
 
         connection_string = shard.get_internal_connection_string()
-        if is_catalog_shard:
-            self.logger.info("Adding %s as catalog shard...", connection_string)
-            client.admin.command({"transitionToCatalogShard": 1})
-        else:
-            self.logger.info("Adding %s as a shard...", connection_string)
-            client.admin.command({"addShard": connection_string})
-
-
-class ExternalShardedClusterFixture(external.ExternalFixture, ShardedClusterFixture):
-    """Fixture to interact with external sharded cluster fixture."""
-
-    REGISTERED_NAME = "ExternalShardedClusterFixture"
-
-    def __init__(self, logger, job_num, fixturelib, shell_conn_string):
-        """Initialize ExternalShardedClusterFixture."""
-        external.ExternalFixture.__init__(self, logger, job_num, fixturelib, shell_conn_string)
-        ShardedClusterFixture.__init__(self, logger, job_num, fixturelib, mongod_options={})
-
-    def setup(self):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture.setup(self)
-
-    def pids(self):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture.pids(self)
-
-    def await_ready(self):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture.await_ready(self)
-
-    def _do_teardown(self, mode=None):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture._do_teardown(self)
-
-    def _is_process_running(self):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture._is_process_running(self)
-
-    def is_running(self):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture.is_running(self)
-
-    def get_internal_connection_string(self):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture.get_internal_connection_string(self)
-
-    def get_driver_connection_url(self):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture.get_driver_connection_url(self)
-
-    def get_node_info(self):
-        """Use ExternalFixture method."""
-        return external.ExternalFixture.get_node_info(self)
+        self.logger.info("Adding %s as a shard...", connection_string)
+        client.admin.command({"addShard": connection_string})
 
 
 class _MongoSFixture(interface.Fixture):
     """Fixture which provides JSTests with a mongos to connect to."""
 
+    # pylint: disable=too-many-arguments
     def __init__(self, logger, job_num, fixturelib, dbpath_prefix, mongos_executable=None,
                  mongos_options=None, add_feature_flags=False):
         """Initialize _MongoSFixture."""
@@ -562,6 +491,7 @@ class _MongoSFixture(interface.Fixture):
         exit_code = self.mongos.wait()
 
         # Python's subprocess module returns negative versions of system calls.
+        # pylint: disable=invalid-unary-operand-type
         if exit_code == 0 or (mode is not None and exit_code == -(mode.value)):
             self.logger.info("Successfully stopped the mongos on port {:d}".format(self.port))
         else:
@@ -585,10 +515,6 @@ class _MongoSFixture(interface.Fixture):
 
     def get_node_info(self):
         """Return a list of NodeInfo objects."""
-        if self.mongos is None:
-            self.logger.warning("The mongos fixture has not been set up yet.")
-            return []
-
         info = interface.NodeInfo(full_name=self.logger.full_name, name=self.logger.name,
                                   port=self.port, pid=self.mongos.pid)
         return [info]

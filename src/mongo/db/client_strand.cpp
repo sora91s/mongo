@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -34,9 +35,7 @@
 
 #include "mongo/logv2/log.h"
 #include "mongo/util/concurrency/thread_name.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
+#include "mongo/util/thread_context.h"
 
 namespace mongo {
 namespace {

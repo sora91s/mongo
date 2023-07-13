@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -37,9 +38,6 @@
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/fail_point.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
@@ -105,8 +103,7 @@ void TTLCollectionCache::deregisterTTLClusteredIndex(UUID uuid) {
                        TTLCollectionCache::Info{TTLCollectionCache::ClusteredId{}});
 }
 
-void TTLCollectionCache::unsetTTLIndexExpireAfterSecondsInvalid(UUID uuid,
-                                                                const IndexName& indexName) {
+void TTLCollectionCache::unsetTTLIndexExpireAfterSecondsNaN(UUID uuid, const IndexName& indexName) {
     stdx::lock_guard<Latch> lock(_ttlInfosLock);
     auto infoIt = _ttlInfos.find(uuid);
     if (infoIt == _ttlInfos.end()) {
@@ -116,7 +113,7 @@ void TTLCollectionCache::unsetTTLIndexExpireAfterSecondsInvalid(UUID uuid,
     auto&& infoVec = infoIt->second;
     for (auto&& info : infoVec) {
         if (!info.isClustered() && info.getIndexName() == indexName) {
-            info.unsetExpireAfterSecondsInvalid();
+            info.unsetExpireAfterSecondsNaN();
             break;
         }
     }

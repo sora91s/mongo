@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -38,9 +39,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 namespace mongo {
 namespace repl {
@@ -63,8 +61,8 @@ OplogBuffer* OplogApplier::getBuffer() const {
 
 Future<void> OplogApplier::startup() {
     auto pf = makePromiseFuture<void>();
-    auto callback = [this,
-                     promise = std::move(pf.promise)](const CallbackArgs& args) mutable noexcept {
+    auto callback =
+        [ this, promise = std::move(pf.promise) ](const CallbackArgs& args) mutable noexcept {
         invariant(args.status);
         LOGV2(21224, "Starting oplog application");
         _run(_oplogBuffer);

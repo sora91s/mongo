@@ -132,6 +132,8 @@ public:
      */
     void closeCursor(WT_CURSOR* cursor);
 
+    void closeCursorsForQueuedDrops(WiredTigerKVEngine* engine);
+
     /**
      * Closes all cached cursors matching the uri.  If the uri is empty,
      * all cached cursors are closed.
@@ -144,6 +146,14 @@ public:
 
     int cachedCursors() const {
         return _cursors.size();
+    }
+
+    bool isDropQueuedIdentsAtSessionEndAllowed() const {
+        return _dropQueuedIdentsAtSessionEnd;
+    }
+
+    void dropQueuedIdentsAtSessionEndAllowed(bool dropQueuedIdentsAtSessionEnd) {
+        _dropQueuedIdentsAtSessionEnd = dropQueuedIdentsAtSessionEnd;
     }
 
     static uint64_t genTableId();
@@ -180,12 +190,19 @@ private:
         return _epoch;
     }
 
+    // Used internally by WiredTigerSessionCache
+    uint64_t _getCursorEpoch() const {
+        return _cursorEpoch;
+    }
+
     const uint64_t _epoch;
+    uint64_t _cursorEpoch;
     WiredTigerSessionCache* _cache;  // not owned
     WT_SESSION* _session;            // owned
     CursorCache _cursors;            // owned
     uint64_t _cursorGen;
     int _cursorsOut;
+    bool _dropQueuedIdentsAtSessionEnd = true;
     Date_t _idleExpireTime;
 };
 
@@ -272,6 +289,11 @@ public:
     void closeAll();
 
     /**
+     * Closes cached cursors for tables that are queued to be dropped.
+     */
+    void closeCursorsForQueuedDrops();
+
+    /**
      * Closes all cached cursors matching the uri.  If the uri is empty,
      * all cached cursors are closed.
      */
@@ -348,6 +370,10 @@ public:
 
     void setJournalListener(JournalListener* jl);
 
+    uint64_t getCursorEpoch() const {
+        return _cursorEpoch.load();
+    }
+
     WiredTigerKVEngine* getKVEngine() const {
         return _engine;
     }
@@ -374,6 +400,9 @@ private:
 
     // Bumped when all open sessions need to be closed
     AtomicWord<unsigned long long> _epoch;  // atomic so we can check it outside of the lock
+
+    // Bumped when all open cursors need to be closed
+    AtomicWord<unsigned long long> _cursorEpoch;  // atomic so we can check it outside of the lock
 
     // Counter and critical section mutex for waitUntilDurable
     AtomicWord<unsigned> _lastSyncTime;

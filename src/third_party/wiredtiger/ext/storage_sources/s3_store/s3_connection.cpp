@@ -66,11 +66,9 @@ S3Connection::S3Connection(const Aws::S3Crt::ClientConfiguration &config,
         throw std::invalid_argument(_bucketName + " : Unable to access bucket.");
 }
 
-/*
- * Builds a list of object names, with prefix matching, from an S3 bucket into a vector. The
- * batchSize parameter specifies the maximum number of objects returned in each AWS response, up to
- * 1000. Return an errno value given an HTTP response code if the aws request does not succeed.
- */
+// Builds a list of object names, with prefix matching, from an S3 bucket into a vector. The
+// batchSize parameter specifies the maximum number of objects returned in each AWS response, up
+// to 1000. Returns 0 if success, otherwise 1.
 int
 S3Connection::ListObjects(const std::string &prefix, std::vector<std::string> &objects,
   uint32_t batchSize, bool listSingle) const
@@ -81,12 +79,8 @@ S3Connection::ListObjects(const std::string &prefix, std::vector<std::string> &o
     listSingle ? request.SetMaxKeys(1) : request.SetMaxKeys(batchSize);
 
     Aws::S3Crt::Model::ListObjectsV2Outcome outcomes = _s3CrtClient.ListObjectsV2(request);
-    if (!outcomes.IsSuccess()) {
-        Aws::Http::HttpResponseCode resCode = outcomes.GetError().GetResponseCode();
-        if (toErrno.find(resCode) != toErrno.end())
-            return (toErrno.at(resCode));
-        return (-1);
-    }
+    if (!outcomes.IsSuccess())
+        return (1);
     auto result = outcomes.GetResult();
 
     // Returning the object name with the prefix stripped.
@@ -101,12 +95,8 @@ S3Connection::ListObjects(const std::string &prefix, std::vector<std::string> &o
     while (continuationToken != "") {
         request.SetContinuationToken(continuationToken);
         outcomes = _s3CrtClient.ListObjectsV2(request);
-        if (!outcomes.IsSuccess()) {
-            Aws::Http::HttpResponseCode resCode = outcomes.GetError().GetResponseCode();
-            if (toErrno.find(resCode) != toErrno.end())
-                return (toErrno.at(resCode));
-            return (-1);
-        }
+        if (!outcomes.IsSuccess())
+            return (1);
         result = outcomes.GetResult();
         for (const auto &object : result.GetContents())
             objects.push_back(object.GetKey().substr(_objectPrefix.length()));
@@ -115,8 +105,7 @@ S3Connection::ListObjects(const std::string &prefix, std::vector<std::string> &o
     return (0);
 }
 
-// Puts an object into an S3 bucket. Return an errno value given an HTTP response code if
-// the aws request does not succeed.
+// Puts an object into an S3 bucket. Returns 0 if success, otherwise 1.
 int
 S3Connection::PutObject(const std::string &objectKey, const std::string &fileName) const
 {
@@ -129,19 +118,14 @@ S3Connection::PutObject(const std::string &objectKey, const std::string &fileNam
     request.SetBody(inputData);
 
     Aws::S3Crt::Model::PutObjectOutcome outcome = _s3CrtClient.PutObject(request);
-
-    if (outcome.IsSuccess())
+    if (outcome.IsSuccess()) {
         return (0);
+    }
 
-    Aws::Http::HttpResponseCode resCode = outcome.GetError().GetResponseCode();
-    if (toErrno.find(resCode) != toErrno.end())
-        return (toErrno.at(resCode));
-
-    return (-1);
+    return (1);
 }
 
-// Deletes an object from S3 bucket. Return an errno value given an HTTP response code if
-// the aws request does not succeed.
+// Deletes an object from S3 bucket. Returns 0 if success, otherwise 1.
 int
 S3Connection::DeleteObject(const std::string &objectKey) const
 {
@@ -150,15 +134,10 @@ S3Connection::DeleteObject(const std::string &objectKey) const
     request.SetKey(_objectPrefix + objectKey);
 
     Aws::S3Crt::Model::DeleteObjectOutcome outcome = _s3CrtClient.DeleteObject(request);
-
     if (outcome.IsSuccess())
         return (0);
 
-    Aws::Http::HttpResponseCode resCode = outcome.GetError().GetResponseCode();
-    if (toErrno.find(resCode) != toErrno.end())
-        return (toErrno.at(resCode));
-
-    return (-1);
+    return (1);
 }
 
 // Retrieves an object from S3. The object is downloaded to disk at the specified location.
@@ -176,18 +155,10 @@ S3Connection::GetObject(const std::string &objectKey, const std::string &path) c
           s3AllocationTag, path, std::ios_base::out | std::ios_base::binary));
     });
 
-    Aws::S3Crt::Model::GetObjectOutcome outcome = _s3CrtClient.GetObject(request);
+    if (!_s3CrtClient.GetObject(request).IsSuccess())
+        return (1);
 
-    // Return an errno value given an HTTP response code if the aws request does not
-    // succeed.
-    if (outcome.IsSuccess())
-        return (0);
-
-    Aws::Http::HttpResponseCode resCode = outcome.GetError().GetResponseCode();
-    if (toErrno.find(resCode) != toErrno.end())
-        return (toErrno.at(resCode));
-
-    return (-1);
+    return (0);
 }
 
 // Checks whether an object with the given key exists in the S3 bucket and also retrieves
@@ -203,24 +174,18 @@ S3Connection::ObjectExists(const std::string &objectKey, bool &exists, size_t &o
     request.SetKey(_objectPrefix + objectKey);
     Aws::S3Crt::Model::HeadObjectOutcome outcome = _s3CrtClient.HeadObject(request);
 
-    /*
-     * If an object with the given key does not exist the HEAD request will return a 404. Do not
-     * fail in this case as it is an expected response. Otherwise return an errno value for any
-     * other HTTP response code.
-     */
+    // If an object with the given key does not exist the HEAD request will return a 404.
+    // Do not fail in this case.
     if (outcome.IsSuccess()) {
         exists = true;
         objectSize = outcome.GetResult().GetContentLength();
         return (0);
-    }
-
-    Aws::Http::HttpResponseCode resCode = outcome.GetError().GetResponseCode();
-    if (resCode == Aws::Http::HttpResponseCode::NOT_FOUND)
+    } else if (outcome.GetError().GetResponseCode() == Aws::Http::HttpResponseCode::NOT_FOUND)
         return (0);
-    if (toErrno.find(resCode) != toErrno.end())
-        return (toErrno.at(resCode));
 
-    return (-1);
+    // Fix later, return a proper error code. Not sure if we always have
+    // outcome.GetError().GetResponseCode()
+    return (1);
 }
 
 // Checks whether the bucket configured for the class is accessible to us or not.
@@ -233,21 +198,15 @@ S3Connection::BucketExists(bool &exists) const
     request.WithBucket(_bucketName);
     Aws::S3Crt::Model::HeadBucketOutcome outcome = _s3CrtClient.HeadBucket(request);
 
-    /*
-     * If an object with the given key does not exist the HEAD request will return a 404. Do not
-     * fail in this case as it is an expected response. Otherwise return an errno value for any
-     * other HTTP response code.
-     */
+    // If an object with the given key does not exist the HEAD request will return a 404.
+    // Do not fail in this case.
     if (outcome.IsSuccess()) {
         exists = true;
         return (0);
-    }
-
-    Aws::Http::HttpResponseCode resCode = outcome.GetError().GetResponseCode();
-    if (resCode == Aws::Http::HttpResponseCode::NOT_FOUND)
+    } else if (outcome.GetError().GetResponseCode() == Aws::Http::HttpResponseCode::NOT_FOUND)
         return (0);
-    if (toErrno.find(resCode) != toErrno.end())
-        return (toErrno.at(resCode));
 
-    return (-1);
+    // Fix later, return a proper error code. Not sure if we always have
+    // outcome.GetError().GetResponseCode()
+    return (1);
 }

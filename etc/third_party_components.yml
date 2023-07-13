@@ -43,7 +43,7 @@ components:
     homepage_url: https://abseil.io
     open_hub_url: N/A
     release_monitoring_id: 115295
-    local_directory_path: src/third_party/abseil-cpp
+    local_directory_path: src/third_party/abseil-cpp-master
     team_owner: "Service Architecture"
     # Note: abseil exists in Black Duck, but not OpenHub
     upgrade_suppression: TODO SERVER-58675
@@ -78,13 +78,13 @@ components:
     release_monitoring_id: 6845
     local_directory_path: src/third_party/boost
     team_owner: "Service Architecture"
-    upgrade_suppression: TODO SERVER-70000
+    upgrade_suppression: TODO SERVER-60440
 
   concurrencytest:
     homepage_url: https://github.com/cgoldberg/concurrencytest
     open_hub_url: https://www.openhub.net/p/concurrencytest
     release_monitoring_id: -1
-    local_directory_path: src/third_party/wiredtiger/test/3rdparty/concurrencytest-0.1.2-locally-modified
+    local_directory_path: src/third_party/wiredtiger/test/3rdparty/concurrencytest-0.1.2
     is_test_only: true
     team_owner: "Wiredtiger"
 
@@ -124,7 +124,7 @@ components:
     open_hub_url: N/A
     release_monitoring_id: 4844
     local_directory_path: src/third_party/snappy-1.1.7
-    team_owner: "Storage Execution"
+    team_owner: "Execution"
     upgrade_suppression: TODO SERVER-47281
     # TODO - bad version data
 
@@ -133,9 +133,8 @@ components:
     open_hub_url: https://www.openhub.net/p/google-perftools
     release_monitoring_id: 1238
     local_directory_path: src/third_party/gperftools
-    team_owner: "Storage Execution"
+    team_owner: "Execution"
     # TODO - fix the version number in Black Duck
-    upgrade_suppression: TODO SERVER-67432
 
   "ICU for C/C++ (ICU4C)":
     homepage_url: http://site.icu-project.org/
@@ -151,7 +150,7 @@ components:
     open_hub_url: N/A
     release_monitoring_id: -1
     local_directory_path: src/third_party/IntelRDFPMathLib20U1
-    team_owner: "Storage Execution"
+    team_owner: "Execution"
     # Note: IntelRDFPMathLib exists in Black Duck, but not OpenHub
 
   jbeder/yaml-cpp:
@@ -174,7 +173,7 @@ components:
     homepage_url: https://github.com/mongodb/libmongocrypt
     open_hub_url: N/A
     release_monitoring_id: -1
-    local_directory_path: src/third_party/libmongocrypt
+    local_directory_path: src/third_party/kms-message
     team_owner: "Security"
     # Note: libmongocrypt exists in Black Duck, but not OpenHub
     upgrade_suppression: TODO SERVER-61193
@@ -201,14 +200,6 @@ components:
     local_directory_path: src/third_party/unwind
     team_owner: "Service Architecture"
 
-  "MongoDB C Driver":
-    homepage_url: https://github.com/mongodb/mongo-c-driver
-    open_hub_url: https://www.openhub.net/p/mongo-c-driver
-    release_monitoring_id: 10712
-    local_directory_path: src/third_party/libbson
-    team_owner: "Security"
-    upgrade_suppression: TODO SERVER-72019
-
   "Mozilla Firefox":
     homepage_url: https://www.mozilla.org/en-US/firefox/organizations/
     open_hub_url: https://www.openhub.net/p/firefox
@@ -223,14 +214,6 @@ components:
     release_monitoring_id: 18301
     local_directory_path: src/third_party/variant-1.4.0
     team_owner: "Service Architecture"
-
-  nlohmann.json.decomposed:
-    homepage_url: https://github.com/nlohmann/json
-    open_hub_url: https://www.openhub.net/p/nlohmann_json
-    release_monitoring_id: 11152
-    local_directory_path: src/third_party/wiredtiger/test/3rdparty/nlohmann
-    is_test_only: true
-    team_owner: "Wiredtiger"
 
   ocspbuilder:
     homepage_url: https://github.com/wbond/ocspbuilder
@@ -250,12 +233,13 @@ components:
     team_owner: "Security"
     # Note: ocspresponder exists in Black Duck, but not OpenHub
 
-  PCRE2:
+  PCRE:
     homepage_url: https://www.pcre.org/
-    open_hub_url: https://www.openhub.net/p/pcre2
-    release_monitoring_id: 5832
-    local_directory_path: src/third_party/pcre2
+    open_hub_url: https://www.openhub.net/p/pcre
+    release_monitoring_id: 2610
+    local_directory_path: src/third_party/pcre-8.42
     team_owner: "Query"
+    upgrade_suppression: TODO SERVER-47278
 
   python-testscenarios:
     homepage_url: https://launchpad.net/testscenarios
@@ -294,7 +278,7 @@ components:
     open_hub_url: https://www.openhub.net/p/smhasher
     release_monitoring_id: -1
     local_directory_path: src/third_party/murmurhash3
-    team_owner: "Storage Execution"
+    team_owner: "Execution"
 
   "Snowball Stemming Algorithms":
     homepage_url: https://snowballstem.org/
@@ -316,7 +300,7 @@ components:
     homepage_url: https://github.com/derickr/timelib
     open_hub_url: N/A
     release_monitoring_id: -1
-    local_directory_path: src/third_party/timelib
+    local_directory_path: src/third_party/timelib-2022.02
     team_owner: "Query"
     # Note: Not in Black Duck
 
@@ -333,7 +317,6 @@ components:
     release_monitoring_id: 13639
     local_directory_path: src/third_party/valgrind
     team_owner: "Decision Automation Group"
-    upgrade_suppression: TODO SERVER-71860
 
   testtools:
     homepage_url: https://launchpad.net/testtools
@@ -343,16 +326,25 @@ components:
     is_test_only: true
     team_owner: "Wiredtiger"
 
+  yhirose/cpp-peglib:
+    homepage_url: https://github.com/yhirose/cpp-peglib
+    open_hub_url: N/A
+    release_monitoring_id: -1
+    local_directory_path: src/third_party/peglib
+    team_owner: "Query"
+    # Note: peglib exists in Black Duck, but not OpenHub
+    upgrade_suppression: TODO SERVER-57940
+
   zlib:
     homepage_url: https://www.zlib.net/
     open_hub_url: https://www.openhub.net/p/zlib
     release_monitoring_id: 5303
-    local_directory_path: src/third_party/zlib
-    team_owner: "Storage Execution"
+    local_directory_path: src/third_party/zlib-1.2.11
+    team_owner: "Execution"
 
   zstd:
     homepage_url: http://www.zstd.net/
     open_hub_url: https://www.openhub.net/p/zstd
     release_monitoring_id: 12083
     local_directory_path: src/third_party/zstandard
-    team_owner: "Storage Execution"
+    team_owner: "Execution"

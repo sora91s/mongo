@@ -81,18 +81,13 @@ class FilterNode;
 class EvaluationNode;
 class SargableNode;
 class RIDIntersectNode;
-class RIDUnionNode;
 class BinaryJoinNode;
 class HashJoinNode;
 class MergeJoinNode;
-class SortedMergeNode;
-class NestedLoopJoinNode;
 class UnionNode;
 class GroupByNode;
 class UnwindNode;
 class UniqueNode;
-class SpoolProducerNode;
-class SpoolConsumerNode;
 class CollationNode;
 class LimitSkipNode;
 class ExchangeNode;
@@ -103,7 +98,4 @@ class RootNode;
  */
 class References;
 class ExpressionBinder;
-
-class PathSyntaxSort;
-class ExpressionSyntaxSort;
 }  // namespace mongo::optimizer

@@ -88,7 +88,7 @@ public:
     }
 
     void setPostBatchResumeToken(BSONObj token) {
-        _postBatchResumeToken = token.isEmptyPrototype() ? token : token.getOwned();
+        _postBatchResumeToken = token.getOwned();
     }
 
     void setPartialResultsReturned(bool partialResults) {
@@ -97,10 +97,6 @@ public:
 
     void setInvalidated() {
         _invalidated = true;
-    }
-
-    void setWasStatementExecuted(bool wasStatementExecuted) {
-        _wasStatementExecuted = wasStatementExecuted;
     }
 
     long long numDocs() const {
@@ -117,7 +113,7 @@ public:
      * Call this after successfully appending all fields that will be part of this response.
      * After calling, you may not call any more methods on this object.
      */
-    void done(CursorId cursorId, const NamespaceString& cursorNamespace);
+    void done(CursorId cursorId, StringData cursorNamespace);
 
     /**
      * Call this if the response should not contain cursor information. It will completely remove
@@ -139,7 +135,6 @@ private:
     BSONObj _postBatchResumeToken;
     bool _partialResultsReturned = false;
     bool _invalidated = false;
-    bool _wasStatementExecuted = false;
 };
 
 /**
@@ -155,7 +150,7 @@ private:
  * This function is deprecated.  Prefer CursorResponseBuilder or CursorResponse::toBSON() instead.
  */
 void appendCursorResponseObject(long long cursorId,
-                                const NamespaceString& cursorNamespace,
+                                StringData cursorNamespace,
                                 BSONArray firstBatch,
                                 boost::optional<StringData> cursorType,
                                 BSONObjBuilder* builder);
@@ -191,20 +186,14 @@ public:
      * Constructs a CursorResponse from the command BSON response. If 'cmdResponse' is not owned,
      * the second argument should be the object that owns the response.
      */
-    static StatusWith<CursorResponse> parseFromBSON(
-        const BSONObj& cmdResponse,
-        const BSONObj* ownedObj = nullptr,
-        boost::optional<TenantId> tenantId = boost::none,
-        const SerializationContext& serializationContext = SerializationContext());
+    static StatusWith<CursorResponse> parseFromBSON(const BSONObj& cmdResponse,
+                                                    const BSONObj* ownedObj = nullptr);
 
     /**
      * A throwing version of 'parseFromBSON'.
      */
-    static CursorResponse parseFromBSONThrowing(
-        boost::optional<TenantId> tenantId,
-        const BSONObj& cmdResponse,
-        const SerializationContext& serializationContext = SerializationContext()) {
-        return uassertStatusOK(parseFromBSON(cmdResponse, nullptr, tenantId, serializationContext));
+    static CursorResponse parseFromBSONThrowing(const BSONObj& cmdResponse) {
+        return uassertStatusOK(parseFromBSON(cmdResponse));
     }
 
     /**
@@ -224,8 +213,7 @@ public:
                    boost::optional<BSONObj> varsField = boost::none,
                    boost::optional<std::string> cursorType = boost::none,
                    bool partialResultsReturned = false,
-                   bool invalidated = false,
-                   bool wasStatementExecuted = false);
+                   bool invalidated = false);
 
     CursorResponse(CursorResponse&& other) = default;
     CursorResponse& operator=(CursorResponse&& other) = default;
@@ -278,21 +266,13 @@ public:
         return _invalidated;
     }
 
-    bool getWasStatementExecuted() const {
-        return _wasStatementExecuted;
-    }
-
     /**
      * Converts this response to its raw BSON representation.
      */
-    BSONObj toBSON(ResponseType responseType,
-                   const SerializationContext& serializationContext = SerializationContext()) const;
-    void addToBSON(ResponseType responseType,
-                   BSONObjBuilder* builder,
-                   const SerializationContext& serializationContext = SerializationContext()) const;
-    BSONObj toBSONAsInitialResponse(
-        const SerializationContext& serializationContext = SerializationContext()) const {
-        return toBSON(ResponseType::InitialResponse, serializationContext);
+    BSONObj toBSON(ResponseType responseType) const;
+    void addToBSON(ResponseType responseType, BSONObjBuilder* builder) const;
+    BSONObj toBSONAsInitialResponse() const {
+        return toBSON(ResponseType::InitialResponse);
     }
 
 private:
@@ -306,7 +286,6 @@ private:
     boost::optional<std::string> _cursorType;
     bool _partialResultsReturned = false;
     bool _invalidated = false;
-    bool _wasStatementExecuted = false;
 };
 
 }  // namespace mongo

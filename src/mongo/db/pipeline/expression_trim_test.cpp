@@ -38,7 +38,6 @@
 #include "mongo/db/json.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/unittest/unittest.h"
@@ -695,7 +694,7 @@ TEST(ExpressionTrimTest, DoesAddInputDependencies) {
                                                                  << "$inputField")),
                                             expCtx.variablesParseState);
     DepsTracker deps;
-    expression::addDependencies(trim.get(), &deps);
+    trim->addDependencies(&deps);
     ASSERT_EQ(deps.fields.count("inputField"), 1u);
     ASSERT_EQ(deps.fields.size(), 1u);
 }
@@ -710,7 +709,7 @@ TEST(ExpressionTrimTest, DoesAddCharsDependencies) {
                                                                  << "$$CURRENT.a")),
                                             expCtx.variablesParseState);
     DepsTracker deps;
-    expression::addDependencies(trim.get(), &deps);
+    trim->addDependencies(&deps);
     ASSERT_EQ(deps.fields.count("inputField"), 1u);
     ASSERT_EQ(deps.fields.count("a"), 1u);
     ASSERT_EQ(deps.fields.size(), 2u);

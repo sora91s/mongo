@@ -66,7 +66,7 @@ class ObjectCountsMetric(NamedTuple):
         )
 
 
-class SconsMetrics:
+class SconsMetrics:  # pylint: disable=too-many-instance-attributes
     """Class representing SCons metrics."""
 
     memory_before_reading_sconscript_files: Optional[int] = None
@@ -107,11 +107,8 @@ class SconsMetrics:
                 TOTAL_COMMAND_EXECUTION_TIME_REGEX, self.raw_report)
 
         if os.path.exists(cache_debug_log_file):
-            try:
-                with open(cache_debug_log_file, "r") as fh:
-                    self.final_cache_hit_ratio = self._parse_float(CACHE_HIT_RATIO_REGEX, fh.read())
-            except Exception:  # pylint: disable=broad-except
-                self.final_cache_hit_ratio = 0.0
+            with open(cache_debug_log_file, "r") as fh:
+                self.final_cache_hit_ratio = self._parse_float(CACHE_HIT_RATIO_REGEX, fh.read())
         else:
             self.final_cache_hit_ratio = 0.0
 

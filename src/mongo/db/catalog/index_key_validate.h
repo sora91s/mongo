@@ -41,6 +41,8 @@ class Status;
 template <typename T>
 class StatusWith;
 
+void initMyIndexKeyVaildate();
+
 namespace index_key_validate {
 
 // TTL indexes with 'expireAfterSeconds' are repaired with this duration, which is chosen to be
@@ -68,8 +70,7 @@ static std::set<StringData> allowedFieldNames = {
     IndexDescriptor::kLanguageOverrideFieldName,
     IndexDescriptor::kNamespaceFieldName,
     IndexDescriptor::kPartialFilterExprFieldName,
-    IndexDescriptor::kWildcardProjectionFieldName,
-    IndexDescriptor::kColumnStoreProjectionFieldName,
+    IndexDescriptor::kPathProjectionFieldName,
     IndexDescriptor::kSparseFieldName,
     IndexDescriptor::kStorageEngineFieldName,
     IndexDescriptor::kTextVersionFieldName,
@@ -77,7 +78,6 @@ static std::set<StringData> allowedFieldNames = {
     IndexDescriptor::kWeightsFieldName,
     IndexDescriptor::kOriginalSpecFieldName,
     IndexDescriptor::kPrepareUniqueFieldName,
-    IndexDescriptor::kColumnStoreCompressorFieldName,
     // Index creation under legacy writeMode can result in an index spec with an _id field.
     "_id"};
 
@@ -138,8 +138,6 @@ enum class ValidateExpireAfterSecondsMode {
 Status validateExpireAfterSeconds(std::int64_t expireAfterSeconds,
                                   ValidateExpireAfterSecondsMode mode);
 
-Status validateExpireAfterSeconds(BSONElement expireAfterSeconds,
-                                  ValidateExpireAfterSecondsMode mode);
 /**
  * Returns true if 'indexSpec' refers to a TTL index.
  */
@@ -155,13 +153,6 @@ Status validateIndexSpecTTL(const BSONObj& indexSpec);
  * Returns whether an index is allowed in API version 1.
  */
 bool isIndexAllowedInAPIVersion1(const IndexDescriptor& indexDesc);
-
-/**
- * Parses the index specifications from 'indexSpecObj', validates them, and returns equivalent index
- * specifications that have any missing attributes filled in. If any index specification is
- * malformed, then an error status is returned.
- */
-BSONObj parseAndValidateIndexSpecs(OperationContext* opCtx, const BSONObj& indexSpecObj);
 
 /**
  * Optional filtering function to adjust allowed index field names at startup.

@@ -27,9 +27,13 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
+#include <cstdint>
+
 #include "mongo/db/catalog/clustered_collection_util.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_validation.h"
-#include "mongo/db/catalog/collection_write_path.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
@@ -43,12 +47,14 @@
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/dbtests/storage_debug_util.h"
 
-namespace mongo {
 namespace ValidateTests {
+
+using std::unique_ptr;
+
 namespace {
 
 const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
-const bool kLogDiagnostics = true;
+const bool kTurnOnExtraLoggingForTest = true;
 
 std::size_t omitTransientWarningsFromCount(const ValidateResults& results) {
     return std::count_if(
@@ -81,6 +87,8 @@ public:
     explicit ValidateBase(bool full, bool background, bool clustered)
         : _full(full), _background(background), _nss(_ns), _autoDb(nullptr), _db(nullptr) {
 
+        _supportsBackgroundValidation = storageGlobalParams.engine != "ephemeralForTest";
+
         CollectionOptions options;
         if (clustered) {
             options.clusteredIndex = clustered_util::makeCanonicalClusteredInfoForLegacyFormat();
@@ -96,16 +104,13 @@ public:
         auto coll = db->createCollection(&_opCtx, _nss, options, createIdIndex);
         ASSERT_TRUE(coll) << _nss;
         wuow.commit();
-
-        _engineSupportsCheckpoints =
-            _opCtx.getServiceContext()->getStorageEngine()->supportsCheckpoints();
     }
 
     explicit ValidateBase(bool full, bool background)
         : ValidateBase(full, background, /*clustered=*/false) {}
 
     ~ValidateBase() {
-        AutoGetDb autoDb(&_opCtx, _nss.dbName(), MODE_X);
+        AutoGetDb autoDb(&_opCtx, _nss.db(), MODE_X);
         auto db = autoDb.getDb();
         ASSERT_TRUE(db);
 
@@ -118,21 +123,13 @@ public:
 
     // Helper to refetch the Collection from the catalog in order to see any changes made to it
     CollectionPtr coll() const {
-        return CollectionPtr(
-            CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, _nss));
+        return CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, _nss);
     }
 
 protected:
-    void forceCheckpoint(bool background) {
-        if (background) {
-            // Checkpoint all of the data.
-            _opCtx.getServiceContext()->getStorageEngine()->checkpoint(&_opCtx);
-        }
-    }
-
     ValidateResults runValidate() {
-        // validate() will set a kCheckpoint read source. Callers continue to do operations after
-        // running validate, so we must reset the read source back to normal before returning.
+        // Callers continue to do operations after running validate, so we must reset the read
+        // source back to normal before returning.
         auto originalReadSource = _opCtx.recoveryUnit()->getTimestampReadSource();
         ON_BLOCK_EXIT([&] {
             _opCtx.recoveryUnit()->abandonSnapshot();
@@ -149,9 +146,8 @@ protected:
         ValidateResults results;
         BSONObjBuilder output;
 
-        forceCheckpoint(_background);
         ASSERT_OK(CollectionValidation::validate(
-            &_opCtx, _nss, mode, repairMode, &results, &output, kLogDiagnostics));
+            &_opCtx, _nss, mode, repairMode, &results, &output, kTurnOnExtraLoggingForTest));
 
         //  Check if errors are reported if and only if valid is set to false.
         ASSERT_EQ(results.valid, results.errors.empty());
@@ -197,16 +193,16 @@ protected:
 
     void lockDb(LockMode mode) {
         _autoDb.reset();
-        invariant(_opCtx.lockState()->isDbLockedForMode(_nss.dbName(), MODE_NONE));
-        _autoDb.reset(new AutoGetDb(&_opCtx, _nss.dbName(), mode));
-        invariant(_opCtx.lockState()->isDbLockedForMode(_nss.dbName(), mode));
+        invariant(_opCtx.lockState()->isDbLockedForMode(_nss.db(), MODE_NONE));
+        _autoDb.reset(new AutoGetDb(&_opCtx, _nss.db().toString(), mode));
+        invariant(_opCtx.lockState()->isDbLockedForMode(_nss.db(), mode));
         _db = _autoDb.get()->getDb();
     }
 
     void releaseDb() {
         _autoDb.reset();
         _db = nullptr;
-        invariant(_opCtx.lockState()->isDbLockedForMode(_nss.dbName(), MODE_NONE));
+        invariant(_opCtx.lockState()->isDbLockedForMode(_nss.db(), MODE_NONE));
     }
 
     const ServiceContext::UniqueOperationContext _txnPtr = cc().makeOperationContext();
@@ -214,9 +210,9 @@ protected:
     bool _full;
     bool _background;
     const NamespaceString _nss;
-    std::unique_ptr<AutoGetDb> _autoDb;
+    unique_ptr<AutoGetDb> _autoDb;
     Database* _db;
-    bool _engineSupportsCheckpoints;
+    bool _supportsBackgroundValidation;
 };
 
 template <bool full, bool background>
@@ -225,9 +221,7 @@ public:
     ValidateIdIndexCount() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -241,11 +235,11 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1)), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2)), nullOpDebug, true));
             wunit.commit();
         }
         releaseDb();
@@ -285,9 +279,7 @@ class ValidateSecondaryIndexCount : public ValidateBase {
 public:
     ValidateSecondaryIndexCount() : ValidateBase(full, background) {}
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -299,11 +291,11 @@ public:
             WriteUnitOfWork wunit(&_opCtx);
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
             wunit.commit();
         }
 
@@ -353,9 +345,7 @@ class ValidateSecondaryIndex : public ValidateBase {
 public:
     ValidateSecondaryIndex() : ValidateBase(full, background) {}
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -367,13 +357,13 @@ public:
             WriteUnitOfWork wunit(&_opCtx);
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "b" << 3)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "b" << 3)), nullOpDebug, true));
             wunit.commit();
         }
 
@@ -413,9 +403,7 @@ public:
     ValidateIdIndex() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -428,11 +416,11 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1)), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2)), nullOpDebug, true));
             wunit.commit();
         }
         releaseDb();
@@ -490,9 +478,7 @@ public:
     ValidateMultiKeyIndex() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -515,13 +501,10 @@ public:
             _db->createCollection(&_opCtx, _nss);
 
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(doc1), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx, InsertStatement(doc1), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(doc2), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(doc3), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx, InsertStatement(doc2), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx, InsertStatement(doc3), nullOpDebug, true));
             wunit.commit();
         }
         releaseDb();
@@ -576,9 +559,7 @@ public:
     ValidateSparseIndex() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -591,13 +572,13 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "b" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "b" << 1)), nullOpDebug, true));
             wunit.commit();
         }
 
@@ -637,9 +618,7 @@ public:
     ValidatePartialIndex() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -652,16 +631,15 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
             // Explicitly test that multi-key partial indexes containing documents that
             // don't match the filter expression are handled correctly.
-            ASSERT_OK(collection_internal::insertDocument(
+            ASSERT_OK(coll()->insertDocument(
                 &_opCtx,
-                coll(),
                 InsertStatement(BSON("_id" << 3 << "a" << BSON_ARRAY(-1 << -2 << -3))),
                 nullOpDebug,
                 true));
@@ -705,9 +683,7 @@ public:
     ValidatePartialIndexOnCollectionWithNonIndexableFields() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -721,12 +697,11 @@ public:
             WriteUnitOfWork wunit(&_opCtx);
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 1 << "x" << 1 << "a" << 2)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 1 << "x" << 1 << "a" << 2)),
+                                       nullOpDebug,
+                                       true));
             wunit.commit();
         }
 
@@ -767,9 +742,7 @@ public:
     ValidateCompoundIndex() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -783,25 +756,23 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 4)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 4)),
+                                       nullOpDebug,
+                                       true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 2 << "a" << 2 << "b" << 5)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 4 << "b" << 6)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 5 << "c" << 7)), nullOpDebug, true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 2 << "a" << 2 << "b" << 5)),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 4 << "b" << 6)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 5 << "c" << 7)), nullOpDebug, true));
             wunit.commit();
         }
 
@@ -850,9 +821,7 @@ public:
     ValidateIndexEntry() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -869,13 +838,13 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "b" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "b" << 1)), nullOpDebug, true));
             wunit.commit();
         }
 
@@ -940,40 +909,13 @@ public:
     }
 };
 
-class ValidateIndexMetadata : public ValidateBase {
-public:
-    ValidateIndexMetadata() : ValidateBase(/*full=*/false, /*background=*/false) {}
-
-    void run() {
-        SharedBufferFragmentBuilder pooledBuilder(
-            KeyString::HeapBuilder::kHeapAllocatorDefaultBytes);
-
-        // Create an index with bad index specs.
-        lockDb(MODE_X);
-
-        const std::string indexName = "bad_specs_index";
-        auto status =
-            dbtests::createIndexFromSpec(&_opCtx,
-                                         coll()->ns().ns(),
-                                         BSON("name" << indexName << "key" << BSON("a" << 1) << "v"
-                                                     << static_cast<int>(kIndexVersion) << "sparse"
-                                                     << "false"));
-
-        ASSERT_OK(status);
-        releaseDb();
-        ensureValidateFailed();
-    }
-};
-
 template <bool full, bool background>
 class ValidateWildCardIndex : public ValidateBase {
 public:
     ValidateWildCardIndex() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -1002,18 +944,16 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 2 << "b" << BSON("0" << 1))),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 2 << "b" << BSON("0" << 1))),
+                                       nullOpDebug,
+                                       true));
             wunit.commit();
         }
         releaseDb();
@@ -1023,15 +963,13 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
+            ASSERT_OK(coll()->insertDocument(
                 &_opCtx,
-                coll(),
                 InsertStatement(BSON("_id" << 3 << "mk_1" << BSON_ARRAY(1 << 2 << 3))),
                 nullOpDebug,
                 true));
-            ASSERT_OK(collection_internal::insertDocument(
+            ASSERT_OK(coll()->insertDocument(
                 &_opCtx,
-                coll(),
                 InsertStatement(BSON("_id" << 4 << "mk_2" << BSON_ARRAY(BSON("e" << 1)))),
                 nullOpDebug,
                 true));
@@ -1097,9 +1035,7 @@ public:
     ValidateWildCardIndexWithProjection() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -1128,35 +1064,30 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 2 << "a" << BSON("w" << 1))),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(coll()->insertDocument(
                 &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 2 << "a" << BSON("w" << 1))),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
                 InsertStatement(BSON("_id" << 3 << "a" << BSON_ARRAY("x" << 1))),
                 nullOpDebug,
                 true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 4 << "b" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 4 << "b" << 2)), nullOpDebug, true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 5 << "b" << BSON("y" << 1))),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(coll()->insertDocument(
                 &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 5 << "b" << BSON("y" << 1))),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
                 InsertStatement(BSON("_id" << 6 << "b" << BSON_ARRAY("z" << 1))),
                 nullOpDebug,
                 true));
@@ -1199,9 +1130,7 @@ public:
     ValidateMissingAndExtraIndexEntryResults() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -1231,12 +1160,12 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
             rid = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -1268,7 +1197,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1292,9 +1221,7 @@ public:
     ValidateMissingIndexEntryResults() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -1327,12 +1254,12 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
             rid = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -1388,7 +1315,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1412,9 +1339,7 @@ public:
     ValidateExtraIndexEntryResults() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -1444,12 +1369,12 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
             rid = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -1479,7 +1404,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1539,24 +1464,21 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 2 << "a" << 3 << "b" << 3)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 3 << "a" << 6 << "b" << 6)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 2 << "a" << 3 << "b" << 3)),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 3 << "a" << 6 << "b" << 6)),
+                                       nullOpDebug,
+                                       true));
             wunit.commit();
         }
         releaseDb();
@@ -1594,7 +1516,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1623,7 +1545,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1659,7 +1581,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1716,12 +1638,12 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
             rid = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -1778,7 +1700,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1809,7 +1731,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1841,7 +1763,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1895,12 +1817,12 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 2 << "a" << 2)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 3 << "a" << 3)), nullOpDebug, true));
             rid = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -1931,7 +1853,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1962,7 +1884,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -1993,7 +1915,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2033,8 +1955,8 @@ public:
             WriteUnitOfWork wunit(&_opCtx);
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
             wunit.commit();
         }
 
@@ -2055,8 +1977,8 @@ public:
         BSONObj dupObj = BSON("_id" << 2 << "a" << 1);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_NOT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(dupObj), nullOpDebug, true));
+            ASSERT_NOT_OK(
+                coll()->insertDocument(&_opCtx, InsertStatement(dupObj), nullOpDebug, true));
         }
         releaseDb();
         ensureValidateWorked();
@@ -2145,7 +2067,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2175,7 +2097,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2194,24 +2116,6 @@ public:
 
             ASSERT_EQ(1, results.indexResultsMap[indexName].keysRemovedFromRecordStore);
 
-            // Verify the older duplicate document appears in the lost-and-found as expected.
-            {
-                const NamespaceString lostAndFoundNss = NamespaceString(
-                    DatabaseName::kLocal, "lost_and_found." + coll()->uuid().toString());
-                AutoGetCollectionForRead autoColl(&_opCtx, lostAndFoundNss);
-                Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(1), &result));
-                ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:1, a:1}"));
-            }
-
-            // Verify the newer duplicate document still appears in the collection as expected.
-            {
-                AutoGetCollectionForRead autoColl(&_opCtx, _nss);
-                Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(3), &result));
-                ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:2, a:1}"));
-            }
-
             dumpOnErrorGuard.dismiss();
         }
 
@@ -2228,7 +2132,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2271,12 +2175,11 @@ public:
             WriteUnitOfWork wunit(&_opCtx);
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
+                                       nullOpDebug,
+                                       true));
             wunit.commit();
         }
 
@@ -2309,8 +2212,8 @@ public:
         BSONObj dupObj = BSON("_id" << 2 << "a" << 1 << "b" << 1);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_NOT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(dupObj), nullOpDebug, true));
+            ASSERT_NOT_OK(
+                coll()->insertDocument(&_opCtx, InsertStatement(dupObj), nullOpDebug, true));
         }
         releaseDb();
         ensureValidateWorked();
@@ -2400,7 +2303,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2418,10 +2321,7 @@ public:
         }
 
         // Run validate with repair, expect missing index entry document is removed from record
-        // store and no action is taken on outdated missing index entry.
-        // Results will not be valid because IndexInfo.numKeys is not subtracted from when
-        // deleteDocument is called. TODO SERVER-62257: Update test to expect valid results when
-        // numKeys can be correctly updated.
+        // store and no action is taken on outdated missing index entry. Results should be valid.
         {
             ValidateResults results;
             BSONObjBuilder output;
@@ -2433,44 +2333,26 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
                 StorageDebugUtil::printCollectionAndIndexTableEntries(&_opCtx, coll()->ns());
             });
 
-            ASSERT_EQ(false, results.valid);
+            ASSERT_EQ(true, results.valid);
             ASSERT_EQ(true, results.repaired);
-            ASSERT_EQ(static_cast<size_t>(1), results.errors.size());
-            ASSERT_EQ(static_cast<size_t>(2), omitTransientWarningsFromCount(results));
+            ASSERT_EQ(static_cast<size_t>(0), results.errors.size());
+            ASSERT_EQ(static_cast<size_t>(1), omitTransientWarningsFromCount(results));
             ASSERT_EQ(static_cast<size_t>(0), results.extraIndexEntries.size());
             ASSERT_EQ(static_cast<size_t>(0), results.missingIndexEntries.size());
             ASSERT_EQ(0, results.numRemovedExtraIndexEntries);
-            ASSERT_EQ(1, results.numInsertedMissingIndexEntries);
+            ASSERT_EQ(0, results.numInsertedMissingIndexEntries);
             ASSERT_EQ(1, results.numDocumentsMovedToLostAndFound);
-            ASSERT_EQ(0, results.numOutdatedMissingIndexEntry);
+            ASSERT_EQ(1, results.numOutdatedMissingIndexEntry);
 
             ASSERT_EQ(1, results.indexResultsMap[indexNameA].keysRemovedFromRecordStore);
             ASSERT_EQ(0, results.indexResultsMap[indexNameB].keysRemovedFromRecordStore);
-
-            // Verify the older document appears in the lost-and-found as expected.
-            {
-                const NamespaceString lostAndFoundNss = NamespaceString(
-                    DatabaseName::kLocal, "lost_and_found." + coll()->uuid().toString());
-                AutoGetCollectionForRead autoColl(&_opCtx, lostAndFoundNss);
-                Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(1), &result));
-                ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:1, a:1, b:1}"));
-            }
-
-            // Verify the newer duplicate document still appears in the collection as expected.
-            {
-                AutoGetCollectionForRead autoColl(&_opCtx, _nss);
-                Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(3), &result));
-                ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:2, a:1, b:1}"));
-            }
 
             dumpOnErrorGuard.dismiss();
         }
@@ -2487,7 +2369,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2533,12 +2415,11 @@ public:
             WriteUnitOfWork wunit(&_opCtx);
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
+                                       nullOpDebug,
+                                       true));
             rid1 = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -2572,8 +2453,8 @@ public:
         BSONObj dupObj = BSON("_id" << 2 << "a" << 1 << "b" << 1);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_NOT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(dupObj), nullOpDebug, true));
+            ASSERT_NOT_OK(
+                coll()->insertDocument(&_opCtx, InsertStatement(dupObj), nullOpDebug, true));
         }
         releaseDb();
         ensureValidateWorked();
@@ -2748,7 +2629,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2766,7 +2647,10 @@ public:
         }
 
         // Run validate with repair, expect duplicate missing index entry document is removed from
-        // record store and missing index entry is inserted into index. Results should be valid.
+        // record store and missing index entry is inserted into index. Results will not be valid
+        // because IndexInfo.numKeys is not subtracted from when deleteDocument is called.
+        // TODO SERVER-62257: Update test to expect valid results when numKeys can be correctly
+        // updated.
         {
             ValidateResults results;
             BSONObjBuilder output;
@@ -2778,44 +2662,26 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
                 StorageDebugUtil::printCollectionAndIndexTableEntries(&_opCtx, coll()->ns());
             });
 
-            ASSERT_EQ(true, results.valid);
+            ASSERT_EQ(false, results.valid);
             ASSERT_EQ(true, results.repaired);
-            ASSERT_EQ(static_cast<size_t>(0), results.errors.size());
-            ASSERT_EQ(static_cast<size_t>(1), omitTransientWarningsFromCount(results));
+            ASSERT_EQ(static_cast<size_t>(1), results.errors.size());
+            ASSERT_EQ(static_cast<size_t>(2), omitTransientWarningsFromCount(results));
             ASSERT_EQ(static_cast<size_t>(0), results.extraIndexEntries.size());
             ASSERT_EQ(static_cast<size_t>(0), results.missingIndexEntries.size());
             ASSERT_EQ(0, results.numRemovedExtraIndexEntries);
-            ASSERT_EQ(0, results.numInsertedMissingIndexEntries);
+            ASSERT_EQ(1, results.numInsertedMissingIndexEntries);
             ASSERT_EQ(1, results.numDocumentsMovedToLostAndFound);
-            ASSERT_EQ(1, results.numOutdatedMissingIndexEntry);
+            ASSERT_EQ(0, results.numOutdatedMissingIndexEntry);
 
             ASSERT_EQ(1, results.indexResultsMap[indexNameA].keysRemovedFromRecordStore);
             ASSERT_EQ(0, results.indexResultsMap[indexNameB].keysRemovedFromRecordStore);
-
-            // Verify the older duplicate document appears in the lost-and-found as expected.
-            {
-                const NamespaceString lostAndFoundNss = NamespaceString(
-                    DatabaseName::kLocal, "lost_and_found." + coll()->uuid().toString());
-                AutoGetCollectionForRead autoColl(&_opCtx, lostAndFoundNss);
-                Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(1), &result));
-                ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:1, a:1, b:1}"));
-            }
-
-            // Verify the newer duplicate document still appears in the collection as expected.
-            {
-                AutoGetCollectionForRead autoColl(&_opCtx, _nss);
-                Snapshotted<BSONObj> result;
-                ASSERT(autoColl.getCollection()->findDoc(&_opCtx, RecordId(3), &result));
-                ASSERT_BSONOBJ_EQ(result.value(), fromjson("{_id:2, a:1, b:1}"));
-            }
 
             dumpOnErrorGuard.dismiss();
         }
@@ -2832,7 +2698,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2880,8 +2746,7 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(doc), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx, InsertStatement(doc), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -2958,7 +2823,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -2989,7 +2854,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3021,7 +2886,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3089,12 +2954,11 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << 1 << "a" << 1 << "b" << 1)),
+                                       nullOpDebug,
+                                       true));
             rid = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -3191,9 +3055,7 @@ public:
     ValidateDuplicateKeysUniqueIndex() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -3228,8 +3090,8 @@ public:
         lockDb(MODE_X);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(
+                &_opCtx, InsertStatement(BSON("_id" << 1 << "a" << 1)), nullOpDebug, true));
             wunit.commit();
         }
 
@@ -3238,8 +3100,8 @@ public:
         BSONObj dupObj = BSON("_id" << 2 << "a" << 1);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_NOT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(dupObj), nullOpDebug, true));
+            ASSERT_NOT_OK(
+                coll()->insertDocument(&_opCtx, InsertStatement(dupObj), nullOpDebug, true));
         }
         releaseDb();
         ensureValidateWorked();
@@ -3382,9 +3244,7 @@ public:
     ValidateInvalidBSONResults() : ValidateBase(full, background) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -3420,22 +3280,13 @@ public:
             ValidateResults results;
             BSONObjBuilder output;
 
-            // validate() will set a kCheckpoint read source. Callers continue to do operations
-            // after running validate, so we must reset the read source back to normal before
-            // returning.
-            auto originalReadSource = _opCtx.recoveryUnit()->getTimestampReadSource();
-            ON_BLOCK_EXIT([&] {
-                _opCtx.recoveryUnit()->abandonSnapshot();
-                _opCtx.recoveryUnit()->setTimestampReadSource(originalReadSource);
-            });
-            forceCheckpoint(_background);
             ASSERT_OK(CollectionValidation::validate(&_opCtx,
                                                      _nss,
                                                      mode,
                                                      CollectionValidation::RepairMode::kNone,
                                                      &results,
                                                      &output,
-                                                     kLogDiagnostics));
+                                                     kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3503,7 +3354,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3534,7 +3385,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3569,7 +3420,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3600,7 +3451,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3642,8 +3493,7 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(doc), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx, InsertStatement(doc), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -3767,7 +3617,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3796,7 +3646,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3826,7 +3676,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -3867,8 +3717,7 @@ public:
             ASSERT_OK(_db->dropCollection(&_opCtx, _nss));
             _db->createCollection(&_opCtx, _nss);
 
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(doc1), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx, InsertStatement(doc1), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -3974,7 +3823,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4003,7 +3852,7 @@ public:
                                                CollectionValidation::RepairMode::kFixErrors,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4032,7 +3881,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4090,8 +3939,7 @@ public:
 
             auto& indexMetadata = collMetadata->indexes[offset];
             indexMetadata.multikeyPaths = {};
-            writer.getWritableCollection(&_opCtx)->replaceMetadata(&_opCtx,
-                                                                   std::move(collMetadata));
+            writer.getWritableCollection()->replaceMetadata(&_opCtx, std::move(collMetadata));
             wunit.commit();
         }
 
@@ -4099,9 +3947,9 @@ public:
         auto descriptor = coll()->getIndexCatalog()->findIndexByName(&_opCtx, indexName);
         {
             WriteUnitOfWork wunit(&_opCtx);
-            auto writableCatalog = writer.getWritableCollection(&_opCtx)->getIndexCatalog();
+            auto writableCatalog = writer.getWritableCollection()->getIndexCatalog();
             descriptor = writableCatalog->refreshEntry(&_opCtx,
-                                                       writer.getWritableCollection(&_opCtx),
+                                                       writer.getWritableCollection(),
                                                        descriptor,
                                                        CreateIndexEntryFlags::kIsReady);
             wunit.commit();
@@ -4114,8 +3962,7 @@ public:
         OpDebug* const nullOpDebug = nullptr;
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx, coll(), InsertStatement(doc1), nullOpDebug, true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx, InsertStatement(doc1), nullOpDebug, true));
             id1 = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -4140,7 +3987,7 @@ public:
                                                CollectionValidation::RepairMode::kAdjustMultikey,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4173,7 +4020,7 @@ public:
                                                CollectionValidation::RepairMode::kAdjustMultikey,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4202,9 +4049,7 @@ public:
         : ValidateBase(/*full=*/false, background, /*clustered=*/true) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -4231,22 +4076,13 @@ public:
             ValidateResults results;
             BSONObjBuilder output;
 
-            // validate() will set a kCheckpoint read source. Callers continue to do operations
-            // after running validate, so we must reset the read source back to normal before
-            // returning.
-            auto originalReadSource = _opCtx.recoveryUnit()->getTimestampReadSource();
-            ON_BLOCK_EXIT([&] {
-                _opCtx.recoveryUnit()->abandonSnapshot();
-                _opCtx.recoveryUnit()->setTimestampReadSource(originalReadSource);
-            });
-            forceCheckpoint(_background);
             ASSERT_OK(CollectionValidation::validate(&_opCtx,
                                                      _nss,
                                                      mode,
                                                      CollectionValidation::RepairMode::kNone,
                                                      &results,
                                                      &output,
-                                                     kLogDiagnostics));
+                                                     kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4273,9 +4109,7 @@ public:
         : ValidateBase(/*full=*/false, background, /*clustered=*/true) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -4300,24 +4134,19 @@ public:
         const OID firstRecordId = OID::gen();
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << firstRecordId << "a" << 1)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << OID::gen() << "a" << 2)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << OID::gen() << "a" << 3)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << firstRecordId << "a" << 1)),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx,
+                                             InsertStatement(BSON("_id" << OID::gen() << "a" << 2)),
+                                             nullOpDebug,
+                                             true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx,
+                                             InsertStatement(BSON("_id" << OID::gen() << "a" << 3)),
+                                             nullOpDebug,
+                                             true));
             rid = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -4345,22 +4174,13 @@ public:
             ValidateResults results;
             BSONObjBuilder output;
 
-            // validate() will set a kCheckpoint read source. Callers continue to do operations
-            // after running validate, so we must reset the read source back to normal before
-            // returning.
-            auto originalReadSource = _opCtx.recoveryUnit()->getTimestampReadSource();
-            ON_BLOCK_EXIT([&] {
-                _opCtx.recoveryUnit()->abandonSnapshot();
-                _opCtx.recoveryUnit()->setTimestampReadSource(originalReadSource);
-            });
-            forceCheckpoint(_background);
             ASSERT_OK(CollectionValidation::validate(&_opCtx,
                                                      _nss,
                                                      mode,
                                                      CollectionValidation::RepairMode::kNone,
                                                      &results,
                                                      &output,
-                                                     kLogDiagnostics));
+                                                     kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4384,9 +4204,7 @@ public:
         : ValidateBase(/*full=*/false, /*background=*/false, /*clustered=*/true) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -4411,24 +4229,19 @@ public:
         const OID firstRecordId = OID::gen();
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << firstRecordId << "a" << 1)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << OID::gen() << "a" << 2)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << OID::gen() << "a" << 3)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << firstRecordId << "a" << 1)),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx,
+                                             InsertStatement(BSON("_id" << OID::gen() << "a" << 2)),
+                                             nullOpDebug,
+                                             true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx,
+                                             InsertStatement(BSON("_id" << OID::gen() << "a" << 3)),
+                                             nullOpDebug,
+                                             true));
             rid = coll()->getCursor(&_opCtx)->next()->id;
             wunit.commit();
         }
@@ -4456,22 +4269,13 @@ public:
             ValidateResults results;
             BSONObjBuilder output;
 
-            // validate() will set a kCheckpoint read source. Callers continue to do operations
-            // after running validate, so we must reset the read source back to normal before
-            // returning.
-            auto originalReadSource = _opCtx.recoveryUnit()->getTimestampReadSource();
-            ON_BLOCK_EXIT([&] {
-                _opCtx.recoveryUnit()->abandonSnapshot();
-                _opCtx.recoveryUnit()->setTimestampReadSource(originalReadSource);
-            });
-            forceCheckpoint(_background);
             ASSERT_OK(CollectionValidation::validate(&_opCtx,
                                                      _nss,
                                                      mode,
                                                      CollectionValidation::RepairMode::kNone,
                                                      &results,
                                                      &output,
-                                                     kLogDiagnostics));
+                                                     kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4496,22 +4300,13 @@ public:
             ValidateResults results;
             BSONObjBuilder output;
 
-            // validate() will set a kCheckpoint read source. Callers continue to do operations
-            // after running validate, so we must reset the read source back to normal before
-            // returning.
-            auto originalReadSource = _opCtx.recoveryUnit()->getTimestampReadSource();
-            ON_BLOCK_EXIT([&] {
-                _opCtx.recoveryUnit()->abandonSnapshot();
-                _opCtx.recoveryUnit()->setTimestampReadSource(originalReadSource);
-            });
-            forceCheckpoint(_background);
             ASSERT_OK(CollectionValidation::validate(&_opCtx,
                                                      _nss,
                                                      mode,
                                                      CollectionValidation::RepairMode::kFixErrors,
                                                      &results,
                                                      &output,
-                                                     kLogDiagnostics));
+                                                     kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4546,9 +4341,7 @@ public:
           _withSecondaryIndex(withSecondaryIndex) {}
 
     void run() {
-        // Cannot run validate with {background:true} if the storage engine does not support
-        // checkpoints.
-        if (_background && !_engineSupportsCheckpoints) {
+        if (_background && !_supportsBackgroundValidation) {
             return;
         }
 
@@ -4574,24 +4367,19 @@ public:
         const OID firstRecordId = OID::gen();
         {
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << firstRecordId << "a" << 1)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << OID::gen() << "a" << 2)),
-                nullOpDebug,
-                true));
-            ASSERT_OK(collection_internal::insertDocument(
-                &_opCtx,
-                coll(),
-                InsertStatement(BSON("_id" << OID::gen() << "a" << 3)),
-                nullOpDebug,
-                true));
+            ASSERT_OK(
+                coll()->insertDocument(&_opCtx,
+                                       InsertStatement(BSON("_id" << firstRecordId << "a" << 1)),
+                                       nullOpDebug,
+                                       true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx,
+                                             InsertStatement(BSON("_id" << OID::gen() << "a" << 2)),
+                                             nullOpDebug,
+                                             true));
+            ASSERT_OK(coll()->insertDocument(&_opCtx,
+                                             InsertStatement(BSON("_id" << OID::gen() << "a" << 3)),
+                                             nullOpDebug,
+                                             true));
             wunit.commit();
         }
         releaseDb();
@@ -4638,7 +4426,7 @@ public:
                                                CollectionValidation::RepairMode::kNone,
                                                &results,
                                                &output,
-                                               kLogDiagnostics));
+                                               kTurnOnExtraLoggingForTest));
 
             ScopeGuard dumpOnErrorGuard([&] {
                 StorageDebugUtil::printValidateResults(results);
@@ -4698,7 +4486,6 @@ public:
         // Tests for index validation.
         add<ValidateIndexEntry<false, false>>();
         add<ValidateIndexEntry<false, true>>();
-        add<ValidateIndexMetadata>();
 
         // Tests that the 'missingIndexEntries' and 'extraIndexEntries' field are populated
         // correctly.
@@ -4745,4 +4532,3 @@ public:
 OldStyleSuiteInitializer<ValidateTests> validateTests;
 
 }  // namespace ValidateTests
-}  // namespace mongo

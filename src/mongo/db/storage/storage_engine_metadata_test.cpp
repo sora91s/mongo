@@ -31,6 +31,7 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/optional.hpp>
+#include <boost/optional/optional_io.hpp>
 #include <fstream>
 #include <ios>
 #include <ostream>

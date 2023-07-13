@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -34,26 +35,19 @@
 
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/commands/txn_cmds_gen.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/index_builds_coordinator.h"
-#include "mongo/db/op_observer/op_observer.h"
 #include "mongo/db/repl/apply_ops.h"
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/repl/timestamp_block.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/transaction/transaction_history_iterator.h"
-#include "mongo/db/transaction/transaction_participant.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/transaction_history_iterator.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
-
 namespace mongo {
-
-using repl::ApplierOperation;
 using repl::OplogEntry;
-
 namespace {
 // If enabled, causes _applyPrepareTransaction to hang before preparing the transaction participant.
 MONGO_FAIL_POINT_DEFINE(applyOpsHangBeforePreparingTransaction);
@@ -67,24 +61,12 @@ MONGO_FAIL_POINT_DEFINE(applyPrepareTxnOpsFailsWithWriteConflict);
 
 MONGO_FAIL_POINT_DEFINE(hangBeforeSessionCheckOutForApplyPrepare);
 
-// Given a vector of OplogEntry pointers, copy and return a vector of OplogEntry's.
-std::vector<OplogEntry> _copyOps(const std::vector<const OplogEntry*>& ops) {
-    std::vector<OplogEntry> res;
-    res.reserve(ops.size());
-    std::transform(ops.begin(),
-                   ops.end(),
-                   std::back_inserter(res),
-                   [](const auto* op) -> const OplogEntry& { return *op; });
-
-    return res;
-}
-
 // Apply the oplog entries for a prepare or a prepared commit during recovery/initial sync.
 Status _applyOperationsForTransaction(OperationContext* opCtx,
-                                      const std::vector<OplogEntry>& txnOps,
+                                      const std::vector<OplogEntry>& ops,
                                       repl::OplogApplication::Mode oplogApplicationMode) noexcept {
     // Apply each the operations via repl::applyOperation.
-    for (const auto& op : txnOps) {
+    for (const auto& op : ops) {
         try {
             if (op.getOpType() == repl::OpTypeEnum::kNoop) {
                 continue;
@@ -97,7 +79,7 @@ Status _applyOperationsForTransaction(OperationContext* opCtx,
             const bool isDataConsistent = true;
             auto status = repl::applyOperation_inlock(opCtx,
                                                       coll.getDb(),
-                                                      ApplierOperation{&op},
+                                                      &op,
                                                       false /*alwaysUpsert*/,
                                                       oplogApplicationMode,
                                                       isDataConsistent);
@@ -152,13 +134,13 @@ Status _applyTransactionFromOplogChain(OperationContext* opCtx,
 
     auto ops = readTransactionOperationsFromOplogChain(opCtx, entry, {});
 
-    const auto dbName = entry.getNss().dbName();
+    const auto dbName = entry.getNss().db().toString();
     Status status = Status::OK();
 
-    writeConflictRetry(opCtx, "replaying prepared transaction", dbName.db(), [&] {
+    writeConflictRetry(opCtx, "replaying prepared transaction", dbName, [&] {
         WriteUnitOfWork wunit(opCtx);
 
-        // We might replay a prepared transaction behind oldest timestamp.
+        // we might replay a prepared transaction behind oldest timestamp.
         opCtx->recoveryUnit()->setRoundUpPreparedTimestamps(true);
 
         BSONObjBuilder resultWeDontCareAbout;
@@ -181,94 +163,38 @@ Status _applyTransactionFromOplogChain(OperationContext* opCtx,
     });
     return status;
 }
-
-/**
- * This is the part of applyCommitTransaction which is common to both split and non-split commit
- * ops in secondary oplog application mode.
- */
-Status _applyCommitTransaction(OperationContext* opCtx,
-                               const OplogEntry& commitOp,
-                               const LogicalSessionId& lsid,
-                               TxnNumber txnNumber,
-                               Timestamp commitTimestamp) {
-    {
-        stdx::lock_guard<Client> lk(*opCtx->getClient());
-        opCtx->setLogicalSessionId(lsid);
-        opCtx->setTxnNumber(txnNumber);
-        if (auto txnRetryCounter = commitOp.getOperationSessionInfo().getTxnRetryCounter()) {
-            opCtx->setTxnRetryCounter(*txnRetryCounter);
-        }
-        opCtx->setInMultiDocumentTransaction();
-    }
-    // This opCtx can be used to apply later operations in the batch, clean up before reusing.
-    ON_BLOCK_EXIT([opCtx]() {
-        stdx::lock_guard<Client> lk(*opCtx->getClient());
-        opCtx->resetMultiDocumentTransactionState();
-    });
-
-    // The write on transaction table may be applied concurrently, so refreshing state
-    // from disk may read that write, causing starting a new transaction on an existing
-    // txnNumber. Thus, we start a new transaction without refreshing state from disk.
-    auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-    auto sessionCheckout = mongoDSessionCatalog->checkOutSessionWithoutRefresh(opCtx);
-
-    auto txnParticipant = TransactionParticipant::get(opCtx);
-    invariant(txnParticipant);
-    txnParticipant.unstashTransactionResources(opCtx, "commitTransaction");
-    txnParticipant.commitPreparedTransaction(opCtx, commitTimestamp, commitOp.getOpTime());
-
-    return Status::OK();
-}
-
-/**
- * This is the part of applyAbortTransaction which is common to both split and non-split abort
- * ops in secondary oplog application mode.
- */
-Status _applyAbortTransaction(OperationContext* opCtx,
-                              const OplogEntry& abortOp,
-                              const LogicalSessionId& lsid,
-                              TxnNumber txnNumber) {
-    {
-        stdx::lock_guard<Client> lk(*opCtx->getClient());
-        opCtx->setLogicalSessionId(lsid);
-        opCtx->setTxnNumber(txnNumber);
-        if (auto txnRetryCounter = abortOp.getOperationSessionInfo().getTxnRetryCounter()) {
-            opCtx->setTxnRetryCounter(*txnRetryCounter);
-        }
-        opCtx->setInMultiDocumentTransaction();
-    }
-    // This opCtx can be used to apply later operations in the batch, clean up before reusing.
-    ON_BLOCK_EXIT([opCtx]() {
-        stdx::lock_guard<Client> lk(*opCtx->getClient());
-        opCtx->resetMultiDocumentTransactionState();
-    });
-
-    // The write on transaction table may be applied concurrently, so refreshing state
-    // from disk may read that write, causing starting a new transaction on an existing
-    // txnNumber. Thus, we start a new transaction without refreshing state from disk.
-    auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-    auto sessionCheckout = mongoDSessionCatalog->checkOutSessionWithoutRefresh(opCtx);
-
-    auto txnParticipant = TransactionParticipant::get(opCtx);
-    invariant(txnParticipant);
-    txnParticipant.unstashTransactionResources(opCtx, "abortTransaction");
-    txnParticipant.abortTransaction(opCtx);
-
-    return Status::OK();
-}
 }  // namespace
 
+/**
+ * Helper used to get previous oplog entry from the same transaction.
+ */
+const repl::OplogEntry getPreviousOplogEntry(OperationContext* opCtx,
+                                             const repl::OplogEntry& entry) {
+    const auto prevOpTime = entry.getPrevWriteOpTimeInTransaction();
+    invariant(prevOpTime);
+    TransactionHistoryIterator iter(prevOpTime.get());
+    invariant(iter.hasNext());
+    const auto prevOplogEntry = iter.next(opCtx);
+
+    return prevOplogEntry;
+}
+
+
 Status applyCommitTransaction(OperationContext* opCtx,
-                              const ApplierOperation& op,
+                              const OplogEntry& entry,
                               repl::OplogApplication::Mode mode) {
-    IDLParserContext ctx("commitTransaction");
-    auto commitCommand = CommitTransactionOplogObject::parse(ctx, op->getObject());
-    auto commitTimestamp = *commitCommand.getCommitTimestamp();
+    IDLParserErrorContext ctx("commitTransaction");
+    auto commitOplogEntryOpTime = entry.getOpTime();
+    auto commitCommand = CommitTransactionOplogObject::parse(ctx, entry.getObject());
+    invariant(commitCommand.getCommitTimestamp());
 
     switch (mode) {
         case repl::OplogApplication::Mode::kRecovering: {
-            return _applyTransactionFromOplogChain(
-                opCtx, *op, mode, commitTimestamp, op->getOpTime().getTimestamp());
+            return _applyTransactionFromOplogChain(opCtx,
+                                                   entry,
+                                                   mode,
+                                                   *commitCommand.getCommitTimestamp(),
+                                                   commitOplogEntryOpTime.getTimestamp());
         }
         case repl::OplogApplication::Mode::kInitialSync: {
             // Initial sync should never apply 'commitTransaction' since it unpacks committed
@@ -280,26 +206,34 @@ Status applyCommitTransaction(OperationContext* opCtx,
             uasserted(50987, "commitTransaction is only used internally by secondaries.");
         }
         case repl::OplogApplication::Mode::kSecondary: {
-            // Checkout the session and apply non-split commit op.
-            if (op.instruction == repl::ApplicationInstruction::applyOplogEntry) {
-                return _applyCommitTransaction(
-                    opCtx, *op, *op->getSessionId(), *op->getTxnNumber(), commitTimestamp);
+            // Transaction operations are in its own batch, so we can modify their opCtx.
+            invariant(entry.getSessionId());
+            invariant(entry.getTxnNumber());
+            opCtx->setLogicalSessionId(*entry.getSessionId());
+            opCtx->setTxnNumber(*entry.getTxnNumber());
+            if (auto txnRetryCounter = entry.getOperationSessionInfo().getTxnRetryCounter()) {
+                opCtx->setTxnRetryCounter(*txnRetryCounter);
             }
-            // Checkout the session and apply split commit op.
-            invariant(op.instruction == repl::ApplicationInstruction::applySplitCommitOrAbortOp);
-            invariant(op.subSession);
-            return _applyCommitTransaction(opCtx,
-                                           *op,
-                                           (*op.subSession).getSessionId(),
-                                           (*op.subSession).getTxnNumber(),
-                                           commitTimestamp);
+            opCtx->setInMultiDocumentTransaction();
+
+            // The write on transaction table may be applied concurrently, so refreshing state
+            // from disk may read that write, causing starting a new transaction on an existing
+            // txnNumber. Thus, we start a new transaction without refreshing state from disk.
+            MongoDOperationContextSessionWithoutRefresh sessionCheckout(opCtx);
+
+            auto transaction = TransactionParticipant::get(opCtx);
+            invariant(transaction);
+            transaction.unstashTransactionResources(opCtx, "commitTransaction");
+            transaction.commitPreparedTransaction(
+                opCtx, *commitCommand.getCommitTimestamp(), commitOplogEntryOpTime);
+            return Status::OK();
         }
     }
     MONGO_UNREACHABLE;
 }
 
 Status applyAbortTransaction(OperationContext* opCtx,
-                             const ApplierOperation& op,
+                             const OplogEntry& entry,
                              repl::OplogApplication::Mode mode) {
     switch (mode) {
         case repl::OplogApplication::Mode::kRecovering: {
@@ -317,15 +251,25 @@ Status applyAbortTransaction(OperationContext* opCtx,
             uasserted(50972, "abortTransaction is only used internally by secondaries.");
         }
         case repl::OplogApplication::Mode::kSecondary: {
-            // Checkout the session and apply non-split abort op.
-            if (op.instruction == repl::ApplicationInstruction::applyOplogEntry) {
-                return _applyAbortTransaction(opCtx, *op, *op->getSessionId(), *op->getTxnNumber());
+            // Transaction operations are in its own batch, so we can modify their opCtx.
+            invariant(entry.getSessionId());
+            invariant(entry.getTxnNumber());
+            opCtx->setLogicalSessionId(*entry.getSessionId());
+            opCtx->setTxnNumber(*entry.getTxnNumber());
+            if (auto txnRetryCounter = entry.getOperationSessionInfo().getTxnRetryCounter()) {
+                opCtx->setTxnRetryCounter(*txnRetryCounter);
             }
-            // Checkout the session and apply split abort op.
-            invariant(op.instruction == repl::ApplicationInstruction::applySplitCommitOrAbortOp);
-            invariant(op.subSession);
-            return _applyAbortTransaction(
-                opCtx, *op, (*op.subSession).getSessionId(), (*op.subSession).getTxnNumber());
+            opCtx->setInMultiDocumentTransaction();
+
+            // The write on transaction table may be applied concurrently, so refreshing state
+            // from disk may read that write, causing starting a new transaction on an existing
+            // txnNumber. Thus, we start a new transaction without refreshing state from disk.
+            MongoDOperationContextSessionWithoutRefresh sessionCheckout(opCtx);
+
+            auto transaction = TransactionParticipant::get(opCtx);
+            transaction.unstashTransactionResources(opCtx, "abortTransaction");
+            transaction.abortTransaction(opCtx);
+            return Status::OK();
         }
     }
     MONGO_UNREACHABLE;
@@ -354,7 +298,7 @@ std::pair<std::vector<OplogEntry>, bool> _readTransactionOperationsFromOplogChai
     const auto lastEntryWrittenToOplogOpTime = oldestEntryInBatch.getPrevWriteOpTimeInTransaction();
     invariant(lastEntryWrittenToOplogOpTime < lastEntryInTxn.getOpTime());
 
-    TransactionHistoryIterator iter(lastEntryWrittenToOplogOpTime.value());
+    TransactionHistoryIterator iter(lastEntryWrittenToOplogOpTime.get());
 
     // If we started with a prepared commit, we want to forget about that operation and move onto
     // the prepare.
@@ -410,16 +354,16 @@ std::pair<std::vector<OplogEntry>, bool> _readTransactionOperationsFromOplogChai
             }
         }
     }
-    return {std::move(ops), isTransactionWithCommand};
+    return std::make_pair(ops, isTransactionWithCommand);
 }
 
 std::vector<OplogEntry> readTransactionOperationsFromOplogChain(
     OperationContext* opCtx,
     const OplogEntry& lastEntryInTxn,
     const std::vector<OplogEntry*>& cachedOps) noexcept {
-    auto [txnOps, _] = _readTransactionOperationsFromOplogChain(
+    auto result = _readTransactionOperationsFromOplogChain(
         opCtx, lastEntryInTxn, cachedOps, false /*checkForCommands*/);
-    return std::move(txnOps);
+    return std::get<0>(result);
 }
 
 std::pair<std::vector<OplogEntry>, bool> readTransactionOperationsFromOplogChainAndCheckForCommands(
@@ -436,11 +380,22 @@ namespace {
  * recovery oplog application.
  */
 Status _applyPrepareTransaction(OperationContext* opCtx,
-                                const OplogEntry& prepareOp,
-                                const LogicalSessionId& lsid,
-                                TxnNumber txnNumber,
-                                const std::vector<OplogEntry>& txnOps,
+                                const OplogEntry& entry,
                                 repl::OplogApplication::Mode mode) {
+
+    // The operations here are reconstructed at their prepare time.  However, that time will
+    // be ignored because there is an outer write unit of work during their application.
+    // The prepare time of the transaction is set explicitly below.
+    auto ops = readTransactionOperationsFromOplogChain(opCtx, entry, {});
+
+    if (mode == repl::OplogApplication::Mode::kRecovering ||
+        mode == repl::OplogApplication::Mode::kInitialSync) {
+        // We might replay a prepared transaction behind oldest timestamp.  Note that since this is
+        // scoped to the storage transaction, and readTransactionOperationsFromOplogChain implicitly
+        // abandons the storage transaction when it releases the global lock, this must be done
+        // after readTransactionOperationsFromOplogChain.
+        opCtx->recoveryUnit()->setRoundUpPreparedTimestamps(true);
+    }
 
     // Block application of prepare oplog entries on secondaries when a concurrent background index
     // build is running.
@@ -455,10 +410,11 @@ Status _applyPrepareTransaction(OperationContext* opCtx,
     // This blocking behavior can also introduce a deadlock with two-phase index builds on
     // a secondary if a prepared transaction blocks on an index build, but the index build can't
     // re-acquire its X lock because of the transaction.
-    for (const auto& op : txnOps) {
+    for (const auto& op : ops) {
         if (op.getOpType() == repl::OpTypeEnum::kNoop) {
             continue;
         }
+
         auto indexBuildsCoord = IndexBuildsCoordinator::get(opCtx);
         auto ns = op.getNss();
         auto uuid = *op.getUuid();
@@ -473,44 +429,28 @@ Status _applyPrepareTransaction(OperationContext* opCtx,
         }
     }
 
-    {
-        stdx::lock_guard<Client> lk(*opCtx->getClient());
-        opCtx->setLogicalSessionId(lsid);
-        opCtx->setTxnNumber(txnNumber);
-        if (auto txnRetryCounter = prepareOp.getOperationSessionInfo().getTxnRetryCounter()) {
-            opCtx->setTxnRetryCounter(*txnRetryCounter);
-        }
-        opCtx->setInMultiDocumentTransaction();
+    // Transaction operations are in their own batch, so we can modify their opCtx.
+    invariant(entry.getSessionId());
+    invariant(entry.getTxnNumber());
+    opCtx->setLogicalSessionId(*entry.getSessionId());
+    opCtx->setTxnNumber(*entry.getTxnNumber());
+    if (auto txnRetryCounter = entry.getOperationSessionInfo().getTxnRetryCounter()) {
+        opCtx->setTxnRetryCounter(*txnRetryCounter);
     }
-    // This opCtx can be used to apply later operations in the batch, clean up before reusing.
-    ON_BLOCK_EXIT([opCtx]() {
-        stdx::lock_guard<Client> lk(*opCtx->getClient());
-        opCtx->resetMultiDocumentTransactionState();
-    });
+    opCtx->setInMultiDocumentTransaction();
 
-    return writeConflictRetry(opCtx, "applying prepare transaction", prepareOp.getNss().ns(), [&] {
+    return writeConflictRetry(opCtx, "applying prepare transaction", entry.getNss().ns(), [&] {
         // The write on transaction table may be applied concurrently, so refreshing state
         // from disk may read that write, causing starting a new transaction on an existing
         // txnNumber. Thus, we start a new transaction without refreshing state from disk.
         hangBeforeSessionCheckOutForApplyPrepare.pauseWhileSet();
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-        auto sessionCheckout = mongoDSessionCatalog->checkOutSessionWithoutRefresh(opCtx);
+        MongoDOperationContextSessionWithoutRefresh sessionCheckout(opCtx);
+
         auto txnParticipant = TransactionParticipant::get(opCtx);
 
-        // We reset the recovery unit on retries, so make sure that we set the necessary states.
-
-        // When querying indexes, we return the record matching the key if it exists, or an
-        // adjacent document. This means that it is possible for us to hit a prepare conflict
-        // if we query for an incomplete key and an adjacent key is prepared.
-        // We ignore prepare conflicts on recovering nodes because they may encounter prepare
-        // conflicts that did not occur on the primary.
+        // We reset the recovery unit on retries, so make sure that we ignore prepare conflicts.
         opCtx->recoveryUnit()->setPrepareConflictBehavior(
             PrepareConflictBehavior::kIgnoreConflictsAllowWrites);
-        // We might replay a prepared transaction behind oldest timestamp.
-        if (mode == repl::OplogApplication::Mode::kRecovering ||
-            mode == repl::OplogApplication::Mode::kInitialSync) {
-            opCtx->recoveryUnit()->setRoundUpPreparedTimestamps(true);
-        }
 
         // Release the WUOW, transaction lock resources and abort storage transaction so that the
         // writeConflictRetry loop will be able to retry applying transactional ops on WCE error.
@@ -527,16 +467,16 @@ Status _applyPrepareTransaction(OperationContext* opCtx,
         // transaction. It should be cleared automatically when the transaction finishes.
         if (mode == repl::OplogApplication::Mode::kRecovering ||
             mode == repl::OplogApplication::Mode::kInitialSync) {
-            txnParticipant.setPrepareOpTimeForRecovery(opCtx, prepareOp.getOpTime());
+            txnParticipant.setPrepareOpTimeForRecovery(opCtx, entry.getOpTime());
         }
 
-        auto status = _applyOperationsForTransaction(opCtx, txnOps, mode);
+        auto status = _applyOperationsForTransaction(opCtx, ops, mode);
 
         if (opCtx->isRetryableWrite()) {
-            for (const auto& op : txnOps) {
+            for (const auto& op : ops) {
                 if (!op.getStatementIds().empty()) {
                     txnParticipant.addCommittedStmtIds(
-                        opCtx, op.getStatementIds(), prepareOp.getOpTime());
+                        opCtx, op.getStatementIds(), entry.getOpTime());
                 }
             }
         }
@@ -548,8 +488,7 @@ Status _applyPrepareTransaction(OperationContext* opCtx,
         }
 
         if (status == ErrorCodes::WriteConflict) {
-            throwWriteConflictException(
-                "Conflict encountered when applying a prepare transaction.");
+            throw WriteConflictException();
         }
         fassert(31137, status);
 
@@ -558,13 +497,7 @@ Status _applyPrepareTransaction(OperationContext* opCtx,
             applyOpsHangBeforePreparingTransaction.pauseWhileSet(opCtx);
         }
 
-        txnParticipant.prepareTransaction(opCtx, prepareOp.getOpTime());
-
-        auto opObserver = opCtx->getServiceContext()->getOpObserver();
-        invariant(opObserver);
-        // TODO (SERVER-73119): Investigate if this should only be called in top-level txn.
-        opObserver->onTransactionPrepareNonPrimary(opCtx, txnOps, prepareOp.getOpTime());
-
+        txnParticipant.prepareTransaction(opCtx, entry.getOpTime());
         // Prepare transaction success.
         abortOnError.dismiss();
 
@@ -577,21 +510,26 @@ Status _applyPrepareTransaction(OperationContext* opCtx,
  * Apply a prepared transaction when we are reconstructing prepared transactions.
  */
 void _reconstructPreparedTransaction(OperationContext* opCtx,
-                                     const OplogEntry& prepareOp,
+                                     const OplogEntry& prepareEntry,
                                      repl::OplogApplication::Mode mode) {
     repl::UnreplicatedWritesBlock uwb(opCtx);
 
     // Snapshot transaction can never conflict with the PBWM lock.
     opCtx->lockState()->setShouldConflictWithSecondaryBatchApplication(false);
 
-    // The operations here are reconstructed at their prepare time. However, that time will
-    // be ignored because there is an outer write unit of work during their application.
-    // The prepare time of the transaction is set explicitly below.
-    auto ops = readTransactionOperationsFromOplogChain(opCtx, prepareOp, {});
+    // When querying indexes, we return the record matching the key if it exists, or an
+    // adjacent document. This means that it is possible for us to hit a prepare conflict if
+    // we query for an incomplete key and an adjacent key is prepared.
+    // We ignore prepare conflicts on recovering nodes because they may encounter prepare
+    // conflicts that did not occur on the primary.
+    opCtx->recoveryUnit()->setPrepareConflictBehavior(
+        PrepareConflictBehavior::kIgnoreConflictsAllowWrites);
+
+    // We might replay a prepared transaction behind oldest timestamp.
+    opCtx->recoveryUnit()->setRoundUpPreparedTimestamps(true);
 
     // Checks out the session, applies the operations and prepares the transaction.
-    uassertStatusOK(_applyPrepareTransaction(
-        opCtx, prepareOp, *prepareOp.getSessionId(), *prepareOp.getTxnNumber(), ops, mode));
+    uassertStatusOK(_applyPrepareTransaction(opCtx, prepareEntry, mode));
 }
 }  // namespace
 
@@ -602,7 +540,7 @@ void _reconstructPreparedTransaction(OperationContext* opCtx,
  * here for initial sync and applyOps should error.
  */
 Status applyPrepareTransaction(OperationContext* opCtx,
-                               const ApplierOperation& op,
+                               const OplogEntry& entry,
                                repl::OplogApplication::Mode mode) {
     switch (mode) {
         case repl::OplogApplication::Mode::kRecovering: {
@@ -630,23 +568,7 @@ Status applyPrepareTransaction(OperationContext* opCtx,
                       "prepare applyOps oplog entry is only used internally by secondaries.");
         }
         case repl::OplogApplication::Mode::kSecondary: {
-            // Checkout the session and apply non-split prepare op.
-            // TODO (SERVER-70578): This can no longer happen once the feature flag is removed.
-            if (op.instruction == repl::ApplicationInstruction::applyOplogEntry) {
-                auto ops = readTransactionOperationsFromOplogChain(opCtx, *op, {});
-                return _applyPrepareTransaction(
-                    opCtx, *op, *op->getSessionId(), *op->getTxnNumber(), ops, mode);
-            }
-            // Checkout the session and apply split prepare op.
-            invariant(op.instruction == repl::ApplicationInstruction::applySplitPrepareOp);
-            invariant(op.subSession);
-            invariant(op.splitPrepareOps);
-            return _applyPrepareTransaction(opCtx,
-                                            *op,
-                                            (*op.subSession).getSessionId(),
-                                            (*op.subSession).getTxnNumber(),
-                                            _copyOps(*op.splitPrepareOps),
-                                            repl::OplogApplication::Mode::kSecondary);
+            return _applyPrepareTransaction(opCtx, entry, repl::OplogApplication::Mode::kSecondary);
         }
     }
     MONGO_UNREACHABLE;
@@ -672,7 +594,7 @@ void reconstructPreparedTransactions(OperationContext* opCtx, repl::OplogApplica
     while (cursor->more()) {
         const auto txnRecordObj = cursor->next();
         const auto txnRecord = SessionTxnRecord::parse(
-            IDLParserContext("recovering prepared transaction"), txnRecordObj);
+            IDLParserErrorContext("recovering prepared transaction"), txnRecordObj);
 
         invariant(txnRecord.getState() == DurableTxnStateEnum::kPrepared);
 

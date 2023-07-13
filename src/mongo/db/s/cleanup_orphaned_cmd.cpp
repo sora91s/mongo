@@ -27,13 +27,23 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
+
+#include "mongo/platform/basic.h"
+
 #include <boost/optional.hpp>
+#include <string>
 
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/privilege.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/field_parser.h"
+#include "mongo/db/jsobj.h"
+#include "mongo/db/namespace_string.h"
+#include "mongo/db/range_arithmetic.h"
+#include "mongo/db/s/chunk_move_write_concern_options.h"
 #include "mongo/db/s/collection_sharding_runtime.h"
 #include "mongo/db/s/migration_util.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
@@ -41,8 +51,7 @@
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
+#include "mongo/s/request_types/migration_secondary_throttle_options.h"
 
 namespace mongo {
 namespace {
@@ -76,9 +85,8 @@ CleanupResult cleanupOrphanedData(OperationContext* opCtx,
         }
         collectionUuid.emplace(autoColl.getCollection()->uuid());
 
-        const auto scopedCsr =
-            CollectionShardingRuntime::assertCollectionLockedAndAcquireShared(opCtx, ns);
-        auto optCollDescr = scopedCsr->getCurrentMetadataIfKnown();
+        auto* const csr = CollectionShardingRuntime::get(opCtx, ns);
+        const auto optCollDescr = csr->getCurrentMetadataIfKnown();
         if (!optCollDescr || !optCollDescr->isSharded()) {
             LOGV2(4416001,
                   "cleanupOrphaned skipping waiting for orphaned data cleanup because "
@@ -160,12 +168,11 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::cleanupOrphaned)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::cleanupOrphaned)) {
             return Status(ErrorCodes::Unauthorized, "Not authorized for cleanupOrphaned command.");
         }
         return Status::OK();
@@ -207,7 +214,7 @@ public:
             return false;
         }
 
-        onCollectionPlacementVersionMismatch(opCtx, nss, boost::none);
+        onShardVersionMismatch(opCtx, nss, boost::none);
 
         CleanupResult cleanupResult = cleanupOrphanedData(opCtx, nss, startingFromKey, &errmsg);
 

@@ -39,7 +39,7 @@
 #include <resolv.h>
 // clang-format on
 
-#include <cstdio>
+#include <stdio.h>
 
 #include <array>
 #include <cassert>

@@ -65,7 +65,7 @@ const AccordionDetails = withStyles((theme) => ({
   },
 }))(MuiAccordionDetails);
 
-const AlgorithmExpander = ({ loading, width, transPathFrom, transPathTo }) => {
+const AlgorithmExpander = ({ loading, width }) => {
   const classes = useStyles();
 
   return (
@@ -93,7 +93,7 @@ const AlgorithmExpander = ({ loading, width, transPathFrom, transPathTo }) => {
               <Typography className={classes.heading}>Graph Paths</Typography>
             </AccordionSummary>
             <AccordionDetails>
-              <GraphPaths datawidth={width} transPathFrom={transPathFrom} transPathTo={transPathTo}/>
+              <GraphPaths datawidth={width} />
             </AccordionDetails>
           </Accordion>
         </Paper>

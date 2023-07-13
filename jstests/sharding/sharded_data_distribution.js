@@ -2,7 +2,7 @@
  * Test to validate the $shardedDataDistribution stage.
  *
  * @tags: [
- *   requires_fcv_62,
+ *   requires_fcv_60,
  * ]
  */
 

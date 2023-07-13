@@ -34,7 +34,7 @@ global:
         - "mongo/db/query/max_time_ms_parser.h"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/crypto/fle_field_schema.idl"
     - "mongo/db/auth/action_type.idl"
     - "mongo/db/auth/access_checks.idl"
@@ -78,60 +78,51 @@ commands:
                 view."
                 type: object
                 default: BSONObj()
-                stability: stable
+                unstable: false
             limit:
                 description: "The maximum number of matching documents to count."
                 type: countLimit
                 optional: true
-                stability: stable
+                unstable: false
             skip:
                 description: "The number of matching documents to skip before counting subsequent
                     results."
                 type: safeInt64
                 optional: true
                 validator: { gte: 0 }
-                stability: stable
+                unstable: false
             hint:
                 description: "The index name to use or the index specification document."
                 type: indexHint
                 default: BSONObj()
-                stability: stable
+                unstable: false
             collation:
                 description: "The collation to use in the count command."
                 type: object
                 optional: true
-                stability: stable
+                unstable: false
             fields:
                 description: "A BSONObj added by the shell. Left in for backwards compatibility."
                 type: object
                 ignore: true
-                stability: unstable
+                unstable: true
             readConcern:
                 description: "A BSONObj read concern."
                 type: object
                 optional: true
-                stability: stable
+                unstable: false
             maxTimeMS:
                 type: maxTimeMS
                 optional: true
-                stability: stable
+                unstable: false
             $queryOptions:
                 description: "Unwrapped read preference."
                 cpp_name: queryOptions
                 type: object
                 optional: true
-                stability: stable
+                unstable: false
             encryptionInformation:
                 description: "Encryption Information schema and other tokens for CRUD commands"
                 type: EncryptionInformation
                 optional: true
-                stability: unstable
-            mirrored:
-                description: "Indicates whether the operation is a mirrored read"
-                type: optionalBool
-                stability: unstable
-            sampleId:
-                description: "The unique sample id for the operation if it has been chosen for sampling."
-                type: uuid
-                optional: true
-                stability: unstable
+                unstable: true

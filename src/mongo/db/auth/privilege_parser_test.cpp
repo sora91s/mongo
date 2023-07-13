@@ -219,8 +219,7 @@ TEST(PrivilegeParserTest, ConvertBetweenPrivilegeTest) {
     ASSERT(privilege.getActions().contains(ActionType::find));
     ASSERT(!privilege.getActions().contains(ActionType::insert));
     ASSERT_EQUALS(privilege.getResourcePattern(),
-                  ResourcePattern::forExactNamespace(
-                      NamespaceString::createNamespaceString_forTest("test.foo")));
+                  ResourcePattern::forExactNamespace(NamespaceString("test.foo")));
 
     ASSERT(ParsedPrivilege::privilegeToParsedPrivilege(privilege, &parsedPrivilege, &errmsg));
     ASSERT(parsedPrivilege.isValid(&errmsg));

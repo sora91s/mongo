@@ -44,23 +44,15 @@ assert.gte(last_register.payload.replSetGetConfig.config.version, 2);
 
 function isUUID(val) {
     // Mock webserver gives us back unpacked BinData/UUID in the form:
-    //"$binary" : {"base64" : "2gzkSY3bTlu/k3bXfpPUKg==", "subType" : "04"}
+    // { '$uuid': '0123456789abcdef0123456789abcdef' }.
     if ((typeof val) !== 'object') {
         return false;
     }
-    const binary = val['$binary'];
-    const subType = binary['subType'];
-    const base64 = binary['base64'];
-
-    // This number is the indentifier for a UUID.
-    // https://www.mongodb.com/docs/manual/reference/bson-types/#binary-data
-    if (subType !== '04') {
+    const uuid = val['$uuid'];
+    if ((typeof uuid) !== 'string') {
         return false;
     }
-
-    // Validate base64
-    return base64.match('^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$') !==
-        null;
+    return uuid.match(/^[0-9a-fA-F]{32}$/) !== null;
 }
 assert.eq(isUUID(last_register.payload.uuid['local.oplog.rs']), true);
 

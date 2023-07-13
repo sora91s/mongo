@@ -47,8 +47,7 @@ class ProjectStage final : public PlanStage {
 public:
     ProjectStage(std::unique_ptr<PlanStage> input,
                  value::SlotMap<std::unique_ptr<EExpression>> projects,
-                 PlanNodeId planNodeId,
-                 bool participateInTrialRunTracking = true);
+                 PlanNodeId nodeId);
 
     std::unique_ptr<PlanStage> clone() const final;
 

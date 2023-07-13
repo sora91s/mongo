@@ -39,7 +39,9 @@
 #include <snappy.h>
 
 namespace mongo {
-
+void initMySnappyMessageCompressor() {
+    
+}
 SnappyMessageCompressor::SnappyMessageCompressor()
     : MessageCompressorBase(MessageCompressor::kSnappy) {}
 

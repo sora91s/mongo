@@ -12,6 +12,7 @@
 
 load('jstests/concurrency/fsm_libs/extend_workload.js');
 load('jstests/concurrency/fsm_workloads/drop_database_sharded.js');
+load("jstests/libs/override_methods/mongos_manual_intervention_actions.js");
 
 var $config = extendWorkload($config, function($config, $super) {
     $config.states.setFCV = function(db, collName) {
@@ -32,26 +33,13 @@ var $config = extendWorkload($config, function($config, $super) {
         jsTestLog('setFCV state finished');
     };
 
-    // Inherithed methods get overridden to tolerate the interruption of
-    // internal transactions on the config server during the execution of setFCV.
-    $config.states.enableSharding = function(db, collName) {
-        try {
-            $super.states.enableSharding.apply(this, arguments);
-        } catch (err) {
-            if (err.code !== ErrorCodes.Interrupted) {
-                throw err;
-            }
-        }
-    };
-
+    // TODO SERVER-63983: remove the following state override once 6.0 becomes lastLTS
     $config.states.shardCollection = function(db, collName) {
-        try {
-            $super.states.shardCollection.apply(this, arguments);
-        } catch (err) {
-            if (err.code !== ErrorCodes.Interrupted) {
-                throw err;
-            }
-        }
+        let coll = getRandomCollection(db);
+        jsTestLog('Executing shardCollection state: ' + coll.getFullName());
+        assertAlways.commandWorkedOrFailedWithCode(
+            db.adminCommand({shardCollection: coll.getFullName(), key: {_id: 1}}),
+            [ErrorCodes.NamespaceNotFound, ErrorCodes.StaleDbVersion, ErrorCodes.IllegalOperation]);
     };
 
     $config.transitions = {

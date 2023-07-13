@@ -73,9 +73,6 @@ public:
     int getJSHeapLimitMB() const override;
     void setJSHeapLimitMB(int limit) override;
 
-    std::string getLoadPath() const override;
-    void setLoadPath(const std::string& loadPath) override;
-
     void registerOperation(OperationContext* ctx, MozJSImplScope* scope);
     void unregisterOperation(unsigned int opId);
 
@@ -99,7 +96,6 @@ private:
                                    // _globalInterruptLock).
 
     DeadlineMonitor<MozJSImplScope> _deadlineMonitor;
-    std::string _loadPath;
 };
 
 }  // namespace mozjs

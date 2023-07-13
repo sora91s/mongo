@@ -31,7 +31,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/db_raii.h"
+#include "mongo/db/dbdirectclient.h"
 #include "mongo/db/repl/replica_set_aware_service.h"
 
 namespace mongo {
@@ -52,39 +52,26 @@ public:
     static ClusterServerParameterInitializer* get(OperationContext* opCtx);
     static ClusterServerParameterInitializer* get(ServiceContext* serviceContext);
 
-    static void updateParameter(OperationContext* opCtx,
-                                BSONObj doc,
-                                StringData mode,
-                                const boost::optional<TenantId>& tenantId);
-    static void clearParameter(OperationContext* opCtx,
-                               ServerParameter* sp,
-                               const boost::optional<TenantId>& tenantId);
-    static void clearParameter(OperationContext* opCtx,
-                               StringData id,
-                               const boost::optional<TenantId>& tenantId);
-    static void clearAllTenantParameters(OperationContext* opCtx,
-                                         const boost::optional<TenantId>& tenantId);
+    void updateParameter(BSONObj doc, StringData mode);
+    void clearParameter(ServerParameter* sp);
+    void clearParameter(StringData id);
+    void clearAllParameters();
 
     /**
      * Used to initialize in-memory cluster parameter state based on the on-disk contents after
      * startup recovery or initial sync is complete.
      */
-    static void initializeAllTenantParametersFromDisk(OperationContext* opCtx,
-                                                      const boost::optional<TenantId>& tenantId);
+    void initializeAllParametersFromDisk(OperationContext* opCtx);
 
     /**
      * Used on rollback and rename with drop.
      * Updates settings which are present and clears settings which are not.
      */
-    static void resynchronizeAllTenantParametersFromDisk(OperationContext* opCtx,
-                                                         const boost::optional<TenantId>& tenantId);
+    void resynchronizeAllParametersFromDisk(OperationContext* opCtx);
 
     // Virtual methods coming from the ReplicaSetAwareService
     void onStartup(OperationContext* opCtx) override final {}
 
-    void onSetCurrentConfig(OperationContext* opCtx) override final {}
-
-    static void synchronizeAllParametersFromDisk(OperationContext* opCtx);
     /**
      * Called after startup recovery or initial sync is complete.
      */
@@ -98,34 +85,20 @@ public:
 
 private:
     template <typename OnEntry>
-    static void doLoadAllTenantParametersFromDisk(OperationContext* opCtx,
-                                                  StringData mode,
-                                                  OnEntry onEntry,
-                                                  const boost::optional<TenantId>& tenantId) try {
-
-        // If the RecoveryUnit already had an open snapshot, keep the snapshot open. Otherwise
-        // abandon the snapshot when exiting the function.
-        ScopeGuard scopeGuard([&] { opCtx->recoveryUnit()->abandonSnapshot(); });
-        if (opCtx->recoveryUnit()->isActive()) {
-            scopeGuard.dismiss();
-        }
-
-        AutoGetCollectionForRead coll(opCtx, NamespaceString::makeClusterParametersNSS(tenantId));
-        if (!coll) {
-            return;
-        }
-
+    void doLoadAllParametersFromDisk(OperationContext* opCtx,
+                                     StringData mode,
+                                     OnEntry onEntry) try {
         std::vector<Status> failures;
 
-        auto cursor = coll->getCursor(opCtx);
-        for (auto doc = cursor->next(); doc; doc = cursor->next()) {
+        DBDirectClient client(opCtx);
+        FindCommandRequest findRequest{NamespaceString::kClusterParametersNamespace};
+        client.find(std::move(findRequest), ReadPreferenceSetting{}, [&](BSONObj doc) {
             try {
-                onEntry(opCtx, doc.get().data.toBson(), mode, tenantId);
+                onEntry(doc, mode);
             } catch (const DBException& ex) {
                 failures.push_back(ex.toStatus());
             }
-        }
-
+        });
         if (!failures.empty()) {
             StringBuilder msg;
             for (const auto& failure : failures) {

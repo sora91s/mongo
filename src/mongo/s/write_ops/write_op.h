@@ -219,10 +219,8 @@ typedef std::pair<int, int> WriteOpRef;
  * operation.
  */
 struct TargetedWrite {
-    TargetedWrite(const ShardEndpoint& endpoint,
-                  WriteOpRef writeOpRef,
-                  boost::optional<UUID> sampleId)
-        : endpoint(endpoint), writeOpRef(writeOpRef), sampleId(sampleId) {}
+    TargetedWrite(const ShardEndpoint& endpoint, WriteOpRef writeOpRef)
+        : endpoint(endpoint), writeOpRef(writeOpRef) {}
 
     // Where to send the write
     ShardEndpoint endpoint;
@@ -231,57 +229,6 @@ struct TargetedWrite {
     // TODO: Could be a more complex handle, shared between write state and networking code if
     // we need to be able to cancel ops.
     WriteOpRef writeOpRef;
-
-    // The unique sample id for the write if it has been chosen for sampling.
-    boost::optional<UUID> sampleId;
-};
-
-/**
- * Data structure representing the information needed to make a batch request, along with
- * pointers to where the resulting responses should be placed.
- *
- * Internal support for storage as a doubly-linked list, to allow the TargetedWriteBatch to
- * efficiently be registered for reporting.
- */
-class TargetedWriteBatch {
-    TargetedWriteBatch(const TargetedWriteBatch&) = delete;
-    TargetedWriteBatch& operator=(const TargetedWriteBatch&) = delete;
-
-public:
-    TargetedWriteBatch(const ShardId& shardId) : _shardId(shardId) {}
-
-    const ShardId& getShardId() const {
-        return _shardId;
-    }
-
-    const std::vector<std::unique_ptr<TargetedWrite>>& getWrites() const {
-        return _writes;
-    };
-
-    size_t getNumOps() const {
-        return _writes.size();
-    }
-
-    int getEstimatedSizeBytes() const {
-        return _estimatedSizeBytes;
-    }
-
-    /**
-     * TargetedWrite is owned here once given to the TargetedWriteBatch.
-     */
-    void addWrite(std::unique_ptr<TargetedWrite> targetedWrite, int estWriteSize);
-
-private:
-    // Where to send the batch
-    const ShardId _shardId;
-
-    // Where the responses go
-    // TargetedWrite*s are owned by the TargetedWriteBatch
-    std::vector<std::unique_ptr<TargetedWrite>> _writes;
-
-    // Conservatively estimated size of the batch, for ensuring it doesn't grow past the maximum
-    // BSON size
-    int _estimatedSizeBytes{0};
 };
 
 }  // namespace mongo

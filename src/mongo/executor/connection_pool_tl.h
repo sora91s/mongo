@@ -32,7 +32,6 @@
 #include <memory>
 
 #include "mongo/client/async_client.h"
-#include "mongo/executor/connection_metrics.h"
 #include "mongo/executor/connection_pool.h"
 #include "mongo/executor/network_connection_hook.h"
 #include "mongo/executor/network_interface.h"
@@ -159,8 +158,7 @@ public:
           _peer(std::move(peer)),
           _sslMode(sslMode),
           _onConnectHook(onConnectHook),
-          _transientSSLContext(transientSSLContext),
-          _connMetrics(serviceContext->getFastClockSource()) {}
+          _transientSSLContext(transientSSLContext) {}
 
     ~TLConnection() {
         // Release must be the first expression of this dtor
@@ -177,8 +175,6 @@ public:
     bool maybeHealthy() override;
     AsyncDBClient* client();
     Date_t now() override;
-    void startConnAcquiredTimer();
-    std::shared_ptr<Timer> getConnAcquiredTimer();
 
 private:
     void setTimeout(Milliseconds timeout, TimeoutCallback cb) override;
@@ -204,7 +200,6 @@ private:
     // SSL context to use intead of the default one for this pool.
     const std::shared_ptr<const transport::SSLConnectionContext> _transientSSLContext;
     AsyncDBClient::Handle _client;
-    ConnectionMetrics _connMetrics;
 };
 
 }  // namespace connection_pool_tl

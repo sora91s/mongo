@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
@@ -38,12 +39,9 @@
 #include "mongo/db/s/sharding_statistics.h"
 #include "mongo/logv2/log.h"
 #include "mongo/logv2/redaction.h"
-#include "mongo/s/commands/cluster_commands_gen.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/request_types/move_chunk_request.h"
 #include "mongo/s/request_types/move_range_request_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -118,7 +116,7 @@ public:
                             auto executorOpCtx = uniqueOpCtx.get();
                             Status status = {ErrorCodes::InternalError, "Uninitialized value"};
                             try {
-                                executorOpCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+                                executorOpCtx->setAlwaysInterruptAtStepDownOrUp();
                                 {
                                     // Ensure that opCtx will get interrupted in the event of a
                                     // stepdown. This is to ensure that the MigrationSourceManager
@@ -199,6 +197,7 @@ public:
                              ShardsvrMoveRange&& request,
                              WriteConcernOptions&& writeConcern) {
             if (request.getFromShard() == request.getToShard()) {
+                // TODO: SERVER-46669 handle wait for delete.
                 return;
             }
 

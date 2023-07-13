@@ -1,4 +1,3 @@
-// @tags: [temporary_catalog_shard_incompatible]
 (function() {
 'use strict';
 

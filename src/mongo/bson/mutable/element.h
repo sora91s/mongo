@@ -283,7 +283,7 @@ public:
      *  BSONObj. However, the contents of the BSONElement returned here must be treated as
      *  const.
      */
-    BSONElement getValue() const;
+    const BSONElement getValue() const;
 
     /** Get the value from a double valued Element. */
     inline double getValueDouble() const;

@@ -18,5 +18,5 @@ assert.commandWorked(t.insert({a: {b: 5}}));
 
 const res = t.explain("executionStats").aggregate([{$match: {'a.b': 2}}]);
 assert.eq(1, res.executionStats.nReturned);
-assertValueOnPlanPath("Exchange", res, "child.nodeType");
+assert.eq("Exchange", res.queryPlanner.winningPlan.optimizerPlan.child.nodeType);
 }());

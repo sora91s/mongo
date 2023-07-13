@@ -52,14 +52,14 @@ template <typename KeyType>
 struct PlanCacheKeyTag {};
 
 /**
- * Creates a key for the classic plan cache from the canonical query and a single collection.
+ * Creates a key for the classic plan cache from the canonical query and collection instances.
  */
 PlanCacheKey make(const CanonicalQuery& query,
                   const CollectionPtr& collection,
                   PlanCacheKeyTag<PlanCacheKey> tag);
 
 /**
- * Similar to above, but for the SBE plan cache key.
+ * Creates a key for the SBE plan cache from the canonical query and collection instances.
  */
 sbe::PlanCacheKey make(const CanonicalQuery& query,
                        const CollectionPtr& collection,
@@ -77,12 +77,5 @@ template <typename Key>
 Key make(const CanonicalQuery& query, const CollectionPtr& collection) {
     return plan_cache_detail::make(query, collection, plan_cache_detail::PlanCacheKeyTag<Key>{});
 }
-
-/**
- * Similar to above, a factory helper to make a SBE plan cache key, but used for agg queries that
- * might involve multiple collections.
- */
-sbe::PlanCacheKey make(const CanonicalQuery& query, const MultipleCollectionAccessor& collections);
-
 }  // namespace plan_cache_key_factory
 }  // namespace mongo

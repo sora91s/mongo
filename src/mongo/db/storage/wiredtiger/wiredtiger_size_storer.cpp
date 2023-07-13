@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -34,7 +35,6 @@
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/db/concurrency/exception_util.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_begin_transaction_block.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
@@ -45,13 +45,19 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/scopeguard.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 
-WiredTigerSizeStorer::WiredTigerSizeStorer(WT_CONNECTION* conn, const std::string& storageUri)
-    : _conn(conn), _storageUri(storageUri), _tableId(WiredTigerSession::genTableId()) {
+WiredTigerSizeStorer::WiredTigerSizeStorer(WT_CONNECTION* conn,
+                                           const std::string& storageUri,
+                                           bool readOnly)
+    : _conn(conn),
+      _storageUri(storageUri),
+      _tableId(WiredTigerSession::genTableId()),
+      _readOnly(readOnly) {
+    if (_readOnly) {
+        return;
+    }
+
     std::string config = WiredTigerCustomizationHooks::get(getGlobalServiceContext())
                              ->getTableCreateConfig(_storageUri);
 
@@ -63,7 +69,7 @@ WiredTigerSizeStorer::WiredTigerSizeStorer(WT_CONNECTION* conn, const std::strin
 
 void WiredTigerSizeStorer::store(StringData uri, std::shared_ptr<SizeInfo> sizeInfo) {
     // If the SizeInfo is still dirty, we're done.
-    if (sizeInfo->_dirty.load())
+    if (sizeInfo->_dirty.load() || _readOnly)
         return;
 
     // Ordering is important: as the entry may be flushed concurrently, set the dirty flag last.
@@ -179,9 +185,8 @@ void WiredTigerSizeStorer::flush(bool syncToDisk) {
                 // One of the code paths calling this function is when a session is checked back
                 // into the session cache. This could involve read-only operations which don't
                 // except write conflicts. If WiredTiger returns WT_ROLLBACK during the flush, we
-                // return an exception here and let the caller decide whether to ignore it or retry
-                // flushing.
-                throwWriteConflictException("Size storer flush received a rollback.");
+                // skip flushing.
+                return;
             }
             invariantWTOK(ret, cursor->session);
         }

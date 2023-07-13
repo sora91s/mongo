@@ -27,13 +27,13 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/pipeline/document_source_cursor.h"
 
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/db_raii.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/query/collection_query_info.h"
@@ -44,9 +44,6 @@
 #include "mongo/s/resharding/resume_token_gen.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -144,10 +141,11 @@ void DocumentSourceCursor::loadBatch() {
     tassert(5565800,
             "Expected PlanExecutor to use an external lock policy",
             _exec->lockPolicy() == PlanExecutor::LockPolicy::kLockExternally);
-    autoColl.emplace(
-        pExpCtx->opCtx,
-        _exec->nss(),
-        AutoGetCollection::Options{}.secondaryNssOrUUIDs(_exec->getSecondaryNamespaces()));
+    autoColl.emplace(pExpCtx->opCtx,
+                     _exec->nss(),
+                     AutoGetCollectionViewMode::kViewsForbidden,
+                     Date_t::max(),
+                     _exec->getSecondaryNamespaces());
     uassertStatusOK(repl::ReplicationCoordinator::get(pExpCtx->opCtx)
                         ->checkCanServeReadsFor(pExpCtx->opCtx, _exec->nss(), true));
 
@@ -225,20 +223,16 @@ Value DocumentSourceCursor::serialize(boost::optional<ExplainOptions::Verbosity>
 
     {
         auto opCtx = pExpCtx->opCtx;
-        auto secondaryNssList = _exec->getSecondaryNamespaces();
-        AutoGetCollectionForReadMaybeLockFree readLock(
-            opCtx,
-            _exec->nss(),
-            AutoGetCollection::Options{}.secondaryNssOrUUIDs(secondaryNssList));
-        MultipleCollectionAccessor collections(opCtx,
-                                               &readLock.getCollection(),
-                                               readLock.getNss(),
-                                               readLock.isAnySecondaryNamespaceAViewOrSharded(),
-                                               secondaryNssList);
+        auto lockMode = getLockModeForQuery(opCtx, _exec->nss());
+        AutoGetDb dbLock(opCtx, _exec->nss().db(), lockMode);
+        Lock::CollectionLock collLock(opCtx, _exec->nss(), lockMode);
+        auto collection = dbLock.getDb()
+            ? CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, _exec->nss())
+            : nullptr;
 
         Explain::explainStages(_exec.get(),
-                               collections,
-                               verbosity.value(),
+                               collection,
+                               verbosity.get(),
                                _execStatus,
                                _winningPlanTrialStats,
                                BSONObj(),
@@ -250,7 +244,7 @@ Value DocumentSourceCursor::serialize(boost::optional<ExplainOptions::Verbosity>
     invariant(explainStats["queryPlanner"]);
     out["queryPlanner"] = Value(explainStats["queryPlanner"]);
 
-    if (verbosity.value() >= ExplainOptions::Verbosity::kExecStats) {
+    if (verbosity.get() >= ExplainOptions::Verbosity::kExecStats) {
         invariant(explainStats["executionStats"]);
         out["executionStats"] = Value(explainStats["executionStats"]);
     }
@@ -315,8 +309,7 @@ DocumentSourceCursor::DocumentSourceCursor(
     : DocumentSource(kStageName, pCtx),
       _currentBatch(cursorType),
       _exec(std::move(exec)),
-      _trackOplogTS(trackOplogTimestamp),
-      _queryFramework(_exec->getQueryFramework()) {
+      _trackOplogTS(trackOplogTimestamp) {
     // It is illegal for both 'kEmptyDocuments' and 'trackOplogTimestamp' to be set.
     invariant(!(cursorType == CursorType::kEmptyDocuments && trackOplogTimestamp));
 

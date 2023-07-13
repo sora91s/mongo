@@ -35,7 +35,7 @@ namespace mongo {
 constexpr StringData InternalSchemaMatchArrayIndexMatchExpression::kName;
 
 InternalSchemaMatchArrayIndexMatchExpression::InternalSchemaMatchArrayIndexMatchExpression(
-    boost::optional<StringData> path,
+    StringData path,
     long long index,
     std::unique_ptr<ExpressionWithPlaceholder> expression,
     clonable_ptr<ErrorAnnotation> annotation)
@@ -51,7 +51,7 @@ void InternalSchemaMatchArrayIndexMatchExpression::debugString(StringBuilder& de
     _debugAddSpace(debug, indentationLevel);
 
     BSONObjBuilder builder;
-    serialize(&builder, {});
+    serialize(&builder, true);
     debug << builder.obj().toString() << "\n";
 
     const auto* tag = getTag();
@@ -72,9 +72,7 @@ bool InternalSchemaMatchArrayIndexMatchExpression::equivalent(const MatchExpress
         _expression->equivalent(other->_expression.get());
 }
 
-BSONObj InternalSchemaMatchArrayIndexMatchExpression::getSerializedRightHandSide(
-    SerializationOptions opts) const {
-    // TODO SERVER-73678 respect 'replacementForLiteralArgs'.
+BSONObj InternalSchemaMatchArrayIndexMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder objBuilder;
     {
         BSONObjBuilder matchArrayElemSubobj(objBuilder.subobjStart(kName));
@@ -82,7 +80,7 @@ BSONObj InternalSchemaMatchArrayIndexMatchExpression::getSerializedRightHandSide
         matchArrayElemSubobj.append("namePlaceholder", _expression->getPlaceholder().value_or(""));
         {
             BSONObjBuilder subexprSubObj(matchArrayElemSubobj.subobjStart("expression"));
-            _expression->getFilter()->serialize(&subexprSubObj, opts);
+            _expression->getFilter()->serialize(&subexprSubObj, true);
             subexprSubObj.doneFast();
         }
         matchArrayElemSubobj.doneFast();

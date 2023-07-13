@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
@@ -60,9 +62,8 @@ public:
         }
         cursorBob.done();
     }
-};
 
-ClusterCursorStats& clusterCursorStats = addMetricToTree(std::make_unique<ClusterCursorStats>());
+} clusterCursorStats;
 
 }  // namespace
 }  // namespace mongo

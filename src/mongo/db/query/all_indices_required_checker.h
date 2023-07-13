@@ -55,19 +55,18 @@ public:
      * Throws a 'QueryPlanKilled' error if any of the indices which existed at the time of
      * construction have since been dropped.
      */
-    void check(OperationContext* opCtx, const MultipleCollectionAccessor& collections) const;
+    void check() const;
 
 private:
     void saveIndicesForCollection(const CollectionPtr& collection);
 
-    void checkIndicesForCollection(OperationContext* opCtx, const CollectionPtr& collection) const;
-
-    // This map of map holds index idents to all of the index catalog entries known at the time of
-    // construction, grouped first by collection UUID then by index name. Later, we can attempt to
-    // lookup the index entry by its ident in order to determine whether an index in the list has
-    // been dropped. If the index entry is found, we need to check the 'isDropped()' flag on the
+    // This map of map holds weak pointers to all of the index catalog entries known at the time of
+    // construction, grouped first by collection namespace then by index name. Later, we can attempt
+    // to lock each weak pointer in order to determine whether an index in the list has been
+    // destroyed. If we can lock the weak pointer, we need to check the 'isDropped()' flag on the
     // index catalog entry.
-    std::map<UUID, StringMap<std::string>> _identEntries;
+    std::map<NamespaceString, StringMap<std::weak_ptr<const IndexCatalogEntry>>>
+        _indexCatalogEntries;
 };
 
 }  // namespace mongo

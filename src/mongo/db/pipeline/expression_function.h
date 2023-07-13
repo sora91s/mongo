@@ -33,6 +33,7 @@
 #include "mongo/db/pipeline/javascript_execution.h"
 
 namespace mongo {
+void initMyExpressionFunction();
 /**
  * This expression takes a function, an array of arguments to pass to it, and the language
  * specifier (currently limited to JavaScript). It returns the return value of the function with
@@ -69,7 +70,7 @@ public:
 
     Value evaluate(const Document& root, Variables* variables) const final;
 
-    Value serialize(SerializationOptions options) const final;
+    Value serialize(bool explain) const final;
 
     void acceptVisitor(ExpressionMutableVisitor* visitor) final {
         return visitor->visit(this);
@@ -88,6 +89,7 @@ private:
                        bool assignFirstArgToThis,
                        std::string funcSourceString,
                        std::string lang);
+    void _doAddDependencies(DepsTracker* deps) const final override;
 
     const boost::intrusive_ptr<Expression>& _passedArgs;
     bool _assignFirstArgToThis;

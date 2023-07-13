@@ -34,14 +34,13 @@
 #include <map>
 #include <string>
 
-#include <MurmurHash3.h>
+#include <third_party/murmurhash3/MurmurHash3.h>
 
 #include "mongo/base/data_type_endian.h"
 #include "mongo/base/data_view.h"
 #include "mongo/base/static_assert.h"
 #include "mongo/base/string_data.h"
 #include "mongo/config.h"
-#include "mongo/db/namespace_string.h"
 
 namespace mongo {
 
@@ -164,10 +163,7 @@ enum ResourceType {
     RESOURCE_COLLECTION,
     RESOURCE_METADATA,
 
-    /**
-     * Resource type used for locking general resources not related to the storage hierarchy. These
-     * can't be created manually, use Lock::ResourceMutex::ResourceMutex() instead.
-     */
+    /** Resource type used for locking general resources not related to the storage hierarchy. */
     RESOURCE_MUTEX,
 
     /** Counts the rest. Always insert new resource types above this entry. */
@@ -235,23 +231,10 @@ class ResourceId {
 
 public:
     ResourceId() : _fullHash(0) {}
-    ResourceId(ResourceType type, const NamespaceString& nss)
-        : _fullHash(fullHash(type, hashStringData(nss.toStringWithTenantId()))) {
-        verifyNoResourceMutex(type);
-    }
-    ResourceId(ResourceType type, const DatabaseName& dbName)
-        : _fullHash(fullHash(type, hashStringData(dbName.toStringWithTenantId()))) {
-        verifyNoResourceMutex(type);
-    }
-    ResourceId(ResourceType type, const std::string& str)
-        : _fullHash(fullHash(type, hashStringData(str))) {
-        // Resources of type database or collection must never be passed as a raw string
-        invariant(type != RESOURCE_DATABASE && type != RESOURCE_COLLECTION);
-        verifyNoResourceMutex(type);
-    }
-    ResourceId(ResourceType type, uint64_t hashId) : _fullHash(fullHash(type, hashId)) {
-        verifyNoResourceMutex(type);
-    }
+    ResourceId(ResourceType type, StringData ns) : _fullHash(fullHash(type, hashStringData(ns))) {}
+    ResourceId(ResourceType type, const std::string& ns)
+        : _fullHash(fullHash(type, hashStringData(ns))) {}
+    ResourceId(ResourceType type, uint64_t hashId) : _fullHash(fullHash(type, hashId)) {}
 
     bool isValid() const {
         return getType() != RESOURCE_INVALID;
@@ -282,20 +265,6 @@ public:
     }
 
 private:
-    ResourceId(uint64_t fullHash) : _fullHash(fullHash) {}
-
-    // Used to allow Lock::ResourceMutex to create ResourceIds with RESOURCE_MUTEX type
-    static ResourceId makeMutexResourceId(uint64_t hashId) {
-        return ResourceId(fullHash(ResourceType::RESOURCE_MUTEX, hashId));
-    }
-    friend class Lock;
-
-    void verifyNoResourceMutex(ResourceType type) {
-        invariant(
-            type != RESOURCE_MUTEX,
-            "Can't create a ResourceMutex directly, use Lock::ResourceMutex::ResourceMutex().");
-    }
-
     /**
      * The top 'resourceTypeBits' bits of '_fullHash' represent the resource type,
      * while the remaining bits contain the bottom bits of the hashId. This avoids false
@@ -328,6 +297,7 @@ typedef uint64_t LockerId;
 // Hardcoded resource id for the oplog collection, which is special-cased both for resource
 // acquisition purposes and for statistics reporting.
 extern const ResourceId resourceIdLocalDB;
+extern const ResourceId resourceIdOplog;
 
 // Hardcoded resource id for admin db. This is to ensure direct writes to auth collections
 // are serialized (see SERVER-16092)

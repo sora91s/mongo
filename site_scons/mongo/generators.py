@@ -4,7 +4,6 @@ import hashlib
 
 # Default and alternative generator definitions go here.
 
-
 # This is the key/value mapping that will be returned by the buildInfo command and
 # printed by the --version command-line option to mongod.
 # Each mapped value is in turn a dict consisting of:
@@ -78,7 +77,7 @@ def default_buildinfo_environment_data():
         ),
     )
     return {
-        k: {'key': k, 'value': v, 'inBuildInfo': ibi, 'inVersion': iv}
+        k:{'key': k, 'value': v, 'inBuildInfo': ibi, 'inVersion': iv}
         for k, v, ibi, iv in data
     }
 
@@ -89,15 +88,7 @@ def empty_buildinfo_environment_data():
     return {}
 
 
-# Special cases - if debug is not enabled and optimization is not specified,
-# default to full optimizationm otherwise turn it off.
-def get_opt_options(env) -> str:
-    if env.GetOption('opt') == 'auto':
-        return "on" if not env.GetOption('dbg') == 'on' else "off"
-    else:
-        return env.GetOption('opt')
-
-
+# TODO: SERVER-69064 Improve default_variant_dir_generator in Build System
 def default_variant_dir_generator(target, source, env, for_signature):
 
     if env.GetOption('cache') != None:
@@ -114,19 +105,16 @@ def default_variant_dir_generator(target, source, env, for_signature):
     hasher = hashlib.md5()
     for option in variant_options:
         hasher.update(option.encode('utf-8'))
-        if option == 'opt':
-            hasher.update(get_opt_options(env).encode('utf-8'))
-        else:
-            hasher.update(str(env.GetOption(option)).encode('utf-8'))
+        hasher.update(str(env.GetOption(option)).encode('utf-8'))
     variant_dir = str(hasher.hexdigest()[0:8])
 
     # If our option hash yields a well known hash, replace it with its name.
     known_variant_hashes = {
-        '343e6678': 'debug',
-        '85fcf9b0': 'opt',
-        '981ce870': 'debug',
-        '9fface73': 'optdebug',
-        'c52b1cc3': 'opt',
+        '343e6678' : 'debug',
+        '85fcf9b0' : 'opt',
+        '981ce870' : 'debug',
+        '9fface73' : 'optdebug',
+        'c52b1cc3' : 'opt',
     }
 
     return known_variant_hashes.get(variant_dir, variant_dir)
@@ -135,5 +123,4 @@ def default_variant_dir_generator(target, source, env, for_signature):
 def os_specific_variant_dir_generator(target, source, env, for_signature):
     return '-'.join([
         env['TARGET_OS'],
-        default_variant_dir_generator(target, source, env, for_signature),
-    ])
+        default_variant_dir_generator(target, source, env, for_signature)])

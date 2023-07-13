@@ -12,15 +12,15 @@
 #include <boost/math/special_functions/expm1.hpp>
 #include <boost/math/distributions/complement.hpp>
 #include <boost/math/distributions/detail/common_error_handling.hpp>
+#include <boost/config/no_tr1/cmath.hpp>
 
-#ifdef _MSC_VER
+#ifdef BOOST_MSVC
 # pragma warning(push)
 # pragma warning(disable: 4127) // conditional expression is constant
 # pragma warning(disable: 4702) // unreachable code (return after domain_error throw).
 #endif
 
 #include <utility>
-#include <cmath>
 
 namespace boost{ namespace math{
 
@@ -77,11 +77,6 @@ private:
 };
 
 typedef exponential_distribution<double> exponential;
-
-#ifdef __cpp_deduction_guides
-template <class RealType>
-exponential_distribution(RealType)->exponential_distribution<typename boost::math::tools::promote_args<RealType>::type>;
-#endif
 
 template <class RealType, class Policy>
 inline const std::pair<RealType, RealType> range(const exponential_distribution<RealType, Policy>& /*dist*/)
@@ -275,7 +270,7 @@ inline RealType entropy(const exponential_distribution<RealType, Policy>& dist)
 } // namespace math
 } // namespace boost
 
-#ifdef _MSC_VER
+#ifdef BOOST_MSVC
 # pragma warning(pop)
 #endif
 

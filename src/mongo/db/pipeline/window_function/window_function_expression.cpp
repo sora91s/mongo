@@ -29,7 +29,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/feature_compatibility_version_documentation.h"
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/pipeline/accumulation_statement.h"
 #include "mongo/db/pipeline/document_source_add_fields.h"
 #include "mongo/db/pipeline/document_source_project.h"
@@ -58,26 +58,61 @@ using namespace window_function_n_traits;
 REGISTER_STABLE_WINDOW_FUNCTION(derivative, ExpressionDerivative::parse);
 REGISTER_STABLE_WINDOW_FUNCTION(first, ExpressionFirst::parse);
 REGISTER_STABLE_WINDOW_FUNCTION(last, ExpressionLast::parse);
-REGISTER_STABLE_WINDOW_FUNCTION(linearFill, ExpressionLinearFill::parse);
-REGISTER_STABLE_WINDOW_FUNCTION(minN, (ExpressionN<WindowFunctionMinN, AccumulatorMinN>::parse));
-REGISTER_STABLE_WINDOW_FUNCTION(maxN, (ExpressionN<WindowFunctionMaxN, AccumulatorMaxN>::parse));
-REGISTER_STABLE_WINDOW_FUNCTION(firstN,
-                                (ExpressionN<WindowFunctionFirstN, AccumulatorFirstN>::parse));
-REGISTER_STABLE_WINDOW_FUNCTION(lastN, (ExpressionN<WindowFunctionLastN, AccumulatorLastN>::parse));
-REGISTER_STABLE_WINDOW_FUNCTION(
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(linearFill,
+                                       (ExpressionLinearFill::parse),
+                                       feature_flags::gFeatureFlagFill.getVersion(),
+                                       AllowedWithApiStrict::kNeverInVersion1,
+                                       feature_flags::gFeatureFlagFill.isEnabledAndIgnoreFCV());
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
+    minN,
+    (ExpressionN<WindowFunctionMinN, AccumulatorMinN>::parse),
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
+    maxN,
+    (ExpressionN<WindowFunctionMaxN, AccumulatorMaxN>::parse),
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
+    firstN,
+    (ExpressionN<WindowFunctionFirstN, AccumulatorFirstN>::parse),
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
+    lastN,
+    (ExpressionN<WindowFunctionLastN, AccumulatorLastN>::parse),
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
     topN,
-    (ExpressionN<WindowFunctionTopN, AccumulatorTopBottomN<TopBottomSense::kTop, false>>::parse));
-REGISTER_STABLE_WINDOW_FUNCTION(
+    (ExpressionN<WindowFunctionTopN, AccumulatorTopBottomN<TopBottomSense::kTop, false>>::parse),
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
     bottomN,
     (ExpressionN<WindowFunctionBottomN,
-                 AccumulatorTopBottomN<TopBottomSense::kBottom, false>>::parse));
-REGISTER_STABLE_WINDOW_FUNCTION(
+                 AccumulatorTopBottomN<TopBottomSense::kBottom, false>>::parse),
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
     top,
-    (ExpressionN<WindowFunctionTop, AccumulatorTopBottomN<TopBottomSense::kTop, true>>::parse));
-REGISTER_STABLE_WINDOW_FUNCTION(
+    (ExpressionN<WindowFunctionTop, AccumulatorTopBottomN<TopBottomSense::kTop, true>>::parse),
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
     bottom,
     (ExpressionN<WindowFunctionBottom,
-                 AccumulatorTopBottomN<TopBottomSense::kBottom, true>>::parse));
+                 AccumulatorTopBottomN<TopBottomSense::kBottom, true>>::parse),
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
 
 StringMap<Expression::ExpressionParserRegistration> Expression::parserMap;
 
@@ -95,16 +130,15 @@ intrusive_ptr<Expression> Expression::parse(BSONObj obj,
                 // be caught as invalid arguments to the Expression parser later.
                 const auto& parserRegistration = parserFCV->second;
                 const auto& parser = parserRegistration.parser;
-                const auto& featureFlag = parserRegistration.featureFlag;
+                const auto& fcv = parserRegistration.fcv;
                 uassert(ErrorCodes::QueryFeatureNotAllowed,
                         str::stream()
                             << exprName
                             << " is not allowed in the current feature compatibility version. See "
                             << feature_compatibility_version_documentation::kCompatibilityLink
                             << " for more information.",
-                        !expCtx->maxFeatureCompatibilityVersion || !featureFlag ||
-                            featureFlag->isEnabledOnVersion(
-                                *expCtx->maxFeatureCompatibilityVersion));
+                        !expCtx->maxFeatureCompatibilityVersion || !fcv ||
+                            (*fcv <= *expCtx->maxFeatureCompatibilityVersion));
 
                 auto allowedWithApi = parserRegistration.allowedWithApi;
 
@@ -148,12 +182,13 @@ intrusive_ptr<Expression> Expression::parse(BSONObj obj,
                        : ", "s + obj.firstElementFieldNameStringData()));
 }
 
-void Expression::registerParser(std::string functionName,
-                                Parser parser,
-                                boost::optional<FeatureFlag> featureFlag,
-                                AllowedWithApiStrict allowedWithApi) {
+void Expression::registerParser(
+    std::string functionName,
+    Parser parser,
+    boost::optional<multiversion::FeatureCompatibilityVersion> requiredMinVersion,
+    AllowedWithApiStrict allowedWithApi) {
     invariant(parserMap.find(functionName) == parserMap.end());
-    ExpressionParserRegistration r{parser, featureFlag, allowedWithApi};
+    ExpressionParserRegistration r{parser, requiredMinVersion, allowedWithApi};
     operatorCountersWindowAccumulatorExpressions.addCounter(functionName);
     parserMap.emplace(std::move(functionName), std::move(r));
 }
@@ -294,14 +329,14 @@ ExpressionN<WindowFunctionN, AccumulatorNType>::buildAccumulatorOnly() const {
     if constexpr (!needsSortBy<WindowFunctionN>::value) {
         tassert(5788606,
                 str::stream() << AccumulatorNType::getName()
-                              << " should not have received a 'sortBy' but did!",
+                              << " should not have recieved a 'sortBy' but did!",
                 !sortPattern);
 
         acc = AccumulatorNType::create(_expCtx);
     } else {
         tassert(5788601,
                 str::stream() << AccumulatorNType::getName()
-                              << " should have received a 'sortBy' but did not!",
+                              << " should have recieved a 'sortBy' but did not!",
                 sortPattern);
         acc = AccumulatorNType::create(_expCtx, *sortPattern);
     }
@@ -320,7 +355,7 @@ ExpressionN<WindowFunctionN, AccumulatorNType>::buildRemovable() const {
     if constexpr (needsSortBy<WindowFunctionN>::value) {
         tassert(5788602,
                 str::stream() << AccumulatorNType::getName()
-                              << " should have received a 'sortBy' but did not!",
+                              << " should have recieved a 'sortBy' but did not!",
                 sortPattern);
         return WindowFunctionN::create(
             _expCtx,

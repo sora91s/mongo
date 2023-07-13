@@ -1,10 +1,6 @@
 env:
-  es2022: true
+  es6: true
   mongo: true
-
-parserOptions:
-  ecmaVersion: 2022
-  sourceType: "module"
 
 rules:
   # Rules are documented at http://eslint.org/docs/rules/

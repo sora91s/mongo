@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/bson/json.h"
 
@@ -46,9 +47,6 @@
 #include "mongo/util/str.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/uuid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 
@@ -78,7 +76,6 @@ using namespace fmt::literals;
 // Size hints given to char vectors
 enum {
     ID_RESERVE_SIZE = 24,
-    UUID_RESERVE_SIZE = 36,
     PAT_RESERVE_SIZE = 4096,
     OPT_RESERVE_SIZE = 64,
     FIELD_RESERVE_SIZE = 4096,
@@ -163,11 +160,6 @@ Status JParse::value(StringData fieldName, BSONObjBuilder& builder) {
         if (ret != Status::OK()) {
             return ret;
         }
-    } else if (readToken("UUID")) {
-        Status ret = uuid(fieldName, builder);
-        if (ret != Status::OK()) {
-            return ret;
-        }
     } else if (peekToken(FORWARDSLASH)) {
         Status ret = regex(fieldName, builder);
         if (ret != Status::OK()) {
@@ -226,9 +218,9 @@ Status JParse::object(StringData fieldName, BSONObjBuilder& builder, bool subObj
     // Special object
     std::string firstField;
     firstField.reserve(FIELD_RESERVE_SIZE);
-    Status fieldParseResult = field(&firstField);
-    if (fieldParseResult != Status::OK()) {
-        return fieldParseResult;
+    Status ret = field(&firstField);
+    if (ret != Status::OK()) {
+        return ret;
     }
 
     if (firstField == "$oid") {
@@ -371,18 +363,18 @@ Status JParse::object(StringData fieldName, BSONObjBuilder& builder, bool subObj
             return valueRet;
         }
         while (readToken(COMMA)) {
-            std::string nextFieldName;
-            nextFieldName.reserve(FIELD_RESERVE_SIZE);
-            Status fieldRet = field(&nextFieldName);
+            std::string fieldName;
+            fieldName.reserve(FIELD_RESERVE_SIZE);
+            Status fieldRet = field(&fieldName);
             if (fieldRet != Status::OK()) {
                 return fieldRet;
             }
             if (!readToken(COLON)) {
                 return parseError("Expecting ':'");
             }
-            Status nextFieldValueRet = value(nextFieldName, *objBuilder);
-            if (nextFieldValueRet != Status::OK()) {
-                return nextFieldValueRet;
+            Status valueRet = value(fieldName, *objBuilder);
+            if (valueRet != Status::OK()) {
+                return valueRet;
             }
         }
     }
@@ -535,13 +527,13 @@ Status JParse::dateObject(StringData fieldName, BSONObjBuilder& builder) {
         }
         date = dateRet.getValue();
     } else if (readToken(LBRACE)) {
-        std::string nextFieldName;
-        nextFieldName.reserve(FIELD_RESERVE_SIZE);
-        Status ret = field(&nextFieldName);
+        std::string fieldName;
+        fieldName.reserve(FIELD_RESERVE_SIZE);
+        Status ret = field(&fieldName);
         if (ret != Status::OK()) {
             return ret;
         }
-        if (nextFieldName != "$numberLong") {
+        if (fieldName != "$numberLong") {
             return parseError("Expected field name: $numberLong for $date value object");
         }
         if (!readToken(COLON)) {
@@ -1001,27 +993,6 @@ Status JParse::objectId(StringData fieldName, BSONObjBuilder& builder) {
         return parseError("Expecting hex digits: " + id);
     }
     builder.append(fieldName, OID(id));
-    return Status::OK();
-}
-
-Status JParse::uuid(StringData fieldName, BSONObjBuilder& builder) {
-    if (!readToken(LPAREN)) {
-        return parseError("Expecting '('");
-    }
-    std::string uuid;
-    uuid.reserve(UUID_RESERVE_SIZE);
-    Status ret = quotedString(&uuid);
-    if (ret != Status::OK()) {
-        return ret;
-    }
-    if (!readToken(RPAREN)) {
-        return parseError("Expecting ')'");
-    }
-    StatusWith<UUID> swUUID = UUID::parse(uuid);
-    if (!swUUID.isOK()) {
-        return swUUID.getStatus();
-    }
-    swUUID.getValue().appendToBuilder(&builder, fieldName);
     return Status::OK();
 }
 
@@ -1503,8 +1474,8 @@ BSONObj fromjson(const char* jsonString, int* len) {
     return builder.obj();
 }
 
-BSONObj fromjson(StringData str) {
-    return fromjson(str.toString().c_str());
+BSONObj fromjson(const std::string& str) {
+    return fromjson(str.c_str());
 }
 
 std::string tojson(const BSONObj& obj, JsonStringFormat format, bool pretty) {

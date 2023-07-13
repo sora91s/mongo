@@ -3,12 +3,15 @@ test_kind: fsm_workload_test
 selector:
   roots:
   - jstests/concurrency/fsm_workloads/**/*.js
-  - src/mongo/db/modules/*/jstests/concurrency/fsm_workloads/*.js
   exclude_files:
   # SERVER-13116 distinct isn't sharding aware
   - jstests/concurrency/fsm_workloads/distinct.js
   - jstests/concurrency/fsm_workloads/distinct_noindex.js
   - jstests/concurrency/fsm_workloads/distinct_projection.js
+
+  # SERVER-17397 Drops of sharded namespaces may not fully succeed
+  - jstests/concurrency/fsm_workloads/create_database.js
+  - jstests/concurrency/fsm_workloads/map_reduce_drop.js
 
   # SERVER-14669 Multi-removes that use $where miscount removed documents
   - jstests/concurrency/fsm_workloads/remove_where.js
@@ -88,6 +91,9 @@ selector:
   # router tries to commit, it may not know the full participant list.
   - jstests/concurrency/fsm_workloads/multi_statement_transaction_all_commands_same_session.js
 
+  # SERVER-44160 Modify cleanupOrphaned to wait for overlapping ranges to finish
+  - jstests/concurrency/fsm_workloads/cleanupOrphanedWhileMigrating.js
+
   # Inserts directly into system.views using applyOps, which is not available on mongos.
   - jstests/concurrency/fsm_workloads/view_catalog_direct_system_writes.js
 
@@ -108,17 +114,11 @@ executor:
       - CheckReplDBHash
       - ValidateCollections
     tests: true
-  config:
-    shell_options:
-      global_vars:
-        TestData:
-          runningWithBalancer: true
+  config: {}
   hooks:
   - class: CheckReplDBHashInBackground
   - class: CheckReplDBHash
   - class: CheckOrphansDeleted
-  - class: CheckRoutingTableConsistency
-  - class: CheckShardFilteringMetadata
   - class: ValidateCollections # Validation can interfere with other operations, so this goes last.
   - class: CleanupConcurrencyWorkloads
   fixture:

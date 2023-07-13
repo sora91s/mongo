@@ -31,7 +31,7 @@
 #include "mongo/bson/bsontypes.h"
 #include "mongo/db/query/datetime/date_time_support.h"
 #include "mongo/util/hex.h"
-#include "mongo/util/overloaded_visitor.h"
+#include "mongo/util/visit_helper.h"
 
 #include <iterator>
 #include <limits>
@@ -50,12 +50,12 @@ auto tabs(int num) {
 
 auto printFieldname(const CNode::Fieldname& fieldname) {
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             [](const KeyFieldname& key) { return "<KeyFieldname "s + toStringData(key) + ">"; },
             [](const UserFieldname& user) { return "<UserFieldname "s + user + ">"; },
             [](const FieldnamePath& path) {
                 return stdx::visit(
-                    OverloadedVisitor{
+                    visit_helper::Overloaded{
                         [&](const ProjectionPath& projPath) {
                             return "<ProjectionPath "s + path::vectorToString(projPath) + ">";
                         },
@@ -73,20 +73,18 @@ auto printFieldname(const CNode::Fieldname& fieldname) {
 
 auto printNonZeroKey(const NonZeroKey& nonZeroKey) {
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             [](const int& keyInt) { return "int "s + std::to_string(keyInt); },
             [](const long long& keyLong) { return "long "s + std::to_string(keyLong); },
             [](const double& keyDouble) { return "double "s + std::to_string(keyDouble); },
-            [](const Decimal128& keyDecimal) {
-                return "decimal "s + keyDecimal.toString();
-            }},
+            [](const Decimal128& keyDecimal) { return "decimal "s + keyDecimal.toString(); }},
         nonZeroKey);
 }
 
 template <typename T>
 auto printValue(const T& payload) {
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             [](const CNode::ArrayChildren&) { return "<Array>"s; },
             [](const CNode::ObjectChildren&) { return "<Object>"s; },
             [](const CompoundInclusionKey&) { return "<CompoundInclusionKey>"s; },
@@ -98,14 +96,14 @@ auto printValue(const T& payload) {
             },
             [](const ValuePath& valuePath) {
                 return stdx::visit(
-                    OverloadedVisitor{[&](const AggregationPath& aggPath) {
-                                          return "<AggregationPath "s +
-                                              path::vectorToString(aggPath) + ">";
-                                      },
-                                      [&](const AggregationVariablePath& aggVarPath) {
-                                          return "<AggregationVariablePath "s +
-                                              path::vectorToString(aggVarPath) + ">";
-                                      }},
+                    visit_helper::Overloaded{[&](const AggregationPath& aggPath) {
+                                                 return "<AggregationPath "s +
+                                                     path::vectorToString(aggPath) + ">";
+                                             },
+                                             [&](const AggregationVariablePath& aggVarPath) {
+                                                 return "<AggregationVariablePath "s +
+                                                     path::vectorToString(aggVarPath) + ">";
+                                             }},
                     valuePath);
             },
             [](const UserDouble& userDouble) {
@@ -160,9 +158,7 @@ auto printValue(const T& payload) {
                 return "<UserDecimal "s + userDecimal.toString() + ">";
             },
             [](const UserMinKey& userMinKey) { return "<UserMinKey>"s; },
-            [](const UserMaxKey& userMaxKey) {
-                return "<UserMaxKey>"s;
-            }},
+            [](const UserMaxKey& userMaxKey) { return "<UserMaxKey>"s; }},
         payload);
 }
 
@@ -170,7 +166,7 @@ auto printValue(const T& payload) {
 
 std::string CNode::toStringHelper(int numTabs) const {
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             [numTabs](const ArrayChildren& children) {
                 return std::accumulate(children.cbegin(),
                                        children.cend(),
@@ -203,9 +199,7 @@ std::string CNode::toStringHelper(int numTabs) const {
                 return tabs(numTabs) + "<CompoundInconsistentKey>\n" +
                     compoundKey.obj->toStringHelper(numTabs + 1);
             },
-            [this, numTabs](auto&&) {
-                return tabs(numTabs) + printValue(payload);
-            }},
+            [this, numTabs](auto&&) { return tabs(numTabs) + printValue(payload); }},
         payload);
 }
 
@@ -230,7 +224,7 @@ std::pair<BSONObj, bool> CNode::toBsonWithArrayIndicator() const {
     };
 
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             // Build an array which will lose its identity and appear as a BSONObj
             [&](const ArrayChildren& children) {
                 return std::pair{
@@ -280,14 +274,15 @@ std::pair<BSONObj, bool> CNode::toBsonWithArrayIndicator() const {
 }
 
 bool CNode::isNumber() const {
-    return stdx::visit(OverloadedVisitor{
-                           [](const UserLong&) { return true; },
-                           [](const UserDouble&) { return true; },
-                           [](const UserDecimal&) { return true; },
-                           [](const UserInt&) { return true; },
-                           [](auto&&) { return false; },
-                       },
-                       payload);
+    return stdx::visit(
+        visit_helper::Overloaded{
+            [](const UserLong&) { return true; },
+            [](const UserDouble&) { return true; },
+            [](const UserDecimal&) { return true; },
+            [](const UserInt&) { return true; },
+            [](auto&&) { return false; },
+        },
+        payload);
 }
 
 int CNode::numberInt() const {
@@ -309,19 +304,18 @@ int CNode::numberInt() const {
 
 long long CNode::numberLong() const {
     return stdx::visit(
-        OverloadedVisitor{[](const UserDouble& userDouble) {
-                              return (BSON("" << userDouble).firstElement()).safeNumberLong();
-                          },
-                          [](const UserInt& userInt) {
-                              return (BSON("" << userInt).firstElement()).safeNumberLong();
-                          },
-                          [](const UserLong& userLong) { return userLong; },
-                          [](const UserDecimal& userDecimal) {
-                              return (BSON("" << userDecimal).firstElement()).safeNumberLong();
-                          },
-                          [](auto&&) -> UserLong {
-                              MONGO_UNREACHABLE
-                          }},
+        visit_helper::Overloaded{
+            [](const UserDouble& userDouble) {
+                return (BSON("" << userDouble).firstElement()).safeNumberLong();
+            },
+            [](const UserInt& userInt) {
+                return (BSON("" << userInt).firstElement()).safeNumberLong();
+            },
+            [](const UserLong& userLong) { return userLong; },
+            [](const UserDecimal& userDecimal) {
+                return (BSON("" << userDecimal).firstElement()).safeNumberLong();
+            },
+            [](auto &&) -> UserLong { MONGO_UNREACHABLE }},
         payload);
 }
 

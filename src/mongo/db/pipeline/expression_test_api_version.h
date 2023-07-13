@@ -32,6 +32,7 @@
 #include "mongo/db/pipeline/expression.h"
 
 namespace mongo {
+void initMyExpressionTestApiVersion();
 /**
  * This expression will be used to validate that versioning code is working as expected.
  * $_testApiVersion should only take one parameter, either {unstable: true} or {deprecated: true}.
@@ -48,7 +49,7 @@ public:
 
     Value evaluate(const Document& root, Variables* variables) const final;
 
-    Value serialize(SerializationOptions options) const final;
+    Value serialize(bool explain) const final;
 
     void acceptVisitor(ExpressionMutableVisitor* visitor) final {
         return visitor->visit(this);
@@ -60,6 +61,7 @@ public:
 
 private:
     ExpressionTestApiVersion(ExpressionContext* expCtx, bool unstable, bool deprecated);
+    void _doAddDependencies(DepsTracker* deps) const final override;
 
     bool _unstable;
     bool _deprecated;

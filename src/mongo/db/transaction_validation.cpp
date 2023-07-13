@@ -36,28 +36,60 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/txn_cmds_gen.h"
 #include "mongo/db/commands/txn_two_phase_commit_cmds_gen.h"
-#include "mongo/db/session/logical_session_id.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/write_concern_options.h"
 
 namespace mongo {
 
 using namespace fmt::literals;
 
+namespace {
+
+// TODO SERVER-65101: Replace this with a property on each command.
+const StringMap<int> retryableWriteCommands = {{"clusterDelete", 1},
+                                               {"clusterInsert", 1},
+                                               {"clusterUpdate", 1},
+                                               {"delete", 1},
+                                               {"findandmodify", 1},
+                                               {"findAndModify", 1},
+                                               {"insert", 1},
+                                               {"testInternalTransactions", 1},
+                                               {"update", 1},
+                                               {"_recvChunkStart", 1},
+                                               {"_configsvrRemoveChunks", 1},
+                                               {"_configsvrRemoveTags", 1},
+                                               {"_shardsvrCreateCollectionParticipant", 1},
+                                               {"_shardsvrDropCollectionParticipant", 1},
+                                               {"_shardsvrRenameCollectionParticipant", 1},
+                                               {"_shardsvrRenameCollectionParticipantUnblock", 1},
+                                               {"_configsvrRenameCollectionMetadata", 1},
+                                               {"_shardsvrParticipantBlock", 1},
+                                               {"_configsvrCollMod", 1},
+                                               {"_shardsvrCollModParticipant", 1},
+                                               {"_shardsvrSetClusterParameter", 1},
+                                               {"_shardsvrSetUserWriteBlockMode", 1}};
+
+// TODO SERVER-65101: Replace this with a property on each command.
+// Commands that can be sent with session info but should not check out a session.
+const StringMap<int> skipSessionCheckoutList = {
+    {"coordinateCommitTransaction", 1}, {"_recvChunkStart", 1}, {"replSetStepDown", 1}};
+
+// TODO SERVER-65101: Replace this with a property on each command.
+const StringMap<int> transactionCommands = {{"abortTransaction", 1},
+                                            {"clusterAbortTransaction", 1},
+                                            {"clusterCommitTransaction", 1},
+                                            {"commitTransaction", 1},
+                                            {"coordinateCommitTransaction", 1},
+                                            {"prepareTransaction", 1}};
+
+}  // namespace
+
 bool isRetryableWriteCommand(StringData cmdName) {
-    auto command = CommandHelpers::findCommand(cmdName);
-    uassert(ErrorCodes::CommandNotFound,
-            str::stream() << "Encountered unknown command during retryability check: " << cmdName,
-            command);
-    return command->supportsRetryableWrite();
+    return retryableWriteCommands.find(cmdName) != retryableWriteCommands.cend();
 }
 
 bool isTransactionCommand(StringData cmdName) {
-    auto command = CommandHelpers::findCommand(cmdName);
-    uassert(ErrorCodes::CommandNotFound,
-            str::stream() << "Encountered unknown command during isTransactionCommand check: "
-                          << cmdName,
-            command);
-    return command->isTransactionCommand();
+    return transactionCommands.find(cmdName) != transactionCommands.cend();
 }
 
 void validateWriteConcernForTransaction(const WriteConcernOptions& wcResult, StringData cmdName) {
@@ -70,6 +102,10 @@ bool isReadConcernLevelAllowedInTransaction(repl::ReadConcernLevel readConcernLe
     return readConcernLevel == repl::ReadConcernLevel::kSnapshotReadConcern ||
         readConcernLevel == repl::ReadConcernLevel::kMajorityReadConcern ||
         readConcernLevel == repl::ReadConcernLevel::kLocalReadConcern;
+}
+
+bool shouldCommandSkipSessionCheckout(StringData cmdName) {
+    return skipSessionCheckoutList.find(cmdName) != skipSessionCheckoutList.cend();
 }
 
 void validateSessionOptions(const OperationSessionInfoFromClient& sessionOptions,
@@ -107,17 +143,4 @@ void validateSessionOptions(const OperationSessionInfoFromClient& sessionOptions
     }
 }
 
-void doTransactionValidationForWrites(OperationContext* opCtx, const NamespaceString& ns) {
-    if (!opCtx->inMultiDocumentTransaction())
-        return;
-    uassert(50791,
-            str::stream() << "Cannot write to system collection " << ns.toString()
-                          << " within a transaction.",
-            !ns.isSystem() || ns.isPrivilegeCollection() || ns.isTimeseriesBucketsCollection());
-    const auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-    uassert(50790,
-            str::stream() << "Cannot write to unreplicated collection " << ns.toString()
-                          << " within a transaction.",
-            !replCoord->isOplogDisabledFor(opCtx, ns));
-}
 }  // namespace mongo

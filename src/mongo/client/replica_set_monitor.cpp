@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -53,9 +54,6 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/string_map.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo {
 

@@ -2,24 +2,25 @@
  * Test that the bucket unpacking with sorting rewrite is performed when plan is cached or
  * replanned.
  *
- * The test runs commands that are not allowed with security token: setProfilingLevel.
  * @tags: [
- *   not_allowed_with_security_token,
  *     # Plan cache stats doesn't support different read concerns.
  *     assumes_read_concern_unchanged,
- *     # Explain of a resolved view must be executed by mongos.
- *     directly_against_shardsvrs_incompatible,
- *     # This complicates aggregation extraction.
- *     do_not_wrap_aggregations_in_facets,
+ *     requires_fcv_60,
+ *     # We need a timeseries collection.
+ *     assumes_no_implicit_collection_creation_after_drop,
+ *     # Cannot insert into a time-series collection in a multi-document transaction.
+ *     does_not_support_transactions,
  *     # Refusing to run a test that issues an aggregation command with explain because it may
  *     # return incomplete results if interrupted by a stepdown.
  *     does_not_support_stepdowns,
- *     # We use the profiler to get info in order to force replanning.
- *     requires_profiling,
+ *     # This complicates aggregation extraction.
+ *     do_not_wrap_aggregations_in_facets,
  *     # We need a timeseries collection.
  *     requires_timeseries,
- *     # Plan cache state is node-local and will not get migrated alongside tenant data.
- *     tenant_migration_incompatible,
+ *     # Explain of a resolved view must be executed by mongos.
+ *     directly_against_shardsvrs_incompatible,
+ *     # We use the profiler to get info in order to force replanning.
+ *     requires_profiling,
  * ]
  */
 (function() {

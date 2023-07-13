@@ -72,7 +72,7 @@ public:
 
     /**
      * Leaves the critical section without doing error-checking. Only meant to be used when
-     * recovering the critical sections in the ShardingRecoveryService.
+     * recovering the critical sections in the RecoverableCriticalSectionService.
      */
     void exitCriticalSectionNoChecks();
 

@@ -40,9 +40,7 @@
 
 namespace mongo {
 
-class CompactStructuredEncryptionDataCoordinator final
-    : public RecoverableShardingDDLCoordinator<CompactStructuredEncryptionDataState,
-                                               CompactStructuredEncryptionDataPhaseEnum> {
+class CompactStructuredEncryptionDataCoordinator final : public ShardingDDLCoordinator {
 public:
     static constexpr auto kStateContext = "CompactStructuredEncryptionDataState"_sd;
     using StateDoc = CompactStructuredEncryptionDataState;
@@ -50,8 +48,7 @@ public:
 
     CompactStructuredEncryptionDataCoordinator(ShardingDDLCoordinatorService* service,
                                                const BSONObj& doc)
-        : RecoverableShardingDDLCoordinator(
-              service, "CompactStructuredEncryptionDataCoordinator", doc) {}
+        : ShardingDDLCoordinator(service, doc), _doc(StateDoc::parse({kStateContext}, doc)) {}
 
     boost::optional<BSONObj> reportForCurrentOp(
         MongoProcessInterface::CurrentOpConnectionsMode connMode,
@@ -63,26 +60,39 @@ public:
         return *_response;
     }
 
-    void checkIfOptionsConflict(const BSONObj& stateDoc) const final {}
+    void checkIfOptionsConflict(const BSONObj& doc) const final {}
 
 private:
-    StringData serializePhase(const Phase& phase) const override {
-        return CompactStructuredEncryptionDataPhase_serializer(phase);
+    void _enterPhase(Phase newPhase);
+
+    template <typename Func>
+    auto _executePhase(const Phase& newPhase, Func&& func) {
+        return [=] {
+            const auto& currPhase = _doc.getPhase();
+            if (currPhase > newPhase) {
+                return;
+            }
+            if (currPhase < newPhase) {
+                _enterPhase(newPhase);
+            }
+
+            return func(_doc);
+        };
+    }
+
+private:
+    ShardingDDLCoordinatorMetadata const& metadata() const final {
+        return _doc.getShardingDDLCoordinatorMetadata();
     }
 
     ExecutorFuture<void> _runImpl(std::shared_ptr<executor::ScopedTaskExecutor> executor,
                                   const CancellationToken& token) noexcept final;
 
-    // TODO SERVER-68373 remove once 7.0 becomes last LTS
-    bool _isPre61Compatible() const {
-        return operationType() ==
-            DDLCoordinatorTypeEnum::kCompactStructuredEncryptionDataPre61Compatible;
-    }
-
-    // TODO SERVER-68373 remove once 7.0 becomes last LTS
-    void _enterPhase(const Phase& newPhase) override;
-
 private:
+    mutable Mutex _docMutex =
+        MONGO_MAKE_LATCH("CompactStructuredEncryptionDataCoordinator::_docMutex");
+    StateDoc _doc;
+
     boost::optional<CompactStructuredEncryptionDataCommandReply> _response;
     bool _skipCompact{false};
     boost::optional<UUID> _ecocRenameUuid;

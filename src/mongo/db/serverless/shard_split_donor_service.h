@@ -56,12 +56,10 @@ public:
     }
 
     NamespaceString getStateDocumentsNS() const override {
-        return NamespaceString::kShardSplitDonorsNamespace;
+        return NamespaceString::kTenantSplitDonorsNamespace;
     }
 
     ThreadPool::Limits getThreadPoolLimits() const override;
-
-    void abortAllSplits(OperationContext* opCtx);
 
 protected:
     // Instance conflict check not yet implemented.
@@ -76,6 +74,9 @@ private:
     ExecutorFuture<void> _createStateDocumentTTLIndex(
         std::shared_ptr<executor::ScopedTaskExecutor> executor, const CancellationToken& token);
 
+    ExecutorFuture<void> _rebuildService(std::shared_ptr<executor::ScopedTaskExecutor> executor,
+                                         const CancellationToken& token) override;
+
     ServiceContext* const _serviceContext;
 };
 
@@ -85,7 +86,6 @@ public:
     struct DurableState {
         ShardSplitDonorStateEnum state;
         boost::optional<Status> abortReason;
-        boost::optional<repl::OpTime> blockOpTime;
     };
 
     DonorStateMachine(ServiceContext* serviceContext,
@@ -106,7 +106,7 @@ public:
      */
     void tryForget();
 
-    void checkIfOptionsConflict(const BSONObj& stateDoc) const final;
+    Status checkIfOptionsConflict(const ShardSplitDonorDocument& stateDoc) const;
 
     SemiFuture<void> run(std::shared_ptr<executor::ScopedTaskExecutor> executor,
                          const CancellationToken& token) noexcept override;
@@ -119,10 +119,6 @@ public:
 
     SharedSemiFuture<void> completionFuture() const {
         return _completionPromise.getFuture();
-    }
-
-    SharedSemiFuture<void> garbageCollectableFuture() const {
-        return _garbageCollectablePromise.getFuture();
     }
 
     UUID getId() const {
@@ -156,41 +152,25 @@ public:
         return _stateDoc.getState();
     }
 
-    SharedSemiFuture<HostAndPort> getSplitAcceptanceFuture_forTest() const {
-        return _splitAcceptancePromise.getFuture();
-    }
-
 private:
     // Tasks
-    ExecutorFuture<void> _enterAbortIndexBuildsOrAbortedState(const ScopedTaskExecutorPtr& executor,
-                                                              const CancellationToken& primaryToken,
-                                                              const CancellationToken& abortToken);
+    ExecutorFuture<void> _enterBlockingOrAbortedState(const ScopedTaskExecutorPtr& executor,
+                                                      const CancellationToken& token);
 
-    ExecutorFuture<void> _abortIndexBuildsAndEnterBlockingState(
-        const ScopedTaskExecutorPtr& executor, const CancellationToken& abortToken);
-
-    ExecutorFuture<void> _waitForRecipientToReachBlockOpTime(const ScopedTaskExecutorPtr& executor,
-                                                             const CancellationToken& abortToken);
+    ExecutorFuture<void> _waitForRecipientToReachBlockTimestamp(
+        const ScopedTaskExecutorPtr& executor, const CancellationToken& token);
 
     ExecutorFuture<void> _applySplitConfigToDonor(const ScopedTaskExecutorPtr& executor,
-                                                  const CancellationToken& abortToken);
+                                                  const CancellationToken& token);
 
-    ExecutorFuture<void> _waitForSplitAcceptanceAndEnterCommittedState(
-        const ScopedTaskExecutorPtr& executor,
-        const CancellationToken& primaryToken,
-        const CancellationToken& abortToken);
+    ExecutorFuture<void> _waitForRecipientToAcceptSplit(const ScopedTaskExecutorPtr& executor,
+                                                        const CancellationToken& token);
 
-    ExecutorFuture<void> _waitForForgetCmdThenMarkGarbageCollectable(
-        const ScopedTaskExecutorPtr& executor, const CancellationToken& primaryToken);
-
-    ExecutorFuture<void> _waitForGarbageCollectionTimeoutThenDeleteStateDoc(
-        const ScopedTaskExecutorPtr& executor, const CancellationToken& primaryToken);
-
-    ExecutorFuture<void> _removeSplitConfigFromDonor(const ScopedTaskExecutorPtr& executor,
-                                                     const CancellationToken& primaryToken);
+    ExecutorFuture<void> _waitForForgetCmdThenMarkGarbageCollectible(
+        const ScopedTaskExecutorPtr& executor, const CancellationToken& token);
 
     ExecutorFuture<DurableState> _handleErrorOrEnterAbortedState(
-        Status status,
+        StatusWith<DurableState> durableState,
         const ScopedTaskExecutorPtr& executor,
         const CancellationToken& instanceAbortToken,
         const CancellationToken& abortToken);
@@ -206,8 +186,6 @@ private:
 
     void _initiateTimeout(const ScopedTaskExecutorPtr& executor,
                           const CancellationToken& abortToken);
-    ConnectionString _setupAcceptanceMonitoring(WithLock lock, const CancellationToken& abortToken);
-    bool _hasInstalledSplitConfig(WithLock lock);
 
     /*
      * We need to call this method when we find out the replica set name is the same as the state
@@ -217,7 +195,7 @@ private:
                                                  const CancellationToken& token);
 
 private:
-    const NamespaceString _stateDocumentsNS = NamespaceString::kShardSplitDonorsNamespace;
+    const NamespaceString _stateDocumentsNS = NamespaceString::kTenantSplitDonorsNamespace;
     mutable Mutex _mutex = MONGO_MAKE_LATCH("ShardSplitDonorService::_mutex");
 
     const UUID _migrationId;
@@ -238,15 +216,11 @@ private:
     // A promise fulfilled when the shard split has committed or aborted.
     SharedPromise<DurableState> _decisionPromise;
 
-    // A promise fulfilled when the shard split state document has been removed following the
-    // completion of the operation.
+    // A promise fulfilled when the shard split operation has fully completed.
     SharedPromise<void> _completionPromise;
 
-    // A promise fulfilled when expireAt has been set following the end of the split.
-    SharedPromise<void> _garbageCollectablePromise;
-
     // A promise fulfilled when all recipient nodes have accepted the split.
-    SharedPromise<HostAndPort> _splitAcceptancePromise;
+    SharedPromise<void> _splitAcceptancePromise;
 
     // A promise fulfilled when tryForget is called.
     SharedPromise<void> _forgetShardSplitReceivedPromise;

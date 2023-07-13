@@ -209,18 +209,15 @@ class test_checkpoint_target(wttest.WiredTigerTestCase):
     ])
 
     def update(self, uri, ds, value):
-        cursor = ds.open_cursor(uri, None, "overwrite")
+        cursor = self.session.open_cursor(uri, None, "overwrite")
         cursor[ds.key(10)] = value
         cursor.close()
 
     def check(self, uri, ds, value):
-        cursor = ds.open_cursor(uri, None, "checkpoint=checkpoint-1")
+        cursor = self.session.open_cursor(uri, None, "checkpoint=checkpoint-1")
         self.assertEquals(cursor[ds.key(10)], value)
         cursor.close()
 
-    # FIXME-WT-9902
-    @wttest.skip_for_hook("tiered", "strange interaction with tiered and named checkpoints using target")
-    @wttest.skip_for_hook("timestamp", "strange interaction with timestamps and named checkpoints using target")
     def test_checkpoint_target(self):
         # Create 3 objects, change one record to an easily recognizable string.
         uri = self.uri + '1'
@@ -298,7 +295,7 @@ class test_checkpoint_last(wttest.WiredTigerTestCase):
 
         for value in ('FIRST', 'SECOND', 'THIRD', 'FOURTH', 'FIFTH'):
             # Update the object.
-            cursor = ds.open_cursor(uri, None, "overwrite")
+            cursor = self.session.open_cursor(uri, None, "overwrite")
             cursor[ds.key(10)] = value
             cursor.close()
 
@@ -306,18 +303,16 @@ class test_checkpoint_last(wttest.WiredTigerTestCase):
             self.session.checkpoint()
 
             # Verify the "last" checkpoint sees the correct value.
-            cursor = ds.open_cursor(
+            cursor = self.session.open_cursor(
                 uri, None, "checkpoint=WiredTigerCheckpoint")
             self.assertEquals(cursor[ds.key(10)], value)
             # Don't close the checkpoint cursor, we want it to remain open until
             # the test completes.
 
-# Check we can't use the reserved name as an application checkpoint name or open a checkpoint cursor
-# with it.
+# Check we can't use the reserved name as an application checkpoint name.
 class test_checkpoint_illegal_name(wttest.WiredTigerTestCase):
     def test_checkpoint_illegal_name(self):
-        uri = "file:checkpoint"
-        ds = SimpleDataSet(self, uri, 100, key_format='S')
+        ds = SimpleDataSet(self, "file:checkpoint", 100, key_format='S')
         ds.populate()
         msg = '/the checkpoint name.*is reserved/'
         for conf in (
@@ -338,14 +333,6 @@ class test_checkpoint_illegal_name(wttest.WiredTigerTestCase):
             'name=check\\point'):
                 self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
                     lambda: self.session.checkpoint(conf), msg)
-        msg = '/the prefix.*is reserved/'
-        for conf in (
-            'checkpoint=WiredTigerCheckpoint.',
-            'checkpoint=WiredTigerCheckpointX'):
-                self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-                    lambda: self.session.open_cursor(uri, None, conf), msg)
-                self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-                    lambda: self.session.open_cursor("file:WiredTigerHS.wt", None, conf), msg)
 
 # Check we can't name checkpoints that include LSM tables.
 class test_checkpoint_lsm_name(wttest.WiredTigerTestCase):
@@ -415,8 +402,6 @@ class test_checkpoint_empty(wttest.WiredTigerTestCase):
         cursor = self.session.open_cursor(self.uri, None, "checkpoint=ckpt")
         self.assertEquals(cursor.next(), wiredtiger.WT_NOTFOUND)
 
-    # Check that if we create an unnamed and then a named checkpoint, opening
-    # WiredTigerCheckpoint opens the most recent (the named) checkpoint.
     def test_checkpoint_empty_six(self):
         self.session.create(self.uri, "key_format=S,value_format=S")
         self.session.checkpoint()
@@ -431,25 +416,7 @@ class test_checkpoint_empty(wttest.WiredTigerTestCase):
 
         cursor = self.session.open_cursor(
             self.uri, None, "checkpoint=WiredTigerCheckpoint")
-        self.assertEquals(cursor.next(), 0)
-
-    # Check that if we create a named and then an unnamed checkpoint, opening
-    # WiredTigerCheckpoint opens the most recent (the named) checkpoint.
-    def test_checkpoint_empty_seven(self):
-        self.session.create(self.uri, "key_format=S,value_format=S")
-        self.session.checkpoint('name=ckpt')
-        cursor = self.session.open_cursor(
-            self.uri, None, "checkpoint=WiredTigerCheckpoint")
         self.assertEquals(cursor.next(), wiredtiger.WT_NOTFOUND)
-        cursor.close()
-
-        cursor = self.session.open_cursor(self.uri, None)
-        cursor["key"] = "value"
-        self.session.checkpoint()
-
-        cursor = self.session.open_cursor(
-            self.uri, None, "checkpoint=WiredTigerCheckpoint")
-        self.assertEquals(cursor.next(), 0)
 
 if __name__ == '__main__':
     wttest.run()

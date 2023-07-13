@@ -1,5 +1,9 @@
 /**
  * Test that chunks and documents are moved correctly after zone changes.
+ *
+ * * @tags: [
+ *   requires_fcv_60,
+ *  ]
  */
 (function() {
 'use strict';
@@ -135,7 +139,10 @@ shardTags = {
 };
 assertShardTags(configDB, shardTags);
 
-const numChunksToMove = zoneChunkBounds["zoneB"].length - 1;
+const balanceAccordingToDataSize = FeatureFlagUtil.isEnabled(
+    st.configRS.getPrimary().getDB('admin'), "BalanceAccordingToDataSize");
+let numChunksToMove = balanceAccordingToDataSize ? zoneChunkBounds["zoneB"].length - 1
+                                                 : zoneChunkBounds["zoneB"].length / 2;
 runBalancer(st, numChunksToMove);
 shardChunkBounds = {
     [st.shard0.shardName]: zoneChunkBounds["zoneB"].slice(0, numChunksToMove),
@@ -224,9 +231,7 @@ assertChunksOnShards(configDB, ns, shardChunkBounds);
 assertDocsOnShards(st, ns, shardChunkBounds, docs, shardKey);
 
 jsTest.log("Make the chunk not aligned with zone ranges.");
-let splitPoint = (targetChunkBounds[1].x === MaxKey)
-    ? {x: NumberLong(targetChunkBounds[0].x + 5000)}
-    : {x: NumberLong(targetChunkBounds[1].x - 5000)};
+let splitPoint = {x: NumberLong(targetChunkBounds[1].x - 5000)};
 assert(chunkBoundsUtil.containsKey(splitPoint, ...targetChunkBounds));
 assert.commandWorked(st.s.adminCommand(
     {updateZoneKeyRange: ns, min: targetChunkBounds[0], max: targetChunkBounds[1], zone: null}));

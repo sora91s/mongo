@@ -41,17 +41,9 @@
 #define strcasecmp stricmp
 
 /*
- * Emulate <linux/limits.h>
- */
-#ifndef PATH_MAX
-#define PATH_MAX 1024
-#endif
-
-/*
  * Emulate <sys/stat.h>
  */
 #define mkdir(path, mode) _mkdir(path)
-#define S_ISDIR(mode) ((mode & _S_IFDIR) == _S_IFDIR)
 
 /*
  * Emulate <sys/time.h>
@@ -62,12 +54,6 @@ struct timeval {
 };
 
 int gettimeofday(struct timeval *tp, void *tzp);
-
-/*
- * Emulate <sys/types.h>
- */
-
-typedef int pid_t;
 
 /*
  * Emulate <unistd.h>

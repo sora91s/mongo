@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
+
+#include "mongo/platform/basic.h"
+
 #include <fmt/format.h>
 
 #include "mongo/db/cancelable_operation_context.h"
@@ -34,21 +38,21 @@
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
+#include "mongo/db/logical_session_cache_noop.h"
 #include "mongo/db/repl/oplog_applier.h"
 #include "mongo/db/repl/session_update_tracker.h"
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/s/collection_sharding_runtime.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/resharding/resharding_donor_oplog_iterator.h"
+#include "mongo/db/s/resharding/resharding_metrics.h"
 #include "mongo/db/s/resharding/resharding_oplog_applier.h"
 #include "mongo/db/s/resharding/resharding_server_parameters_gen.h"
 #include "mongo/db/s/resharding/resharding_util.h"
 #include "mongo/db/s/sharding_mongod_test_fixture.h"
 #include "mongo/db/s/sharding_state.h"
-#include "mongo/db/session/logical_session_cache_noop.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/transaction/transaction_participant.h"
-#include "mongo/db/update/update_oplog_entry_serialization.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/db/vector_clock_metadata_hook.h"
 #include "mongo/executor/network_interface_factory.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
@@ -59,8 +63,6 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/str.h"
 #include "mongo/util/uuid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 namespace mongo {
 namespace {
@@ -136,32 +138,36 @@ public:
 
         uassertStatusOK(createCollection(
             operationContext(),
-            NamespaceString::kSessionTransactionsTableNamespace.dbName(),
+            NamespaceString::kSessionTransactionsTableNamespace.db().toString(),
             BSON("create" << NamespaceString::kSessionTransactionsTableNamespace.coll())));
         DBDirectClient client(operationContext());
-        client.createIndexes(NamespaceString::kSessionTransactionsTableNamespace,
+        client.createIndexes(NamespaceString::kSessionTransactionsTableNamespace.ns(),
                              {MongoDSessionCatalog::getConfigTxnPartialIndexSpec()});
 
         OperationShardingState::ScopedAllowImplicitCollectionCreate_UNSAFE unsafeCreateCollection(
             operationContext());
-        uassertStatusOK(createCollection(
-            operationContext(), kAppliedToNs.dbName(), BSON("create" << kAppliedToNs.coll())));
-        uassertStatusOK(createCollection(
-            operationContext(), kStashNs.dbName(), BSON("create" << kStashNs.coll())));
         uassertStatusOK(createCollection(operationContext(),
-                                         kOtherDonorStashNs.dbName(),
+                                         kAppliedToNs.db().toString(),
+                                         BSON("create" << kAppliedToNs.coll())));
+        uassertStatusOK(createCollection(
+            operationContext(), kStashNs.db().toString(), BSON("create" << kStashNs.coll())));
+        uassertStatusOK(createCollection(operationContext(),
+                                         kOtherDonorStashNs.db().toString(),
                                          BSON("create" << kOtherDonorStashNs.coll())));
 
         _cm = createChunkManagerForOriginalColl();
 
-        _metrics = ReshardingMetrics::makeInstance(kCrudUUID,
-                                                   BSON("y" << 1),
-                                                   kCrudNs,
-                                                   ReshardingMetrics::Role::kRecipient,
-                                                   getServiceContext()->getFastClockSource()->now(),
-                                                   getServiceContext());
-        _applierMetrics =
-            std::make_unique<ReshardingOplogApplierMetrics>(_metrics.get(), boost::none);
+        _metrics = std::make_unique<ReshardingMetrics>(getServiceContext());
+        _metricsNew =
+            ReshardingMetricsNew::makeInstance(kCrudUUID,
+                                               BSON("y" << 1),
+                                               kCrudNs,
+                                               ReshardingMetricsNew::Role::kRecipient,
+                                               getServiceContext()->getFastClockSource()->now(),
+                                               getServiceContext());
+        _metrics->onStart(ReshardingMetrics::Role::kRecipient,
+                          getServiceContext()->getFastClockSource()->now());
+        _metrics->setRecipientState(RecipientStateEnum::kApplying);
 
         _executor = makeTaskExecutorForApplier();
         _executor->startup();
@@ -190,17 +196,17 @@ public:
                 kCrudUUID,
                 ChunkRange{BSON(kOriginalShardKey << MINKEY),
                            BSON(kOriginalShardKey << -std::numeric_limits<double>::infinity())},
-                ChunkVersion({epoch, Timestamp(1, 1)}, {1, 0}),
+                ChunkVersion(1, 0, epoch, Timestamp(1, 1)),
                 _sourceId.getShardId()},
             ChunkType{
                 kCrudUUID,
                 ChunkRange{BSON(kOriginalShardKey << -std::numeric_limits<double>::infinity()),
                            BSON(kOriginalShardKey << 0)},
-                ChunkVersion({epoch, Timestamp(1, 1)}, {1, 0}),
+                ChunkVersion(1, 0, epoch, Timestamp(1, 1)),
                 kOtherShardId},
             ChunkType{kCrudUUID,
                       ChunkRange{BSON(kOriginalShardKey << 0), BSON(kOriginalShardKey << MAXKEY)},
-                      ChunkVersion({epoch, Timestamp(1, 1)}, {1, 0}),
+                      ChunkVersion(1, 0, epoch, Timestamp(1, 1)),
                       _sourceId.getShardId()}};
 
         auto rt = RoutingTableHistory::makeNew(kCrudNs,
@@ -237,7 +243,9 @@ public:
                                const std::vector<StmtId>& statementIds) {
         ReshardingDonorOplogId id(opTime.getTimestamp(), opTime.getTimestamp());
         return {repl::DurableOplogEntry(opTime,
+                                        boost::none /* hash */,
                                         opType,
+                                        boost::none /* tenant id */,
                                         kCrudNs,
                                         kCrudUUID,
                                         false /* fromMigrate */,
@@ -273,7 +281,7 @@ public:
     }
 
     const ChunkManager& chunkManager() {
-        return _cm.value();
+        return _cm.get();
     }
 
     const std::vector<NamespaceString>& stashCollections() {
@@ -281,12 +289,15 @@ public:
     }
 
     BSONObj getMetricsOpCounters() {
-        return _metrics->reportForCurrentOp();
+        BSONObjBuilder bob;
+        _metrics->serializeCumulativeOpMetrics(&bob);
+        return bob.obj().getObjectField("opcounters").getOwned();
     }
 
     long long metricsAppliedCount() const {
-        auto fullCurOp = _metrics->reportForCurrentOp();
-        return fullCurOp["oplogEntriesApplied"_sd].Long();
+        BSONObjBuilder bob;
+        _metrics->serializeCurrentOpMetrics(&bob, ReshardingMetrics::Role::kRecipient);
+        return bob.obj()["oplogEntriesApplied"_sd].Long();
     }
 
     std::shared_ptr<executor::ThreadPoolTaskExecutor> getExecutor() {
@@ -300,8 +311,8 @@ public:
 
 protected:
     auto makeApplierEnv() {
-        return std::make_unique<ReshardingOplogApplier::Env>(getServiceContext(),
-                                                             _applierMetrics.get());
+        return std::make_unique<ReshardingOplogApplier::Env>(
+            getServiceContext(), _metrics.get(), _metricsNew.get());
     }
 
     std::shared_ptr<executor::ThreadPoolTaskExecutor> makeTaskExecutorForApplier() {
@@ -345,16 +356,12 @@ protected:
     }
 
     static constexpr int kWriterPoolSize = 4;
-    const NamespaceString kOplogNs =
-        NamespaceString::createNamespaceString_forTest("config.localReshardingOplogBuffer.xxx.yyy");
-    const NamespaceString kCrudNs = NamespaceString::createNamespaceString_forTest("foo.bar");
+    const NamespaceString kOplogNs{"config.localReshardingOplogBuffer.xxx.yyy"};
+    const NamespaceString kCrudNs{"foo.bar"};
     const UUID kCrudUUID = UUID::gen();
-    const NamespaceString kAppliedToNs = NamespaceString::createNamespaceString_forTest(
-        "foo", "system.resharding.{}"_format(kCrudUUID.toString()));
-    const NamespaceString kStashNs = NamespaceString::createNamespaceString_forTest(
-        "foo", "{}.{}"_format(kCrudNs.coll(), kOplogNs.coll()));
-    const NamespaceString kOtherDonorStashNs = NamespaceString::createNamespaceString_forTest(
-        "foo", "{}.{}"_format("otherstash", "otheroplog"));
+    const NamespaceString kAppliedToNs{"foo", "system.resharding.{}"_format(kCrudUUID.toString())};
+    const NamespaceString kStashNs{"foo", "{}.{}"_format(kCrudNs.coll(), kOplogNs.coll())};
+    const NamespaceString kOtherDonorStashNs{"foo", "{}.{}"_format("otherstash", "otheroplog")};
     const std::vector<NamespaceString> kStashCollections{kStashNs, kOtherDonorStashNs};
     const ShardId kMyShardId{"shard1"};
     const ShardId kOtherShardId{"shard2"};
@@ -362,7 +369,7 @@ protected:
 
     const ReshardingSourceId _sourceId{UUID::gen(), kMyShardId};
     std::unique_ptr<ReshardingMetrics> _metrics;
-    std::unique_ptr<ReshardingOplogApplierMetrics> _applierMetrics;
+    std::unique_ptr<ReshardingMetricsNew> _metricsNew;
 
     std::shared_ptr<executor::ThreadPoolTaskExecutor> _executor;
     std::shared_ptr<ThreadPool> _cancelableOpCtxExecutor;
@@ -401,8 +408,7 @@ TEST_F(ReshardingOplogApplierTest, ApplyBasicCrud) {
                                 boost::none));
     crudOps.push_back(makeOplog(repl::OpTime(Timestamp(7, 3), 1),
                                 repl::OpTypeEnum::kUpdate,
-                                update_oplog_entry::makeDeltaOplogEntry(
-                                    BSON(doc_diff::kUpdateSectionFieldName << BSON("x" << 1))),
+                                BSON("$set" << BSON("x" << 1)),
                                 BSON("_id" << 2)));
     crudOps.push_back(makeOplog(repl::OpTime(Timestamp(8, 3), 1),
                                 repl::OpTypeEnum::kDelete,
@@ -540,7 +546,7 @@ TEST_F(ReshardingOplogApplierTest, ErrorDuringFirstBatchApply) {
     auto cancelToken = operationContext()->getCancellationToken();
     CancelableOperationContextFactory factory(cancelToken, getCancelableOpCtxExecutor());
     auto future = applier->run(getExecutor(), getExecutor(), cancelToken, factory);
-    ASSERT_EQ(future.getNoThrow(), ErrorCodes::duplicateCodeForTest(4772600));
+    ASSERT_EQ(future.getNoThrow(), ErrorCodes::FailedToParse);
 
     DBDirectClient client(operationContext());
     auto doc = client.findOne(appliedToNs(), BSON("_id" << 1));
@@ -583,7 +589,7 @@ TEST_F(ReshardingOplogApplierTest, ErrorDuringSecondBatchApply) {
     auto cancelToken = operationContext()->getCancellationToken();
     CancelableOperationContextFactory factory(cancelToken, getCancelableOpCtxExecutor());
     auto future = applier->run(getExecutor(), getExecutor(), cancelToken, factory);
-    ASSERT_EQ(future.getNoThrow(), ErrorCodes::duplicateCodeForTest(4772600));
+    ASSERT_EQ(future.getNoThrow(), ErrorCodes::FailedToParse);
 
     DBDirectClient client(operationContext());
     auto doc = client.findOne(appliedToNs(), BSON("_id" << 1));
@@ -838,11 +844,7 @@ TEST_F(ReshardingOplogApplierTest, MetricsAreReported) {
         std::deque<repl::OplogEntry>{
             easyOp(5, OpT::kDelete, BSON("_id" << 1)),
             easyOp(6, OpT::kInsert, BSON("_id" << 2)),
-            easyOp(7,
-                   OpT::kUpdate,
-                   update_oplog_entry::makeDeltaOplogEntry(
-                       BSON(doc_diff::kUpdateSectionFieldName << BSON("x" << 1))),
-                   BSON("_id" << 2)),
+            easyOp(7, OpT::kUpdate, BSON("$set" << BSON("x" << 1)), BSON("_id" << 2)),
             easyOp(8, OpT::kDelete, BSON("_id" << 1)),
             easyOp(9, OpT::kInsert, BSON("_id" << 3))},
         2);
@@ -863,9 +865,9 @@ TEST_F(ReshardingOplogApplierTest, MetricsAreReported) {
     ASSERT_OK(future.getNoThrow());
 
     auto opCountersObj = getMetricsOpCounters();
-    ASSERT_EQ(opCountersObj.getIntField("insertsApplied"), 2);
-    ASSERT_EQ(opCountersObj.getIntField("updatesApplied"), 1);
-    ASSERT_EQ(opCountersObj.getIntField("deletesApplied"), 2);
+    ASSERT_EQ(opCountersObj.getIntField("insert"), 2);
+    ASSERT_EQ(opCountersObj.getIntField("update"), 1);
+    ASSERT_EQ(opCountersObj.getIntField("delete"), 2);
 
     // The in-memory metrics should show the 5 ops above + the final oplog entry, but on disk should
     // not include the final entry in its count.

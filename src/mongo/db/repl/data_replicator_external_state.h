@@ -91,7 +91,7 @@ public:
      * Forwards the parsed metadata in the query results to the replication system.
      */
     virtual void processMetadata(const rpc::ReplSetMetadata& replMetadata,
-                                 const rpc::OplogQueryMetadata& oqMetadata) = 0;
+                                 rpc::OplogQueryMetadata oqMetadata) = 0;
 
     /**
      * Evaluates quality of sync source. Accepts the current sync source; the last optime on this

@@ -28,6 +28,8 @@
  */
 #include "mongo/client/sdam/topology_manager.h"
 
+#include <boost/optional/optional_io.hpp>
+
 #include "mongo/client/sdam/sdam_test_base.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/util/system_clock_source.h"
@@ -106,7 +108,7 @@ TEST_F(TopologyManagerTestFixture,
        ShouldUpdateServerDescriptionsTopologyDescriptionPtrWhenTopologyDescriptionIsInstalled) {
     auto checkServerTopologyDescriptionMatches = [](TopologyDescriptionPtr topologyDescription) {
         auto rawTopologyDescPtr = topologyDescription.get();
-        for (const auto& server : topologyDescription->getServers()) {
+        for (auto server : topologyDescription->getServers()) {
             auto rawServerTopologyDescPtr = (*server->getTopologyDescription()).get();
             ASSERT(server->getTopologyDescription());
             ASSERT(rawServerTopologyDescPtr == rawTopologyDescPtr);

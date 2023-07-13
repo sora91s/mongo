@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -60,13 +61,15 @@
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/text.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
-
 namespace mongo {
 namespace {
 
 const size_t kPathBufferSize = 1024;
+
+struct Options {
+    bool withHumanReadable = false;
+    bool rawAddress = false;
+};
 
 // On Windows the symbol handler must be initialized at process startup and cleaned up at shutdown.
 // This class wraps up that logic and gives access to the process handle associated with the
@@ -92,9 +95,8 @@ public:
         const auto symbolPath = symbolPathBuilder.str();
 
         if (!SymInitializeW(handle, symbolPath.c_str(), TRUE)) {
-            auto ec = lastSystemError();
             LOGV2_ERROR(
-                31443, "Stack trace initialization failed", "error"_attr = errorMessage(ec));
+                31443, "Stack trace initialization failed", "error"_attr = errnoWithDescription());
             return;
         }
 
@@ -210,11 +212,14 @@ struct TraceItem {
     std::pair<std::string, size_t> symbol;
 };
 
-void appendTrace(BSONObjBuilder* bob, const std::vector<TraceItem>& traceList) {
+void appendTrace(BSONObjBuilder* bob,
+                 const std::vector<TraceItem>& traceList,
+                 const Options& options) {
     auto bt = BSONArrayBuilder(bob->subarrayStart("backtrace"));
     for (const auto& item : traceList) {
         auto o = BSONObjBuilder(bt.subobjStart());
-        o.append("a", stack_trace_detail::Hex(item.address));
+        if (options.rawAddress)
+            o.append("a", stack_trace_detail::Hex(item.address));
         if (!item.module.empty())
             o.append("module", item.module);
         if (!item.source.first.empty()) {
@@ -289,51 +294,59 @@ std::vector<TraceItem> makeTraceList(CONTEXT& context) {
     return traceList;
 }
 
-StackTrace getStackTraceImpl(CONTEXT& context) {
-    std::vector<TraceItem> traceList = makeTraceList(context);
-    if (traceList.empty()) {
-        return StackTrace(BSONObj(), "");
-    }
-
+void printTraceList(const std::vector<TraceItem>& traceList,
+                    StackTraceSink* sink,
+                    const Options& options) {
+    using namespace fmt::literals;
+    if (traceList.empty())
+        return;
     BSONObjBuilder bob;
-    appendTrace(&bob, traceList);
-    return StackTrace(bob.obj(), "");
+    appendTrace(&bob, traceList, options);
+    stack_trace_detail::logBacktraceObject(bob.done(), sink, options.withHumanReadable);
 }
-}  // namespace
 
-StackTrace getStackTrace() {
+/** `sink` can be nullptr to emit structured logs instead of writing to a sink. */
+void printWindowsStackTraceImpl(CONTEXT& context, StackTraceSink* sink) {
+    Options options{};
+    options.withHumanReadable = true;
+    options.rawAddress = true;
+    printTraceList(makeTraceList(context), sink, options);
+}
+
+void printWindowsStackTraceImpl(StackTraceSink* sink) {
     CONTEXT context;
     memset(&context, 0, sizeof(context));
     context.ContextFlags = CONTEXT_CONTROL;
     RtlCaptureContext(&context);
-
-    return getStackTraceImpl(context);
+    printWindowsStackTraceImpl(context, sink);
 }
 
+}  // namespace
+
 void printWindowsStackTrace(CONTEXT& context, StackTraceSink& sink) {
-    getStackTraceImpl(context).sink(&sink);
+    printWindowsStackTraceImpl(context, &sink);
 }
 
 void printWindowsStackTrace(CONTEXT& context, std::ostream& os) {
     OstreamStackTraceSink sink{os};
-    printWindowsStackTrace(context, sink);
+    printWindowsStackTraceImpl(context, &sink);
 }
 
 void printWindowsStackTrace(CONTEXT& context) {
-    getStackTraceImpl(context).log();
+    printWindowsStackTraceImpl(context, nullptr);
 }
 
 void printStackTrace(StackTraceSink& sink) {
-    getStackTrace().sink(&sink);
+    printWindowsStackTraceImpl(&sink);
 }
 
 void printStackTrace(std::ostream& os) {
     OstreamStackTraceSink sink{os};
-    printStackTrace(sink);
+    printWindowsStackTraceImpl(&sink);
 }
 
 void printStackTrace() {
-    getStackTrace().log();
+    printWindowsStackTraceImpl(nullptr);
 }
 
 }  // namespace mongo

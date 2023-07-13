@@ -32,7 +32,7 @@ global:
     - "mongo/db/auth/umc_info_command_arg.h"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/db/auth/auth_types.idl"
 
 types:
@@ -43,7 +43,6 @@ types:
         cpp_type: "UsersInfoCommandArg"
         deserializer: "mongo::auth::UsersInfoCommandArg::parseFromBSON"
         serializer: "mongo::auth::UsersInfoCommandArg::serializeToBSON"
-        deserialize_with_tenant: true
 
     # Unifies the various invocations of {rolesInfo:...}
     RolesInfoCommandArg:
@@ -52,7 +51,6 @@ types:
         cpp_type: "RolesInfoCommandArg"
         deserializer: "mongo::auth::RolesInfoCommandArg::parseFromBSON"
         serializer: "mongo::auth::RolesInfoCommandArg::serializeToBSON"
-        deserialize_with_tenant: true
 
     # PrivilegeFormat: true | false | "asUserFragment"
     ParsedPrivilegeFormat:

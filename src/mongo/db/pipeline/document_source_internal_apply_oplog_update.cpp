@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/update/update_driver.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
-
 namespace mongo {
 
 REGISTER_DOCUMENT_SOURCE(_internalApplyOplogUpdate,
@@ -59,8 +57,8 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceInternalApplyOplogUpdate::cre
                           << " stage must be an object, but found type: " << typeName(elem.type()),
             elem.type() == BSONType::Object);
 
-    auto spec =
-        InternalApplyOplogUpdateSpec::parse(IDLParserContext(kStageName), elem.embeddedObject());
+    auto spec = InternalApplyOplogUpdateSpec::parse(IDLParserErrorContext(kStageName),
+                                                    elem.embeddedObject());
 
     return new DocumentSourceInternalApplyOplogUpdate(pExpCtx, spec.getOplogUpdate());
 }

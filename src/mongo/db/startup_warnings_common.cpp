@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/version.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 namespace mongo {
 
@@ -130,19 +128,17 @@ void logCommonStartupWarnings(const ServerGlobalParams& serverParams) {
     if (sslGlobalParams.sslMode.load() != SSLParams::SSLMode_disabled &&
 #ifdef MONGO_CONFIG_SSL_CERTIFICATE_SELECTORS
         sslGlobalParams.sslCertificateSelector.empty() &&
-        sslGlobalParams.sslClusterCertificateSelector.empty() &&
 #endif
-        sslGlobalParams.sslCAFile.empty() && sslGlobalParams.sslClusterCAFile.empty()) {
+        sslGlobalParams.sslCAFile.empty()) {
 #ifdef MONGO_CONFIG_SSL_CERTIFICATE_SELECTORS
         LOGV2_WARNING(22132,
-                      "No client certificate validation can be performed since no CA File or "
-                      "cluster CA File has been provided and no sslCertificateSelector has "
-                      "been specified. Please specify an sslCAFile or a clusterCAFile parameter");
+                      "No client certificate validation can be performed since no CA file has been "
+                      "provided and no sslCertificateSelector has been specified. Please specify "
+                      "an sslCAFile parameter");
 #else
-        LOGV2_WARNING(
-            22133,
-            "No client certificate validation can be performed since no CA file or cluster CA File "
-            "has been provided. Please specify an sslCAFile or a clusterCAFile parameter");
+        LOGV2_WARNING(22133,
+                      "No client certificate validation can be performed since no CA file has been "
+                      "provided. Please specify an sslCAFile parameter");
 #endif
     }
 

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/executor/async_request_executor.h"
 #include "mongo/util/future.h"
 #include "mongo/util/version.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -64,9 +62,7 @@ ClusterBuildInfoExecutor* ClusterBuildInfoExecutor::get(ServiceContext* svc) {
 const auto clusterBuildInfoExecutorRegisterer = ServiceContext::ConstructorActionRegisterer{
     "ClusterBuildInfoExecutor",
     [](ServiceContext* ctx) { getClusterBuildInfoExecutor(ctx).start(); },
-    [](ServiceContext* ctx) {
-        getClusterBuildInfoExecutor(ctx).stop();
-    }};
+    [](ServiceContext* ctx) { getClusterBuildInfoExecutor(ctx).stop(); }};
 
 class ClusterCmdBuildInfo : public BasicCommand {
 public:
@@ -92,11 +88,9 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();  // No auth required
-    }
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const final {}  // No auth required
 
     std::string help() const final {
         return "get version #, etc.\n"
@@ -104,14 +98,14 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbname,
              const BSONObj& jsobj,
              BSONObjBuilder& result) final {
         VersionInfoInterface::instance().appendBuildInfo(&result);
         return true;
     }
 
-    Future<void> runAsync(std::shared_ptr<RequestExecutionContext> rec, const DatabaseName&) final {
+    Future<void> runAsync(std::shared_ptr<RequestExecutionContext> rec, std::string) final {
         auto opCtx = rec->getOpCtx();
         return ClusterBuildInfoExecutor::get(opCtx->getServiceContext())->schedule(std::move(rec));
     }

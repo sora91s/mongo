@@ -1,7 +1,11 @@
 (function() {
 "use strict";
 
-load("jstests/libs/optimizer_utils.js");  // For assertValueOnPlanPath.
+load("jstests/libs/optimizer_utils.js");  // For checkCascadesOptimizerEnabled.
+if (!checkCascadesOptimizerEnabled(db)) {
+    jsTestLog("Skipping test because the optimizer is not enabled");
+    return;
+}
 
 const t = db.cqf_value_elemMatch;
 t.drop();
@@ -22,24 +26,27 @@ for (let i = 0; i < nDocs; i++) {
 }
 
 assert.commandWorked(t.createIndex({a: 1}));
+
 {
     // Value elemMatch. Demonstrate we can use an index.
     const res =
         t.explain("executionStats").aggregate([{$match: {a: {$elemMatch: {$gte: 5, $lte: 6}}}}]);
     assert.eq(2, res.executionStats.nReturned);
-    assertValueOnPlanPath("IndexScan", res, "child.leftChild.child.nodeType");
+    assert.eq("IndexScan",
+              res.queryPlanner.winningPlan.optimizerPlan.child.child.leftChild.child.nodeType);
 }
 {
     const res =
         t.explain("executionStats").aggregate([{$match: {a: {$elemMatch: {$lt: 11, $gt: 9}}}}]);
     assert.eq(1, res.executionStats.nReturned);
-    assertValueOnPlanPath("IndexScan", res, "child.leftChild.child.nodeType");
+    assert.eq("IndexScan",
+              res.queryPlanner.winningPlan.optimizerPlan.child.child.leftChild.child.nodeType);
 }
 {
     // Contradiction.
     const res =
         t.explain("executionStats").aggregate([{$match: {a: {$elemMatch: {$lt: 5, $gt: 6}}}}]);
     assert.eq(0, res.executionStats.nReturned);
-    assertValueOnPlanPath("CoScan", res, "child.child.child.nodeType");
+    assert.eq("CoScan", res.queryPlanner.winningPlan.optimizerPlan.child.child.child.nodeType);
 }
 }());

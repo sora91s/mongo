@@ -5,7 +5,7 @@
  *
  * Runs defragmentation on collections with concurrent operations.
  *
- * @tags: [requires_sharding, assumes_balancer_on, antithesis_incompatible]
+ * @tags: [requires_sharding, assumes_balancer_on]
  */
 
 const dbPrefix = jsTestName() + '_DB_';
@@ -193,26 +193,8 @@ var $config = (function() {
     };
 
     let defaultChunkDefragmentationThrottlingMS;
-    let defaultBalancerShouldReturnRandomMigrations;
 
     function setup(db, collName, cluster) {
-        cluster.executeOnConfigNodes((db) => {
-            defaultBalancerShouldReturnRandomMigrations =
-                assert
-                    .commandWorked(db.adminCommand({
-                        getParameter: 1,
-                        'failpoint.balancerShouldReturnRandomMigrations': 1
-                    }))['failpoint.balancerShouldReturnRandomMigrations']
-                    .mode;
-
-            // If the failpoint is enabled on this suite, disable it because this test relies on the
-            // balancer taking correct decisions.
-            if (defaultBalancerShouldReturnRandomMigrations === 1) {
-                assert.commandWorked(db.adminCommand(
-                    {configureFailPoint: 'balancerShouldReturnRandomMigrations', mode: 'off'}));
-            }
-        });
-
         const mongos = cluster.getDB('config').getMongo();
         // Create all fragmented collections
         for (let i = 0; i < dbCount; i++) {
@@ -246,13 +228,7 @@ var $config = (function() {
     function teardown(db, collName, cluster) {
         const mongos = cluster.getDB('config').getMongo();
 
-        let defaultOverrideBalanceRoundInterval;
         cluster.executeOnConfigNodes((db) => {
-            defaultOverrideBalanceRoundInterval = assert.commandWorked(db.adminCommand({
-                getParameter: 1,
-                'failpoint.overrideBalanceRoundInterval': 1
-            }))['failpoint.overrideBalanceRoundInterval'];
-
             assert.commandWorked(db.adminCommand({
                 configureFailPoint: 'overrideBalanceRoundInterval',
                 mode: 'alwaysOn',
@@ -269,7 +245,7 @@ var $config = (function() {
                 // Enable balancing and wait for balanced
                 assertAlways.commandWorked(mongos.getDB('config').collections.update(
                     {_id: fullNs}, {$set: {"noBalance": false}}));
-                sh.awaitCollectionBalance(mongos.getCollection(fullNs), 300000 /* 5 minutes */);
+                sh.awaitCollectionBalance(mongos.getCollection(fullNs));
                 // Begin defragmentation again
                 assertAlways.commandWorked(mongos.adminCommand({
                     configureCollectionBalancing: fullNs,
@@ -289,35 +265,11 @@ var $config = (function() {
                 });
             }
         }
-
-        cluster.executeOnConfigNodes((db) => {
-            // Reset the failpoint to its original value.
-            if (defaultBalancerShouldReturnRandomMigrations === 1) {
-                defaultBalancerShouldReturnRandomMigrations =
-                    assert
-                        .commandWorked(db.adminCommand({
-                            configureFailPoint: 'balancerShouldReturnRandomMigrations',
-                            mode: 'alwaysOn'
-                        }))
-                        .was;
-            }
-
-            if (defaultOverrideBalanceRoundInterval.mode === 0) {
-                assert.commandWorked(db.adminCommand(
-                    {configureFailPoint: 'overrideBalanceRoundInterval', mode: 'off'}));
-            } else if (defaultOverrideBalanceRoundInterval.mode === 1) {
-                assert.commandWorked(db.adminCommand({
-                    configureFailPoint: 'overrideBalanceRoundInterval',
-                    mode: 'alwaysOn',
-                    data: {intervalMs: defaultOverrideBalanceRoundInterval.data.intervalMs}
-                }));
-            }
-        });
     }
 
     return {
         threadCount: 5,
-        iterations: 1,
+        iterations: 10,
         states: states,
         transitions: transitions,
         setup: setup,

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include <algorithm>
 #include <boost/optional.hpp>
@@ -42,17 +43,14 @@
 #include "mongo/db/s/resharding/resharding_coordinator_commit_monitor.h"
 #include "mongo/db/s/resharding/resharding_metrics.h"
 #include "mongo/db/s/resharding/resharding_server_parameters_gen.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/logv2/log.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/cancellation.h"
 #include "mongo/util/duration.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/functional.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 namespace resharding {
@@ -109,22 +107,22 @@ private:
     std::shared_ptr<CoordinatorCommitMonitor> _commitMonitor;
 
     boost::optional<Callback> _runOnMockingNextResponse;
-
-    ReshardingCumulativeMetrics _cumulativeMetrics;
-    std::shared_ptr<ReshardingMetrics> _metrics;
 };
 
 auto makeExecutor() {
     executor::ThreadPoolMock::Options options;
-    options.onCreateThread = [] {
-        Client::initThread("executor", nullptr);
-    };
+    options.onCreateThread = [] { Client::initThread("executor", nullptr); };
     auto net = std::make_unique<executor::NetworkInterfaceMock>();
     return executor::makeSharedThreadPoolTestExecutor(std::move(net), std::move(options));
 }
 
 void CoordinatorCommitMonitorTest::setUp() {
     ConfigServerTestFixture::setUp();
+
+    auto metrics = ReshardingMetrics::get(getServiceContext());
+    metrics->onStart(ReshardingMetrics::Role::kCoordinator,
+                     getServiceContext()->getFastClockSource()->now());
+    metrics->setCoordinatorState(CoordinatorStateEnum::kApplying);
 
     auto hostNameForShard = [](const ShardId& shard) -> std::string {
         return fmt::format("{}:1234", shard.toString());
@@ -153,23 +151,8 @@ void CoordinatorCommitMonitorTest::setUp() {
     _futureExecutor->startup();
 
     _cancellationSource = std::make_unique<CancellationSource>();
-
-    auto clockSource = getServiceContext()->getFastClockSource();
-    _metrics = std::make_shared<ReshardingMetrics>(
-        UUID::gen(),
-        BSON("y" << 1),
-        _ns,
-        ShardingDataTransformInstanceMetrics::Role::kCoordinator,
-        clockSource->now(),
-        clockSource,
-        &_cumulativeMetrics);
-
-    _commitMonitor = std::make_shared<CoordinatorCommitMonitor>(_metrics,
-                                                                _ns,
-                                                                _recipientShards,
-                                                                _futureExecutor,
-                                                                _cancellationSource->token(),
-                                                                Milliseconds(0));
+    _commitMonitor = std::make_shared<CoordinatorCommitMonitor>(
+        _ns, _recipientShards, _futureExecutor, _cancellationSource->token(), Milliseconds(0));
     _commitMonitor->setNetworkExecutorForTest(executor());
 }
 

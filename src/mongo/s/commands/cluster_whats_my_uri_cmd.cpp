@@ -55,16 +55,16 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();  // No auth required
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        // No auth required
     }
 
-    bool run(OperationContext*,
-             const DatabaseName&,
-             const BSONObj&,
-             BSONObjBuilder& result) override {
+    virtual bool run(OperationContext* opCtx,
+                     const std::string& dbname,
+                     const BSONObj& cmdObj,
+                     BSONObjBuilder& result) {
         result << "you" << cc().getRemote().toString();
         return true;
     }

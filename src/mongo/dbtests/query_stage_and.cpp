@@ -66,7 +66,7 @@ public:
     QueryStageAndBase() : _client(&_opCtx) {}
 
     virtual ~QueryStageAndBase() {
-        _client.dropCollection(nss());
+        _client.dropCollection(ns());
     }
 
     void addIndex(const BSONObj& obj) {
@@ -75,8 +75,7 @@ public:
 
     const IndexDescriptor* getIndex(const BSONObj& obj, const CollectionPtr& coll) {
         std::vector<const IndexDescriptor*> indexes;
-        coll->getIndexCatalog()->findIndexesByKeyPattern(
-            &_opCtx, obj, IndexCatalog::InclusionPolicy::kReady, &indexes);
+        coll->getIndexCatalog()->findIndexesByKeyPattern(&_opCtx, obj, false, &indexes);
         if (indexes.empty()) {
             FAIL(str::stream() << "Unable to find index with key pattern " << obj);
         }
@@ -102,11 +101,11 @@ public:
     }
 
     void insert(const BSONObj& obj) {
-        _client.insert(nss(), obj);
+        _client.insert(ns(), obj);
     }
 
     void remove(const BSONObj& obj) {
-        _client.remove(nss(), obj);
+        _client.remove(ns(), obj);
     }
 
     /**
@@ -149,11 +148,11 @@ public:
         return BSONObj();
     }
 
-    const char* ns() {
-        return _nss.ns().c_str();
+    static const char* ns() {
+        return "unittests.QueryStageAnd";
     }
-    const NamespaceString& nss() {
-        return _nss;
+    NamespaceString nss() {
+        return NamespaceString(ns());
     }
 
 protected:
@@ -165,8 +164,6 @@ protected:
 
 private:
     DBDirectClient _client;
-    const NamespaceString _nss =
-        NamespaceString::createNamespaceString_forTest("unittests.QueryStageAnd");
 };
 
 //
@@ -801,7 +798,7 @@ public:
         CollectionPtr coll = ctx.getCollection();
         if (!coll) {
             WriteUnitOfWork wuow(&_opCtx);
-            coll = CollectionPtr(db->createCollection(&_opCtx, nss()));
+            coll = db->createCollection(&_opCtx, nss());
             wuow.commit();
         }
 

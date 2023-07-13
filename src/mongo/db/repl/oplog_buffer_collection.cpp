@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -38,16 +39,12 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/util/bson_extract.h"
-#include "mongo/db/catalog/clustered_collection_util.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/ops/write_ops_exec.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 namespace mongo {
 namespace repl {
@@ -456,12 +453,7 @@ BSONObj OplogBufferCollection::_peek_inlock(OperationContext* opCtx, PeekMode pe
 void OplogBufferCollection::_createCollection(OperationContext* opCtx) {
     CollectionOptions options;
     options.temp = _options.useTemporaryCollection;
-    // This oplog-like collection will benefit from clustering by _id to reduce storage engine
-    // overhead and improve _id query efficiency.
-    options.clusteredIndex = clustered_util::makeDefaultClusteredIdIndex();
-
-    // TODO (SERVER-71443): Fix to be interruptible or document exception.
-    UninterruptibleLockGuard noInterrupt(opCtx->lockState());  // NOLINT.
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
     auto status = _storageInterface->createCollection(opCtx, _nss, options);
     if (status.code() == ErrorCodes::NamespaceExists)
         return;
@@ -469,8 +461,7 @@ void OplogBufferCollection::_createCollection(OperationContext* opCtx) {
 }
 
 void OplogBufferCollection::_dropCollection(OperationContext* opCtx) {
-    // TODO (SERVER-71443): Fix to be interruptible or document exception.
-    UninterruptibleLockGuard noInterrupt(opCtx->lockState());  // NOLINT.
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
     uassertStatusOK(_storageInterface->dropCollection(opCtx, _nss));
 }
 

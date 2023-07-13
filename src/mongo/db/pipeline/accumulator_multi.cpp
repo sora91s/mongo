@@ -35,21 +35,93 @@ namespace mongo {
 using FirstLastSense = AccumulatorFirstLastN::Sense;
 using MinMaxSense = AccumulatorMinMax::Sense;
 
-// Register macros for the various accumulators/expressions in this file.
-REGISTER_ACCUMULATOR(maxN, AccumulatorMinMaxN::parseMinMaxN<MinMaxSense::kMax>);
-REGISTER_ACCUMULATOR(minN, AccumulatorMinMaxN::parseMinMaxN<MinMaxSense::kMin>);
-REGISTER_STABLE_EXPRESSION(maxN, AccumulatorMinMaxN::parseExpression<MinMaxSense::kMax>);
-REGISTER_STABLE_EXPRESSION(minN, AccumulatorMinMaxN::parseExpression<MinMaxSense::kMin>);
-REGISTER_ACCUMULATOR(firstN, AccumulatorFirstLastN::parseFirstLastN<FirstLastSense::kFirst>);
-REGISTER_ACCUMULATOR(lastN, AccumulatorFirstLastN::parseFirstLastN<FirstLastSense::kLast>);
-REGISTER_STABLE_EXPRESSION(firstN, AccumulatorFirstLastN::parseExpression<FirstLastSense::kFirst>);
-REGISTER_STABLE_EXPRESSION(lastN, AccumulatorFirstLastN::parseExpression<FirstLastSense::kLast>);
-REGISTER_ACCUMULATOR(topN, (AccumulatorTopBottomN<TopBottomSense::kTop, false>::parseTopBottomN));
-REGISTER_ACCUMULATOR(bottomN,
-                     (AccumulatorTopBottomN<TopBottomSense::kBottom, false>::parseTopBottomN));
-REGISTER_ACCUMULATOR(top, (AccumulatorTopBottomN<TopBottomSense::kTop, true>::parseTopBottomN));
-REGISTER_ACCUMULATOR(bottom,
-                     (AccumulatorTopBottomN<TopBottomSense::kBottom, true>::parseTopBottomN));
+// Register macros for the various accumulators/expressions in this file. Note that we check
+// 'isEnabledAndIgnoreFCV()' because the feature flag is a property set at startup, while FCV can
+// change while the server is running.
+REGISTER_ACCUMULATOR_CONDITIONALLY(
+    maxN,
+    AccumulatorMinMaxN::parseMinMaxN<MinMaxSense::kMax>,
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_ACCUMULATOR_CONDITIONALLY(
+    minN,
+    AccumulatorMinMaxN::parseMinMaxN<MinMaxSense::kMin>,
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_EXPRESSION_CONDITIONALLY(
+    maxN,
+    AccumulatorMinMaxN::parseExpression<MinMaxSense::kMax>,
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_EXPRESSION_CONDITIONALLY(
+    minN,
+    AccumulatorMinMaxN::parseExpression<MinMaxSense::kMin>,
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_ACCUMULATOR_CONDITIONALLY(
+    firstN,
+    AccumulatorFirstLastN::parseFirstLastN<FirstLastSense::kFirst>,
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_ACCUMULATOR_CONDITIONALLY(
+    lastN,
+    AccumulatorFirstLastN::parseFirstLastN<FirstLastSense::kLast>,
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_EXPRESSION_CONDITIONALLY(
+    firstN,
+    AccumulatorFirstLastN::parseExpression<FirstLastSense::kFirst>,
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_EXPRESSION_CONDITIONALLY(
+    lastN,
+    AccumulatorFirstLastN::parseExpression<FirstLastSense::kLast>,
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_ACCUMULATOR_CONDITIONALLY(
+    topN,
+    (AccumulatorTopBottomN<TopBottomSense::kTop, false>::parseTopBottomN),
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_ACCUMULATOR_CONDITIONALLY(
+    bottomN,
+    (AccumulatorTopBottomN<TopBottomSense::kBottom, false>::parseTopBottomN),
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_ACCUMULATOR_CONDITIONALLY(
+    top,
+    (AccumulatorTopBottomN<TopBottomSense::kTop, true>::parseTopBottomN),
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
+REGISTER_ACCUMULATOR_CONDITIONALLY(
+    bottom,
+    (AccumulatorTopBottomN<TopBottomSense::kBottom, true>::parseTopBottomN),
+    AllowedWithApiStrict::kAlways,
+    AllowedWithClientType::kAny,
+    feature_flags::gFeatureFlagExactTopNAccumulator.getVersion(),
+    feature_flags::gFeatureFlagExactTopNAccumulator.isEnabledAndIgnoreFCV());
 
 AccumulatorN::AccumulatorN(ExpressionContext* const expCtx)
     : AccumulatorState(expCtx), _maxMemUsageBytes(internalQueryTopNAccumulatorBytes.load()) {}
@@ -106,10 +178,9 @@ const char* AccumulatorMinMaxN::getOpName() const {
 
 Document AccumulatorMinMaxN::serialize(boost::intrusive_ptr<Expression> initializer,
                                        boost::intrusive_ptr<Expression> argument,
-                                       bool explain,
-                                       SerializationOptions options) const {
+                                       bool explain) const {
     MutableDocument args;
-    AccumulatorN::serializeHelper(initializer, argument, options, args);
+    AccumulatorN::serializeHelper(initializer, argument, explain, args);
     return DOC(getOpName() << args.freeze());
 }
 
@@ -159,10 +230,10 @@ void AccumulatorN::updateAndCheckMemUsage(size_t memAdded) {
 
 void AccumulatorN::serializeHelper(const boost::intrusive_ptr<Expression>& initializer,
                                    const boost::intrusive_ptr<Expression>& argument,
-                                   SerializationOptions options,
+                                   bool explain,
                                    MutableDocument& md) {
-    md.addField(kFieldNameN, Value(initializer->serialize(options)));
-    md.addField(kFieldNameInput, Value(argument->serialize(options)));
+    md.addField(kFieldNameN, Value(initializer->serialize(explain)));
+    md.addField(kFieldNameInput, Value(argument->serialize(explain)));
 }
 
 template <MinMaxSense s>
@@ -314,10 +385,9 @@ const char* AccumulatorFirstLastN::getOpName() const {
 
 Document AccumulatorFirstLastN::serialize(boost::intrusive_ptr<Expression> initializer,
                                           boost::intrusive_ptr<Expression> argument,
-                                          bool explain,
-                                          SerializationOptions options) const {
+                                          bool explain) const {
     MutableDocument args;
-    AccumulatorN::serializeHelper(initializer, argument, options, args);
+    AccumulatorN::serializeHelper(initializer, argument, explain, args);
     return DOC(getOpName() << args.freeze());
 }
 
@@ -421,10 +491,9 @@ AccumulatorTopBottomN<sense, single>::AccumulatorTopBottomN(ExpressionContext* c
                                                             bool isRemovable)
     : AccumulatorN(expCtx), _isRemovable(isRemovable), _sortPattern(std::move(sp)) {
 
-    // Make a copy of _sortPattern to sort based on fields where they are in the evaluated argument
-    // instead of where they would be in the raw document received by $group and friends.
+    // Modify sortPattern to sort based on fields where they are in the evaluated argument instead
+    // of where they would be in the raw document received by $group and friends.
     std::vector<SortPattern::SortPatternPart> parts;
-    parts.reserve(_sortPattern.size());
     int sortOrder = 0;
     for (auto part : _sortPattern) {
         const auto newFieldName =
@@ -436,10 +505,10 @@ AccumulatorTopBottomN<sense, single>::AccumulatorTopBottomN(ExpressionContext* c
             // parseAccumulatorTopBottomNSortBy().
             part.expression = nullptr;
         }
-        parts.push_back(std::move(part));
+        parts.push_back(part);
         sortOrder++;
     }
-    SortPattern internalSortPattern(std::move(parts));
+    SortPattern internalSortPattern(parts);
 
     _sortKeyComparator.emplace(internalSortPattern);
     _sortKeyGenerator.emplace(std::move(internalSortPattern), expCtx->getCollator());
@@ -462,14 +531,13 @@ template <TopBottomSense sense, bool single>
 Document AccumulatorTopBottomN<sense, single>::serialize(
     boost::intrusive_ptr<Expression> initializer,
     boost::intrusive_ptr<Expression> argument,
-    bool explain,
-    SerializationOptions options) const {
+    bool explain) const {
     MutableDocument args;
 
     if constexpr (!single) {
-        args.addField(kFieldNameN, Value(initializer->serialize(options)));
+        args.addField(kFieldNameN, Value(initializer->serialize(explain)));
     }
-    auto serializedArg = argument->serialize(options);
+    auto serializedArg = argument->serialize(explain);
 
     // If 'argument' contains a field named 'output', this means that we are serializing the
     // accumulator's original output expression under the field name 'output'. Otherwise, we are
@@ -482,14 +550,13 @@ Document AccumulatorTopBottomN<sense, single>::serialize(
     }
     args.addField(kFieldNameSortBy,
                   Value(_sortPattern.serialize(
-                      SortPattern::SortKeySerialization::kForPipelineSerialization, options)));
+                      SortPattern::SortKeySerialization::kForPipelineSerialization)));
     return DOC(getOpName() << args.freeze());
 }
 
 template <TopBottomSense sense>
 std::pair<SortPattern, BSONArray> parseAccumulatorTopBottomNSortBy(ExpressionContext* const expCtx,
                                                                    BSONObj sortBy) {
-
     SortPattern sortPattern(sortBy, expCtx);
     BSONArrayBuilder sortFieldsExpBab;
     BSONObjIterator sortByBoi(sortBy);
@@ -514,8 +581,10 @@ template <TopBottomSense sense, bool single>
 AccumulationExpression AccumulatorTopBottomN<sense, single>::parseTopBottomN(
     ExpressionContext* const expCtx, BSONElement elem, VariablesParseState vps) {
     auto name = AccumulatorTopBottomN<sense, single>::getName();
+
     const auto [n, output, sortBy] =
         accumulatorNParseArgs<single>(expCtx, elem, name.rawData(), true, vps);
+
     auto [sortPattern, sortFieldsExp] = parseAccumulatorTopBottomNSortBy<sense>(expCtx, *sortBy);
 
     // Construct argument expression. If given sortBy: {field1: 1, field2: 1} it will be shaped like

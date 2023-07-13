@@ -69,20 +69,19 @@ public:
                "NOTE: This command may take a while to run";
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(
-                     ResourcePattern::forExactNamespace(parseNs(dbName, cmdObj)),
-                     ActionType::splitVector)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forExactNamespace(NamespaceString(parseNs(dbname, cmdObj))),
+                ActionType::splitVector)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
-    NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) const override {
-        return NamespaceString(dbName.tenantId(), CommandHelpers::parseNsFullyQualified(cmdObj));
+    std::string parseNs(const string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::CommandHelpers::parseNsFullyQualified(cmdObj);
     }
 
     bool errmsgRun(OperationContext* opCtx,
@@ -91,7 +90,7 @@ public:
                    string& errmsg,
                    BSONObjBuilder& result) override {
 
-        const NamespaceString nss(parseNs({boost::none, dbname}, jsobj));
+        const NamespaceString nss = NamespaceString(parseNs(dbname, jsobj));
         BSONObj keyPattern = jsobj.getObjectField("keyPattern");
 
         if (keyPattern.isEmpty()) {

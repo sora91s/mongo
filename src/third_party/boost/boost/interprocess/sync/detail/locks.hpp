@@ -21,6 +21,7 @@
 
 #include <boost/interprocess/detail/config_begin.hpp>
 #include <boost/interprocess/detail/workaround.hpp>
+#include <boost/interprocess/detail/posix_time_types_wrk.hpp>
 
 namespace boost {
 namespace interprocess {
@@ -97,8 +98,7 @@ class lock_to_wait
 
    BOOST_INTERPROCESS_FORCEINLINE bool try_lock() {  return l_.try_wait(); }
 
-   template<class TimePoint>
-   BOOST_INTERPROCESS_FORCEINLINE bool timed_lock(const TimePoint &abs_time)
+   BOOST_INTERPROCESS_FORCEINLINE bool timed_lock(const boost::posix_time::ptime &abs_time)
       {  return l_.timed_wait(abs_time);   }
 };
 

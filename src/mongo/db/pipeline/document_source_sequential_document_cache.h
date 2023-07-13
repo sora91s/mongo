@@ -97,8 +97,6 @@ public:
         return newStage;
     }
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
-
 protected:
     GetNextResult doGetNext() final;
     Pipeline::SourceContainer::iterator doOptimizeAt(Pipeline::SourceContainer::iterator itr,

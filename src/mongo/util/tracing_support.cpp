@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include <deque>
 
@@ -37,10 +38,7 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/static_immortal.h"
-#include "mongo/util/system_tick_source.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
+#include "mongo/util/system_clock_source.h"
 
 namespace mongo {
 
@@ -53,14 +51,14 @@ public:
 
     class BasicSpan final : public Tracer::Span {
     public:
-        BasicSpan(BSONObjBuilder bob, TickSource::Tick tracerStart, std::shared_ptr<Tracer> tracer)
-            : _bob(std::move(bob)), _tracerStart(tracerStart), _tracer(std::move(tracer)) {
-            _bob.append("startedMicros"_sd, durationCount<Microseconds>(_now()));
+        BasicSpan(BSONObjBuilder bob, std::shared_ptr<Tracer> tracer)
+            : _bob(std::move(bob)), _tracer(std::move(tracer)) {
+            _bob.append("started"_sd, _tracer->getClockSource()->now());
         }
 
         ~BasicSpan() {
             _spans = boost::none;
-            _bob.append("stoppedMicros"_sd, durationCount<Microseconds>(_now()));
+            _bob.append("stopped"_sd, _tracer->getClockSource()->now());
         }
 
         BSONObjBuilder makeSubSpan(std::string name) {
@@ -70,15 +68,9 @@ public:
             return _spans->subobjStart(name);
         }
 
-        Microseconds _now() const {
-            auto ts = _tracer->getTickSource();
-            return ts->ticksTo<Microseconds>(ts->getTicks() - _tracerStart);
-        }
-
     private:
         BSONObjBuilder _bob;
         boost::optional<BSONObjBuilder> _spans;
-        TickSource::Tick _tracerStart;
         const std::shared_ptr<Tracer> _tracer;
     };
 
@@ -86,13 +78,10 @@ public:
         if (_spans.empty()) {
             // We're starting a new root span, so erase the most recent trace.
             _trace = boost::none;
-            _tracerStart = _tracer->getTickSource()->getTicks();
         }
-
-        auto span = std::make_unique<BasicSpan>(
-            _makeObjBuilder(std::move(name)), _tracerStart, _tracer->shared_from_this());
+        auto span = std::make_unique<BasicSpan>(_makeObjBuilder(std::move(name)),
+                                                _tracer->shared_from_this());
         _spans.push_back(span.get());
-
         return Tracer::ScopedSpan(span.release(), [this](Tracer::Span* span) {
             invariant(span == _spans.back(), "Spans must go out of scope in the order of creation");
             _spans.pop_back();
@@ -123,10 +112,8 @@ private:
         }
     }
 
-
     const std::string _name;
     Tracer* const _tracer;
-    TickSource::Tick _tracerStart;
 
     std::deque<BasicSpan*> _spans;
     boost::optional<BSONObjBuilder> _builder;
@@ -149,29 +136,29 @@ MONGO_INITIALIZER(InitializeTraceProvider)(InitializerContext*) {
     LOGV2_OPTIONS(5970001,
                   {logv2::LogTag::kStartupWarnings},
                   "Operation tracing is enabled. This may have performance implications.");
-    TracerProvider::initialize(makeSystemTickSource());  // NOLINT
+    TracerProvider::initialize(std::make_unique<SystemClockSource>());  // NOLINT
 }
 
 }  // namespace
 
-Tracer::Tracer(std::string name, TickSource* tickSource) : _tickSource(tickSource) {
+Tracer::Tracer(std::string name, ClockSource* clkSource) : _clkSource(clkSource) {
     _factory = std::make_unique<BasicTracerFactory>(std::move(name), this);
 }
 
-void TracerProvider::initialize(std::unique_ptr<TickSource> tickSource) {  // NOLINT
+void TracerProvider::initialize(std::unique_ptr<ClockSource> clkSource) {  // NOLINT
     auto& provider = getTraceProvider();
     invariant(!provider.has_value(), "already initialized");
-    provider.emplace(TracerProvider(std::move(tickSource)));
+    provider.emplace(TracerProvider(std::move(clkSource)));
 }
 
 TracerProvider& TracerProvider::get() {  // NOLINT
     auto& provider = getTraceProvider();
     invariant(provider.has_value(), "not initialized");
-    return provider.value();
+    return provider.get();
 }
 
 std::shared_ptr<Tracer> TracerProvider::getTracer(std::string name) {
-    return std::make_shared<Tracer>(name, _tickSource.get());
+    return std::make_shared<Tracer>(name, _clkSource.get());
 }
 
 }  // namespace mongo

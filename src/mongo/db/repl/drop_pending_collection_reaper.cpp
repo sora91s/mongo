@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 namespace mongo {
 namespace repl {
@@ -102,21 +100,20 @@ void DropPendingCollectionReaper::addDropPendingNamespace(
 
     _dropPendingNamespaces.insert(std::make_pair(dropOpTime, dropPendingNamespace));
     if (opCtx->lockState()->inAWriteUnitOfWork()) {
-        opCtx->recoveryUnit()->onRollback(
-            [this, dropPendingNamespace, dropOpTime](OperationContext*) {
-                stdx::lock_guard<Latch> lock(_mutex);
+        opCtx->recoveryUnit()->onRollback([this, dropPendingNamespace, dropOpTime]() {
+            stdx::lock_guard<Latch> lock(_mutex);
 
-                const auto equalRange = _dropPendingNamespaces.equal_range(dropOpTime);
-                const auto& lowerBound = equalRange.first;
-                const auto& upperBound = equalRange.second;
-                auto matcher = [&dropPendingNamespace](const auto& pair) {
-                    return pair.second == dropPendingNamespace;
-                };
+            const auto equalRange = _dropPendingNamespaces.equal_range(dropOpTime);
+            const auto& lowerBound = equalRange.first;
+            const auto& upperBound = equalRange.second;
+            auto matcher = [&dropPendingNamespace](const auto& pair) {
+                return pair.second == dropPendingNamespace;
+            };
 
-                auto it = std::find_if(lowerBound, upperBound, matcher);
-                invariant(it != upperBound);
-                _dropPendingNamespaces.erase(it);
-            });
+            auto it = std::find_if(lowerBound, upperBound, matcher);
+            invariant(it != upperBound);
+            _dropPendingNamespaces.erase(it);
+        });
     }
 }
 
@@ -140,9 +137,7 @@ bool DropPendingCollectionReaper::rollBackDropPendingCollection(
         const auto equalRange = _dropPendingNamespaces.equal_range(opTime);
         const auto& lowerBound = equalRange.first;
         const auto& upperBound = equalRange.second;
-        auto matcher = [&pendingNss](const auto& pair) {
-            return pair.second == pendingNss;
-        };
+        auto matcher = [&pendingNss](const auto& pair) { return pair.second == pendingNss; };
         auto it = std::find_if(lowerBound, upperBound, matcher);
         if (it == upperBound) {
             LOGV2_WARNING(21154,

@@ -31,6 +31,7 @@ delete m2result.parsed.net.transportLayer;
 delete m2result.parsed.setParameter;
 delete m2result.parsed.storage.engine;
 delete m2result.parsed.storage.inMemory;
+delete m2result.parsed.storage.journal;
 delete m2result.parsed.storage.rocksdb;
 delete m2result.parsed.storage.wiredTiger;
 delete m2result.parsed.replication;  // Removes enableMajorityReadConcern setting.
@@ -57,6 +58,7 @@ delete m3result.parsed.net.transportLayer;
 delete m3result.parsed.setParameter;
 delete m3result.parsed.storage.engine;
 delete m3result.parsed.storage.inMemory;
+delete m3result.parsed.storage.journal;
 delete m3result.parsed.storage.rocksdb;
 delete m3result.parsed.storage.wiredTiger;
 delete m3result.parsed.replication;  // Removes enableMajorityReadConcern setting.

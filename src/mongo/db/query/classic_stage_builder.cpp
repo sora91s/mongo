@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -64,9 +65,6 @@
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
-
 namespace mongo::stage_builder {
 // Returns a non-null pointer to the root of a plan tree, or a non-OK status if the PlanStage tree
 // could not be constructed.
@@ -79,7 +77,7 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
             CollectionScanParams params;
             params.tailable = csn->tailable;
             params.shouldTrackLatestOplogTimestamp = csn->shouldTrackLatestOplogTimestamp;
-            params.assertTsHasNotFallenOff = csn->assertTsHasNotFallenOff;
+            params.assertTsHasNotFallenOffOplog = csn->assertTsHasNotFallenOffOplog;
             params.direction = (csn->direction == 1) ? CollectionScanParams::FORWARD
                                                      : CollectionScanParams::BACKWARD;
             params.shouldWaitForOplogVisibility = csn->shouldWaitForOplogVisibility;
@@ -119,13 +117,13 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
         }
         case STAGE_FETCH: {
             const FetchNode* fn = static_cast<const FetchNode*>(root);
-            auto childStage = build(fn->children[0].get());
+            auto childStage = build(fn->children[0]);
             return std::make_unique<FetchStage>(
                 expCtx, _ws, std::move(childStage), fn->filter.get(), _collection);
         }
         case STAGE_SORT_DEFAULT: {
             auto snDefault = static_cast<const SortNodeDefault*>(root);
-            auto childStage = build(snDefault->children[0].get());
+            auto childStage = build(snDefault->children[0]);
             return std::make_unique<SortStageDefault>(
                 _cq.getExpCtx(),
                 _ws,
@@ -137,7 +135,7 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
         }
         case STAGE_SORT_SIMPLE: {
             auto snSimple = static_cast<const SortNodeSimple*>(root);
-            auto childStage = build(snSimple->children[0].get());
+            auto childStage = build(snSimple->children[0]);
             return std::make_unique<SortStageSimple>(
                 _cq.getExpCtx(),
                 _ws,
@@ -149,19 +147,19 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
         }
         case STAGE_SORT_KEY_GENERATOR: {
             const SortKeyGeneratorNode* keyGenNode = static_cast<const SortKeyGeneratorNode*>(root);
-            auto childStage = build(keyGenNode->children[0].get());
+            auto childStage = build(keyGenNode->children[0]);
             return std::make_unique<SortKeyGeneratorStage>(
                 _cq.getExpCtx(), std::move(childStage), _ws, keyGenNode->sortSpec);
         }
         case STAGE_RETURN_KEY: {
             auto returnKeyNode = static_cast<const ReturnKeyNode*>(root);
-            auto childStage = build(returnKeyNode->children[0].get());
+            auto childStage = build(returnKeyNode->children[0]);
             return std::make_unique<ReturnKeyStage>(
                 expCtx, std::move(returnKeyNode->sortKeyMetaFields), _ws, std::move(childStage));
         }
         case STAGE_PROJECTION_DEFAULT: {
             auto pn = static_cast<const ProjectionNodeDefault*>(root);
-            auto childStage = build(pn->children[0].get());
+            auto childStage = build(pn->children[0]);
             return std::make_unique<ProjectionStageDefault>(
                 _cq.getExpCtx(),
                 _cq.getFindCommandRequest().getProjection(),
@@ -171,7 +169,7 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
         }
         case STAGE_PROJECTION_COVERED: {
             auto pn = static_cast<const ProjectionNodeCovered*>(root);
-            auto childStage = build(pn->children[0].get());
+            auto childStage = build(pn->children[0]);
             return std::make_unique<ProjectionStageCovered>(
                 _cq.getExpCtxRaw(),
                 _cq.getFindCommandRequest().getProjection(),
@@ -182,7 +180,7 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
         }
         case STAGE_PROJECTION_SIMPLE: {
             auto pn = static_cast<const ProjectionNodeSimple*>(root);
-            auto childStage = build(pn->children[0].get());
+            auto childStage = build(pn->children[0]);
             return std::make_unique<ProjectionStageSimple>(
                 _cq.getExpCtxRaw(),
                 _cq.getFindCommandRequest().getProjection(),
@@ -192,19 +190,19 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
         }
         case STAGE_LIMIT: {
             const LimitNode* ln = static_cast<const LimitNode*>(root);
-            auto childStage = build(ln->children[0].get());
+            auto childStage = build(ln->children[0]);
             return std::make_unique<LimitStage>(expCtx, ln->limit, _ws, std::move(childStage));
         }
         case STAGE_SKIP: {
             const SkipNode* sn = static_cast<const SkipNode*>(root);
-            auto childStage = build(sn->children[0].get());
+            auto childStage = build(sn->children[0]);
             return std::make_unique<SkipStage>(expCtx, sn->skip, _ws, std::move(childStage));
         }
         case STAGE_AND_HASH: {
             const AndHashNode* ahn = static_cast<const AndHashNode*>(root);
             auto ret = std::make_unique<AndHashStage>(expCtx, _ws);
             for (size_t i = 0; i < ahn->children.size(); ++i) {
-                auto childStage = build(ahn->children[i].get());
+                auto childStage = build(ahn->children[i]);
                 ret->addChild(std::move(childStage));
             }
             return ret;
@@ -213,7 +211,7 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
             const OrNode* orn = static_cast<const OrNode*>(root);
             auto ret = std::make_unique<OrStage>(expCtx, _ws, orn->dedup, orn->filter.get());
             for (size_t i = 0; i < orn->children.size(); ++i) {
-                auto childStage = build(orn->children[i].get());
+                auto childStage = build(orn->children[i]);
                 ret->addChild(std::move(childStage));
             }
             return ret;
@@ -222,7 +220,7 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
             const AndSortedNode* asn = static_cast<const AndSortedNode*>(root);
             auto ret = std::make_unique<AndSortedStage>(expCtx, _ws);
             for (size_t i = 0; i < asn->children.size(); ++i) {
-                auto childStage = build(asn->children[i].get());
+                auto childStage = build(asn->children[i]);
                 ret->addChild(std::move(childStage));
             }
             return ret;
@@ -235,7 +233,7 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
             params.collator = _cq.getCollator();
             auto ret = std::make_unique<MergeSortStage>(expCtx, params, _ws);
             for (size_t i = 0; i < msn->children.size(); ++i) {
-                auto childStage = build(msn->children[i].get());
+                auto childStage = build(msn->children[i]);
                 ret->addChild(std::move(childStage));
             }
             return ret;
@@ -283,8 +281,8 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
             auto node = static_cast<const TextOrNode*>(root);
             auto ret = std::make_unique<TextOrStage>(
                 expCtx, *_ftsKeyPrefixSize, _ws, node->filter.get(), _collection);
-            for (auto&& childNode : root->children) {
-                ret->addChild(build(childNode.get()));
+            for (auto childNode : root->children) {
+                ret->addChild(build(childNode));
             }
             return ret;
         }
@@ -315,18 +313,16 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
             _ftsKeyPrefixSize.emplace(params.spec.numExtraBefore());
             ON_BLOCK_EXIT([&] { _ftsKeyPrefixSize = {}; });
 
-            return std::make_unique<TextMatchStage>(
-                expCtx, build(root->children[0].get()), params, _ws);
+            return std::make_unique<TextMatchStage>(expCtx, build(root->children[0]), params, _ws);
         }
         case STAGE_SHARDING_FILTER: {
             const ShardingFilterNode* fn = static_cast<const ShardingFilterNode*>(root);
-            auto childStage = build(fn->children[0].get());
+            auto childStage = build(fn->children[0]);
 
-            auto scopedCss = CollectionShardingState::assertCollectionLockedAndAcquire(
-                _opCtx, _collection->ns());
+            auto css = CollectionShardingState::get(_opCtx, _collection->ns());
             return std::make_unique<ShardFilterStage>(
                 expCtx,
-                scopedCss->getOwnershipFilter(
+                css->getOwnershipFilter(
                     _opCtx, CollectionShardingState::OrphanCleanupPolicy::kDisallowOrphanCleanup),
                 _ws,
                 std::move(childStage));
@@ -421,10 +417,8 @@ std::unique_ptr<PlanStage> ClassicStageBuilder::build(const QuerySolutionNode* r
         case STAGE_TRIAL:
         case STAGE_UNKNOWN:
         case STAGE_UNPACK_TIMESERIES_BUCKET:
-        case STAGE_TIMESERIES_MODIFY:
-        case STAGE_SPOOL:
         case STAGE_SENTINEL:
-        case STAGE_COLUMN_SCAN:
+        case STAGE_COLUMN_IXSCAN:
         case STAGE_UPDATE: {
             LOGV2_WARNING(4615604, "Can't build exec tree for node", "node"_attr = *root);
         }

@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/s/forwardable_operation_metadata.h"
 
 #include "mongo/db/auth/authorization_session.h"
@@ -37,7 +39,7 @@ namespace mongo {
 
 ForwardableOperationMetadata::ForwardableOperationMetadata(const BSONObj& obj) {
     ForwardableOperationMetadataBase::parseProtected(
-        IDLParserContext("ForwardableOperationMetadataBase"), obj);
+        IDLParserErrorContext("ForwardableOperationMetadataBase"), obj);
 }
 
 ForwardableOperationMetadata::ForwardableOperationMetadata(OperationContext* opCtx) {
@@ -45,17 +47,7 @@ ForwardableOperationMetadata::ForwardableOperationMetadata(OperationContext* opC
         setComment(optComment->wrap());
     }
     if (const auto authMetadata = rpc::getImpersonatedUserMetadata(opCtx)) {
-        if (authMetadata->getUser()) {
-            AuthenticationMetadata metadata;
-            metadata.setUser(authMetadata->getUser().get());
-            metadata.setRoles(authMetadata->getRoles());
-            setImpersonatedUserMetadata(metadata);
-        } else if (authMetadata->getUsers()) {
-            AuthenticationMetadata metadata;
-            metadata.setUsers(authMetadata->getUsers().get());
-            metadata.setRoles(authMetadata->getRoles());
-            setImpersonatedUserMetadata(metadata);
-        }
+        setImpersonatedUserMetadata({{authMetadata->getUsers(), authMetadata->getRoles()}});
     }
 
     setMayBypassWriteBlocking(WriteBlockBypass::get(opCtx).isWriteBlockBypassEnabled());
@@ -65,25 +57,13 @@ void ForwardableOperationMetadata::setOn(OperationContext* opCtx) const {
     Client* client = opCtx->getClient();
     if (const auto& comment = getComment()) {
         stdx::lock_guard<Client> lk(*client);
-        opCtx->setComment(comment.value());
+        opCtx->setComment(comment.get());
     }
 
     if (const auto& optAuthMetadata = getImpersonatedUserMetadata()) {
-        const auto& authMetadata = optAuthMetadata.value();
-        UserName username;
-
-        if (authMetadata.getUser()) {
-            fassert(ErrorCodes::InternalError, authMetadata.getUsers() == boost::none);
-
-            username = authMetadata.getUser().get();
-        } else if (authMetadata.getUsers()) {
-            // TODO SERVER-72448: Remove
-            fassert(ErrorCodes::InternalError, authMetadata.getUsers()->size() == 1);
-            username = authMetadata.getUsers().get()[0];
-        }
-
-        if (!authMetadata.getRoles().empty()) {
-            AuthorizationSession::get(client)->setImpersonatedUserData(username,
+        const auto& authMetadata = optAuthMetadata.get();
+        if (!authMetadata.getUsers().empty() || !authMetadata.getRoles().empty()) {
+            AuthorizationSession::get(client)->setImpersonatedUserData(authMetadata.getUsers(),
                                                                        authMetadata.getRoles());
         }
     }

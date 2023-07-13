@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 namespace cluster {
 namespace {
@@ -45,7 +43,7 @@ namespace {
 std::vector<AsyncRequestsSender::Request> buildUnshardedRequestsForAllShards(
     OperationContext* opCtx, std::vector<ShardId> shardIds, const BSONObj& cmdObj) {
     auto cmdToSend = cmdObj;
-    appendShardVersion(cmdToSend, ShardVersion::UNSHARDED());
+    appendShardVersion(cmdToSend, ChunkVersion::UNSHARDED());
 
     std::vector<AsyncRequestsSender::Request> requests;
     for (auto&& shardId : shardIds)
@@ -62,7 +60,7 @@ AsyncRequestsSender::Response executeCommandAgainstDatabasePrimaryOrFirstShard(
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy) {
     ShardId shardId;
-    if (dbName == DatabaseName::kConfig.db()) {
+    if (dbName == NamespaceString::kConfigDb) {
         auto shardIds = Grid::get(opCtx)->shardRegistry()->getAllShardIds(opCtx);
         uassert(ErrorCodes::IllegalOperation, "there are no shards to target", !shardIds.empty());
         std::sort(shardIds.begin(), shardIds.end());
@@ -92,7 +90,7 @@ CachedDatabaseInfo createDatabase(OperationContext* opCtx,
 
     if (dbStatus == ErrorCodes::NamespaceNotFound) {
         ConfigsvrCreateDatabase request(dbName.toString());
-        request.setDbName(DatabaseName::kAdmin);
+        request.setDbName(NamespaceString::kAdminDb);
         if (suggestedPrimaryId)
             request.setPrimaryShardId(*suggestedPrimaryId);
 
@@ -109,7 +107,7 @@ CachedDatabaseInfo createDatabase(OperationContext* opCtx,
                                        << "Database " << dbName << " could not be created");
 
         auto createDbResponse = ConfigsvrCreateDatabaseResponse::parse(
-            IDLParserContext("configsvrCreateDatabaseResponse"), response.response);
+            IDLParserErrorContext("configsvrCreateDatabaseResponse"), response.response);
         catalogCache->onStaleDatabaseVersion(dbName, createDbResponse.getDatabaseVersion());
 
         dbStatus = catalogCache->getDatabase(opCtx, dbName);
@@ -133,8 +131,8 @@ void createCollection(OperationContext* opCtx, const ShardsvrCreateCollection& r
     const auto remoteResponse = uassertStatusOK(cmdResponse.swResponse);
     uassertStatusOK(getStatusFromCommandResult(remoteResponse.data));
 
-    auto createCollResp =
-        CreateCollectionResponse::parse(IDLParserContext("createCollection"), remoteResponse.data);
+    auto createCollResp = CreateCollectionResponse::parse(IDLParserErrorContext("createCollection"),
+                                                          remoteResponse.data);
 
     auto catalogCache = Grid::get(opCtx)->catalogCache();
     catalogCache->invalidateShardOrEntireCollectionEntryForShardedCollection(

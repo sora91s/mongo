@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
 
 #include "mongo/db/s/resharding/resharding_manual_cleanup.h"
 
@@ -38,9 +39,6 @@
 #include "mongo/s/request_types/cleanup_reshard_collection_gen.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
-
-
 namespace mongo {
 
 namespace {
@@ -48,9 +46,8 @@ namespace {
 std::vector<ShardId> getAllParticipantsFromCoordDoc(const ReshardingCoordinatorDocument& doc) {
     std::vector<ShardId> participants;
 
-    auto donorShards = resharding::extractShardIdsFromParticipantEntriesAsSet(doc.getDonorShards());
-    auto recipientShards =
-        resharding::extractShardIdsFromParticipantEntriesAsSet(doc.getRecipientShards());
+    auto donorShards = extractShardIdsFromParticipantEntriesAsSet(doc.getDonorShards());
+    auto recipientShards = extractShardIdsFromParticipantEntriesAsSet(doc.getRecipientShards());
     std::set_union(donorShards.begin(),
                    donorShards.end(),
                    recipientShards.begin(),
@@ -65,7 +62,7 @@ std::vector<AsyncRequestsSender::Request> createShardCleanupRequests(
 
     auto participants = getAllParticipantsFromCoordDoc(doc);
     std::vector<AsyncRequestsSender::Request> requests;
-    for (const auto& participant : participants) {
+    for (auto participant : participants) {
         requests.emplace_back(participant,
                               ShardsvrCleanupReshardCollection(nss, reshardingUUID).toBSON({}));
     }
@@ -112,7 +109,7 @@ void ReshardingCleaner<Service, StateMachine, ReshardingDocument>::clean(Operati
         return;
     }
 
-    opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+    opCtx->setAlwaysInterruptAtStepDownOrUp();
 
     _waitOnMachineCompletionIfExists(opCtx);
 
@@ -165,7 +162,7 @@ void ReshardingCleaner<Service, StateMachine, ReshardingDocument>::_waitOnMachin
 }
 
 template class ReshardingCleaner<ReshardingCoordinatorService,
-                                 ReshardingCoordinator,
+                                 ReshardingCoordinatorService::ReshardingCoordinator,
                                  ReshardingCoordinatorDocument>;
 
 template class ReshardingCleaner<ReshardingDonorService,
@@ -201,7 +198,8 @@ void ReshardingCoordinatorCleaner::_doClean(OperationContext* opCtx,
     _dropTemporaryReshardingCollection(opCtx, doc.getTempReshardingNss());
 }
 
-void ReshardingCoordinatorCleaner::_abortMachine(ReshardingCoordinator& machine) {
+void ReshardingCoordinatorCleaner::_abortMachine(
+    ReshardingCoordinatorService::ReshardingCoordinator& machine) {
     machine.abort();
 }
 
@@ -210,7 +208,7 @@ void ReshardingCoordinatorCleaner::_cleanOnParticipantShards(
     AsyncRequestsSender ars(
         opCtx,
         Grid::get(opCtx)->getExecutorPool()->getFixedExecutor(),
-        DatabaseName::kAdmin.db(),
+        NamespaceString::kAdminDb,
         createShardCleanupRequests(_originalCollectionNss, _reshardingUUID, doc),
         ReadPreferenceSetting(ReadPreference::PrimaryOnly),
         Shard::RetryPolicy::kIdempotent,

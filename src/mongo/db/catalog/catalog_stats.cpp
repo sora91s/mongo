@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/db/catalog/catalog_stats.h"
 
@@ -35,8 +36,6 @@
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 namespace mongo::catalog_stats {
 
@@ -91,13 +90,21 @@ public:
         stats.timeseriesExtendedRange = requiresTimeseriesExtendedRangeSupport.load();
 
         const auto viewCatalogDbNames = catalog->getViewCatalogDbNames(opCtx);
-        for (const auto& dbName : viewCatalogDbNames) {
-            const auto viewStats = catalog->getViewStatsForDatabase(opCtx, dbName);
-            invariant(viewStats);
+        for (const auto& tenantDbName : viewCatalogDbNames) {
+            try {
+                const auto viewStats =
+                    catalog->getViewStatsForDatabase(opCtx, tenantDbName.dbName());
+                invariant(viewStats);
 
-            stats.timeseries += viewStats->userTimeseries;
-            stats.views += viewStats->userViews;
-            stats.internalViews += viewStats->internal;
+                stats.timeseries += viewStats->userTimeseries;
+                stats.views += viewStats->userViews;
+                stats.internalViews += viewStats->internal;
+            } catch (ExceptionForCat<ErrorCategory::Interruption>&) {
+                LOGV2_DEBUG(5578400,
+                            2,
+                            "Failed to collect view catalog statistics",
+                            "db"_attr = tenantDbName);
+            }
         }
 
         BSONObjBuilder builder;

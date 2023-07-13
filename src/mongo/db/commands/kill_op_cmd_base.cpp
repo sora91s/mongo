@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 #include "mongo/db/auth/authorization_session.h"
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -39,13 +40,10 @@
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 
 void KillOpCmdBase::reportSuccessfulCompletion(OperationContext* opCtx,
-                                               const DatabaseName& dbName,
+                                               const std::string& db,
                                                const BSONObj& cmdObj) {
 
     logv2::DynamicAttributes attr;
@@ -53,11 +51,8 @@ void KillOpCmdBase::reportSuccessfulCompletion(OperationContext* opCtx,
     auto client = opCtx->getClient();
     if (client) {
         if (AuthorizationManager::get(client->getServiceContext())->isAuthEnabled()) {
-            if (auto user = AuthorizationSession::get(client)->getAuthenticatedUserName()) {
-                attr.add("user", BSON_ARRAY(user->toBSON()));
-            } else {
-                attr.add("user", BSONArray());
-            }
+            auto user = AuthorizationSession::get(client)->getAuthenticatedUserNames();
+            attr.add("user", user->toBSON());
         }
 
         if (client->session()) {
@@ -69,17 +64,16 @@ void KillOpCmdBase::reportSuccessfulCompletion(OperationContext* opCtx,
         }
     }
 
-    attr.add("db", dbName.db());
+    attr.add("db", db);
     attr.add("command", cmdObj);
 
     LOGV2(558700, "Successful killOp", attr);
 }
 
 
-Status KillOpCmdBase::checkAuthForOperation(OperationContext* workerOpCtx,
-                                            const DatabaseName&,
-                                            const BSONObj& cmdObj) const {
-    auto* worker = workerOpCtx->getClient();
+Status KillOpCmdBase::checkAuthForCommand(Client* worker,
+                                          const std::string& dbname,
+                                          const BSONObj& cmdObj) const {
     auto opKiller = OperationKiller(worker);
 
     if (opKiller.isGenerallyAuthorizedToKill()) {
@@ -88,7 +82,7 @@ Status KillOpCmdBase::checkAuthForOperation(OperationContext* workerOpCtx,
 
     if (isKillingLocalOp(cmdObj.getField("op"))) {
         // Look up the OperationContext and see if we have permission to kill it. This is done once
-        // here and again in the command body. The check here in the checkAuthForOperation function
+        // here and again in the command body. The check here in the checkAuthForCommand() function
         // is necessary because if the check fails, it will be picked up by the auditing system.
         long long opId = parseOpId(cmdObj);
         auto target = worker->getServiceContext()->getLockedClient(opId);

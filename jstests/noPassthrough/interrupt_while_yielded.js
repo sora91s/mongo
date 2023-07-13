@@ -1,9 +1,3 @@
-/**
- * @tags: [
- *   # TODO SERVER-64007: Support yielding in CQF plans.
- *   cqf_incompatible,
- * ]
- */
 (function() {
 "use strict";
 

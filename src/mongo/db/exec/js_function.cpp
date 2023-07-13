@@ -44,12 +44,12 @@ std::string getAuthenticatedUserNamesToken(Client* client) {
     StringBuilder sb;
 
     auto as = AuthorizationSession::get(client);
-    if (auto name = as->getAuthenticatedUserName()) {
+    for (auto nameIter = as->getAuthenticatedUserNames(); nameIter.more(); nameIter.next()) {
         // Using a NUL byte which isn't valid in usernames to separate them.
-        if (const auto& tenant = name->getTenant()) {
+        if (const auto& tenant = nameIter->getTenant()) {
             sb << '\0' << tenant->toString();
         }
-        sb << '\0' << name->getUnambiguousName();
+        sb << '\0' << nameIter->getUnambiguousName();
     }
 
     return sb.str();

@@ -52,7 +52,8 @@ function curOpAfterFailpoint(failPoint, filter, timesEntered = 1) {
     return result;
 }
 
-function makeWorkerFilterWithAction(session, action, txnNumber, txnRetryCounter) {
+function makeWorkerFilterWithAction(
+    session, action, txnNumber, txnRetryCounter, areInternalTransactionsEnabled) {
     var filter = {
         'twoPhaseCommitCoordinator.lsid.id': session.getSessionId().id,
         'twoPhaseCommitCoordinator.txnNumber': NumberLong(txnNumber),
@@ -60,8 +61,10 @@ function makeWorkerFilterWithAction(session, action, txnNumber, txnRetryCounter)
         'twoPhaseCommitCoordinator.startTime': {$exists: true}
     };
 
-    Object.assign(filter,
-                  {'twoPhaseCommitCoordinator.txnRetryCounter': NumberInt(txnRetryCounter)});
+    if (areInternalTransactionsEnabled) {
+        Object.assign(filter,
+                      {'twoPhaseCommitCoordinator.txnRetryCounter': NumberInt(txnRetryCounter)});
+    }
 
     return filter;
 }
@@ -110,6 +113,9 @@ const failPointNames = [
     'hangBeforeDeletingCoordinatorDoc',
     'hangBeforeSendingAbort'
 ];
+const areInternalTransactionsEnabled =
+    assert.commandWorked(st.s.adminCommand({getParameter: 1, featureFlagInternalTransactions: 1}))
+        .featureFlagInternalTransactions.value;
 
 assert.commandWorked(st.s.adminCommand({enableSharding: dbName}));
 assert.commandWorked(st.s.adminCommand({movePrimary: dbName, to: coordinator.shardName}));
@@ -198,8 +204,8 @@ jsTest.log("Testing that coordinator threads show up in currentOp for an abort d
 
     let commitJoin = commitTxn(st, lsid, txnNumber, ErrorCodes.NoSuchTransaction);
 
-    const sendAbortFilter =
-        makeWorkerFilterWithAction(session, "sendingAbort", txnNumber, txnRetryCounter);
+    const sendAbortFilter = makeWorkerFilterWithAction(
+        session, "sendingAbort", txnNumber, txnRetryCounter, areInternalTransactionsEnabled);
     let sendingAbortOp =
         curOpAfterFailpoint(failPoints['hangBeforeSendingAbort'], sendAbortFilter, numShards);
     assert.eq(numShards, sendingAbortOp.length);

@@ -2,6 +2,7 @@
  * Tests that the migration still proceeds successfully after a state transition write aborts.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -9,14 +10,16 @@
  *   serverless,
  * ]
  */
-
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {runMigrationAsync} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
 load("jstests/libs/parallelTester.js");
-load("jstests/replsets/rslib.js");  // 'createRstArgs'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
+
+const kTenantIdPrefix = "testTenantId";
 
 /**
  * Starts a migration and forces the write to insert the donor's state doc to abort on the first few
@@ -35,7 +38,7 @@ function testAbortInitialState() {
     // record.
     let writeConflictFp = configureFailPoint(donorPrimary, "WTWriteConflictException");
 
-    const tenantId = ObjectId().str;
+    const tenantId = `${kTenantIdPrefix}-initial`;
     const migrationId = UUID();
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(migrationId),
@@ -43,11 +46,12 @@ function testAbortInitialState() {
         recipientConnString: tenantMigrationTest.getRecipientConnString(),
     };
 
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     // Run the migration in its own thread, since the initial 'donorStartMigration' command will
     // hang due to the failpoint.
-    let migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    let migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
     migrationThread.start();
     writeConflictFp.wait();
 
@@ -82,7 +86,7 @@ function testAbortStateTransition(pauseFailPoint, setUpFailPoints, nextState) {
     const donorRst = tenantMigrationTest.getDonorRst();
 
     const donorPrimary = donorRst.getPrimary();
-    const tenantId = ObjectId().str;
+    const tenantId = `${kTenantIdPrefix}-${nextState}`;
 
     const migrationId = UUID();
     const migrationOpts = {
@@ -148,3 +152,4 @@ jsTest.log("Test aborting donor's state doc update");
  }].forEach(({pauseFailPoint, setUpFailPoints = [], nextState}) => {
     testAbortStateTransition(pauseFailPoint, setUpFailPoints, nextState);
 });
+}());

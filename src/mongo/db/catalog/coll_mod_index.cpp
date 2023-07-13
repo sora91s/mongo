@@ -27,11 +27,11 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
 
 #include "mongo/db/catalog/coll_mod_index.h"
 
 #include "mongo/db/catalog/cannot_convert_index_to_unique_info.h"
-#include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/catalog/throttle_cursor.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/storage/index_entry_comparison.h"
@@ -42,9 +42,6 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/shared_buffer_fragment.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
-
 
 namespace mongo {
 
@@ -69,15 +66,12 @@ void _processCollModIndexRequestExpireAfterSeconds(OperationContext* opCtx,
         const auto& coll = autoColl->getCollection();
         // Do not refer to 'idx' within this commit handler as it may be be invalidated by
         // IndexCatalog::refreshEntry().
-        opCtx->recoveryUnit()->onCommit([ttlCache,
-                                         uuid = coll->uuid(),
-                                         indexName = idx->indexName()](OperationContext*,
-                                                                       boost::optional<Timestamp>) {
-            // We assume the expireAfterSeconds field is valid, because we've already done
-            // validation of this field.
-            ttlCache->registerTTLInfo(
-                uuid, TTLCollectionCache::Info{indexName, /*isExpireAfterSecondsInvalid=*/false});
-        });
+        opCtx->recoveryUnit()->onCommit(
+            [ttlCache, uuid = coll->uuid(), indexName = idx->indexName(), indexExpireAfterSeconds](
+                auto _) {
+                ttlCache->registerTTLInfo(
+                    uuid, TTLCollectionCache::Info{indexName, /*isExpireAfterSecondsNaN=*/false});
+            });
 
         // Change the value of "expireAfterSeconds" on disk.
         autoColl->getWritableCollection(opCtx)->updateTTLSetting(
@@ -85,12 +79,9 @@ void _processCollModIndexRequestExpireAfterSeconds(OperationContext* opCtx,
         return;
     }
 
-    // If the current `expireAfterSeconds` is invalid, it can never be equal to
+    // If the current `expireAfterSeconds` is NaN, it can never be equal to
     // 'indexExpireAfterSeconds'.
-    if (auto status = index_key_validate::validateExpireAfterSeconds(
-            oldExpireSecsElement,
-            index_key_validate::ValidateExpireAfterSecondsMode::kSecondaryTTLIndex);
-        !status.isOK()) {
+    if (oldExpireSecsElement.isNaN()) {
         // Setting *oldExpireSecs is mostly for informational purposes.
         // We could also use index_key_validate::kExpireAfterSecondsForInactiveTTLIndex but
         // 0 is more consistent with the previous safeNumberLong() behavior and avoids potential
@@ -106,10 +97,8 @@ void _processCollModIndexRequestExpireAfterSeconds(OperationContext* opCtx,
         auto ttlCache = &TTLCollectionCache::get(opCtx->getServiceContext());
         const auto& coll = autoColl->getCollection();
         opCtx->recoveryUnit()->onCommit(
-            [ttlCache, uuid = coll->uuid(), indexName = idx->indexName()](
-                OperationContext*, boost::optional<Timestamp>) {
-                ttlCache->unsetTTLIndexExpireAfterSecondsInvalid(uuid, indexName);
-            });
+            [ttlCache, uuid = coll->uuid(), indexName = idx->indexName(), indexExpireAfterSeconds](
+                auto _) { ttlCache->unsetTTLIndexExpireAfterSecondsNaN(uuid, indexName); });
         return;
     }
 
@@ -315,7 +304,7 @@ void processCollModIndexRequest(OperationContext* opCtx,
                                      oldPrepareUnique,
                                      newPrepareUnique,
                                      newForceNonUnique,
-                                     result](OperationContext*, boost::optional<Timestamp>) {
+                                     result](boost::optional<Timestamp>) {
         // add the fields to BSONObjBuilder result
         if (oldExpireSecs) {
             result->append("expireAfterSeconds_old", *oldExpireSecs);

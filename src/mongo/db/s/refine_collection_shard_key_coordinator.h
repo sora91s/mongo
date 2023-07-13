@@ -35,9 +35,7 @@
 
 namespace mongo {
 
-class RefineCollectionShardKeyCoordinator
-    : public RecoverableShardingDDLCoordinator<RefineCollectionShardKeyCoordinatorDocument,
-                                               RefineCollectionShardKeyCoordinatorPhaseEnum> {
+class RefineCollectionShardKeyCoordinator : public ShardingDDLCoordinator {
 public:
     using StateDoc = RefineCollectionShardKeyCoordinatorDocument;
     using Phase = RefineCollectionShardKeyCoordinatorPhaseEnum;
@@ -47,21 +45,56 @@ public:
 
     void checkIfOptionsConflict(const BSONObj& coorDoc) const override;
 
-    void appendCommandInfo(BSONObjBuilder* cmdInfoBuilder) const override;
+    boost::optional<BSONObj> reportForCurrentOp(
+        MongoProcessInterface::CurrentOpConnectionsMode connMode,
+        MongoProcessInterface::CurrentOpSessionsMode sessionMode) noexcept override;
+
+protected:
+    RefineCollectionShardKeyCoordinator(ShardingDDLCoordinatorService* service,
+                                        const BSONObj& initialState,
+                                        bool persistCoordinatorDocument);
 
 private:
-    StringData serializePhase(const Phase& phase) const override {
-        return RefineCollectionShardKeyCoordinatorPhase_serializer(phase);
+    ShardingDDLCoordinatorMetadata const& metadata() const override {
+        return _doc.getShardingDDLCoordinatorMetadata();
     }
 
     ExecutorFuture<void> _runImpl(std::shared_ptr<executor::ScopedTaskExecutor> executor,
                                   const CancellationToken& token) noexcept override;
 
+    template <typename Func>
+    auto _executePhase(const Phase& newPhase, Func&& func) {
+        return [=] {
+            const auto& currPhase = _doc.getPhase();
+
+            if (currPhase > newPhase) {
+                // Do not execute this phase if we already reached a subsequent one.
+                return;
+            }
+            if (currPhase < newPhase) {
+                // Persist the new phase if this is the first time we are executing it.
+                _enterPhase(newPhase);
+            }
+            return func();
+        };
+    }
+
+    void _enterPhase(Phase newPhase);
+
+    mutable Mutex _docMutex = MONGO_MAKE_LATCH("RefineCollectionShardKeyCoordinator::_docMutex");
+    RefineCollectionShardKeyCoordinatorDocument _doc;
+
     const mongo::RefineCollectionShardKeyRequest _request;
 
     const KeyPattern _newShardKey;
-    KeyPattern _oldShardKey;
-    boost::optional<UUID> _collectionUUID;
+    const bool _persistCoordinatorDocument;  // TODO: SERVER-62850 remove this then 6.0 branches out
+};
+
+// TODO: SERVER-62850 remove this then 6.0 branches out
+class RefineCollectionShardKeyCoordinator_NORESILIENT : public RefineCollectionShardKeyCoordinator {
+public:
+    RefineCollectionShardKeyCoordinator_NORESILIENT(ShardingDDLCoordinatorService* service,
+                                                    const BSONObj& initialState);
 };
 
 }  // namespace mongo

@@ -36,12 +36,12 @@
 
 namespace mongo {
 namespace repl {
-
-struct TenantMigrationInfo {
-    TenantMigrationInfo(const UUID& in_uuid) : uuid(in_uuid) {}
+struct TenantMigrationRecipientInfo {
+    TenantMigrationRecipientInfo(const UUID& in_uuid) : uuid(in_uuid) {}
     UUID uuid;
 };
-extern const OperationContext::Decoration<boost::optional<TenantMigrationInfo>> tenantMigrationInfo;
+extern const OperationContext::Decoration<boost::optional<TenantMigrationRecipientInfo>>
+    tenantMigrationRecipientInfo;
 
 }  // namespace repl
 }  // namespace mongo

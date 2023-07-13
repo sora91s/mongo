@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kFTDC
 
 #include "mongo/platform/basic.h"
 
@@ -38,6 +39,7 @@
 #include <boost/algorithm/string/split.hpp>
 #include <boost/filesystem.hpp>
 #include <fcntl.h>
+#include <pcrecpp.h>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -50,13 +52,9 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/logv2/log.h"
-#include "mongo/util/pcre.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
 #include "mongo/util/text.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kFTDC
-
 namespace mongo {
 
 namespace {
@@ -94,10 +92,10 @@ constexpr auto kSysBlockDeviceDirectoryName = "device";
 StatusWith<std::string> readFileAsString(StringData filename) {
     int fd = open(filename.toString().c_str(), 0);
     if (fd == -1) {
-        auto ec = lastSystemError();
+        int err = errno;
         return Status(ErrorCodes::FileOpenFailed,
                       str::stream() << "Failed to open file " << filename
-                                    << " with error: " << errorMessage(ec));
+                                    << " with error: " << errnoWithDescription(err));
     }
     ScopeGuard scopedGuard([fd] { close(fd); });
 
@@ -116,18 +114,17 @@ StatusWith<std::string> readFileAsString(StringData filename) {
             size_read = read(fd, buf.data(), kFileBufferSize);
 
             if (size_read == -1) {
-                auto ec = lastPosixError();
+                int err = errno;
 
-                // Retry if we hit EAGAIN or EINTR a few times before giving up
-                if (retry < kFileReadRetryCount &&
-                    (ec == posixError(EAGAIN) || ec == posixError(EINTR))) {
+                // Retry if we hit EGAIN or EINTR a few times before giving up
+                if (retry < kFileReadRetryCount && (err == EAGAIN || err == EINTR)) {
                     ++retry;
                     continue;
                 }
 
                 return Status(ErrorCodes::FileStreamFailed,
                               str::stream() << "Failed to read file " << filename
-                                            << " with error: " << errorMessage(ec));
+                                            << " with error: " << errnoWithDescription(err));
             }
 
             break;
@@ -655,9 +652,9 @@ Status parseProcSelfMountStatsImpl(
         // 36 35 98:0 /mnt1 /mnt2 rw,noatime master:1 - ext3 /dev/root rw,errors=continue
         // |  |  |    |     |     |          |          |      |     |
         // (1)(2)(3:4)(5)   (6)   (7)        (8)        (9)   (10)   (11)
-        static const pcre::Regex kRe(R"re(\d+ \d+ \d+:\d+ \S+ (\S+))re");
-        if (auto m = kRe.matchView(line)) {
-            std::string mountPoint{m[1]};
+        static const pcrecpp::RE kRe(R"re(\d+ \d+ \d+:\d+ \S+ (\S+))re");
+        std::string mountPoint;
+        if (kRe.PartialMatch(line, &mountPoint)) {
             boost::filesystem::path p(mountPoint);
             boost::system::error_code ec;
             boost::filesystem::space_info spaceInfo = getSpace(p, ec);
@@ -858,63 +855,6 @@ Status parseProcVMStatFile(StringData filename,
     }
 
     return parseProcVMStat(keys, swString.getValue(), builder);
-}
-
-Status parseProcSysFsFileNr(FileNrKey key, StringData data, BSONObjBuilder* builder) {
-    // Format: HANDLES_IN_USE<whitespace>UNUSED_HANDLES<whitespace>MAX_HANDLES<return>
-    using string_split_iterator = boost::split_iterator<StringData::const_iterator>;
-    string_split_iterator partIt = string_split_iterator(
-        data.begin(),
-        data.end(),
-        boost::token_finder([](char c) { return c == ' ' || c == '\t' || c == '\n'; },
-                            boost::token_compress_on));
-
-    if (partIt == string_split_iterator()) {
-        return Status(ErrorCodes::FailedToParse, "Couldn't find first token");
-    }
-
-    if (key == FileNrKey::kFileHandlesInUse) {
-        StringData stringValue(partIt->begin(), partIt->end());
-        uint64_t value;
-        if (!NumberParser{}(stringValue, &value).isOK()) {
-            return Status(ErrorCodes::FailedToParse, "Couldn't parse first token to number");
-        }
-
-        builder->appendNumber(kFileHandlesInUseKey, static_cast<long long>(value));
-        return Status::OK();
-    }
-    ++partIt;
-
-    if (partIt == string_split_iterator()) {
-        return Status(ErrorCodes::FailedToParse, "Couldn't find second token");
-    }
-    // The second value is the number of allocated but unused file handles, which should always be
-    // 0; we ignore this.
-    ++partIt;
-
-    if (partIt == string_split_iterator()) {
-        return Status(ErrorCodes::FailedToParse, "Couldn't find third token");
-    }
-
-    invariant(key == FileNrKey::kMaxFileHandles);
-    StringData stringValue(partIt->begin(), partIt->end());
-    uint64_t value;
-    if (!NumberParser{}(stringValue, &value).isOK()) {
-        return Status(ErrorCodes::FailedToParse, "Couldn't parse third token to number");
-    }
-
-    builder->appendNumber(kMaxFileHandlesKey, static_cast<long long>(value));
-
-    return Status::OK();
-}
-
-Status parseProcSysFsFileNrFile(StringData filename, FileNrKey key, BSONObjBuilder* builder) {
-    auto swString = readFileAsString(filename);
-    if (!swString.isOK()) {
-        return swString.getStatus();
-    }
-
-    return parseProcSysFsFileNr(key, swString.getValue(), builder);
 }
 
 }  // namespace procparser

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -47,9 +48,6 @@
 #include "mongo/util/processinfo.h"
 #include "mongo/util/str.h"
 #include "mongo/util/version.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 namespace mongo {
 namespace {
@@ -98,15 +96,15 @@ StatusWith<std::string> StartupWarningsMongod::readTransparentHugePagesParameter
 
         std::string line;
         if (!std::getline(ifs, line)) {
-            auto ec = lastSystemError();
-            return StatusWith<std::string>(ErrorCodes::FileStreamFailed,
-                                           str::stream()
-                                               << "failed to read from " << filename << ": "
-                                               << ((ifs.eof()) ? "EOF" : errorMessage(ec)));
+            int errorcode = errno;
+            return StatusWith<std::string>(
+                ErrorCodes::FileStreamFailed,
+                str::stream() << "failed to read from " << filename << ": "
+                              << ((ifs.eof()) ? "EOF" : errnoWithDescription(errorcode)));
         }
 
-        std::string::size_type posBegin = line.find('[');
-        std::string::size_type posEnd = line.find(']');
+        std::string::size_type posBegin = line.find("[");
+        std::string::size_type posEnd = line.find("]");
         if (posBegin == string::npos || posEnd == string::npos || posBegin >= posEnd) {
             return StatusWith<std::string>(ErrorCodes::FailedToParse,
                                            str::stream() << "cannot parse line: '" << line << "'");
@@ -146,7 +144,12 @@ void logMongodStartupWarnings(const StorageGlobalParams& storageParams,
             22152,
             {logv2::LogTag::kStartupWarnings},
             "This is a 32 bit MongoDB binary. 32 bit builds are limited to less than 2GB "
-            "of data. See http://dochub.mongodb.org/core/32bit");
+            "of data (or less with --journal). See http://dochub.mongodb.org/core/32bit");
+        if (!storageParams.dur) {
+            LOGV2_WARNING_OPTIONS(22154,
+                                  {logv2::LogTag::kStartupWarnings},
+                                  "Journaling defaults to off for 32 bit and is currently off");
+        }
     }
 
 #ifdef __linux__
@@ -185,11 +188,10 @@ void logMongodStartupWarnings(const StorageGlobalParams& storageParams,
             std::string line;  // we only need the first line
             std::getline(f, line);
             if (f.fail()) {
-                auto ec = lastSystemError();
                 LOGV2_WARNING_OPTIONS(22200,
                                       {logv2::LogTag::kStartupWarnings},
                                       "Failed to read from /proc/self/numa_maps",
-                                      "error"_attr = errorMessage(ec));
+                                      "error"_attr = errnoWithDescription());
             } else {
                 // skip over pointer
                 std::string::size_type where = line.find(' ');
@@ -213,15 +215,18 @@ void logMongodStartupWarnings(const StorageGlobalParams& storageParams,
         }
     }
 
-    std::fstream f("/proc/sys/vm/overcommit_memory", ios_base::in);
-    unsigned val;
-    f >> val;
+    if (storageParams.dur) {
+        std::fstream f("/proc/sys/vm/overcommit_memory", ios_base::in);
+        unsigned val;
+        f >> val;
 
-    if (val == 2) {
-        LOGV2_OPTIONS(22171,
-                      {logv2::LogTag::kStartupWarnings},
-                      "Journaling works best if /proc/sys/vm/overcommit_memory is set to 0 or 1",
-                      "currentValue"_attr = val);
+        if (val == 2) {
+            LOGV2_OPTIONS(
+                22171,
+                {logv2::LogTag::kStartupWarnings},
+                "Journaling works best if /proc/sys/vm/overcommit_memory is set to 0 or 1",
+                "currentValue"_attr = val);
+        }
     }
 
     if (boost::filesystem::exists("/proc/sys/vm/zone_reclaim_mode")) {
@@ -319,12 +324,12 @@ void logMongodStartupWarnings(const StorageGlobalParams& storageParams,
                                   "recommendedMinimum"_attr = minNumFiles);
         }
     } else {
-        auto ec = lastSystemError();
+        const auto errmsg = errnoWithDescription();
         LOGV2_WARNING_OPTIONS(22186,
                               {logv2::LogTag::kStartupWarnings},
                               "getrlimit failed: {error}",
                               "getrlimit failed",
-                              "error"_attr = errorMessage(ec));
+                              "error"_attr = errmsg);
     }
 
 // Solaris does not have RLIMIT_MEMLOCK, these are exposed via getrctl(2) instead
@@ -347,12 +352,12 @@ void logMongodStartupWarnings(const StorageGlobalParams& storageParams,
                                       minLockedPages * ProcessInfo::getPageSize());
         }
     } else {
-        auto ec = lastSystemError();
+        const auto errmsg = errnoWithDescription();
         LOGV2_WARNING_OPTIONS(22190,
                               {logv2::LogTag::kStartupWarnings},
                               "** WARNING: getrlimit failed: {error}",
                               "getrlimit failed",
-                              "error"_attr = errorMessage(ec));
+                              "error"_attr = errmsg);
     }
 #endif
 #endif
@@ -370,18 +375,18 @@ void logMongodStartupWarnings(const StorageGlobalParams& storageParams,
 
 #endif  // #ifdef _WIN32
 
+    if (storageParams.engine == "ephemeralForTest") {
+        LOGV2_OPTIONS(
+            22197,
+            {logv2::LogTag::kStartupWarnings},
+            "The ephemeralForTest storage engine is for testing only. Do not use in production");
+    }
+
     if (storageParams.restore) {
         LOGV2_OPTIONS(
             6260401,
             {logv2::LogTag::kStartupWarnings},
             "Running with --restore. This should only be used when restoring from a backup");
-    }
-
-    if (repl::ReplSettings::shouldRecoverFromOplogAsStandalone()) {
-        LOGV2_WARNING_OPTIONS(21558,
-                              {logv2::LogTag::kStartupWarnings},
-                              "Setting mongod to readOnly mode as a result of specifying "
-                              "'recoverFromOplogAsStandalone'");
     }
 }
 }  // namespace mongo

@@ -4,6 +4,8 @@
  * successfully complete initial sync.
  *
  * @tags: [
+ *    # Tenant migrations will not be run with the ephemeralForTest storage engine in production.
+ *      incompatible_with_eft,
  *    # Running tenant migrations on macOS depends on plumbing transient SSL params through the
  *    # Apple SSL manager (see SERVER-56100).
  *      incompatible_with_macos,
@@ -24,9 +26,12 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 load('jstests/replsets/rslib.js');  // for waitForNewlyAddedRemovalForNodeToBeCommitted
 
 const testDBName = 'testDB';
@@ -108,3 +113,4 @@ TenantMigrationTest.assertCommitted(tenantMigrationTest.waitForMigrationToComple
 assert.commandWorked(tenantMigrationTest.forgetMigration(migrationOpts.migrationIdString));
 
 tenantMigrationTest.stop();
+})();

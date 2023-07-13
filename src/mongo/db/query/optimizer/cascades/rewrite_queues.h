@@ -31,7 +31,7 @@
 
 #include <queue>
 
-#include "mongo/db/query/optimizer/cascades/rewriter_rules.h"
+#include "mongo/db/query/optimizer/cascades/logical_rewriter_rules.h"
 #include "mongo/db/query/optimizer/node_defs.h"
 
 namespace mongo::optimizer::cascades {
@@ -72,11 +72,7 @@ static constexpr double kDefaultPriority = 10.0;
  * Keeps track of candidate physical rewrites.
  */
 struct PhysRewriteEntry {
-    PhysRewriteEntry(double priority,
-                     PhysicalRewriteType rule,
-                     std::unique_ptr<ABT> node,
-                     ChildPropsType childProps,
-                     NodeCEMap nodeCEMap);
+    PhysRewriteEntry(double priority, ABT node, ChildPropsType childProps, NodeCEMap nodeCEMap);
 
     PhysRewriteEntry() = delete;
     PhysRewriteEntry(const PhysRewriteEntry& other) = delete;
@@ -84,18 +80,10 @@ struct PhysRewriteEntry {
 
     // Numerically lower priority gets applied first.
     double _priority;
-    // Rewrite rule that triggered this entry.
-    PhysicalRewriteType _rule;
 
-    // Node we are optimizing. This is typically a single node such as Filter with a
-    // MemoLogicalDelegator child, but could be a more complex tree.
-    std::unique_ptr<ABT> _node;
-    // For each child to optimize, we have associated physical properties. If we are optimizing the
-    // node under new properties (e.g. via enforcement) the map will contain a single entry using
-    // the address of the node itself (as opposed to the children to optimize).
+    ABT _node;
     ChildPropsType _childProps;
 
-    // Optional per-node CE. Used if the node is complex tree.
     NodeCEMap _nodeCEMap;
 };
 
@@ -110,56 +98,40 @@ using PhysRewriteQueue = std::priority_queue<std::unique_ptr<PhysRewriteEntry>,
 
 void optimizeChildrenNoAssert(PhysRewriteQueue& queue,
                               double priority,
-                              PhysicalRewriteType rule,
-                              std::unique_ptr<ABT> node,
-                              ChildPropsType childProps,
-                              NodeCEMap nodeCEMap);
-
-void optimizeChildrenNoAssert(PhysRewriteQueue& queue,
-                              double priority,
-                              PhysicalRewriteType rule,
                               ABT node,
                               ChildPropsType childProps,
-                              NodeCEMap nodeCEMap);
+                              NodeCEMap nodeCEMap = {});
 
-template <class T, PhysicalRewriteType rule>
+template <class T>
 static void optimizeChildren(PhysRewriteQueue& queue,
                              double priority,
                              ABT node,
                              ChildPropsType childProps) {
     static_assert(canBePhysicalNode<T>(), "Can only optimize a physical node.");
-    optimizeChildrenNoAssert(
-        queue, priority, rule, std::move(node), std::move(childProps), {} /*nodeCEMap*/);
+    optimizeChildrenNoAssert(queue, priority, std::move(node), std::move(childProps));
 }
 
-template <class T, PhysicalRewriteType rule>
+template <class T>
 static void optimizeChild(PhysRewriteQueue& queue,
                           double priority,
                           ABT node,
                           properties::PhysProps childProps) {
     ABT& childRef = node.cast<T>()->getChild();
-    optimizeChildren<T, rule>(
+    optimizeChildren<T>(
         queue, priority, std::move(node), ChildPropsType{{&childRef, std::move(childProps)}});
 }
 
-template <class T, PhysicalRewriteType rule>
+template <class T>
 static void optimizeChild(PhysRewriteQueue& queue, const double priority, ABT node) {
-    optimizeChildren<T, rule>(queue, priority, std::move(node), {} /*nodeCEMap*/);
+    optimizeChildren<T>(queue, priority, std::move(node), {});
 }
 
-
-template <PhysicalRewriteType rule>
-void optimizeUnderNewProperties(cascades::PhysRewriteQueue& queue,
-                                const double priority,
+void optimizeUnderNewProperties(PhysRewriteQueue& queue,
+                                double priority,
                                 ABT child,
-                                properties::PhysProps props) {
-    auto nodePtr = std::make_unique<ABT>(std::move(child));
-    ChildPropsType childProps{{nodePtr.get(), std::move(props)}};
-    optimizeChildrenNoAssert(
-        queue, priority, rule, std::move(nodePtr), std::move(childProps), {} /*nodeCEMap*/);
-}
+                                properties::PhysProps props);
 
-template <class T, PhysicalRewriteType rule>
+template <class T>
 static void optimizeChildren(PhysRewriteQueue& queue,
                              double priority,
                              ABT node,
@@ -167,7 +139,7 @@ static void optimizeChildren(PhysRewriteQueue& queue,
                              properties::PhysProps rightProps) {
     ABT& leftChildRef = node.cast<T>()->getLeftChild();
     ABT& rightChildRef = node.cast<T>()->getRightChild();
-    optimizeChildren<T, rule>(
+    optimizeChildren<T>(
         queue,
         priority,
         std::move(node),

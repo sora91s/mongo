@@ -57,9 +57,9 @@ namespace mongo {
 AuthorizationSession::~AuthorizationSession() = default;
 
 void AuthorizationSession::ScopedImpersonate::swap() {
-    using std::swap;
     auto impersonations = _authSession._getImpersonations();
-    swap(*std::get<0>(impersonations), _user);
+    using std::swap;
+    swap(*std::get<0>(impersonations), _users);
     swap(*std::get<1>(impersonations), _roles);
 }
 

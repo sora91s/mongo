@@ -185,28 +185,17 @@ public:
      *                          hook is expected not to throw. If it does throw, the process will be
      *                          terminated.
      */
-    ShardRegistry(ServiceContext* service,
-                  std::unique_ptr<ShardFactory> shardFactory,
-                  const boost::optional<ConnectionString>& configServerCS,
+    ShardRegistry(std::unique_ptr<ShardFactory> shardFactory,
+                  const ConnectionString& configServerCS,
                   std::vector<ShardRemovalHook> shardRemovalHooks = {});
 
     ~ShardRegistry();
 
     /**
-     * Initializes ShardRegistry with config shard, if a connection string was provided at
-     * construction.
-     *
-     * The creation of the config shard object will intialize the associated RSM monitor that in
-     * turn will call ShardRegistry::updateReplSetHosts(). Hence the config shard object MUST be
-     * created after the ShardRegistry is fully constructed.
+     * Initializes ShardRegistry with config shard. Must be called outside c-tor to avoid calls on
+     * this while its still not fully constructed.
      */
-    void init();
-
-    /**
-     * Sets up the registry's config shard from the given connection string. Only takes effect if
-     * the registry has not already done this.
-     */
-    void initConfigShardIfNecessary(const ConnectionString& configCS);
+    void init(ServiceContext* service);
 
     /**
      * Startup the periodic reloader of the ShardRegistry.
@@ -283,10 +272,10 @@ public:
     std::unique_ptr<Shard> createConnection(const ConnectionString& connStr) const;
 
     /**
-     * Returns a ShardLocal for the config server that is not tracked by the registry. May only be
-     * called on a config server node.
+     * The ShardRegistry is "up" once a successful lookup from the config servers has been
+     * completed.
      */
-    std::shared_ptr<Shard> createLocalConfigShard() const;
+    bool isUp();
 
     void toBSON(BSONObjBuilder* result) const;
 
@@ -297,18 +286,17 @@ public:
     void reload(OperationContext* opCtx);
 
     /**
+     * Clears all entries from the shard registry entries, which will force the registry to do a
+     * reload on next access.
+     */
+    void clearEntries();
+
+    /**
      * For use in mongos which needs notifications about changes to shard replset membership to
      * update the config.shards collection.
      */
     static void updateReplicaSetOnConfigServer(ServiceContext* serviceContex,
                                                const ConnectionString& connStr) noexcept;
-
-    /*
-     * Returns true if the given host is part of the config server replica set.
-     *
-     * This method relies on the RSM to have pushed the correct CSRS membership information.
-     */
-    bool isConfigServer(const HostAndPort& host) const;
 
     // TODO SERVER-50206: Remove usage of these non-causally consistent accessors.
     //
@@ -319,10 +307,22 @@ public:
     // refreshed via _lookup()).
 
     /**
+     * Returns a shared pointer to the shard object with the given shard id. The shardId parameter
+     * can actually be the shard name or the HostAndPort for any server in the shard. Will not
+     * refresh the shard registry or otherwise perform any network traffic. This means that if the
+     * shard was recently added it may not be found.  USE WITH CAUTION.
+     */
+    std::shared_ptr<Shard> getShardNoReload(const ShardId& shardId) const;
+
+    /**
      * Finds the Shard that the mongod listening at this HostAndPort is a member of. Will not
      * refresh the shard registry or otherwise perform any network traffic.
      */
     std::shared_ptr<Shard> getShardForHostNoReload(const HostAndPort& shardHost) const;
+
+    std::vector<ShardId> getAllShardIdsNoReload() const;
+
+    int getNumShardsNoReload() const;
 
 private:
     /**
@@ -419,16 +419,19 @@ private:
     SharedSemiFuture<Cache::ValueHandle> _getDataAsync();
 
     /**
-     * Triggers a reload without waiting for it to complete.
-     */
-    void _scheduleLookup();
-
-    /**
      * Gets the latest-cached copy of the ShardRegistryData.  Never fetches from the config servers.
      * Only used by the "NoReload" accessors.
      * TODO SERVER-50206: Remove usage of this non-causally consistent accessor.
      */
     Cache::ValueHandle _getCachedData() const;
+
+    /**
+     * Lookup shard by replica set name. Returns nullptr if the name can't be found.
+     * Note: this doesn't refresh the table if the name isn't found, so it's possible that a
+     * newly added shard/Replica Set may not be found.
+     * TODO SERVER-50206: Remove usage of this non-causally consistent accessor.
+     */
+    std::shared_ptr<Shard> _getShardForRSNameNoReload(const std::string& name) const;
 
     using LatestConnStrings = stdx::unordered_map<ShardId, ConnectionString, ShardId::Hasher>;
 
@@ -438,11 +441,8 @@ private:
 
     void _initializeCacheIfNecessary() const;
 
-    void _initConfigShard(WithLock, const ConnectionString& configCS);
-
     SharedSemiFuture<Cache::ValueHandle> _reloadAsync();
-
-    ServiceContext* _service{nullptr};
+    SharedSemiFuture<Cache::ValueHandle> _reloadAsyncNoRetry();
 
     /**
      * Factory to create shards.  Never changed after startup so safe to access outside of _mutex.
@@ -453,7 +453,7 @@ private:
      * Specified in the ShardRegistry c-tor. It's used only in init() to initialize the config
      * shard.
      */
-    const boost::optional<ConnectionString> _initConfigServerCS;
+    const ConnectionString _initConfigServerCS;
 
     /**
      * A list of callbacks to be called asynchronously when it has been discovered that a shard was
@@ -487,8 +487,13 @@ private:
 
     AtomicWord<bool> _isInitialized{false};
 
+    // The ShardRegistry is "up" once there has been a successful refresh.
+    AtomicWord<bool> _isUp{false};
+
     // Set to true in shutdown call to prevent calling it twice.
     AtomicWord<bool> _isShutdown{false};
+
+    ServiceContext* _service{nullptr};
 };
 
 }  // namespace mongo

@@ -31,10 +31,8 @@
 
 #include <memory>
 
-#include "mongo/db/exec/fastpath_projection_node.h"
 #include "mongo/db/exec/projection_executor.h"
 #include "mongo/db/exec/projection_node.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 #include "mongo/db/pipeline/expression_walker.h"
 
 namespace mongo::projection_executor {
@@ -66,7 +64,7 @@ public:
         }
 
         for (auto&& expressionPair : _expressions) {
-            expression::addDependencies(expressionPair.second.get(), deps);
+            expressionPair.second->addDependencies(deps);
         }
 
         for (auto&& childPair : _children) {
@@ -140,18 +138,16 @@ protected:
 /**
  * A fast-path inclusion projection implementation which applies a BSON-to-BSON transformation
  * rather than constructing an output document using the Document/Value API. For inclusion-only
- * projections (as defined by projection_ast::Projection::isInclusionOnly) it can be much faster
- * than the default InclusionNode implementation. On a document-by-document basis, if the fast-path
+ * projections (which are projections without expressions, metadata, find-only expressions ($slice,
+ * $elemMatch, and positional), and not requiring an entire document) it can be much faster than the
+ * default InclusionNode implementation. On a document-by-document basis, if the fast-path
  * projection cannot be applied to the input document, it will fall back to the default
  * implementation.
  */
-class FastPathEligibleInclusionNode final
-    : public FastPathProjectionNode<FastPathEligibleInclusionNode, InclusionNode> {
-private:
-    using Base = FastPathProjectionNode<FastPathEligibleInclusionNode, InclusionNode>;
-
+class FastPathEligibleInclusionNode final : public InclusionNode {
 public:
-    using Base::Base;
+    FastPathEligibleInclusionNode(ProjectionPolicies policies, std::string pathToNode = "")
+        : InclusionNode(policies, std::move(pathToNode)) {}
 
     Document applyToDocument(const Document& inputDoc) const final;
 
@@ -162,22 +158,8 @@ protected:
     }
 
 private:
-    void _applyToProjectedField(const BSONElement& element, BSONObjBuilder* bob) const {
-        // This element is included by the projection, so it is added to the output.
-        bob->append(element);
-    }
-    void _applyToNonProjectedField(const BSONElement& element, BSONObjBuilder* bob) const {
-        // No-op. This element is not included in the projection, so it is not added to the output.
-    }
-    void _applyToNonProjectedField(const BSONElement& element, BSONArrayBuilder* bab) const {
-        // No-op. This array element is not included in the projection, so it is not added to the
-        // output.
-    }
-    void _applyToRemainingFields(BSONObjIterator& it, BSONObjBuilder* bob) const {
-        // No-op. We processed all inclusions, rest of the elements can be discarded.
-    }
-
-    friend class FastPathProjectionNode<FastPathEligibleInclusionNode, InclusionNode>;
+    void _applyProjections(BSONObj bson, BSONObjBuilder* bob) const;
+    void _applyProjectionsToArray(BSONObj array, BSONArrayBuilder* bab) const;
 };
 
 /**
@@ -217,17 +199,16 @@ public:
     /**
      * Serialize the projection.
      */
-    Document serializeTransformation(boost::optional<ExplainOptions::Verbosity> explain,
-                                     SerializationOptions options = {}) const final {
+    Document serializeTransformation(
+        boost::optional<ExplainOptions::Verbosity> explain) const final {
         MutableDocument output;
 
         // The InclusionNode tree in '_root' will always have a top-level _id node if _id is to be
         // included. If the _id node is not present, then explicitly set {_id: false} to avoid
         // ambiguity in the expected behavior of the serialized projection.
-        _root->serialize(explain, &output, options);
-        auto idFieldName = options.serializeFieldName("_id");
-        if (output.peek()[idFieldName].missing()) {
-            output.addField(idFieldName, Value{false});
+        _root->serialize(explain, &output);
+        if (output.peek()["_id"].missing()) {
+            output.addField("_id", Value{false});
         }
 
         return output.freeze();
@@ -244,16 +225,9 @@ public:
     DepsTracker::State addDependencies(DepsTracker* deps) const final {
         _root->reportDependencies(deps);
         if (_rootReplacementExpression) {
-            expression::addDependencies(_rootReplacementExpression.get(), deps);
+            _rootReplacementExpression->addDependencies(deps);
         }
         return DepsTracker::State::EXHAUSTIVE_FIELDS;
-    }
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {
-        _root->addVariableRefs(refs);
-        if (_rootReplacementExpression) {
-            expression::addVariableRefs(_rootReplacementExpression.get(), refs);
-        }
     }
 
     DocumentSource::GetModPathsReturn getModifiedPaths() const final {
@@ -263,10 +237,10 @@ public:
             return {DocumentSource::GetModPathsReturn::Type::kAllPaths, {}, {}};
         }
 
-        OrderedPathSet preservedPaths;
+        std::set<std::string> preservedPaths;
         _root->reportProjectedPaths(&preservedPaths);
 
-        OrderedPathSet computedPaths;
+        std::set<std::string> computedPaths;
         StringMap<std::string> renamedPaths;
         _root->reportComputedPaths(&computedPaths, &renamedPaths);
 

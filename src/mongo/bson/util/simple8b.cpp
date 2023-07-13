@@ -357,7 +357,7 @@ Simple8bBuilder<T>::PendingIterator::PendingIterator(
     : _begin(beginning), _it(it), _rleValue(rleValue), _rleCount(rleCount) {}
 
 template <typename T>
-auto Simple8bBuilder<T>::PendingIterator::operator->() const -> pointer {
+auto Simple8bBuilder<T>::PendingIterator::operator-> () const -> pointer {
     return &operator*();
 }
 
@@ -705,7 +705,7 @@ int64_t Simple8bBuilder<T>::_encodeLargestPossibleWord(uint8_t extensionType) {
 
     _pendingValues.erase(_pendingValues.begin(), _pendingValues.begin() + integersCoded);
     _currMaxBitLen = kMinDataBits;
-    for (const auto& val : _pendingValues) {
+    for (auto val : _pendingValues) {
         _updateSimple8bCurrentState(val);
     }
     // Reset which selectors are possible to use for next word

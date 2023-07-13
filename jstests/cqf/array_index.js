@@ -25,9 +25,9 @@ assert.commandWorked(t.createIndex({a: 1}));
 
 let res = t.explain("executionStats").aggregate([{$match: {a: 2}}]);
 assert.eq(4, res.executionStats.nReturned);
-assertValueOnPlanPath("IndexScan", res, "child.leftChild.nodeType");
+assert.eq("IndexScan", res.queryPlanner.winningPlan.optimizerPlan.child.leftChild.nodeType);
 
 res = t.explain("executionStats").aggregate([{$match: {a: {$lt: 2}}}]);
 assert.eq(2, res.executionStats.nReturned);
-assertValueOnPlanPath("IndexScan", res, "child.leftChild.child.nodeType");
+assert.eq("IndexScan", res.queryPlanner.winningPlan.optimizerPlan.child.leftChild.child.nodeType);
 }());

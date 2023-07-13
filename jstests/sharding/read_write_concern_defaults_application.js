@@ -32,6 +32,7 @@
 "use strict";
 
 load('jstests/libs/profiler.js');
+load("jstests/libs/logv2_helpers.js");
 load('jstests/sharding/libs/last_lts_mongod_commands.js');
 
 // TODO SERVER-50144 Remove this and allow orphan checking.
@@ -78,8 +79,6 @@ let validateTestCase = function(test) {
 let testCases = {
     _addShard: {skip: "internal command"},
     _cloneCollectionOptionsFromPrimaryShard: {skip: "internal command"},
-    _clusterQueryWithoutShardKey: {skip: "internal command"},
-    _clusterWriteWithoutShardKey: {skip: "internal command"},
     _configsvrAbortReshardCollection: {skip: "internal command"},
     _configsvrAddShard: {skip: "internal command"},
     _configsvrAddShardToZone: {skip: "internal command"},
@@ -87,23 +86,26 @@ let testCases = {
     _configsvrBalancerStart: {skip: "internal command"},
     _configsvrBalancerStatus: {skip: "internal command"},
     _configsvrBalancerStop: {skip: "internal command"},
-    _configsvrCheckClusterMetadataConsistency: {skip: "internal command"},
-    _configsvrCheckMetadataConsistency: {skip: "internal command"},
     _configsvrCleanupReshardCollection: {skip: "internal command"},
     _configsvrCollMod: {skip: "internal command"},
     _configsvrClearJumboFlag: {skip: "internal command"},
     _configsvrCommitChunksMerge: {skip: "internal command"},
     _configsvrCommitChunkMigration: {skip: "internal command"},
     _configsvrCommitChunkSplit: {skip: "internal command"},
-    _configsvrCommitIndex: {skip: "internal command"},
-    _configsvrCommitMergeAllChunksOnShard: {skip: "internal command"},
     _configsvrCommitMovePrimary: {skip: "internal command"},  // Can be removed once 6.0 is last LTS
     _configsvrCommitReshardCollection: {skip: "internal command"},
+    _configsvrConfigureAutoSplit: {
+        skip: "internal command"
+    },  // TODO SERVER-62374: remove this once 5.3 becomes last continuos release
     _configsvrConfigureCollectionBalancing: {skip: "internal command"},
     _configsvrCreateDatabase: {skip: "internal command"},
-    _configsvrDropIndexCatalogEntry: {skip: "internal command"},
+    _configsvrDropCollection:
+        {skip: "internal command"},  // TODO SERVER-58843: Remove once 6.0 becomes last LTS
+    _configsvrDropDatabase:
+        {skip: "internal command"},  // TODO SERVER-58843: Remove once 6.0 becomes last LTS
+    _configsvrEnableSharding:
+        {skip: "internal command"},  // TODO SERVER-58843: Remove once 6.0 becomes last LTS
     _configsvrEnsureChunkVersionIsGreaterThan: {skip: "internal command"},
-    _configsvrGetHistoricalPlacement: {skip: "internal command"},  // TODO SERVER-73029 remove
     _configsvrMoveChunk: {skip: "internal command"},
     _configsvrMovePrimary: {skip: "internal command"},  // Can be removed once 6.0 is last LTS
     _configsvrMoveRange: {skip: "internal command"},
@@ -120,8 +122,8 @@ let testCases = {
     _configsvrSetAllowMigrations: {skip: "internal command"},
     _configsvrSetClusterParameter: {skip: "internal command"},
     _configsvrSetUserWriteBlockMode: {skip: "internal command"},
-    _configsvrTransitionToCatalogShard: {skip: "internal command"},
-    _configsvrTransitionToDedicatedConfigServer: {skip: "internal command"},
+    _configsvrShardCollection:
+        {skip: "internal command"},  // TODO SERVER-58843: Remove once 6.0 becomes last LTS
     _configsvrUpdateZoneKeyRange: {skip: "internal command"},
     _flushDatabaseCacheUpdates: {skip: "internal command"},
     _flushDatabaseCacheUpdatesWithWriteConcern: {skip: "internal command"},
@@ -141,39 +143,22 @@ let testCases = {
     _recvChunkReleaseCritSec: {skip: "internal command"},
     _recvChunkStart: {skip: "internal command"},
     _recvChunkStatus: {skip: "internal command"},
-    _refreshQueryAnalyzerConfiguration: {skip: "internal command"},
     _shardsvrAbortReshardCollection: {skip: "internal command"},
     _shardsvrCleanupReshardCollection: {skip: "internal command"},
     _shardsvrCloneCatalogData: {skip: "internal command"},
-    _shardsvrRegisterIndex: {skip: "internal command"},
-    _shardsvrCheckMetadataConsistency: {skip: "internal command"},
-    _shardsvrCheckMetadataConsistencyParticipant: {skip: "internal command"},
-    _shardsvrCommitIndexParticipant: {skip: "internal command"},
     _shardsvrCommitReshardCollection: {skip: "internal command"},
     _shardsvrCompactStructuredEncryptionData: {skip: "internal command"},
     _shardsvrCreateCollection: {skip: "internal command"},
     _shardsvrCreateCollectionParticipant: {skip: "internal command"},
-    _shardsvrCreateGlobalIndex: {skip: "internal command"},
-    _shardsvrDropGlobalIndex: {skip: "internal command"},
     _shardsvrDropCollection: {skip: "internal command"},
-    // TODO SERVER-74324: deprecate _shardsvrDropCollectionIfUUIDNotMatching after 7.0 is lastLTS.
     _shardsvrDropCollectionIfUUIDNotMatching: {skip: "internal command"},
-    _shardsvrDropCollectionIfUUIDNotMatchingWithWriteConcern: {skip: "internal command"},
     _shardsvrDropCollectionParticipant: {skip: "internal command"},
-    _shardsvrUnregisterIndex: {skip: "internal command"},
-    _shardsvrDropIndexCatalogEntryParticipant: {skip: "internal command"},
     _shardsvrDropIndexes: {skip: "internal command"},
     _shardsvrDropDatabase: {skip: "internal command"},
     _shardsvrDropDatabaseParticipant: {skip: "internal command"},
     _shardsvrGetStatsForBalancing: {skip: "internal command"},
-    _shardsvrInsertGlobalIndexKey: {skip: "internal command"},
-    _shardsvrDeleteGlobalIndexKey: {skip: "internal command"},
-    _shardsvrWriteGlobalIndexKeys: {skip: "internal command"},
     _shardsvrJoinMigrations: {skip: "internal command"},
-    _shardsvrMergeAllChunksOnShard: {skip: "internal command"},
     _shardsvrMovePrimary: {skip: "internal command"},
-    _shardsvrMovePrimaryEnterCriticalSection: {skip: "internal command"},
-    _shardsvrMovePrimaryExitCriticalSection: {skip: "internal command"},
     _shardsvrMoveRange: {
         skip:
             "does not accept read or write concern (accepts writeConcern, but only explicitly and when _secondaryThrottle is true)"
@@ -182,17 +167,16 @@ let testCases = {
     _shardsvrRenameCollection: {skip: "internal command"},
     _shardsvrRenameCollectionParticipant: {skip: "internal command"},
     _shardsvrRenameCollectionParticipantUnblock: {skip: "internal command"},
-    _shardsvrRenameIndexMetadata: {skip: "internal command"},
     _shardsvrReshardCollection: {skip: "internal command"},
     _shardsvrReshardingOperationTime: {skip: "internal command"},
     _shardsvrSetAllowMigrations: {skip: "internal command"},
     _shardsvrSetClusterParameter: {skip: "internal command"},
     _shardsvrSetUserWriteBlockMode: {skip: "internal command"},
-    _shardsvrValidateShardKeyCandidate: {skip: "internal command"},
     _shardsvrCollMod: {skip: "internal command"},
     _shardsvrCollModParticipant: {skip: "internal command"},
     _shardsvrParticipantBlock: {skip: "internal command"},
-    _startStreamProcessor: {skip: "internal command"},
+    _shardsvrShardCollection:
+        {skip: "internal command"},  // TODO SERVER-58843: Remove once 6.0 becomes last LTS
     _transferMods: {skip: "internal command"},
     _vectorClockPersist: {skip: "internal command"},
     abortReshardCollection: {skip: "does not accept read or write concern"},
@@ -232,8 +216,6 @@ let testCases = {
         checkReadConcern: true,
         checkWriteConcern: true,
     },
-    analyze: {skip: "TODO SERVER-67772"},
-    analyzeShardKey: {skip: "does not accept read or write concern"},
     appendOplogNote: {
         command: {appendOplogNote: 1, data: {foo: 1}},
         checkReadConcern: false,
@@ -245,14 +227,13 @@ let testCases = {
     applyOps: {skip: "internal command"},
     authenticate: {skip: "does not accept read or write concern"},
     autoSplitVector: {skip: "internal command"},
+    availableQueryOptions: {skip: "internal command"},
     balancerCollectionStatus: {skip: "does not accept read or write concern"},
     balancerStart: {skip: "does not accept read or write concern"},
     balancerStatus: {skip: "does not accept read or write concern"},
     balancerStop: {skip: "does not accept read or write concern"},
     buildInfo: {skip: "does not accept read or write concern"},
-    bulkWrite: {skip: "not yet implemented"},
     captrunc: {skip: "test command"},
-    checkMetadataConsistency: {skip: "does not accept read or write concern"},
     checkShardingIndex: {skip: "does not accept read or write concern"},
     cleanupOrphaned: {skip: "only on shard server"},
     cleanupReshardCollection: {skip: "does not accept read or write concern"},
@@ -270,7 +251,6 @@ let testCases = {
     clusterAbortTransaction: {skip: "already tested by 'abortTransaction' tests on mongos"},
     clusterAggregate: {skip: "already tested by 'aggregate' tests on mongos"},
     clusterCommitTransaction: {skip: "already tested by 'commitTransaction' tests on mongos"},
-    clusterCount: {skip: "already tested by 'count' tests on mongos"},
     clusterDelete: {skip: "already tested by 'delete' tests on mongos"},
     clusterFind: {skip: "already tested by 'find' tests on mongos"},
     clusterGetMore: {skip: "already tested by 'getMore' tests on mongos"},
@@ -314,9 +294,11 @@ let testCases = {
     },
     compact: {skip: "does not accept read or write concern"},
     compactStructuredEncryptionData: {skip: "does not accept read or write concern"},
+    configureCollectionAutoSplitter: {
+        skip: "does not accept read or write concern"
+    },  // TODO SERVER-62374: remove this once 5.3 becomes last continuos release
     configureCollectionBalancing: {skip: "does not accept read or write concern"},
     configureFailPoint: {skip: "does not accept read or write concern"},
-    configureQueryAnalyzer: {skip: "does not accept read or write concern"},
     connPoolStats: {skip: "does not accept read or write concern"},
     connPoolSync: {skip: "internal command"},
     connectionStatus: {skip: "does not accept read or write concern"},
@@ -358,8 +340,6 @@ let testCases = {
         shardedTargetsConfigServer: true,
         useLogs: true,
     },
-    createSearchIndex: {skip: "present in v6.3 but renamed to createSearchIndexes in v7.0"},
-    createSearchIndexes: {skip: "does not accept read or write concern"},
     createUser: {
         command: {createUser: "foo", pwd: "bar", roles: []},
         checkReadConcern: false,
@@ -392,12 +372,17 @@ let testCases = {
         checkWriteConcern: false,
     },
     donorAbortMigration: {skip: "does not accept read or write concern"},
+    // TODO(SERVER-61845) : remove overrides once possible
+    donorAbortSplit: {skip: "has been removed from the server"},
     donorForgetMigration: {skip: "does not accept read or write concern"},
+    donorForgetSplit: {skip: "has been removed from the server"},
     donorStartMigration: {skip: "does not accept read or write concern"},
+    donorStartSplit: {skip: "has been removed from the server"},
     donorWaitForMigrationToCommit: {skip: "does not accept read or write concern"},
-    abortShardSplit: {skip: "internal command"},
-    commitShardSplit: {skip: "internal command"},
-    forgetShardSplit: {skip: "internal command"},
+    // TODO(SERVER-63743) : split cmds need to support writeConcern.
+    abortShardSplit: {skip: "does not accept read or write concern"},
+    commitShardSplit: {skip: "does not accept read or write concern"},
+    forgetShardSplit: {skip: "does not accept read or write concern"},
     driverOIDTest: {skip: "internal command"},
     drop: {
         setUp: function(conn) {
@@ -455,7 +440,6 @@ let testCases = {
         shardedTargetsConfigServer: true,
         useLogs: true,
     },
-    dropSearchIndex: {skip: "does not accept read or write concern"},
     dropUser: {
         setUp: function(conn) {
             assert.commandWorked(conn.getDB(db).runCommand(
@@ -495,19 +479,21 @@ let testCases = {
     fsync: {skip: "does not accept read or write concern"},
     fsyncUnlock: {skip: "does not accept read or write concern"},
     getAuditConfig: {skip: "does not accept read or write concern"},
-    getChangeStreamState: {skip: "does not accept read or write concern"},
+    getChangeStreamOptions:
+        {skip: "does not accept read or write concern"},  // TODO SERVER-65353 remove in 6.1.
     getClusterParameter: {skip: "does not accept read or write concern"},
     getCmdLineOpts: {skip: "does not accept read or write concern"},
     getDatabaseVersion: {skip: "does not accept read or write concern"},
     getDefaultRWConcern: {skip: "does not accept read or write concern"},
     getDiagnosticData: {skip: "does not accept read or write concern"},
     getFreeMonitoringStatus: {skip: "does not accept read or write concern"},
+    getLastError: {skip: "does not accept read or write concern"},
     getLog: {skip: "does not accept read or write concern"},
     getMore: {skip: "does not accept read or write concern"},
     getParameter: {skip: "does not accept read or write concern"},
     getShardMap: {skip: "internal command"},
     getShardVersion: {skip: "internal command"},
-    getnonce: {skip: "removed in v6.3"},
+    getnonce: {skip: "does not accept read or write concern"},
     godinsert: {skip: "for testing only"},
     grantPrivilegesToRole: {
         setUp: function(conn) {
@@ -575,9 +561,7 @@ let testCases = {
     listCollections: {skip: "does not accept read or write concern"},
     listCommands: {skip: "does not accept read or write concern"},
     listDatabases: {skip: "does not accept read or write concern"},
-    listDatabasesForAllTenants: {skip: "does not accept read or write concern"},
     listIndexes: {skip: "does not accept read or write concern"},
-    listSearchIndexes: {skip: "does not accept read or write concern"},
     listShards: {skip: "does not accept read or write concern"},
     lockInfo: {skip: "does not accept read or write concern"},
     logApplicationMessage: {skip: "does not accept read or write concern"},
@@ -586,9 +570,7 @@ let testCases = {
     logout: {skip: "does not accept read or write concern"},
     makeSnapshot: {skip: "does not accept read or write concern"},
     mapReduce: {skip: "does not accept read or write concern"},
-    mergeAllChunksOnShard: {skip: "does not accept read or write concern"},
     mergeChunks: {skip: "does not accept read or write concern"},
-    modifySearchIndex: {skip: "present in v6.3 but renamed to updateSearchIndex in v7.0"},
     moveChunk: {
         skip:
             "does not accept read or write concern (accepts writeConcern, but only explicitly and when _secondaryThrottle is true)"
@@ -600,8 +582,6 @@ let testCases = {
     },
     multicast: {skip: "does not accept read or write concern"},
     netstat: {skip: "internal command"},
-    oidcListKeys: {skip: "does not accept read or write concern"},
-    oidcRefreshKeys: {skip: "does not accept read or write concern"},
     pinHistoryReplicated: {skip: "internal command"},
     ping: {skip: "does not accept read or write concern"},
     planCacheClear: {skip: "does not accept read or write concern"},
@@ -680,7 +660,7 @@ let testCases = {
                 writeConcern: {w: 1}
             }));
         },
-        command: {revokeRolesFromRole: "foo", roles: [{role: "bar", db: db}]},
+        command: {revokeRolesFromRole: "foo", roles: [{role: "foo", db: db}]},
         checkReadConcern: false,
         checkWriteConcern: true,
         shardedTargetsConfigServer: true,
@@ -711,15 +691,15 @@ let testCases = {
     serverStatus: {skip: "does not accept read or write concern"},
     setAllowMigrations: {skip: "does not accept read or write concern"},
     setAuditConfig: {skip: "does not accept read or write concern"},
+    setChangeStreamOptions:
+        {skip: "does not accept read or write concern"},  // TODO SERVER-65353 remove in 6.1.
     setCommittedSnapshot: {skip: "internal command"},
     setDefaultRWConcern: {skip: "special case (must run after all other commands)"},
     setFeatureCompatibilityVersion: {skip: "does not accept read or write concern"},
     setFreeMonitoring: {skip: "does not accept read or write concern"},
-    setProfilingFilterGlobally: {skip: "does not accept read or write concern"},
     setIndexCommitQuorum: {skip: "does not accept read or write concern"},
     setParameter: {skip: "does not accept read or write concern"},
     setShardVersion: {skip: "internal command"},
-    setChangeStreamState: {skip: "does not accept read or write concern"},
     setClusterParameter: {skip: "does not accept read or write concern"},
     setUserWriteBlockMode: {skip: "does not accept read or write concern"},
     shardCollection: {skip: "does not accept read or write concern"},
@@ -741,8 +721,6 @@ let testCases = {
     testVersions1And2: {skip: "does not accept read or write concern"},
     testVersion2: {skip: "does not accept read or write concern"},
     top: {skip: "does not accept read or write concern"},
-    transitionToCatalogShard: {skip: "does not accept read or write concern"},
-    transitionToDedicatedConfigServer: {skip: "does not accept read or write concern"},
     update: {
         setUp: function(conn) {
             assert.commandWorked(conn.getCollection(nss).insert({x: 1}, {writeConcern: {w: 1}}));
@@ -765,7 +743,6 @@ let testCases = {
         shardedTargetsConfigServer: true,
         useLogs: true,
     },
-    updateSearchIndex: {skip: "does not accept read or write concern"},
     updateUser: {
         setUp: function(conn) {
             assert.commandWorked(conn.getDB(db).runCommand(
@@ -781,9 +758,9 @@ let testCases = {
     usersInfo: {skip: "does not accept read or write concern"},
     validate: {skip: "does not accept read or write concern"},
     validateDBMetadata: {skip: "does not accept read or write concern"},
-    voteAbortIndexBuild: {skip: "internal command"},
     voteCommitImportCollection: {skip: "internal command"},
     voteCommitIndexBuild: {skip: "internal command"},
+    voteCommitMigrationProgress: {skip: "internal command"},  // TODO (SERVER-64296): Remove in 6.1.
     waitForFailPoint: {skip: "does not accept read or write concern"},
     waitForOngoingChunkSplits: {skip: "does not accept read or write concern"},
     whatsmysni: {skip: "does not accept read or write concern"},
@@ -791,7 +768,7 @@ let testCases = {
 };
 
 commandsRemovedFromMongodSinceLastLTS.forEach(function(cmd) {
-    testCases[cmd] = {skip: "must define test coverage for backwards compatibility"};
+    testCases[cmd] = {skip: "must define test coverage for 4.4 backwards compatibility"};
 });
 
 // Running setDefaultRWConcern in the middle of a scenario would define defaults when there
@@ -831,14 +808,27 @@ let setDefaultRWConcernActualTestCase = {
 //     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 function createLogLineRegularExpressionForTestCase(test, cmdName, targetId, explicitRWC) {
     let expectedProvenance = explicitRWC ? "clientSupplied" : "customDefault";
-    let pattern = `"command":{"${cmdName}"`;
-    pattern += `.*"comment":"${targetId}"`;
+    if (isJsonLogNoConn()) {
+        let pattern = `"command":{"${cmdName}"`;
+        pattern += `.*"comment":"${targetId}"`;
+        if (test.checkReadConcern) {
+            pattern += `.*"readConcern":{"level":"majority","provenance":"${expectedProvenance}"}`;
+        }
+        if (test.checkWriteConcern) {
+            pattern += `.*"writeConcern":{"w":"majority","wtimeout":1234567,"provenance":"${
+                expectedProvenance}"}`;
+        }
+        return new RegExp(pattern);
+    }
+
+    let pattern = `command: ${cmdName} `;
+    pattern += `.* comment: "${targetId}"`;
     if (test.checkReadConcern) {
-        pattern += `.*"readConcern":{"level":"majority","provenance":"${expectedProvenance}"}`;
+        pattern += `.* readConcern:{ level: "majority", provenance: "${expectedProvenance}" }`;
     }
     if (test.checkWriteConcern) {
-        pattern += `.*"writeConcern":{"w":"majority","wtimeout":1234567,"provenance":"${
-            expectedProvenance}"}`;
+        pattern += `.* writeConcern:{ w: "majority", wtimeout: 1234567, provenance: "${
+            expectedProvenance}" }`;
     }
     return new RegExp(pattern);
 }
@@ -1071,6 +1061,9 @@ function runTests(conn, regularCheckConn, configSvrCheckConn) {
                 configSvrCheckConn,
                 {explicitRWC: true, explicitProvenance: true});
 }
+
+// TODO SERVER-45052: Move the main code into jstests/lib, and then call it from jstests/replsets
+// and jstests/sharding.
 
 let rst = new ReplSetTest({nodes: 1});
 rst.startSet();

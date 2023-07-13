@@ -31,6 +31,7 @@
 #include "mongo/unittest/unittest.h"
 
 #include <boost/optional.hpp>
+#include <boost/optional/optional_io.hpp>
 #include <vector>
 
 using namespace mongo;

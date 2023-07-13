@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
@@ -44,8 +48,6 @@
 #include "mongo/s/catalog_cache_loader.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/flush_routing_table_cache_updates_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 namespace mongo {
 namespace {
@@ -108,24 +110,22 @@ public:
             uassert(ErrorCodes::IllegalOperation,
                     str::stream() << "Can't call " << Derived::Request::kCommandName
                                   << " if in read-only mode",
-                    !opCtx->readOnly());
+                    !storageGlobalParams.readOnly);
 
             boost::optional<SharedSemiFuture<void>> criticalSectionSignal;
 
             {
-                // TODO (SERVER-74313): Replace with AutoGetCollection
-                Lock::DBLock dbLock(opCtx, ns().dbName(), MODE_IS);
-                Lock::CollectionLock collLock(opCtx, ns(), MODE_IS);
+                AutoGetCollection autoColl(
+                    opCtx, ns(), MODE_IS, AutoGetCollectionViewMode::kViewsPermitted);
 
                 // If the primary is in the critical section, secondaries must wait for the commit
                 // to finish on the primary in case a secondary's caller has an afterClusterTime
                 // inclusive of the commit (and new writes to the committed chunk) that hasn't yet
                 // propagated back to this shard. This ensures the read your own writes causal
                 // consistency guarantee.
-                const auto scopedCsr =
-                    CollectionShardingRuntime::assertCollectionLockedAndAcquireShared(opCtx, ns());
-                criticalSectionSignal = scopedCsr->getCriticalSectionSignal(
-                    opCtx, ShardingMigrationCriticalSection::kWrite);
+                auto const csr = CollectionShardingRuntime::get(opCtx, ns());
+                criticalSectionSignal =
+                    csr->getCriticalSectionSignal(opCtx, ShardingMigrationCriticalSection::kWrite);
             }
 
             if (criticalSectionSignal)
@@ -137,7 +137,7 @@ public:
                             "Forcing remote routing table refresh for {namespace}",
                             "Forcing remote routing table refresh",
                             "namespace"_attr = ns());
-                onCollectionPlacementVersionMismatch(opCtx, ns(), boost::none);
+                onShardVersionMismatch(opCtx, ns(), boost::none);
             }
 
             CatalogCacheLoader::get(opCtx).waitForCollectionFlush(opCtx, ns());

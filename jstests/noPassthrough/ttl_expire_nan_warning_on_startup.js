@@ -24,14 +24,11 @@ const coll = db.t;
 // The test cases here revolve around having a TTL index in the catalog with a NaN
 // 'expireAfterSeconds'. The current createIndexes behavior will overwrite NaN with int32::max
 // unless we use a fail point.
-const fp = configureFailPoint(primary, 'skipTTLIndexValidationOnCreateIndex');
-const fp2 =
-    configureFailPoint(primary, 'skipTTLIndexInvalidExpireAfterSecondsValidationForCreateIndex');
+const fp = configureFailPoint(primary, 'skipTTLIndexNaNExpireAfterSecondsValidation');
 try {
     assert.commandWorked(coll.createIndex({t: 1}, {expireAfterSeconds: NaN}));
 } finally {
     fp.off();
-    fp2.off();
 }
 
 assert.commandWorked(coll.insert({_id: 0, t: ISODate()}));

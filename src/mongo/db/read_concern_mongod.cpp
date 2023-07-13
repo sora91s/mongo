@@ -27,14 +27,15 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/base/shim.h"
 #include "mongo/base/status.h"
 #include "mongo/db/catalog_raii.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop_failpoint_helpers.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/read_concern.h"
 #include "mongo/db/read_concern_mongod_gen.h"
@@ -50,9 +51,6 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/concurrency/notification.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -110,9 +108,7 @@ private:
 /**
  *  Schedule a write via appendOplogNote command to the primary of this replica set.
  */
-Status makeNoopWriteIfNeeded(OperationContext* opCtx,
-                             LogicalTime clusterTime,
-                             const DatabaseName& dbName) {
+Status makeNoopWriteIfNeeded(OperationContext* opCtx, LogicalTime clusterTime, StringData dbName) {
     repl::ReplicationCoordinator* const replCoord = repl::ReplicationCoordinator::get(opCtx);
     invariant(replCoord->isReplEnabled());
 
@@ -170,13 +166,11 @@ Status makeNoopWriteIfNeeded(OperationContext* opCtx,
                             "clusterTime"_attr = clusterTime.toString(),
                             "remainingAttempts"_attr = remainingAttempts);
 
-                auto onRemoteCmdScheduled = [](executor::TaskExecutor::CallbackHandle handle) {
-                };
-                auto onRemoteCmdComplete = [](executor::TaskExecutor::CallbackHandle handle) {
-                };
+                auto onRemoteCmdScheduled = [](executor::TaskExecutor::CallbackHandle handle) {};
+                auto onRemoteCmdComplete = [](executor::TaskExecutor::CallbackHandle handle) {};
                 auto appendOplogNoteResponse = replCoord->runCmdOnPrimaryAndAwaitResponse(
                     opCtx,
-                    DatabaseName::kAdmin.toString(),
+                    NamespaceString::kAdminDb.toString(),
                     BSON("appendOplogNote"
                          << 1 << "maxClusterTime" << clusterTime.asTimestamp() << "data"
                          << BSON("noop write for afterClusterTime read concern" << 1)
@@ -285,7 +279,7 @@ void setPrepareConflictBehaviorForReadConcernImpl(OperationContext* opCtx,
 
 Status waitForReadConcernImpl(OperationContext* opCtx,
                               const repl::ReadConcernArgs& readConcernArgs,
-                              const DatabaseName& dbName,
+                              StringData dbName,
                               bool allowAfterClusterTime) {
     // If we are in a direct client within a transaction, then we may be holding locks, so it is
     // illegal to wait for read concern. This is fine, since the outer operation should have handled

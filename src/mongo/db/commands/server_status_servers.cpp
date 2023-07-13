@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/config.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/transport/message_compressor_registry.h"
@@ -39,6 +41,12 @@
 #include "mongo/util/net/ssl_manager.h"
 
 namespace mongo {
+
+using std::endl;
+using std::map;
+using std::string;
+using std::stringstream;
+
 namespace {
 
 // some universal sections
@@ -78,10 +86,10 @@ public:
         networkCounter.append(b);
         appendMessageCompressionStats(&b);
 
-        auto svcCtx = opCtx->getServiceContext();
         {
             BSONObjBuilder section = b.subobjStart("serviceExecutors");
 
+            auto svcCtx = opCtx->getServiceContext();
             if (auto executor = transport::ServiceExecutorSynchronous::get(svcCtx)) {
                 executor->appendStats(&section);
             }
@@ -94,8 +102,6 @@ public:
                 executor->appendStats(&section);
             }
         }
-        if (auto tl = svcCtx->getTransportLayer())
-            tl->appendStatsForServerStatus(&b);
 
         return b.obj();
     }
@@ -179,6 +185,6 @@ public:
         }
     }
 } advisoryHostFQDNs;
-
 }  // namespace
+
 }  // namespace mongo

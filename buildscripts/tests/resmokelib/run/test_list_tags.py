@@ -1,4 +1,5 @@
 """Unit tests for buildscripts/resmokelib/run/list_tags.py."""
+# pylint: disable=missing-docstring
 import unittest
 
 from buildscripts.resmokelib.run import list_tags

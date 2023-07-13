@@ -1,7 +1,8 @@
 /**
- * Tests whether $sum/$avg accumulator incorrect result bug is fixed on both engines.
+ * Tests whether $sum accumulator incorrect result bug is fixed on both engines under FCV 6.0.
  *
  * @tags: [
+ *  requires_fcv_60,
  *  requires_sharding,
  * ]
  */
@@ -25,8 +26,8 @@
         }
 
         // Turns on the classical engine.
-        assert.commandWorked(db.adminCommand(
-            {setParameter: 1, internalQueryFrameworkControl: "forceClassicEngine"}));
+        assert.commandWorked(
+            db.adminCommand({setParameter: 1, internalQueryForceClassicEngine: true}));
 
         const pipeline = [{$group: {_id: "$k", o: accSpec}}, {$group: {_id: "$o"}}];
 
@@ -74,14 +75,14 @@
         };
 
         // Turns on the classical engine.
-        assert.commandWorked(db.adminCommand(
-            {setParameter: 1, internalQueryFrameworkControl: "forceClassicEngine"}));
+        assert.commandWorked(
+            db.adminCommand({setParameter: 1, internalQueryForceClassicEngine: true}));
         const classicRes = assert.commandWorked(db.runCommand(aggCmd)).cursor.firstBatch;
         assert.eq(classicRes, expectedRes, testDesc);
 
         // Turns off the classical engine.
         assert.commandWorked(
-            db.adminCommand({setParameter: 1, internalQueryFrameworkControl: "tryBonsai"}));
+            db.adminCommand({setParameter: 1, internalQueryForceClassicEngine: false}));
         const sbeRes = assert.commandWorked(db.runCommand(aggCmd)).cursor.firstBatch;
         assert.eq(sbeRes, expectedRes, testDesc);
     };
@@ -99,9 +100,10 @@
         verifyOverTheWireDataFormatOnBothEngines(
             "Partial sum of an int", pipelineWithSum, [{_id: null, o: expectedPartialSum}]);
         verifyOverTheWireDataFormatOnBothEngines(
-            "Partial avg of an int",
-            pipelineWithAvg,
-            [{_id: null, o: {count: NumberLong(1), ps: expectedPartialSum}}]);
+            "Partial avg of an int", pipelineWithAvg, [{
+                _id: null,
+                o: {subTotal: 1.0, count: NumberLong(1), subTotalError: 0.0, ps: expectedPartialSum}
+            }]);
 
         assert.commandWorked(coll.insert({n: NumberLong(1)}));
         expectedPartialSum = [
@@ -113,9 +115,10 @@
                                                  pipelineWithSum,
                                                  [{_id: null, o: expectedPartialSum}]);
         verifyOverTheWireDataFormatOnBothEngines(
-            "Partial avg of an int and a long",
-            pipelineWithAvg,
-            [{_id: null, o: {count: NumberLong(2), ps: expectedPartialSum}}]);
+            "Partial avg of an int and a long", pipelineWithAvg, [{
+                _id: null,
+                o: {subTotal: 2.0, count: NumberLong(2), subTotalError: 0.0, ps: expectedPartialSum}
+            }]);
 
         assert.commandWorked(coll.insert({n: NumberLong("9223372036854775807")}));
         expectedPartialSum = [
@@ -127,9 +130,15 @@
                                                  pipelineWithSum,
                                                  [{_id: null, o: expectedPartialSum}]);
         verifyOverTheWireDataFormatOnBothEngines(
-            "Partial avg of an int/a long/the long max",
-            pipelineWithAvg,
-            [{_id: null, o: {count: NumberLong(3), ps: expectedPartialSum}}]);
+            "Partial avg of an int/a long/the long max", pipelineWithAvg, [{
+                _id: null,
+                o: {
+                    subTotal: 9223372036854775808.0,
+                    count: NumberLong(3),
+                    subTotalError: 1.0,
+                    ps: expectedPartialSum
+                }
+            }]);
 
         // A double can always expresses 15 digits precisely. So, 1.0 + 0.00000000000001 is
         // precisely expressed by the 'addend' element.
@@ -146,7 +155,15 @@
         verifyOverTheWireDataFormatOnBothEngines(
             "Partial avg of mixed data leading to a number that a double can't express",
             pipelineWithAvg,
-            [{_id: null, o: {count: NumberLong(4), ps: expectedPartialSum}}]);
+            [{
+                _id: null,
+                o: {
+                    subTotal: 9223372036854775808.0,
+                    count: NumberLong(4),
+                    subTotalError: 1.00000000000001,
+                    ps: expectedPartialSum
+                }
+            }]);
 
         assert.commandWorked(coll.insert({n: NumberDecimal("1.0")}));
         expectedPartialSum = [
@@ -159,9 +176,14 @@
                                                  pipelineWithSum,
                                                  [{_id: null, o: expectedPartialSum}]);
         verifyOverTheWireDataFormatOnBothEngines(
-            "Partial avg of mixed data which has a decimal",
-            pipelineWithAvg,
-            [{_id: null, o: {count: NumberLong(5), ps: expectedPartialSum}}]);
+            "Partial avg of mixed data which has a decimal", pipelineWithAvg, [{
+                _id: null,
+                o: {
+                    subTotal: NumberDecimal("9223372036854775810.000000000000010"),
+                    count: NumberLong(5),
+                    ps: expectedPartialSum
+                }
+            }]);
 
         assert(coll.drop());
 
@@ -174,9 +196,15 @@
         verifyOverTheWireDataFormatOnBothEngines(
             "Partial sum of two double max", pipelineWithSum, [{_id: null, o: expectedPartialSum}]);
         verifyOverTheWireDataFormatOnBothEngines(
-            "Partial avg of two double max",
-            pipelineWithAvg,
-            [{_id: null, o: {count: NumberLong(2), ps: expectedPartialSum}}]);
+            "Partial avg of two double max", pipelineWithAvg, [{
+                _id: null,
+                o: {
+                    subTotal: Infinity,
+                    count: NumberLong(2),
+                    subTotalError: NaN,
+                    ps: expectedPartialSum
+                }
+            }]);
 
         assert(coll.drop());
 
@@ -191,9 +219,10 @@
                                                  pipelineWithSum,
                                                  [{_id: null, o: expectedPartialSum}]);
         verifyOverTheWireDataFormatOnBothEngines(
-            "Partial avg of a decimal and a double",
-            pipelineWithAvg,
-            [{_id: null, o: {count: NumberLong(2), ps: expectedPartialSum}}]);
+            "Partial avg of a decimal and a double", pipelineWithAvg, [{
+                _id: null,
+                o: {subTotal: NumberDecimal("2.0"), count: NumberLong(2), ps: expectedPartialSum}
+            }]);
     }());
 
     MongoRunner.stopMongod(conn);
@@ -211,10 +240,10 @@
 
     let verifyShardedAccumulatorResultsOnBothEngine = (testDesc, coll, pipeline, expectedRes) => {
         // Turns to the classic engine at the shards.
-        assert.commandWorked(dbAtShard0.adminCommand(
-            {setParameter: 1, internalQueryFrameworkControl: "forceClassicEngine"}));
-        assert.commandWorked(dbAtShard1.adminCommand(
-            {setParameter: 1, internalQueryFrameworkControl: "forceClassicEngine"}));
+        assert.commandWorked(
+            dbAtShard0.adminCommand({setParameter: 1, internalQueryForceClassicEngine: true}));
+        assert.commandWorked(
+            dbAtShard1.adminCommand({setParameter: 1, internalQueryForceClassicEngine: true}));
 
         // Verifies that the classic engine's results are same as the expected results.
         const classicRes = coll.aggregate(pipeline).toArray();
@@ -222,9 +251,9 @@
 
         // Turns to the SBE engine at the shards.
         assert.commandWorked(
-            dbAtShard0.adminCommand({setParameter: 1, internalQueryFrameworkControl: "tryBonsai"}));
+            dbAtShard0.adminCommand({setParameter: 1, internalQueryForceClassicEngine: false}));
         assert.commandWorked(
-            dbAtShard1.adminCommand({setParameter: 1, internalQueryFrameworkControl: "tryBonsai"}));
+            dbAtShard1.adminCommand({setParameter: 1, internalQueryForceClassicEngine: false}));
 
         // Verifies that the SBE engine's results are same as the expected results.
         const sbeRes = coll.aggregate(pipeline).toArray();

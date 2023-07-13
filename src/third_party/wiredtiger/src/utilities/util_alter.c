@@ -15,9 +15,7 @@
 static int
 usage(void)
 {
-    static const char *options[] = {"-?", "show this message", NULL, NULL};
-
-    util_usage("alter uri configuration ...", "options:", options);
+    util_usage("alter uri configuration ...", NULL, NULL);
     return (1);
 }
 
@@ -32,11 +30,9 @@ util_alter(WT_SESSION *session, int argc, char *argv[])
     int ch;
     char **configp;
 
-    while ((ch = __wt_getopt(progname, argc, argv, "?")) != EOF)
+    while ((ch = __wt_getopt(progname, argc, argv, "")) != EOF)
         switch (ch) {
         case '?':
-            usage();
-            return (0);
         default:
             return (usage());
         }
@@ -45,7 +41,7 @@ util_alter(WT_SESSION *session, int argc, char *argv[])
     argv += __wt_optind;
 
     /* The remaining arguments are uri/string pairs. */
-    if (argc == 0 || argc % 2 != 0)
+    if (argc % 2 != 0)
         return (usage());
 
     for (configp = argv; *configp != NULL; configp += 2)

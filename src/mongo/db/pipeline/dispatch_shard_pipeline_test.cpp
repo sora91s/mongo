@@ -31,7 +31,6 @@
 #include "mongo/db/pipeline/sharded_agg_helpers.h"
 #include "mongo/s/query/sharded_agg_test_fixture.h"
 #include "mongo/s/router.h"
-#include "mongo/s/shard_version_factory.h"
 
 namespace mongo {
 namespace {
@@ -55,14 +54,10 @@ TEST_F(DispatchShardPipelineTest, DoesNotSplitPipelineIfTargetingOneShard) {
         AggregateCommandRequest(expCtx()->ns, stages));
     const bool hasChangeStream = false;
     const bool startsWithDocuments = false;
-    const bool eligibleForSampling = false;
 
     auto future = launchAsync([&] {
-        auto results = sharded_agg_helpers::dispatchShardPipeline(serializedCommand,
-                                                                  hasChangeStream,
-                                                                  startsWithDocuments,
-                                                                  eligibleForSampling,
-                                                                  std::move(pipeline));
+        auto results = sharded_agg_helpers::dispatchShardPipeline(
+            serializedCommand, hasChangeStream, startsWithDocuments, std::move(pipeline));
         ASSERT_EQ(results.remoteCursors.size(), 1UL);
         ASSERT(!results.splitPipeline);
     });
@@ -91,14 +86,10 @@ TEST_F(DispatchShardPipelineTest, DoesSplitPipelineIfMatchSpansTwoShards) {
         AggregateCommandRequest(expCtx()->ns, stages));
     const bool hasChangeStream = false;
     const bool startsWithDocuments = false;
-    const bool eligibleForSampling = false;
 
     auto future = launchAsync([&] {
-        auto results = sharded_agg_helpers::dispatchShardPipeline(serializedCommand,
-                                                                  hasChangeStream,
-                                                                  startsWithDocuments,
-                                                                  eligibleForSampling,
-                                                                  std::move(pipeline));
+        auto results = sharded_agg_helpers::dispatchShardPipeline(
+            serializedCommand, hasChangeStream, startsWithDocuments, std::move(pipeline));
         ASSERT_EQ(results.remoteCursors.size(), 2UL);
         ASSERT(bool(results.splitPipeline));
     });
@@ -130,14 +121,10 @@ TEST_F(DispatchShardPipelineTest, DispatchShardPipelineRetriesOnNetworkError) {
         AggregateCommandRequest(expCtx()->ns, stages));
     const bool hasChangeStream = false;
     const bool startsWithDocuments = false;
-    const bool eligibleForSampling = false;
     auto future = launchAsync([&] {
         // Shouldn't throw.
-        auto results = sharded_agg_helpers::dispatchShardPipeline(serializedCommand,
-                                                                  hasChangeStream,
-                                                                  startsWithDocuments,
-                                                                  eligibleForSampling,
-                                                                  std::move(pipeline));
+        auto results = sharded_agg_helpers::dispatchShardPipeline(
+            serializedCommand, hasChangeStream, startsWithDocuments, std::move(pipeline));
         ASSERT_EQ(results.remoteCursors.size(), 2UL);
         ASSERT(bool(results.splitPipeline));
     });
@@ -180,30 +167,24 @@ TEST_F(DispatchShardPipelineTest, DispatchShardPipelineDoesNotRetryOnStaleConfig
         AggregateCommandRequest(expCtx()->ns, stages));
     const bool hasChangeStream = false;
     const bool startsWithDocuments = false;
-    const bool eligibleForSampling = false;
 
     auto future = launchAsync([&] {
-        ASSERT_THROWS_CODE(sharded_agg_helpers::dispatchShardPipeline(serializedCommand,
-                                                                      hasChangeStream,
-                                                                      startsWithDocuments,
-                                                                      eligibleForSampling,
-                                                                      std::move(pipeline)),
-                           AssertionException,
-                           ErrorCodes::StaleConfig);
+        ASSERT_THROWS_CODE(
+            sharded_agg_helpers::dispatchShardPipeline(
+                serializedCommand, hasChangeStream, startsWithDocuments, std::move(pipeline)),
+            AssertionException,
+            ErrorCodes::StaleConfig);
     });
 
     // Mock out an error response.
     onCommand([&](const executor::RemoteCommandRequest& request) {
         OID epoch{OID::gen()};
         Timestamp timestamp{1, 0};
-        return createErrorCursorResponse(
-            {StaleConfigInfo(
-                 kTestAggregateNss,
-                 ShardVersionFactory::make(ChunkVersion({epoch, timestamp}, {1, 0}),
-                                           boost::optional<CollectionIndexes>(boost::none)),
-                 boost::none,
-                 ShardId{"0"}),
-             "Mock error: shard version mismatch"});
+        return createErrorCursorResponse({StaleConfigInfo(kTestAggregateNss,
+                                                          ChunkVersion(1, 0, epoch, timestamp),
+                                                          boost::none,
+                                                          ShardId{"0"}),
+                                          "Mock error: shard version mismatch"});
     });
     future.default_timed_get();
 }
@@ -223,20 +204,16 @@ TEST_F(DispatchShardPipelineTest, WrappedDispatchDoesRetryOnStaleConfigError) {
         AggregateCommandRequest(expCtx()->ns, stages));
     const bool hasChangeStream = false;
     const bool startsWithDocuments = false;
-    const bool eligibleForSampling = false;
     auto future = launchAsync([&] {
         // Shouldn't throw.
         sharding::router::CollectionRouter router(getServiceContext(), kTestAggregateNss);
-        auto results =
-            router.route(operationContext(),
-                         "dispatch shard pipeline"_sd,
-                         [&](OperationContext* opCtx, const CollectionRoutingInfo& cri) {
-                             return sharded_agg_helpers::dispatchShardPipeline(serializedCommand,
-                                                                               hasChangeStream,
-                                                                               startsWithDocuments,
-                                                                               eligibleForSampling,
-                                                                               pipeline->clone());
-                         });
+        auto results = router.route(
+            operationContext(),
+            "dispatch shard pipeline"_sd,
+            [&](OperationContext* opCtx, const ChunkManager& cm) {
+                return sharded_agg_helpers::dispatchShardPipeline(
+                    serializedCommand, hasChangeStream, startsWithDocuments, pipeline->clone());
+            });
         ASSERT_EQ(results.remoteCursors.size(), 1UL);
         ASSERT(!bool(results.splitPipeline));
     });
@@ -248,20 +225,17 @@ TEST_F(DispatchShardPipelineTest, WrappedDispatchDoesRetryOnStaleConfigError) {
     // Mock out one error response, then expect a refresh of the sharding catalog for that
     // namespace, then mock out a successful response.
     onCommand([&](const executor::RemoteCommandRequest& request) {
-        return createErrorCursorResponse(
-            {StaleConfigInfo(
-                 kTestAggregateNss,
-                 ShardVersionFactory::make(ChunkVersion({epoch, timestamp}, {2, 0}),
-                                           boost::optional<CollectionIndexes>(boost::none)),
-                 boost::none,
-                 ShardId{"0"}),
-             "Mock error: shard version mismatch"});
+        return createErrorCursorResponse({StaleConfigInfo(kTestAggregateNss,
+                                                          ChunkVersion(2, 0, epoch, timestamp),
+                                                          boost::none,
+                                                          ShardId{"0"}),
+                                          "Mock error: shard version mismatch"});
     });
 
     // Mock the expected config server queries.
     const ShardKeyPattern shardKeyPattern(BSON("_id" << 1));
 
-    ChunkVersion version({epoch, timestamp}, {2, 0});
+    ChunkVersion version(2, 0, epoch, timestamp);
 
     ChunkType chunk1(
         uuid, {shardKeyPattern.getKeyPattern().globalMin(), BSON("_id" << 0)}, version, {"0"});
@@ -275,9 +249,6 @@ TEST_F(DispatchShardPipelineTest, WrappedDispatchDoesRetryOnStaleConfigError) {
 
     expectCollectionAndChunksAggregation(
         kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, {chunk1, chunk2});
-
-    expectCollectionAndIndexesAggregation(
-        kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, boost::none, {});
 
     // That error should be retried, but only the one on that shard.
     onCommand([&](const executor::RemoteCommandRequest& request) {

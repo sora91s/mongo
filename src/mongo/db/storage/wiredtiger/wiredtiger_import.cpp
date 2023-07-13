@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTenantMigration
 
 #include "wiredtiger_import.h"
 
@@ -37,31 +38,19 @@
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/db/repl/tenant_migration_access_blocker_util.h"
 #include "mongo/db/storage/bson_collection_catalog_entry.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
 #include "mongo/logv2/log.h"
-#include "mongo/util/database_name_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTenantMigration
-
 
 namespace mongo {
 
 using namespace fmt::literals;
 
 namespace {
-bool shouldImport(const NamespaceString& ns, const UUID& migrationId) {
-    const auto tenantId =
-        tenant_migration_access_blocker::parseTenantIdFromDatabaseName(ns.dbName());
-
-    // TODO SERVER-62491: Update this code path to handle TenantId::kSystemTenantId for internal
-    // collections.
-    tenant_migration_access_blocker::validateNssIsBeingMigrated(tenantId, ns, migrationId);
-
-    return !!tenantId;
+bool shouldImport(NamespaceString ns) {
+    return !(ns.isLocal() || ns.isAdminDB() || ns.isConfigDB());
 }
 
 // catalogEntry is like {idxIdent: {myIndex: "index-12-345", myOtherIndex: "index-67-890"}}.
@@ -120,11 +109,11 @@ class CountsChange : public RecoveryUnit::Change {
 public:
     CountsChange(WiredTigerRecordStore* rs, long long numRecords, long long dataSize)
         : _rs(rs), _numRecords(numRecords), _dataSize(dataSize) {}
-    void commit(OperationContext* opCtx, boost::optional<Timestamp>) {
+    void commit(boost::optional<Timestamp>) {
         _rs->setNumRecords(_numRecords);
         _rs->setDataSize(_dataSize);
     }
-    void rollback(OperationContext* opCtx) {}
+    void rollback() {}
 
 private:
     WiredTigerRecordStore* _rs;
@@ -134,7 +123,7 @@ private:
 }  // namespace
 
 std::vector<CollectionImportMetadata> wiredTigerRollbackToStableAndGetMetadata(
-    OperationContext* opCtx, const std::string& importPath, const UUID& migrationId) {
+    OperationContext* opCtx, const std::string& importPath) {
     LOGV2_DEBUG(6113400, 1, "Opening donor WiredTiger database", "importPath"_attr = importPath);
     WT_CONNECTION* conn;
     // WT converts the imported WiredTiger.backup file to a fresh WiredTiger.wt file, rolls back to
@@ -183,9 +172,8 @@ std::vector<CollectionImportMetadata> wiredTigerRollbackToStableAndGetMetadata(
         WT_ITEM catalogValue;
         uassertWTOK(mdbCatalogCursor->get_value(mdbCatalogCursor, &catalogValue), session);
         BSONObj rawCatalogEntry(static_cast<const char*>(catalogValue.data));
-        NamespaceString ns(NamespaceString::parseFromStringExpectTenantIdInMultitenancyMode(
-            rawCatalogEntry.getStringField("ns")));
-        if (!shouldImport(ns, migrationId)) {
+        NamespaceString ns{rawCatalogEntry["ns"].String()};
+        if (!shouldImport(ns)) {
             LOGV2_DEBUG(6113801, 1, "Not importing donor collection", "ns"_attr = ns);
             continue;
         }
@@ -195,9 +183,9 @@ std::vector<CollectionImportMetadata> wiredTigerRollbackToStableAndGetMetadata(
         catalogEntry.parse(rawCatalogEntry["md"].Obj());
         CollectionImportMetadata collectionMetadata;
         collectionMetadata.catalogObject = rawCatalogEntry.getOwned();
-        collectionMetadata.collection.ident = collIdent;
-        collectionMetadata.collection.tableMetadata = getTableWTMetadata(session, collIdent);
-        collectionMetadata.collection.fileMetadata = getFileWTMetadata(session, collIdent);
+        collectionMetadata.importArgs.ident = collIdent;
+        collectionMetadata.importArgs.tableMetadata = getTableWTMetadata(session, collIdent);
+        collectionMetadata.importArgs.fileMetadata = getFileWTMetadata(session, collIdent);
         collectionMetadata.ns = ns;
         auto sizeInfo = getSizeInfo(ns, collIdent, sizeStorerCursor);
         collectionMetadata.numRecords = sizeInfo.numRecords;
@@ -206,9 +194,8 @@ std::vector<CollectionImportMetadata> wiredTigerRollbackToStableAndGetMetadata(
                     1,
                     "Recorded collection metadata",
                     "ns"_attr = ns,
-                    "ident"_attr = collectionMetadata.collection.ident,
-                    "tableMetadata"_attr = collectionMetadata.collection.tableMetadata,
-                    "fileMetadata"_attr = collectionMetadata.collection.fileMetadata);
+                    "tableMetadata"_attr = collectionMetadata.importArgs.tableMetadata,
+                    "fileMetadata"_attr = collectionMetadata.importArgs.fileMetadata);
 
         // Like: {"_id_": "/path/to/index-12-345.wt", "a_1": "/path/to/index-67-890.wt"}.
         BSONObjBuilder indexFilesBob;
@@ -224,11 +211,9 @@ std::vector<CollectionImportMetadata> wiredTigerRollbackToStableAndGetMetadata(
                                                                         ns.ns()),
                     index.ready);
 
-            WTIndexImportArgs indexImportArgs;
-            auto indexName = index.nameStringData();
+            WTimportArgs indexImportArgs;
             // Ident is like "index-12-345".
-            auto indexIdent = indexNameToIdent[indexName];
-            indexImportArgs.indexName = indexName.toString();
+            auto indexIdent = indexNameToIdent[index.nameStringData()];
             indexImportArgs.ident = indexIdent;
             indexImportArgs.tableMetadata = getTableWTMetadata(session, indexIdent);
             indexImportArgs.fileMetadata = getFileWTMetadata(session, indexIdent);
@@ -237,8 +222,6 @@ std::vector<CollectionImportMetadata> wiredTigerRollbackToStableAndGetMetadata(
                         1,
                         "recorded index metadata",
                         "ns"_attr = ns,
-                        "indexName"_attr = indexImportArgs.indexName,
-                        "indexIdent"_attr = indexImportArgs.ident,
                         "tableMetadata"_attr = indexImportArgs.tableMetadata,
                         "fileMetadata"_attr = indexImportArgs.fileMetadata);
         }

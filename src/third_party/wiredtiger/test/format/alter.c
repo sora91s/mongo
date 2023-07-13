@@ -35,17 +35,15 @@
 WT_THREAD_RET
 alter(void *arg)
 {
-    SAP sap;
     TABLE *table;
     WT_CONNECTION *conn;
     WT_DECL_RET;
     WT_SESSION *session;
-    u_int counter, period;
+    u_int period;
     char buf[32];
     bool access_value;
 
     (void)(arg);
-
     conn = g.wts_conn;
 
     /*
@@ -55,30 +53,25 @@ alter(void *arg)
     access_value = false;
 
     /* Open a session */
-    memset(&sap, 0, sizeof(sap));
-    wt_wrap_open_session(conn, &sap, NULL, &session);
-    counter = 0;
+    testutil_check(conn->open_session(conn, NULL, NULL, &session));
 
     while (!g.workers_finished) {
-        period = mmrand(&g.extra_rnd, 1, 10);
+        period = mmrand(NULL, 1, 10);
 
         testutil_check(__wt_snprintf(
           buf, sizeof(buf), "access_pattern_hint=%s", access_value ? "random" : "none"));
         access_value = !access_value;
 
         /* Alter can return EBUSY if concurrent with other operations. */
-        table = table_select(NULL, false);
-        trace_msg(session, "Alter #%u URI %s start %s", ++counter, table->uri, buf);
-
+        table = table_select(NULL);
         while ((ret = session->alter(session, table->uri, buf)) != 0 && ret != EBUSY)
             testutil_die(ret, "session.alter");
-        trace_msg(session, "Alter #%u URI %s stop", counter, table->uri);
         while (period > 0 && !g.workers_finished) {
             --period;
             __wt_sleep(1, 0);
         }
     }
 
-    wt_wrap_close_session(session);
+    testutil_check(session->close(session, NULL));
     return (WT_THREAD_RET_VALUE);
 }

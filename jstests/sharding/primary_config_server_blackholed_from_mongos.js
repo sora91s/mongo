@@ -9,9 +9,8 @@ load('jstests/replsets/rslib.js');
 // the mongos in this test.
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
-var st = new ShardingTest({shards: 2, mongos: 1, useBridge: true, config: 3});
+var st = new ShardingTest({shards: 2, mongos: 1, useBridge: true});
 
 var testDB = st.s.getDB('BlackHoleDB');
 var configDB = st.s.getDB('config');
@@ -83,10 +82,6 @@ st.s.setReadPref('secondary');
 assert.lt(0, configDB.chunks.find().itcount());
 assert.lt(0, configDB.chunks.find().count());
 assert.lt(0, configDB.chunks.aggregate().itcount());
-
-jsTest.log('Remove network partition before tearing down');
-configPrimary.discardMessagesFrom(st.s, 0.0);
-st.s.discardMessagesFrom(configPrimary, 0.0);
 
 st.stop();
 }());

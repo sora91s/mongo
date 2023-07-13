@@ -27,13 +27,16 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/s/chunk_manager.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+
 namespace {
 
-const NamespaceString kNss = NamespaceString::createNamespaceString_forTest("TestDB", "TestColl");
+const NamespaceString kNss("TestDB", "TestColl");
 const ShardId kThisShard("testShard");
 
 class ChunkMapTest : public unittest::Test {
@@ -55,7 +58,7 @@ private:
 
 TEST_F(ChunkMapTest, TestAddChunk) {
     const OID epoch = OID::gen();
-    ChunkVersion version({epoch, Timestamp(1, 1)}, {1, 0});
+    ChunkVersion version{1, 0, epoch, Timestamp(1, 1)};
 
     auto chunk = std::make_shared<ChunkInfo>(
         ChunkType{uuid(),
@@ -72,7 +75,7 @@ TEST_F(ChunkMapTest, TestAddChunk) {
 TEST_F(ChunkMapTest, TestEnumerateAllChunks) {
     const OID epoch = OID::gen();
     ChunkMap chunkMap{epoch, Timestamp(1, 1)};
-    ChunkVersion version({epoch, Timestamp(1, 1)}, {1, 0});
+    ChunkVersion version{1, 0, epoch, Timestamp(1, 1)};
 
     auto newChunkMap = chunkMap.createMerged(
         {std::make_shared<ChunkInfo>(
@@ -107,7 +110,7 @@ TEST_F(ChunkMapTest, TestEnumerateAllChunks) {
 TEST_F(ChunkMapTest, TestIntersectingChunk) {
     const OID epoch = OID::gen();
     ChunkMap chunkMap{epoch, Timestamp(1, 1)};
-    ChunkVersion version({epoch, Timestamp(1, 1)}, {1, 0});
+    ChunkVersion version{1, 0, epoch, Timestamp(1, 1)};
 
     auto newChunkMap = chunkMap.createMerged(
         {std::make_shared<ChunkInfo>(
@@ -137,7 +140,7 @@ TEST_F(ChunkMapTest, TestIntersectingChunk) {
 TEST_F(ChunkMapTest, TestEnumerateOverlappingChunks) {
     const OID epoch = OID::gen();
     ChunkMap chunkMap{epoch, Timestamp(1, 1)};
-    ChunkVersion version({epoch, Timestamp(1, 1)}, {1, 0});
+    ChunkVersion version{1, 0, epoch, Timestamp(1, 1)};
 
     auto newChunkMap = chunkMap.createMerged(
         {std::make_shared<ChunkInfo>(

@@ -37,13 +37,13 @@ namespace mongo {
 
 class ServerParameterService {
 public:
-    virtual ServerParameter* get(StringData parameterName) = 0;
+    virtual const ServerParameter* getIfExists(StringData parameterName) = 0;
     virtual ~ServerParameterService() = default;
 };
 
 class ClusterParameterService final : public ServerParameterService {
 public:
-    ServerParameter* get(StringData parameterName) override;
+    const ServerParameter* getIfExists(StringData parameterName) override;
 };
 
 class DBClientService {
@@ -51,8 +51,7 @@ public:
     virtual StatusWith<bool> updateParameterOnDisk(OperationContext* opCtx,
                                                    BSONObj query,
                                                    BSONObj update,
-                                                   const WriteConcernOptions&,
-                                                   const boost::optional<TenantId>&) = 0;
+                                                   const WriteConcernOptions&) = 0;
     virtual Timestamp getUpdateClusterTime(OperationContext*) = 0;
     virtual ~DBClientService() = default;
 };
@@ -63,8 +62,7 @@ public:
     StatusWith<bool> updateParameterOnDisk(OperationContext* opCtx,
                                            BSONObj query,
                                            BSONObj update,
-                                           const WriteConcernOptions&,
-                                           const boost::optional<TenantId>&) override;
+                                           const WriteConcernOptions&) override;
     Timestamp getUpdateClusterTime(OperationContext*) override;
 
 private:
@@ -73,24 +71,14 @@ private:
 
 class SetClusterParameterInvocation {
 public:
-    SetClusterParameterInvocation(std::unique_ptr<ServerParameterService> serverParameterService,
+    SetClusterParameterInvocation(std::unique_ptr<ServerParameterService> serverParmeterService,
                                   DBClientService& dbClientService)
-        : _sps(std::move(serverParameterService)), _dbService(dbClientService) {}
+        : _sps(std::move(serverParmeterService)), _dbService(dbClientService) {}
 
     bool invoke(OperationContext*,
                 const SetClusterParameter&,
                 boost::optional<Timestamp>,
                 const WriteConcernOptions&);
-
-    // Validate new parameter passed to setClusterParameter and generate the query and update fields
-    // for the on-disk update.
-    std::pair<BSONObj, BSONObj> normalizeParameter(OperationContext* opCtx,
-                                                   BSONObj cmdParamObj,
-                                                   const boost::optional<Timestamp>& paramTime,
-                                                   ServerParameter* sp,
-                                                   StringData parameterName,
-                                                   const boost::optional<TenantId>& tenantId,
-                                                   bool skipValidation);
 
 private:
     std::unique_ptr<ServerParameterService> _sps;

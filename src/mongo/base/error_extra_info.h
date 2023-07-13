@@ -38,6 +38,8 @@
 
 namespace mongo {
 
+void initMyErrorExtraInfo();
+
 class BSONObj;
 class BSONObjBuilder;
 

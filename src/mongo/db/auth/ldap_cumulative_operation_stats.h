@@ -40,6 +40,8 @@
 
 namespace mongo {
 
+void initMyLDAPCumulativeOperationStats();
+
 class LDAPOperationStats;
 
 /**

@@ -8,9 +8,10 @@ const conn = MongoRunner.runMongod();
 assert.neq(null, conn, "mongod was unable to start up");
 const testDB = conn.getDB("jstests_plan_cache_list_failed_plans");
 const coll = testDB.test;
+const isSBEEnabled = checkSBEEnabled(testDB, ["featureFlagSbeFull"]);
 
-if (checkSBEEnabled(testDB)) {
-    jsTest.log("Skipping test because SBE is enabled");
+if (checkSBEEnabled(testDB, ["featureFlagSbePlanCache", "featureFlagSbeFull"])) {
+    jsTest.log("Skipping test because SBE and SBE plan cache are both enabled.");
     MongoRunner.stopMongod(conn);
     return;
 }
@@ -43,7 +44,12 @@ const creationExecStats = planCacheEntry.creationExecStats;
 assert.eq(creationExecStats.length, 2, planCacheEntry);
 // We expect that the first plan succeed, and the second failed.
 assert(!creationExecStats[0].hasOwnProperty("failed"), planCacheEntry);
-assert.eq(creationExecStats[1].failed, true, planCacheEntry);
+// SBE will not report the 'failed' field.
+if (isSBEEnabled) {
+    assert(!creationExecStats[1].hasOwnProperty("failed"), planCacheEntry);
+} else {
+    assert.eq(creationExecStats[1].failed, true, planCacheEntry);
+}
 
 // The failing plan should have a score of 0.
 const candidatePlanScores = planCacheEntry.candidatePlanScores;

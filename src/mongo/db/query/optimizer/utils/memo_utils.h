@@ -37,6 +37,9 @@
 
 namespace mongo::optimizer {
 
+ABT wrapConstFilter(ABT node);
+ABT unwrapConstFilter(ABT node);
+
 template <class ToAddType, class ToRemoveType>
 static void addRemoveProjectionsToProperties(properties::PhysProps& properties,
                                              const ToAddType& toAdd,
@@ -62,17 +65,11 @@ static void addProjectionsToProperties(properties::PhysProps& properties, const 
  */
 ABT extractLatestPlan(const cascades::Memo& memo, GroupIdType rootGroupId);
 
-using PlanExtractorResult = std::vector<PlanAndProps>;
-
 /**
- * Extracts complete physical plans by inlining references to MemoPhysicalPlanNode. If the flag
- * "includeRejected" is true, it extracts ALL possible plans from the memo, including the rejected
- * ones (if they are retained).
+ * Extracts a complete physical plan by inlining references to MemoPhysicalPlanNode.
  */
-PlanExtractorResult extractPhysicalPlans(bool includeRejected,
-                                         MemoPhysicalNodeId id,
-                                         const Metadata& metadata,
-                                         const RIDProjectionsMap& ridProjections,
-                                         const cascades::Memo& memo);
+std::pair<ABT, NodeToGroupPropsMap> extractPhysicalPlan(MemoPhysicalNodeId id,
+                                                        const Metadata& metadata,
+                                                        const cascades::Memo& memo);
 
 }  // namespace mongo::optimizer

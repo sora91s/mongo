@@ -2,7 +2,7 @@
  * Test which verifies that $out/$merge aggregations with secondary read preference which write
  * over 16 MB work as expected (especially with respect to producing correctly sized write batches).
  *
- * @tags: [uses_$out, assumes_read_preference_unchanged]
+ * @tags: [uses_$out, assumes_read_preference_unchanged, requires_replication]
  */
 (function() {
 const dbName = "db";

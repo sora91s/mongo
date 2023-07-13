@@ -40,9 +40,13 @@
 namespace mongo {
 
 /**
- * Struct containing basic stats about a collection useful for query planning.
+ * Struct containing information about secondary collections (such as the 'from' collection in
+ * $lookup) useful for query planning.
  */
-struct CollectionStats {
+struct SecondaryCollectionInfo {
+    std::vector<IndexEntry> indexes{};
+    bool exists{true};
+
     // The number of records in the collection.
     long long noOfRecords{0};
 
@@ -51,17 +55,6 @@ struct CollectionStats {
 
     // The allocated storage size in bytes.
     long long storageSizeBytes{0};
-};
-
-/**
- * Struct containing information about secondary collections (such as the 'from' collection in
- * $lookup) useful for query planning.
- */
-struct SecondaryCollectionInfo {
-    std::vector<IndexEntry> indexes{};
-    std::vector<ColumnIndexEntry> columnIndexes{};
-    bool exists{true};
-    CollectionStats stats{};
 };
 
 
@@ -84,8 +77,7 @@ struct QueryPlannerParams {
         : options(options),
           indexFiltersApplied(false),
           maxIndexedSolutions(internalQueryPlannerMaxIndexedSolutions.load()),
-          clusteredCollectionCollator(nullptr),
-          availableMemoryBytes(0) {}
+          clusteredCollectionCollator(nullptr) {}
 
     enum Options {
         // You probably want to set this.
@@ -112,24 +104,34 @@ struct QueryPlannerParams {
         // Set this if you want to turn on index intersection.
         INDEX_INTERSECTION = 1 << 3,
 
-        // Set this to generate covered whole IXSCAN plans.
-        GENERATE_COVERED_IXSCANS = 1 << 4,
+        // Indicate to the planner that this query could be eligible for count optimization. For
+        // example, the query {$group: {_id: null, sum: {$sum: 1}}} is a count-like operation and
+        // could be eligible for the COUNT_SCAN.
+        IS_COUNT = 1 << 4,
 
-        // Set this to track the most recent timestamp seen by this cursor while scanning the
-        // oplog or change collection.
-        TRACK_LATEST_OPLOG_TS = 1 << 5,
+        // Set this to generate covered whole IXSCAN plans.
+        GENERATE_COVERED_IXSCANS = 1 << 5,
+
+        // Set this to track the most recent timestamp seen by this cursor while scanning the oplog.
+        TRACK_LATEST_OPLOG_TS = 1 << 6,
 
         // Set this so that collection scans on the oplog wait for visibility before reading.
-        OPLOG_SCAN_WAIT_FOR_VISIBLE = 1 << 6,
+        OPLOG_SCAN_WAIT_FOR_VISIBLE = 1 << 7,
 
         // Set this so that getExecutorDistinct() will only use a plan that _guarantees_ it will
         // return exactly one document per value of the distinct field. See the comments above the
         // declaration of getExecutorDistinct() for more detail.
-        STRICT_DISTINCT_ONLY = 1 << 7,
+        STRICT_DISTINCT_ONLY = 1 << 8,
+
+        // Instruct the planner that the caller is expecting to consume the record ids associated
+        // with documents returned by the plan. Any generated query solution must not discard record
+        // ids. In some cases, record ids can be discarded as an optimization when they will not be
+        // consumed downstream.
+        PRESERVE_RECORD_ID = 1 << 9,
 
         // Set this on an oplog scan to uassert that the oplog has not already rolled over the
         // minimum 'ts' timestamp specified in the query.
-        ASSERT_MIN_TS_HAS_NOT_FALLEN_OFF_OPLOG = 1 << 8,
+        ASSERT_MIN_TS_HAS_NOT_FALLEN_OFF_OPLOG = 1 << 10,
 
         // Instruct the plan enumerator to enumerate contained $ors in a special order. $or
         // enumeration can generate an exponential number of plans, and is therefore limited at some
@@ -146,16 +148,11 @@ struct QueryPlannerParams {
         // order, we would get assignments [a_b, a_b], [a_c, a_c], [a_c, a_b], then [a_b, a_c]. This
         // is thought to be helpful in general, but particularly in cases where all children of the
         // $or use the same fields and have the same indexes available, as in this example.
-        ENUMERATE_OR_CHILDREN_LOCKSTEP = 1 << 9,
+        ENUMERATE_OR_CHILDREN_LOCKSTEP = 1 << 11,
 
         // Ensure that any plan generated returns data that is "owned." That is, all BSONObjs are
         // in an "owned" state and are not pointing to data that belongs to the storage engine.
-        RETURN_OWNED_DATA = 1 << 10,
-
-        // When generating column scan queries, splits match expressions so that the filters can be
-        // applied per-column. This is off by default, since the execution side doesn't support it
-        // yet.
-        GENERATE_PER_COLUMN_FILTERS = 1 << 11,
+        RETURN_OWNED_DATA = 1 << 12,
     };
 
     // See Options enum above.
@@ -165,10 +162,7 @@ struct QueryPlannerParams {
     std::vector<IndexEntry> indices;
 
     // Columnar indexes available.
-    std::vector<ColumnIndexEntry> columnStoreIndexes;
-
-    // Basic collection stats for the main collection.
-    CollectionStats collectionStats;
+    std::vector<ColumnIndexEntry> columnarIndexes;
 
     // What's our shard key?  If INCLUDE_SHARD_FILTER is set we will create a shard filtering
     // stage.  If we know the shard key, we can perform covering analysis instead of always
@@ -195,9 +189,6 @@ struct QueryPlannerParams {
     std::map<NamespaceString, SecondaryCollectionInfo> secondaryCollectionsInfo;
 
     boost::optional<TraversalPreference> traversalPreference = boost::none;
-
-    // Size of available memory in bytes.
-    long long availableMemoryBytes;
 };
 
 }  // namespace mongo

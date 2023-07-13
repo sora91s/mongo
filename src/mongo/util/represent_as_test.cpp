@@ -47,9 +47,7 @@ namespace {
 using namespace fmt::literals;
 
 // Char values
-const char kCharMax = std::numeric_limits<char>::max();
-const signed char kSCharMax = std::numeric_limits<signed char>::max();
-const int kSCharMaxAsInt = kSCharMax;
+const signed char kCharMax = std::numeric_limits<signed char>::max();
 const int kCharMaxAsInt = kCharMax;
 
 // Unsigned char values
@@ -432,11 +430,8 @@ TEST(RepresentAs, DoubleToDecimal128) {
 
 TEST(RepresentAs, PlatformDependent) {
     // signed char
-    ASSERT(*(representAs<int>(kSCharMax)) == kSCharMaxAsInt);
-    ASSERT(!(representAs<signed char>(kIntMax)));
-
-    // unspecified/bare char
     ASSERT(*(representAs<int>(kCharMax)) == kCharMaxAsInt);
+    ASSERT(!(representAs<signed char>(kIntMax)));
 
     // unsigned char
     ASSERT(*(representAs<int>(kUCharMax)) == kUCharMaxAsInt);

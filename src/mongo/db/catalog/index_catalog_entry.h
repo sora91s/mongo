@@ -44,7 +44,6 @@
 #include "mongo/util/debug_util.h"
 
 namespace mongo {
-
 class CollatorInterface;
 class Collection;
 class CollectionPtr;
@@ -56,7 +55,6 @@ class IndexBuildInterceptor;
 class IndexDescriptor;
 class MatchExpression;
 class OperationContext;
-class UpdateIndexData;
 
 class IndexCatalogEntry : public std::enable_shared_from_this<IndexCatalogEntry> {
 public:
@@ -66,17 +64,16 @@ public:
     inline IndexCatalogEntry(IndexCatalogEntry&&) = delete;
     inline IndexCatalogEntry& operator=(IndexCatalogEntry&&) = delete;
 
+    virtual void init(std::unique_ptr<IndexAccessMethod> accessMethod) = 0;
+
     virtual const std::string& getIdent() const = 0;
     virtual std::shared_ptr<Ident> getSharedIdent() const = 0;
-    virtual void setIdent(std::shared_ptr<Ident> newIdent) = 0;
 
     virtual IndexDescriptor* descriptor() = 0;
 
     virtual const IndexDescriptor* descriptor() const = 0;
 
     virtual IndexAccessMethod* accessMethod() const = 0;
-
-    virtual void setAccessMethod(std::unique_ptr<IndexAccessMethod> accessMethod) = 0;
 
     virtual bool isHybridBuilding() const = 0;
 
@@ -98,7 +95,6 @@ public:
     /// ---------------------
 
     virtual void setIsReady(bool newIsReady) = 0;
-    virtual void setIsFrozen(bool newIsFrozen) = 0;
 
     virtual void setDropped() = 0;
     virtual bool isDropped() const = 0;
@@ -192,8 +188,6 @@ public:
     virtual boost::optional<Timestamp> getMinimumVisibleSnapshot() const = 0;
 
     virtual void setMinimumVisibleSnapshot(Timestamp name) = 0;
-
-    virtual const UpdateIndexData& getIndexedPaths() const = 0;
 };
 
 class IndexCatalogEntryContainer {

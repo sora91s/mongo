@@ -41,9 +41,10 @@
 
 namespace mongo {
 
-APIParametersFromClient initializeAPIParameters(const BSONObj& requestBody, Command* command) {
+const APIParametersFromClient initializeAPIParameters(const BSONObj& requestBody,
+                                                      Command* command) {
     auto apiParamsFromClient =
-        APIParametersFromClient::parse(IDLParserContext{"APIParametersFromClient"}, requestBody);
+        APIParametersFromClient::parse("APIParametersFromClient"_sd, requestBody);
 
     if (command->skipApiVersionCheck()) {
         return apiParamsFromClient;

@@ -46,7 +46,7 @@ assert.soon(() => isConfigCommitted(primary));
 // Subsequent reconfig should now succeed.
 config.version++;
 assert.commandWorked(primary.getDB("admin").runCommand({replSetReconfig: config}));
-assert.soon(() => isConfigCommitted(primary));
+assert(isConfigCommitted(primary));
 
 replTest.stopSet();
 }());

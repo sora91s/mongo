@@ -33,7 +33,7 @@
 # are part of the package. To create the distribution, in this directory, run
 # "python setup_pip.py sdist", this creates a tar.gz file under ./dist .
 from __future__ import print_function
-import os, os.path, re, shutil, sys
+import os, os.path, re, shutil, site, sys
 from setuptools import setup, Distribution, Extension
 import distutils.sysconfig
 import distutils.ccompiler

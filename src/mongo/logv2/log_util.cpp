@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT mongo::logv2::LogComponent::kControl
 
 #include "mongo/logv2/log_util.h"
 
@@ -36,9 +37,6 @@
 
 #include <string>
 #include <vector>
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT mongo::logv2::LogComponent::kControl
-
 
 namespace mongo::logv2 {
 
@@ -70,7 +68,7 @@ Status rotateLogs(bool renameFiles,
     LOGV2(23166, "Log rotation initiated", "suffix"_attr = suffix, "logType"_attr = logType);
 
     if (logType) {
-        auto it = logRotateCallbacks.find(logType.value());
+        auto it = logRotateCallbacks.find(logType.get());
         if (it == logRotateCallbacks.end()) {
             LOGV2_WARNING(6221500, "Unknown log type for rotate", "logType"_attr = logType);
             return Status(ErrorCodes::NoSuchKey, "Unknown log type for rotate");

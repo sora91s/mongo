@@ -101,7 +101,7 @@ Status createIndex(OperationContext* opCtx, StringData ns, const BSONObj& keys, 
 
 Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj& spec) {
     NamespaceString nss(ns);
-    AutoGetDb autoDb(opCtx, nss.dbName(), MODE_IX);
+    AutoGetDb autoDb(opCtx, nsToDatabaseSubstring(ns), MODE_IX);
     {
         Lock::CollectionLock collLock(opCtx, nss, MODE_X);
         WriteUnitOfWork wunit(opCtx);
@@ -116,9 +116,9 @@ Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj
         wunit.commit();
     }
     MultiIndexBlock indexer;
+    CollectionWriter collection(opCtx, nss);
     ScopeGuard abortOnExit([&] {
         Lock::CollectionLock collLock(opCtx, nss, MODE_X);
-        CollectionWriter collection(opCtx, nss);
         WriteUnitOfWork wunit(opCtx);
         indexer.abortIndexBuild(opCtx, collection, MultiIndexBlock::kNoopOnCleanUpFn);
         wunit.commit();
@@ -126,7 +126,6 @@ Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj
     auto status = Status::OK();
     {
         Lock::CollectionLock collLock(opCtx, nss, MODE_X);
-        CollectionWriter collection(opCtx, nss);
         status = indexer
                      .init(opCtx,
                            collection,
@@ -147,8 +146,6 @@ Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj
     }
     {
         Lock::CollectionLock collLock(opCtx, nss, MODE_IX);
-        // Using CollectionWriter for convenience here.
-        CollectionWriter collection(opCtx, nss);
         status = indexer.insertAllDocumentsInCollection(opCtx, collection.get());
         if (!status.isOK()) {
             return status;
@@ -156,7 +153,6 @@ Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj
     }
     {
         Lock::CollectionLock collLock(opCtx, nss, MODE_X);
-        CollectionWriter collection(opCtx, nss);
         status = indexer.retrySkippedRecords(opCtx, collection.get());
         if (!status.isOK()) {
             return status;
@@ -168,7 +164,7 @@ Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj
         }
         WriteUnitOfWork wunit(opCtx);
         ASSERT_OK(indexer.commit(opCtx,
-                                 collection.getWritableCollection(opCtx),
+                                 collection.getWritableCollection(),
                                  MultiIndexBlock::kNoopOnCreateEachFn,
                                  MultiIndexBlock::kNoopOnCommitFn));
         ASSERT_OK(opCtx->recoveryUnit()->setTimestamp(Timestamp(1, 1)));
@@ -186,7 +182,7 @@ WriteContextForTests::WriteContextForTests(OperationContext* opCtx, StringData n
 
     const bool doShardVersionCheck = false;
 
-    _clientContext.emplace(opCtx, _nss, doShardVersionCheck);
+    _clientContext.emplace(opCtx, _nss.ns(), doShardVersionCheck);
     auto db = _autoDb->ensureDbExists(opCtx);
     invariant(db, _nss.ns());
     invariant(db == _clientContext->db());

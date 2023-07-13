@@ -40,7 +40,7 @@ namespace mongo {
 constexpr StringData InternalSchemaEqMatchExpression::kName;
 
 InternalSchemaEqMatchExpression::InternalSchemaEqMatchExpression(
-    boost::optional<StringData> path, BSONElement rhs, clonable_ptr<ErrorAnnotation> annotation)
+    StringData path, BSONElement rhs, clonable_ptr<ErrorAnnotation> annotation)
     : LeafMatchExpression(MatchType::INTERNAL_SCHEMA_EQ,
                           path,
                           ElementPath::LeafArrayBehavior::kNoTraversal,
@@ -69,9 +69,7 @@ void InternalSchemaEqMatchExpression::debugString(StringBuilder& debug,
     debug << "\n";
 }
 
-BSONObj InternalSchemaEqMatchExpression::getSerializedRightHandSide(
-    SerializationOptions opts) const {
-    // TODO SERVER-73678 respect 'replacementForLiteralArgs.'
+BSONObj InternalSchemaEqMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder eqObj;
     eqObj.appendAs(_rhsElem, kName);
     return eqObj.obj();

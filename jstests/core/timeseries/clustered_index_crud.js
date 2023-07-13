@@ -3,6 +3,8 @@
  *
  * @tags: [
  *   does_not_support_stepdowns,
+ *   requires_fcv_51,
+ *   requires_wiredtiger,
  * ]
  */
 

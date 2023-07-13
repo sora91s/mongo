@@ -32,6 +32,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/query/collation/collation_spec.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
@@ -39,6 +40,10 @@
 
 namespace mongo {
 namespace {
+
+using std::string;
+using std::stringstream;
+using std::vector;
 
 /**
  * Mongos implementation of the 'planCacheClear' command. Forwards the command to one node in each
@@ -64,15 +69,15 @@ public:
         return "Drops one or all plan cache entries for a collection.";
     }
 
-    NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) const override {
-        return CommandHelpers::parseNsCollectionRequired(dbName, cmdObj);
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsCollectionRequired(dbname, cmdObj).ns();
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const {
-        AuthorizationSession* authzSession = AuthorizationSession::get(opCtx->getClient());
-        ResourcePattern pattern = parseResourcePattern(dbName.db(), cmdObj);
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const {
+        AuthorizationSession* authzSession = AuthorizationSession::get(client);
+        ResourcePattern pattern = parseResourcePattern(dbname, cmdObj);
 
         if (authzSession->isAuthorizedForActionsOnResource(pattern, ActionType::planCacheWrite)) {
             return Status::OK();
@@ -82,24 +87,24 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result);
 } clusterPlanCacheClearCmd;
 
 bool ClusterPlanCacheClearCmd::run(OperationContext* opCtx,
-                                   const DatabaseName& dbName,
+                                   const std::string& dbName,
                                    const BSONObj& cmdObj,
                                    BSONObjBuilder& result) {
     const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
     const BSONObj query;
-    const auto cri =
+    const auto routingInfo =
         uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
     auto shardResponses = scatterGatherVersionedTargetByRoutingTable(
         opCtx,
         nss.db(),
         nss,
-        cri,
+        routingInfo,
         applyReadWriteConcern(
             opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
         ReadPreferenceSetting::get(opCtx),

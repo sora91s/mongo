@@ -66,8 +66,7 @@ ops = Operation(Operation.OP_INSERT, Table(tname0), Key(Key.KEYGEN_APPEND, 10), 
 workload = Workload(context, Thread(ops))
 
 print('RUN1')
-ret = workload.run(conn)
-assert ret == 0, ret
+workload.run(conn)
 show(tname0)
 
 # The context has memory of how many keys are in all the tables.
@@ -84,8 +83,7 @@ print('multiplying op is: ' + str(o))
 thread0 = Thread(o + op + op)
 workload = Workload(context, thread0)
 print('RUN2')
-ret = workload.run(conn)
-assert ret == 0, ret
+workload.run(conn)
 show(tname0)
 show(tname1)
 
@@ -99,8 +97,7 @@ op += Operation(Operation.OP_INSERT, Table(tname0), Key(Key.KEYGEN_APPEND, 10), 
 thread0 = Thread(op * 10 + op2 * 20)
 workload = Workload(context, thread0)
 print('RUN3')
-ret = workload.run(conn)
-assert ret == 0, ret
+workload.run(conn)
 show(tname0)
 show(tname1)
 

@@ -106,7 +106,7 @@ public:
           _outputNs(std::move(outputNs)),
           _writeConcern(expCtx->opCtx->getWriteConcern()),
           _writeSizeEstimator(
-              expCtx->mongoProcessInterface->getWriteSizeEstimator(expCtx->opCtx, _outputNs)) {}
+              expCtx->mongoProcessInterface->getWriteSizeEstimator(expCtx->opCtx, outputNs)) {}
 
     DepsTracker::State getDependencies(DepsTracker* deps) const override {
         deps->needWholeDocument = true;
@@ -116,7 +116,7 @@ public:
     GetModPathsReturn getModifiedPaths() const override {
         // For purposes of tracking which fields come from where, the writer stage does not modify
         // any fields by default.
-        return {GetModPathsReturn::Type::kFiniteSet, OrderedPathSet{}, {}};
+        return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>{}, {}};
     }
 
     boost::optional<DistributedPlanLogic> distributedPlanLogic() override {
@@ -124,7 +124,7 @@ public:
     }
 
     bool canRunInParallelBeforeWriteStage(
-        const OrderedPathSet& nameOfShardKeyFieldsUponEntryToStage) const override {
+        const std::set<std::string>& nameOfShardKeyFieldsUponEntryToStage) const override {
         return true;
     }
 

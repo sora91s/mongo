@@ -147,11 +147,6 @@ public:
     // from ThreadPoolInterface
     void startup() override;
     void shutdown() override;
-
-    /**
-     * Joins all scheduled tasks. Can also spawn a free thread that ignores maxThread options to
-     * execute pending tasks.
-     */
     void join() override;
 
     /**
@@ -163,8 +158,6 @@ public:
      *
      * May be called multiple times, by multiple threads. May not be called by a task in the thread
      * pool.
-     *
-     * Not safe to use when shutdown can be called concurrently.
      */
     void waitForIdle();
 

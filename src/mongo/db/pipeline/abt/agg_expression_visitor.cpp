@@ -30,23 +30,22 @@
 #include <stack>
 
 #include "mongo/base/error_codes.h"
-#include "mongo/db/exec/docval_to_sbeval.h"
 #include "mongo/db/pipeline/abt/agg_expression_visitor.h"
 #include "mongo/db/pipeline/abt/expr_algebrizer_context.h"
 #include "mongo/db/pipeline/abt/utils.h"
 #include "mongo/db/pipeline/accumulator.h"
 #include "mongo/db/pipeline/accumulator_multi.h"
 #include "mongo/db/pipeline/expression_walker.h"
-#include "mongo/db/query/optimizer/utils/path_utils.h"
+#include "mongo/db/query/optimizer/utils/utils.h"
 
 namespace mongo::optimizer {
 
 class ABTAggExpressionVisitor final : public ExpressionConstVisitor {
 public:
-    ABTAggExpressionVisitor(ExpressionAlgebrizerContext& ctx) : _ctx(ctx){};
+    ABTAggExpressionVisitor(ExpressionAlgebrizerContext& ctx) : _prefixId(), _ctx(ctx){};
 
     void visit(const ExpressionConstant* expr) override final {
-        auto [tag, val] = sbe::value::makeValue(expr->getValue());
+        auto [tag, val] = convertFrom(expr->getValue());
         _ctx.push<Constant>(tag, val);
     }
 
@@ -87,18 +86,7 @@ public:
     void visit(const ExpressionArrayElemAt* expr) override final {
         unsupportedExpression(expr->getOpName());
     }
-    void visit(const ExpressionBitAnd* expr) override final {
-        unsupportedExpression("bitAnd");
-    }
-    void visit(const ExpressionBitOr* expr) override final {
-        unsupportedExpression("bitOr");
-    }
-    void visit(const ExpressionBitXor* expr) override final {
-        unsupportedExpression("bitXor");
-    }
-    void visit(const ExpressionBitNot* expr) override final {
-        unsupportedExpression(expr->getOpName());
-    }
+
     void visit(const ExpressionFirst* expr) override final {
         unsupportedExpression(expr->getOpName());
     }
@@ -134,61 +122,38 @@ public:
         ABT right = _ctx.pop();
         ABT left = _ctx.pop();
 
-        const auto translateCmpOpFn = [](const ExpressionCompare::CmpOp op) {
-            switch (op) {
-                case ExpressionCompare::CmpOp::EQ:
-                    return Operations::Eq;
+        switch (expr->getOp()) {
+            case ExpressionCompare::CmpOp::EQ:
+                _ctx.push<BinaryOp>(Operations::Eq, std::move(left), std::move(right));
+                break;
 
-                case ExpressionCompare::CmpOp::NE:
-                    return Operations::Neq;
+            case ExpressionCompare::CmpOp::NE:
+                _ctx.push<BinaryOp>(Operations::Neq, std::move(left), std::move(right));
+                break;
 
-                case ExpressionCompare::CmpOp::GT:
-                    return Operations::Gt;
+            case ExpressionCompare::CmpOp::GT:
+                _ctx.push<BinaryOp>(Operations::Gt, std::move(left), std::move(right));
+                break;
 
-                case ExpressionCompare::CmpOp::GTE:
-                    return Operations::Gte;
+            case ExpressionCompare::CmpOp::GTE:
+                _ctx.push<BinaryOp>(Operations::Gte, std::move(left), std::move(right));
+                break;
 
-                case ExpressionCompare::CmpOp::LT:
-                    return Operations::Lt;
+            case ExpressionCompare::CmpOp::LT:
+                _ctx.push<BinaryOp>(Operations::Lt, std::move(left), std::move(right));
+                break;
 
-                case ExpressionCompare::CmpOp::LTE:
-                    return Operations::Lte;
+            case ExpressionCompare::CmpOp::LTE:
+                _ctx.push<BinaryOp>(Operations::Lte, std::move(left), std::move(right));
+                break;
 
-                case ExpressionCompare::CmpOp::CMP:
-                    return Operations::Cmp3w;
+            case ExpressionCompare::CmpOp::CMP:
+                _ctx.push<FunctionCall>("cmp3w", makeSeq(std::move(left), std::move(right)));
+                break;
 
-                default:
-                    MONGO_UNREACHABLE;
-            }
-        };
-
-        const auto addEvalFilterFn = [&](ABT path, ABT expr, const Operations op) {
-            PathAppender::appendInPlace(path, make<PathCompare>(op, std::move(expr)));
-
-            _ctx.push<EvalFilter>(std::move(path), _ctx.getRootProjVar());
-        };
-
-        const Operations op = translateCmpOpFn(expr->getOp());
-        if (op != Operations::Cmp3w) {
-            // TODO: SERVER-67306. Remove requirement that path is simple.
-            // Then we can re-use traverse between EvalPath/EvalFilter contexts.
-
-            // If we have simple EvalPaths coming from the left or on the right, add a PathCompare,
-            // and keep propagating the path.
-            if (auto leftPtr = left.cast<EvalPath>(); leftPtr != nullptr &&
-                isSimplePath(leftPtr->getPath()) && leftPtr->getInput() == _ctx.getRootProjVar()) {
-                addEvalFilterFn(std::move(leftPtr->getPath()), std::move(right), op);
-                return;
-            }
-            if (auto rightPtr = right.cast<EvalPath>(); rightPtr != nullptr &&
-                isSimplePath(rightPtr->getPath()) &&
-                rightPtr->getInput() == _ctx.getRootProjVar()) {
-                addEvalFilterFn(
-                    std::move(rightPtr->getPath()), std::move(left), flipComparisonOp(op));
-                return;
-            }
+            default:
+                MONGO_UNREACHABLE;
         }
-        _ctx.push<BinaryOp>(op, std::move(left), std::move(right));
     }
 
     void visit(const ExpressionConcat* expr) override final {
@@ -201,7 +166,7 @@ public:
 
     void visit(const ExpressionCond* expr) override final {
         _ctx.ensureArity(3);
-        ABT cond = _ctx.pop();
+        ABT cond = generateCoerceToBoolPopInput();
         ABT thenCase = _ctx.pop();
         ABT elseCase = _ctx.pop();
         _ctx.push<If>(std::move(cond), std::move(thenCase), std::move(elseCase));
@@ -264,11 +229,10 @@ public:
         ABT path = translateFieldPath(
             fieldPath,
             make<PathIdentity>(),
-            [](FieldNameType fieldName, const bool isLastElement, ABT input) {
-                if (!isLastElement) {
-                    input = make<PathTraverse>(PathTraverse::kUnlimited, std::move(input));
-                }
-                return make<PathGet>(std::move(fieldName), std::move(input));
+            [](const std::string& fieldName, const bool isLastElement, ABT input) {
+                return make<PathGet>(fieldName,
+                                     isLastElement ? std::move(input)
+                                                   : make<PathTraverse>(std::move(input)));
             },
             1ul);
 
@@ -280,19 +244,18 @@ public:
         uassert(6624427,
                 "Filter variable must be user-defined.",
                 Variables::isUserDefinedVariable(varId));
-        const ProjectionName varName{generateVariableName(varId)};
+        const std::string& varName = generateVariableName(varId);
 
         _ctx.ensureArity(2);
         ABT filter = _ctx.pop();
         ABT input = _ctx.pop();
 
-        _ctx.push<EvalPath>(
-            make<PathTraverse>(
-                PathTraverse::kUnlimited,
-                make<PathLambda>(make<LambdaAbstraction>(
-                    varName,
-                    make<If>(std::move(filter), make<Variable>(varName), Constant::nothing())))),
-            std::move(input));
+        _ctx.push<EvalPath>(make<PathTraverse>(make<PathLambda>(make<LambdaAbstraction>(
+                                varName,
+                                make<If>(generateCoerceToBoolInternal(std::move(filter)),
+                                         make<Variable>(varName),
+                                         Constant::nothing())))),
+                            std::move(input));
     }
 
     void visit(const ExpressionFloor* expr) override final {
@@ -328,7 +291,7 @@ public:
     }
 
     void visit(const ExpressionLn* expr) override final {
-        pushSingleArgFunctionFromTop("ln");
+        unsupportedExpression(expr->getOpName());
     }
 
     void visit(const ExpressionLog* expr) override final {
@@ -343,10 +306,6 @@ public:
         unsupportedExpression(expr->getOpName());
     }
 
-    void visit(const ExpressionInternalFLEBetween* expr) override final {
-        unsupportedExpression(expr->getOpName());
-    }
-
     void visit(const ExpressionMap* expr) override final {
         unsupportedExpression("$map");
     }
@@ -356,7 +315,7 @@ public:
     }
 
     void visit(const ExpressionMod* expr) override final {
-        pushMultiArgFunctionFromTop("mod", 2);
+        unsupportedExpression(expr->getOpName());
     }
 
     void visit(const ExpressionMultiply* expr) override final {
@@ -509,7 +468,7 @@ public:
 
         ABTVector children;
         for (size_t i = 0; i < numCases; i++) {
-            children.emplace_back(_ctx.pop());
+            children.emplace_back(generateCoerceToBoolPopInput());
             children.emplace_back(_ctx.pop());
         }
 
@@ -776,14 +735,6 @@ public:
         unsupportedExpression("tsIncrement");
     }
 
-    void visit(const ExpressionInternalOwningShard* expr) override final {
-        unsupportedExpression("$_internalOwningShard");
-    }
-
-    void visit(const ExpressionInternalIndexKey* expr) override final {
-        unsupportedExpression("$_internalIndexKey");
-    }
-
 private:
     /**
      * Shared logic for $and, $or. Converts each child into an EExpression that evaluates to Boolean
@@ -792,57 +743,24 @@ private:
      * semantics.
      */
     void visitMultiBranchLogicExpression(const Expression* expr, Operations logicOp) {
-        const bool isAnd = logicOp == Operations::And;
-        invariant(isAnd || logicOp == Operations::Or);
+        invariant(logicOp == Operations::And || logicOp == Operations::Or);
         const size_t arity = expr->getChildren().size();
         _ctx.ensureArity(arity);
 
         if (arity == 0) {
             // Empty $and and $or always evaluate to their logical operator's identity value: true
             // and false, respectively.
-            _ctx.push(Constant::boolean(isAnd));
+            const bool logicIdentityVal = (logicOp == Operations::And);
+            _ctx.push<Constant>(sbe::value::TypeTags::Boolean,
+                                sbe::value::bitcastFrom<bool>(logicIdentityVal));
             return;
         }
 
-        bool allFilters = true;
-        ABTVector children;
-        ABTVector childPaths;
-
-        for (size_t i = 0; i < arity; i++) {
-            // TODO: SERVER-67306. Remove requirement that path is simple.
-            // Then we can re-use traverse between EvalPath/EvalFilter contexts.
-
-            ABT child = _ctx.pop();
-            if (auto filterPtr = child.cast<EvalFilter>(); allFilters && filterPtr != nullptr &&
-                isSimplePath(filterPtr->getPath()) &&
-                filterPtr->getInput() == _ctx.getRootProjVar()) {
-                childPaths.push_back(filterPtr->getPath());
-            } else {
-                allFilters = false;
-            }
-            children.push_back(std::move(child));
+        ABT current = generateCoerceToBoolPopInput();
+        for (size_t i = 0; i < arity - 1; i++) {
+            current = make<BinaryOp>(logicOp, std::move(current), generateCoerceToBoolPopInput());
         }
-
-        if (allFilters) {
-            // If all children are simple paths, place a path composition.
-            ABT result = make<PathIdentity>();
-            if (isAnd) {
-                for (ABT& child : childPaths) {
-                    maybeComposePath<PathComposeM>(result, std::move(child));
-                }
-            } else {
-                for (ABT& child : childPaths) {
-                    maybeComposePath<PathComposeA>(result, std::move(child));
-                }
-            }
-            _ctx.push<EvalFilter>(std::move(result), _ctx.getRootProjVar());
-        } else {
-            ABT result = std::move(children.front());
-            for (size_t i = 1; i < arity; i++) {
-                result = make<BinaryOp>(logicOp, std::move(result), std::move(children.at(i)));
-            }
-            _ctx.push(std::move(result));
-        }
+        _ctx.push(std::move(current));
     }
 
     void pushMultiArgFunctionFromTop(const std::string& functionName, const size_t argCount) {
@@ -852,8 +770,6 @@ private:
         for (size_t i = 0; i < argCount; i++) {
             children.emplace_back(_ctx.pop());
         }
-        std::reverse(children.begin(), children.end());
-
         _ctx.push<FunctionCall>(functionName, children);
     }
 
@@ -864,22 +780,42 @@ private:
     void pushArithmeticBinaryExpr(const Expression* expr, const Operations op) {
         const size_t arity = expr->getChildren().size();
         _ctx.ensureArity(arity);
+        if (arity < 2) {
+            // Nothing to do for arity 0 and 1.
+            return;
+        }
 
         ABT current = _ctx.pop();
         for (size_t i = 0; i < arity - 1; i++) {
-            current = make<BinaryOp>(op, _ctx.pop(), std::move(current));
+            current = make<BinaryOp>(op, std::move(current), _ctx.pop());
         }
         _ctx.push(std::move(current));
     }
 
-    ProjectionName generateVariableName(const Variables::Id varId) {
-        return ProjectionName{str::stream() << "var_" << varId};
+    ABT generateCoerceToBoolInternal(ABT input) {
+        return generateCoerceToBool(std::move(input), getNextId("coerceToBool"));
+    }
+
+    ABT generateCoerceToBoolPopInput() {
+        return generateCoerceToBoolInternal(_ctx.pop());
+    }
+
+    std::string generateVariableName(const Variables::Id varId) {
+        std::ostringstream os;
+        os << _ctx.getUniqueIdPrefix() << "_var_" << varId;
+        return os.str();
+    }
+
+    std::string getNextId(const std::string& key) {
+        return _ctx.getUniqueIdPrefix() + "_" + _prefixId.getNextId(key);
     }
 
     void unsupportedExpression(const char* op) const {
         uasserted(ErrorCodes::InternalErrorNotSupported,
                   str::stream() << "Expression is not supported: " << op);
     }
+
+    PrefixId _prefixId;
 
     // We don't own this.
     ExpressionAlgebrizerContext& _ctx;
@@ -898,10 +834,10 @@ private:
 };
 
 ABT generateAggExpression(const Expression* expr,
-                          const ProjectionName& rootProjection,
-                          PrefixId& prefixId) {
+                          const std::string& rootProjection,
+                          const std::string& uniqueIdPrefix) {
     ExpressionAlgebrizerContext ctx(
-        true /*assertExprSort*/, false /*assertPathSort*/, rootProjection, prefixId);
+        true /*assertExprSort*/, false /*assertPathSort*/, rootProjection, uniqueIdPrefix);
     ABTAggExpressionVisitor visitor(ctx);
 
     AggExpressionWalker walker(&visitor);

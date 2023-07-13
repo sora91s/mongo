@@ -6,6 +6,7 @@
  * cloning on recipient, adapt this test to handle file cleanup on recipient.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -15,16 +16,18 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {checkTenantDBHashes} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 load("jstests/replsets/rslib.js");
 load("jstests/libs/uuid_util.js");
 
 const tenantMigrationTest =
     new TenantMigrationTest({name: jsTestName(), quickGarbageCollection: true});
 
-const kTenantId = ObjectId().str;
+const kTenantId = "testTenantId";
 const kDbName = tenantMigrationTest.tenantDB(kTenantId, "testDB");
 const kCollName = "testColl";
 
@@ -154,10 +157,8 @@ assert.commandWorked(recipientPrimary.getDB(kDbName).runCommand({
 
 // The dbhash between the donor and the recipient should still match after retrying
 // commitTransaction and the retryable writes because they should be noop.
-checkTenantDBHashes({
-    donorRst: tenantMigrationTest.getDonorRst(),
-    recipientRst: tenantMigrationTest.getRecipientRst(),
-    tenantId: kTenantId
-});
+TenantMigrationUtil.checkTenantDBHashes(
+    tenantMigrationTest.getDonorRst(), tenantMigrationTest.getRecipientRst(), kTenantId);
 
 tenantMigrationTest.stop();
+})();

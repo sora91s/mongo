@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -34,9 +35,6 @@
 
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 void PlanStage::saveState() {
@@ -78,4 +76,9 @@ void PlanStage::reattachToOperationContext(OperationContext* opCtx) {
 
     doReattachToOperationContext();
 }
+
+ClockSource* PlanStage::getClock() const {
+    return _opCtx->getServiceContext()->getFastClockSource();
+}
+
 }  // namespace mongo

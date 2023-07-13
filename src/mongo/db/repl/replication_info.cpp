@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kFTDC
 
 #include "mongo/platform/basic.h"
 
@@ -45,6 +46,7 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/not_primary_error_tracker.h"
 #include "mongo/db/ops/write_ops.h"
@@ -59,7 +61,6 @@
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/s/global_user_write_block_state.h"
-#include "mongo/db/session/logical_session_id.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/network_interface.h"
@@ -68,10 +69,6 @@
 #include "mongo/transport/hello_metrics.h"
 #include "mongo/util/decimal_counter.h"
 #include "mongo/util/fail_point.h"
-#include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kFTDC
-
 
 namespace mongo {
 
@@ -135,11 +132,11 @@ TopologyVersion appendReplicationInfo(OperationContext* opCtx,
 
             auto cwwc = ReadWriteConcernDefaults::get(opCtx).getCWWC(opCtx);
             if (cwwc) {
-                result->append(HelloCommandReply::kCwwcFieldName, cwwc.value().toBSON());
+                result->append(HelloCommandReply::kCwwcFieldName, cwwc.get().toBSON());
             }
         }
 
-        return helloResponse->getTopologyVersion().value();
+        return helloResponse->getTopologyVersion().get();
     }
 
     auto currentTopologyVersion = replCoord->getTopologyVersion();
@@ -213,12 +210,11 @@ public:
             auto state = UserWriteBlockState::kUnknown;
             // Try to lock. If we fail (i.e. lock is already held in write mode), don't read the
             // GlobalUserWriteBlockState and set the userWriteBlockMode field to kUnknown.
-            Lock::GlobalLock lk(
-                opCtx, MODE_IS, Date_t::now(), Lock::InterruptBehavior::kLeaveUnlocked, [] {
-                    Lock::GlobalLockSkipOptions options;
-                    options.skipRSTLLock = true;
-                    return options;
-                }());
+            Lock::GlobalLock lk(opCtx,
+                                MODE_IS,
+                                Date_t::now(),
+                                Lock::InterruptBehavior::kLeaveUnlocked,
+                                true /* skipRSTLLock */);
             if (!lk.isLocked()) {
                 LOGV2_DEBUG(6345700, 2, "Failed to retrieve user write block state");
             } else {
@@ -253,21 +249,18 @@ public:
         result.append("latestOptime", replCoord->getMyLastAppliedOpTime().getTimestamp());
 
         auto earliestOplogTimestampFetch = [&]() -> Timestamp {
-            // Hold reference to the catalog for collection lookup without locks to be safe.
-            auto catalog = CollectionCatalog::get(opCtx);
-            auto oplog =
-                catalog->lookupCollectionByNamespace(opCtx, NamespaceString::kRsOplogNamespace);
+            auto oplog = CollectionCatalog::get(opCtx)->lookupCollectionByNamespaceForRead(
+                opCtx, NamespaceString::kRsOplogNamespace);
             if (!oplog) {
                 return Timestamp();
             }
 
             // Try to get the lock. If it's already locked, immediately return null timestamp.
-            Lock::GlobalLock lk(
-                opCtx, MODE_IS, Date_t::now(), Lock::InterruptBehavior::kLeaveUnlocked, [] {
-                    Lock::GlobalLockSkipOptions options;
-                    options.skipRSTLLock = true;
-                    return options;
-                }());
+            Lock::GlobalLock lk(opCtx,
+                                MODE_IS,
+                                Date_t::now(),
+                                Lock::InterruptBehavior::kLeaveUnlocked,
+                                true /* skipRSTLLock */);
             if (!lk.isLocked()) {
                 LOGV2_DEBUG(
                     6294100, 2, "Failed to get global lock for oplog server status section");
@@ -284,7 +277,8 @@ public:
                 // Note that getSingleton will take a global IS lock, but this won't block because
                 // we are already holding the global IS lock.
                 BSONObj o;
-                if (Helpers::getSingleton(opCtx, NamespaceString::kRsOplogNamespace, o)) {
+                if (Helpers::getSingleton(
+                        opCtx, NamespaceString::kRsOplogNamespace.ns().c_str(), o)) {
                     return o["ts"].timestamp();
                 }
             }
@@ -315,14 +309,6 @@ public:
         return false;
     }
 
-    HandshakeRole handshakeRole() const final {
-        return HandshakeRole::kHello;
-    }
-
-    bool allowedWithSecurityToken() const final {
-        return true;
-    }
-
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const final {
         return AllowedOnSecondary::kAlways;
     }
@@ -351,14 +337,12 @@ public:
                 {kImplicitDefaultReadConcernNotPermitted}};
     }
 
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();  // No auth required
-    }
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const final {}  // No auth required
 
     bool runWithReplyBuilder(OperationContext* opCtx,
-                             const DatabaseName& dbName,
+                             const string&,
                              const BSONObj& cmdObj,
                              rpc::ReplyBuilderInterface* replyBuilder) final {
         CommandHelpers::handleMarkKillOnClientDisconnect(opCtx);
@@ -443,7 +427,7 @@ public:
             LOGV2_DEBUG(23904,
                         3,
                         "Using maxAwaitTimeMS for awaitable hello protocol",
-                        "maxAwaitTimeMS"_attr = maxAwaitTimeMS.value());
+                        "maxAwaitTimeMS"_attr = maxAwaitTimeMS.get());
 
             curOp->pauseTimer();
             timerGuard.emplace([curOp]() { curOp->resumeTimer(); });
@@ -509,11 +493,11 @@ public:
                           wireSpec->incomingExternalClient.maxWireVersion);
         }
 
-        result.append(HelloCommandReply::kReadOnlyFieldName, opCtx->readOnly());
+        result.append(HelloCommandReply::kReadOnlyFieldName, storageGlobalParams.readOnly);
 
         if (auto param = ServerParameterSet::getNodeParameterSet()->getIfExists(
                 kAutomationServiceDescriptorFieldName)) {
-            param->append(opCtx, &result, kAutomationServiceDescriptorFieldName, boost::none);
+            param->append(opCtx, result, kAutomationServiceDescriptorFieldName);
         }
 
         if (opCtx->getClient()->session()) {
@@ -552,7 +536,7 @@ public:
             }
         }
 
-        handleHelloAuth(opCtx, dbName, cmd, &result);
+        handleHelloAuth(opCtx, cmd, &result);
 
         if (getTestCommandsEnabled()) {
             validateResult(&result);
@@ -564,11 +548,11 @@ public:
         auto ret = result->asTempObj();
         if (ret[ErrorReply::kErrmsgFieldName].eoo()) {
             // Nominal success case, parse the object as-is.
-            HelloCommandReply::parse(IDLParserContext{"hello.reply"}, ret);
+            HelloCommandReply::parse({"hello.reply"}, ret);
         } else {
             // Something went wrong, still try to parse, but accept a few ignorable fields.
             StringDataSet ignorable({ErrorReply::kCodeFieldName, ErrorReply::kErrmsgFieldName});
-            HelloCommandReply::parse(IDLParserContext{"hello.reply"}, ret.removeFields(ignorable));
+            HelloCommandReply::parse({"hello.reply"}, ret.removeFields(ignorable));
         }
     }
 
@@ -594,17 +578,6 @@ private:
         if (args.hasElement("notInternalClient") && cmdObj.hasElement("internalClient")) {
             LOGV2(5648902, "Fail point Hello is disabled for internal client");
             return;  // Filtered out internal client.
-        }
-        if (args.hasElement("delayMillis")) {
-            Milliseconds delay{args["delayMillis"].safeNumberLong()};
-            LOGV2(6724102,
-                  "Fail point delays Hello processing",
-                  "cmd"_attr = cmdObj,
-                  "client"_attr = opCtx->getClient()->clientAddress(true),
-                  "desc"_attr = opCtx->getClient()->desc(),
-                  "delay"_attr = delay);
-            opCtx->sleepFor(delay);
-            return;
         }
         // Default action is sleep.
         LOGV2(5648903,

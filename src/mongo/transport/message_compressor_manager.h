@@ -121,7 +121,7 @@ public:
     StatusWith<Message> decompressMessage(const Message& msg,
                                           MessageCompressorId* compressorId = nullptr);
 
-    static MessageCompressorManager& forSession(const std::shared_ptr<transport::Session>& session);
+    static MessageCompressorManager& forSession(const transport::SessionHandle& session);
 
 private:
     std::vector<MessageCompressorBase*> _negotiated;

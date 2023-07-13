@@ -1,7 +1,6 @@
 // Tests that currentOp is resilient to drop shard.
 (function() {
 'use strict';
-load('jstests/sharding/libs/remove_shard_util.js');
 
 // TODO SERVER-50144 Remove this and allow orphan checking.
 // This test calls removeShard which can leave docs in config.rangeDeletions in state "pending",
@@ -16,7 +15,14 @@ st.startBalancer();
 const mongosDB = st.s.getDB(jsTestName());
 const shardName = st.shard0.shardName;
 
-removeShard(st, shardName);
+var res = st.s.adminCommand({removeShard: shardName});
+assert.commandWorked(res);
+assert.eq('started', res.state);
+assert.soon(function() {
+    res = st.s.adminCommand({removeShard: shardName});
+    assert.commandWorked(res);
+    return ('completed' === res.state);
+}, "removeShard never completed for shard " + shardName);
 
 assert.commandWorked(mongosDB.currentOp());
 

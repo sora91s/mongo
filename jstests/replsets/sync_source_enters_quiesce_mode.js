@@ -1,6 +1,10 @@
 /**
  * Tests that reading from an existing sync source continues uninterrupted when the sync source
  * enters quiesce mode.
+ *
+ * @tags: [
+ *   live_record_incompatible,
+ * ]
  */
 (function() {
 "use strict";

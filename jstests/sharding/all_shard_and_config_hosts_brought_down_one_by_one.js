@@ -1,7 +1,5 @@
 /**
  * Shuts down config server and shard replica set nodes one by one and ensures correct behaviour.
- *
- * @tags: [temporary_catalog_shard_incompatible]
  */
 
 // Checking UUID and index consistency involves talking to the config servers, which are shut down
@@ -9,7 +7,6 @@
 TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 (function() {
 'use strict';
@@ -83,7 +80,5 @@ for (var i = 0; i < 2; i++) {
     }
 }
 
-// Restart one config server node to ensure that teardown checks may be executed
-st.restartConfigServer(0);
 st.stop();
 }());

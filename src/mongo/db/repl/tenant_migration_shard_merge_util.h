@@ -38,11 +38,9 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/tenant_migration_shared_data.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_import.h"
 #include "mongo/executor/scoped_task_executor.h"
 #include "mongo/util/cancellation.h"
-#include "mongo/util/concurrency/thread_pool.h"
 
 namespace mongo::repl::shard_merge_utils {
 
@@ -58,7 +56,8 @@ inline bool isDonatedFilesCollection(const NamespaceString& ns) {
 }
 
 inline NamespaceString getDonatedFilesNs(const UUID& migrationUUID) {
-    return NamespaceString(DatabaseName::kConfig, kDonatedFilesPrefix + migrationUUID.toString());
+    return NamespaceString(NamespaceString::kConfigDb,
+                           kDonatedFilesPrefix + migrationUUID.toString());
 }
 
 inline boost::filesystem::path fileClonerTempDir(const UUID& migrationId) {
@@ -105,19 +104,14 @@ struct MetadataInfo {
 /**
  * Copy a file from the donor.
  */
-void cloneFile(OperationContext* opCtx,
-               DBClientConnection* clientConnection,
-               ThreadPool* writerPool,
-               TenantMigrationSharedData* sharedData,
-               const BSONObj& metadataDoc);
+void cloneFile(OperationContext* opCtx, const BSONObj& metadataDoc);
 
 /**
  * Import a donor collection after its files have been cloned to a temp dir.
  */
 void wiredTigerImportFromBackupCursor(OperationContext* opCtx,
-                                      const UUID& migrationId,
-                                      const std::string& importPath,
-                                      std::vector<CollectionImportMetadata>&& metadatas);
+                                      const std::vector<CollectionImportMetadata>& metadatas,
+                                      const std::string& importPath);
 
 /**
  * Send a "getMore" to keep a backup cursor from timing out.

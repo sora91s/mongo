@@ -20,10 +20,3 @@ function assertDocumentValidationFailure(res, coll) {
         assert.eq(typeof error["errInfo"], "object", tojson(error));
     }
 }
-
-/**
- * Verifies that the logs contain DocumentValidationFailure.
- */
-function assertDocumentValidationFailureCheckLogs(db) {
-    checkLog.contains(db, '"codeName":"DocumentValidationFailure"');
-}

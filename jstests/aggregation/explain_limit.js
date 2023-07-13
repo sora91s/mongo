@@ -5,8 +5,6 @@
 // @tags: [
 //   do_not_wrap_aggregations_in_facets,
 //   requires_pipeline_optimization,
-//   # Implicit index creation may change the plan/engine used.
-//   assumes_no_implicit_index_creation,
 // ]
 (function() {
 "use strict";
@@ -18,7 +16,7 @@ let coll = db.explain_limit;
 
 const kCollSize = 105;
 const kLimit = 10;
-const isSBEEnabled = checkSBEEnabled(db);
+const isSBEEnabled = checkSBEEnabled(db, ["featureFlagSbeFull"]);
 
 // Return whether or explain() was successful and contained the appropriate fields given the
 // requested verbosity. Checks that the number of documents examined and returned are correct given

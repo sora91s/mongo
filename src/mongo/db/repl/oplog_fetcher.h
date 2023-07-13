@@ -275,7 +275,8 @@ public:
     /**
      * Returns the `find` query run on the sync source's oplog.
      */
-    FindCommandRequest makeFindCmdRequest_forTest(long long findTimeout) const;
+    BSONObj getFindQueryFilter_forTest() const;
+    Query getFindQuerySettings_forTest(long long findTimeout) const;
 
     /**
      * Returns the OpTime of the last oplog entry fetched and processed.
@@ -326,7 +327,7 @@ private:
     /**
      * Schedules the _runQuery function to run in a separate thread.
      */
-    void _doStartup_inlock() override;
+    Status _doStartup_inlock() noexcept override;
 
     /**
      * Shuts down the DBClientCursor and DBClientConnection. Uses the connection's
@@ -386,9 +387,11 @@ private:
 
     /**
      * This function will create the `find` query to issue to the sync source. It is provided with
-     * the value to use as the "maxTimeMS" for the find command.
+     * whether this is the initial attempt to create the `find` query to determine what the find
+     * timeout should be.
      */
-    FindCommandRequest _makeFindCmdRequest(long long findTimeout) const;
+    BSONObj _makeFindQueryFilter() const;
+    Query _makeFindQuerySettings(long long findTimeout) const;
 
     /**
      * Gets the next batch from the exhaust cursor.

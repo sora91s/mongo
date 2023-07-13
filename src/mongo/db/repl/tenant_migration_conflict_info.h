@@ -36,18 +36,20 @@
 
 namespace mongo {
 
+void initMyTenantMigrationConFlictInfo();
+
 const Status kNonRetryableTenantMigrationStatus(
     ErrorCodes::Interrupted,
     "Operation interrupted by an internal data migration and could not be automatically retried");
 
 class TenantMigrationConflictInfoBase : public ErrorExtraInfo {
 public:
-    TenantMigrationConflictInfoBase(UUID migrationId,
+    TenantMigrationConflictInfoBase(const std::string tenantId,
                                     std::shared_ptr<TenantMigrationAccessBlocker> mtab = nullptr)
-        : _migrationId(std::move(migrationId)), _mtab(std::move(mtab)){};
+        : _tenantId(std::move(tenantId)), _mtab(std::move(mtab)){};
 
-    const auto& getMigrationId() const {
-        return _migrationId;
+    const auto& getTenantId() const {
+        return _tenantId;
     }
 
     const auto& getTenantMigrationAccessBlocker() const {
@@ -58,17 +60,17 @@ public:
     static std::shared_ptr<const ErrorExtraInfo> parse(const BSONObj&);
 
 private:
-    const UUID _migrationId;
-    const std::shared_ptr<TenantMigrationAccessBlocker> _mtab;
+    std::string _tenantId;
+    std::shared_ptr<TenantMigrationAccessBlocker> _mtab;
 };
 
 class TenantMigrationConflictInfo final : public TenantMigrationConflictInfoBase {
 public:
     static constexpr auto code = ErrorCodes::TenantMigrationConflict;
 
-    TenantMigrationConflictInfo(UUID migrationId,
+    TenantMigrationConflictInfo(const std::string tenantId,
                                 std::shared_ptr<TenantMigrationAccessBlocker> mtab = nullptr)
-        : TenantMigrationConflictInfoBase(std::move(migrationId), std::move(mtab)) {}
+        : TenantMigrationConflictInfoBase(std::move(tenantId), std::move(mtab)) {}
 };
 
 class NonRetryableTenantMigrationConflictInfo final : public TenantMigrationConflictInfoBase {
@@ -76,8 +78,8 @@ public:
     static constexpr auto code = ErrorCodes::NonRetryableTenantMigrationConflict;
 
     NonRetryableTenantMigrationConflictInfo(
-        UUID migrationId, std::shared_ptr<TenantMigrationAccessBlocker> mtab = nullptr)
-        : TenantMigrationConflictInfoBase(std::move(migrationId), std::move(mtab)) {}
+        const std::string tenantId, std::shared_ptr<TenantMigrationAccessBlocker> mtab = nullptr)
+        : TenantMigrationConflictInfoBase(std::move(tenantId), std::move(mtab)) {}
 };
 
 using TenantMigrationCommittedException = ExceptionFor<ErrorCodes::TenantMigrationCommitted>;

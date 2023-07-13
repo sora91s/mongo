@@ -82,7 +82,9 @@ public:
          */
         bool allowShardedForeignCollection(NamespaceString nss,
                                            bool inMultiDocumentTransaction) const override final {
-            if (!inMultiDocumentTransaction) {
+            const bool foreignShardedAllowed = feature_flags::gFeatureFlagShardedLookup.isEnabled(
+                serverGlobalParams.featureCompatibility);
+            if (foreignShardedAllowed && !inMultiDocumentTransaction) {
                 return true;
             }
             auto involvedNss = getInvolvedNamespaces();
@@ -140,8 +142,6 @@ public:
 
     DepsTracker::State getDependencies(DepsTracker* deps) const final;
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final;
-
     boost::optional<DistributedPlanLogic> distributedPlanLogic() final;
 
     void addInvolvedCollections(stdx::unordered_set<NamespaceString>* collectionNames) const final;
@@ -149,8 +149,6 @@ public:
     void detachFromOperationContext() final;
 
     void reattachToOperationContext(OperationContext* opCtx) final;
-
-    bool validateOperationContext(const OperationContext* opCtx) const final;
 
     bool usedDisk() final;
 
@@ -254,7 +252,7 @@ public:
         return _sbeCompatible;
     }
 
-    const NamespaceString& getFromNs() const {
+    const NamespaceString& getFromNs() {
         return _fromNs;
     }
 
@@ -361,7 +359,7 @@ private:
     void appendSpecificExecStats(MutableDocument& doc) const;
 
     /**
-     * Returns true if we are not in a transaction.
+     * Returns true if 'featureFlagShardedLookup' is enabled and we are not in a transaction.
      */
     bool foreignShardedLookupAllowed() const;
 

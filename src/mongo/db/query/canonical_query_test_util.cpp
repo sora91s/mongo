@@ -29,18 +29,22 @@
 
 #include "mongo/db/query/canonical_query_test_util.h"
 
-namespace mongo {
-const NamespaceString CanonicalQueryTest::nss("test.collection");
+#include "mongo/db/query/query_test_service_context.h"
+#include "mongo/unittest/unittest.h"
 
+namespace mongo {
 /**
  * Utility functions to create a CanonicalQuery
  */
-std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(const BSONObj& queryObj) {
+std::unique_ptr<CanonicalQuery> canonicalize(const BSONObj& queryObj) {
+    QueryTestServiceContext serviceContext;
+    auto opCtx = serviceContext.makeOperationContext();
+
     auto findCommand = std::make_unique<FindCommandRequest>(nss);
     findCommand->setFilter(queryObj);
     const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
-        CanonicalQuery::canonicalize(opCtx(),
+        CanonicalQuery::canonicalize(opCtx.get(),
                                      std::move(findCommand),
                                      false,
                                      expCtx,
@@ -50,15 +54,18 @@ std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(const BSONObj& 
     return std::move(statusWithCQ.getValue());
 }
 
-std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(StringData queryStr) {
+std::unique_ptr<CanonicalQuery> canonicalize(StringData queryStr) {
     BSONObj queryObj = fromjson(queryStr.toString());
     return canonicalize(queryObj);
 }
 
-std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(BSONObj query,
-                                                                 BSONObj sort,
-                                                                 BSONObj proj,
-                                                                 BSONObj collation) {
+std::unique_ptr<CanonicalQuery> canonicalize(BSONObj query,
+                                             BSONObj sort,
+                                             BSONObj proj,
+                                             BSONObj collation) {
+    QueryTestServiceContext serviceContext;
+    auto opCtx = serviceContext.makeOperationContext();
+
     auto findCommand = std::make_unique<FindCommandRequest>(nss);
     findCommand->setFilter(query);
     findCommand->setSort(sort);
@@ -66,7 +73,7 @@ std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(BSONObj query,
     findCommand->setCollation(collation);
     const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
-        CanonicalQuery::canonicalize(opCtx(),
+        CanonicalQuery::canonicalize(opCtx.get(),
                                      std::move(findCommand),
                                      false,
                                      expCtx,
@@ -76,22 +83,25 @@ std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(BSONObj query,
     return std::move(statusWithCQ.getValue());
 }
 
-std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(const char* queryStr,
-                                                                 const char* sortStr,
-                                                                 const char* projStr,
-                                                                 const char* collationStr) {
+std::unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
+                                             const char* sortStr,
+                                             const char* projStr,
+                                             const char* collationStr) {
     return canonicalize(
         fromjson(queryStr), fromjson(sortStr), fromjson(projStr), fromjson(collationStr));
 }
 
-std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(const char* queryStr,
-                                                                 const char* sortStr,
-                                                                 const char* projStr,
-                                                                 long long skip,
-                                                                 long long limit,
-                                                                 const char* hintStr,
-                                                                 const char* minStr,
-                                                                 const char* maxStr) {
+std::unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
+                                             const char* sortStr,
+                                             const char* projStr,
+                                             long long skip,
+                                             long long limit,
+                                             const char* hintStr,
+                                             const char* minStr,
+                                             const char* maxStr) {
+    QueryTestServiceContext serviceContext;
+    auto opCtx = serviceContext.makeOperationContext();
+
     auto findCommand = std::make_unique<FindCommandRequest>(nss);
     findCommand->setFilter(fromjson(queryStr));
     findCommand->setSort(fromjson(sortStr));
@@ -107,7 +117,7 @@ std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(const char* que
     findCommand->setMax(fromjson(maxStr));
     const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
-        CanonicalQuery::canonicalize(opCtx(),
+        CanonicalQuery::canonicalize(opCtx.get(),
                                      std::move(findCommand),
                                      false,
                                      expCtx,
@@ -117,15 +127,18 @@ std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(const char* que
     return std::move(statusWithCQ.getValue());
 }
 
-std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(const char* queryStr,
-                                                                 const char* sortStr,
-                                                                 const char* projStr,
-                                                                 long long skip,
-                                                                 long long limit,
-                                                                 const char* hintStr,
-                                                                 const char* minStr,
-                                                                 const char* maxStr,
-                                                                 bool explain) {
+std::unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
+                                             const char* sortStr,
+                                             const char* projStr,
+                                             long long skip,
+                                             long long limit,
+                                             const char* hintStr,
+                                             const char* minStr,
+                                             const char* maxStr,
+                                             bool explain) {
+    QueryTestServiceContext serviceContext;
+    auto opCtx = serviceContext.makeOperationContext();
+
     auto findCommand = std::make_unique<FindCommandRequest>(nss);
     findCommand->setFilter(fromjson(queryStr));
     findCommand->setSort(fromjson(sortStr));
@@ -141,7 +154,7 @@ std::unique_ptr<CanonicalQuery> CanonicalQueryTest::canonicalize(const char* que
     findCommand->setMax(fromjson(maxStr));
     const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
-        CanonicalQuery::canonicalize(opCtx(),
+        CanonicalQuery::canonicalize(opCtx.get(),
                                      std::move(findCommand),
                                      explain,
                                      expCtx,

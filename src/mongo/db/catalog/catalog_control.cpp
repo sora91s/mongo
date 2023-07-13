@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #define LOGV2_FOR_RECOVERY(ID, DLEVEL, MESSAGE, ...) \
     LOGV2_DEBUG_OPTIONS(ID, DLEVEL, {logv2::LogComponent::kStorageRecovery}, MESSAGE, ##__VA_ARGS__)
@@ -39,16 +40,14 @@
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/database_name.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
 #include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/rebuild_indexes.h"
 #include "mongo/db/repl/oplog.h"
+#include "mongo/db/tenant_database_name.h"
 #include "mongo/db/timeseries/timeseries_extended_range.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 namespace mongo {
 namespace catalog {
@@ -69,15 +68,16 @@ void reopenAllDatabasesAndReloadCollectionCatalog(OperationContext* opCtx,
     boost::optional<BatchedCollectionCatalogWriter> catalogWriter(opCtx);
 
     auto databaseHolder = DatabaseHolder::get(opCtx);
-    std::vector<DatabaseName> databasesToOpen = storageEngine->listDatabases();
-    for (auto&& dbName : databasesToOpen) {
+    std::vector<TenantDatabaseName> databasesToOpen = storageEngine->listDatabases();
+    for (auto&& tenantDbName : databasesToOpen) {
         LOGV2_FOR_RECOVERY(
-            23992, 1, "openCatalog: dbholder reopening database", "db"_attr = dbName);
-        auto db = databaseHolder->openDb(opCtx, dbName);
-        invariant(db, str::stream() << "failed to reopen database " << dbName.toString());
-        for (auto&& collNss : catalogWriter.value()->getAllCollectionNamesFromDb(opCtx, dbName)) {
+            23992, 1, "openCatalog: dbholder reopening database", "db"_attr = tenantDbName);
+        auto db = databaseHolder->openDb(opCtx, tenantDbName);
+        invariant(db, str::stream() << "failed to reopen database " << tenantDbName.toString());
+        for (auto&& collNss :
+             catalogWriter.get()->getAllCollectionNamesFromDb(opCtx, tenantDbName)) {
             // Note that the collection name already includes the database component.
-            auto collection = catalogWriter.value()->lookupCollectionByNamespace(opCtx, collNss);
+            auto collection = catalogWriter.get()->lookupCollectionByNamespace(opCtx, collNss);
             invariant(collection,
                       str::stream()
                           << "failed to get valid collection pointer for namespace " << collNss);
@@ -96,23 +96,9 @@ void reopenAllDatabasesAndReloadCollectionCatalog(OperationContext* opCtx,
                     stableTimestamp,
                     previousCatalogState.minVisibleTimestampMap.find(collection->uuid())->second);
                 auto writableCollection =
-                    catalogWriter.value()->lookupCollectionByUUIDForMetadataWrite(
-                        opCtx, collection->uuid());
+                    catalogWriter.get()->lookupCollectionByUUIDForMetadataWrite(opCtx,
+                                                                                collection->uuid());
                 writableCollection->setMinimumVisibleSnapshot(minVisible);
-            }
-
-            if (auto it = previousCatalogState.minValidTimestampMap.find(collection->uuid());
-                it != previousCatalogState.minValidTimestampMap.end()) {
-                // After rolling back to a stable timestamp T, the minimum valid timestamp for each
-                // collection must be reset to (at least) its value at T. When the min valid
-                // timestamp is clamped to the stable timestamp we may end up with a pessimistic
-                // minimum valid timestamp set where the last DDL operation occured earlier. This is
-                // fine as this is just an optimization when to avoid reading the catalog from WT.
-                auto minValid = std::min(stableTimestamp, it->second);
-                auto writableCollection =
-                    catalogWriter.value()->lookupCollectionByUUIDForMetadataWrite(
-                        opCtx, collection->uuid());
-                writableCollection->setMinimumValidSnapshot(minValid);
             }
 
             if (collection->getTimeseriesOptions()) {
@@ -123,7 +109,7 @@ void reopenAllDatabasesAndReloadCollectionCatalog(OperationContext* opCtx,
                     extendedRangeSetting = it->second;
                 } else {
                     extendedRangeSetting =
-                        timeseries::collectionMayRequireExtendedRangeSupport(opCtx, *collection);
+                        timeseries::collectionMayRequireExtendedRangeSupport(opCtx, collection);
                 }
 
                 if (extendedRangeSetting) {
@@ -139,8 +125,7 @@ void reopenAllDatabasesAndReloadCollectionCatalog(OperationContext* opCtx,
                 // The oplog collection must be visible when establishing for repl. Finish our
                 // batched catalog write and continue on a new batch afterwards.
                 catalogWriter.reset();
-
-                repl::establishOplogCollectionForLogging(opCtx, collection);
+                collection->establishOplogCollectionForLogging(opCtx);
                 catalogWriter.emplace(opCtx);
             }
         }
@@ -160,13 +145,14 @@ PreviousCatalogState closeCatalog(OperationContext* opCtx) {
     IndexBuildsCoordinator::get(opCtx)->assertNoIndexBuildInProgress();
 
     PreviousCatalogState previousCatalogState;
-    std::vector<DatabaseName> allDbs =
+    std::vector<TenantDatabaseName> allDbs =
         opCtx->getServiceContext()->getStorageEngine()->listDatabases();
 
     auto databaseHolder = DatabaseHolder::get(opCtx);
     auto catalog = CollectionCatalog::get(opCtx);
-    for (auto&& dbName : allDbs) {
-        for (auto collIt = catalog->begin(opCtx, dbName); collIt != catalog->end(opCtx); ++collIt) {
+    for (auto&& tenantDbName : allDbs) {
+        for (auto collIt = catalog->begin(opCtx, tenantDbName); collIt != catalog->end(opCtx);
+             ++collIt) {
             auto coll = *collIt;
             if (!coll) {
                 break;
@@ -183,19 +169,6 @@ PreviousCatalogState closeCatalog(OperationContext* opCtx) {
                             "uuid"_attr = coll->uuid(),
                             "minVisible"_attr = minVisible);
                 previousCatalogState.minVisibleTimestampMap[coll->uuid()] = *minVisible;
-            }
-
-            boost::optional<Timestamp> minValid = coll->getMinimumValidSnapshot();
-
-            // If there's a minimum valid, invariant there's also a UUID.
-            if (minValid) {
-                LOGV2_DEBUG(6825500,
-                            1,
-                            "closeCatalog: preserving min valid timestamp.",
-                            "ns"_attr = coll->ns(),
-                            "uuid"_attr = coll->uuid(),
-                            "minVisible"_attr = minValid);
-                previousCatalogState.minValidTimestampMap[coll->uuid()] = *minValid;
             }
 
             if (coll->getTimeseriesOptions()) {
@@ -242,27 +215,20 @@ void openCatalog(OperationContext* opCtx,
     // Load the catalog in the storage engine.
     LOGV2(20273, "openCatalog: loading storage engine catalog");
     auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
-
-    // Remove catalogId mappings for larger timestamp than 'stableTimestamp'.
-    CollectionCatalog::write(opCtx, [stableTimestamp](CollectionCatalog& catalog) {
-        catalog.cleanupForCatalogReopen(stableTimestamp);
-    });
-
     // Ignore orphaned idents because this function is used during rollback and not at
     // startup recovery, when we may try to recover orphaned idents.
-    storageEngine->loadCatalog(opCtx, stableTimestamp, StorageEngine::LastShutdownState::kClean);
+    storageEngine->loadCatalog(opCtx, StorageEngine::LastShutdownState::kClean);
 
     LOGV2(20274, "openCatalog: reconciling catalog and idents");
-    auto reconcileResult =
-        fassert(40688,
-                storageEngine->reconcileCatalogAndIdents(
-                    opCtx, stableTimestamp, StorageEngine::LastShutdownState::kClean));
+    auto reconcileResult = fassert(
+        40688,
+        storageEngine->reconcileCatalogAndIdents(opCtx, StorageEngine::LastShutdownState::kClean));
 
     // Determine which indexes need to be rebuilt. rebuildIndexesOnCollection() requires that all
     // indexes on that collection are done at once, so we use a map to group them together.
-    stdx::unordered_map<NamespaceString, IndexNameObjs> nsToIndexNameObjMap;
+    StringMap<IndexNameObjs> nsToIndexNameObjMap;
     auto catalog = CollectionCatalog::get(opCtx);
-    for (const StorageEngine::IndexIdentifier& indexIdentifier : reconcileResult.indexesToRebuild) {
+    for (StorageEngine::IndexIdentifier indexIdentifier : reconcileResult.indexesToRebuild) {
         auto indexName = indexIdentifier.indexName;
         auto coll = catalog->lookupCollectionByNamespace(opCtx, indexIdentifier.nss);
         auto indexSpecs = getIndexNameObjs(
@@ -283,7 +249,7 @@ void openCatalog(OperationContext* opCtx,
             str::stream() << "expected to find a list containing exactly 1 index spec, but found "
                           << indexesToRebuild.second.size());
 
-        auto& ino = nsToIndexNameObjMap[indexIdentifier.nss];
+        auto& ino = nsToIndexNameObjMap[indexIdentifier.nss.ns()];
         ino.first.emplace_back(std::move(indexesToRebuild.first.back()));
         ino.second.emplace_back(std::move(indexesToRebuild.second.back()));
     }

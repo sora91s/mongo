@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -36,12 +37,8 @@
 #include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/commands/set_cluster_parameter_invocation.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/idl/cluster_server_parameter_gen.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -67,10 +64,6 @@ public:
         return "Set cluster parameter on replica set or node";
     }
 
-    bool allowedWithSecurityToken() const final {
-        return true;
-    }
-
     class Invocation final : public InvocationBase {
     public:
         using InvocationBase::InvocationBase;
@@ -80,13 +73,23 @@ public:
                     "setClusterParameter can only run on mongos in sharded clusters",
                     (serverGlobalParams.clusterRole == ClusterRole::None));
 
-            if (!feature_flags::gFeatureFlagAuditConfigClusterParameter.isEnabled(
-                    serverGlobalParams.featureCompatibility)) {
-                uassert(ErrorCodes::IllegalOperation,
-                        str::stream() << Request::kCommandName << " cannot be run on standalones",
-                        repl::ReplicationCoordinator::get(opCtx)->getReplicationMode() !=
-                            repl::ReplicationCoordinator::modeNone);
-            }
+            FixedFCVRegion fcvRegion(opCtx);
+            uassert(ErrorCodes::UnknownFeatureCompatibilityVersion,
+                    "FCV is not yet initialized, retry the command after FCV initialization has "
+                    "completed",
+                    serverGlobalParams.featureCompatibility.isVersionInitialized());
+
+            uassert(
+                ErrorCodes::IllegalOperation,
+                "Cannot set cluster parameter, gFeatureFlagClusterWideConfig is not enabled",
+                gFeatureFlagClusterWideConfig.isEnabled(serverGlobalParams.featureCompatibility));
+
+            // TODO SERVER-65249: This will eventually be made specific to the parameter being set
+            // so that some parameters will be able to use setClusterParameter even on standalones.
+            uassert(ErrorCodes::IllegalOperation,
+                    str::stream() << Request::kCommandName << " cannot be run on standalones",
+                    repl::ReplicationCoordinator::get(opCtx)->getReplicationMode() !=
+                        repl::ReplicationCoordinator::modeNone);
 
             std::unique_ptr<ServerParameterService> parameterService =
                 std::make_unique<ClusterParameterService>();

@@ -2,6 +2,8 @@
 import importlib
 import unittest
 
+# pylint: disable=missing-docstring
+
 
 class TestMultiversionconstantsLocation(unittest.TestCase):
     def test_multiversionconstants_location(self):

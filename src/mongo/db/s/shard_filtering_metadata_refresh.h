@@ -31,8 +31,8 @@
 
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/s/collection_metadata.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/database_version.h"
-#include "mongo/s/shard_version.h"
 
 namespace mongo {
 
@@ -40,11 +40,10 @@ class OperationContext;
 
 /**
  * Must be invoked whenever code, which is executing on a shard encounters a StaleConfig exception
- * and should be passed the placement version from the 'version received' in the exception. If the
- * shard's current placement version is behind 'chunkVersionReceived', causes the shard's filtering
- * metadata to be refreshed from the config server, otherwise does nothing and immediately returns.
- * If there are other threads currently performing refresh, blocks so that only one of them hits the
- * config server.
+ * and should be passed the 'version received' from the exception. If the shard's current version is
+ * behind 'shardVersionReceived', causes the shard's filtering metadata to be refreshed from the
+ * config server, otherwise does nothing and immediately returns. If there are other threads
+ * currently performing refresh, blocks so that only one of them hits the config server.
  *
  * If refresh fails for any reason (most commonly ExceededTimeLimit), returns a failed status.
  *
@@ -56,14 +55,13 @@ class OperationContext;
  * execution state in the response. This is specifically problematic for write commands, which are
  * expected to return the set of write batch entries that succeeded.
  */
-Status onCollectionPlacementVersionMismatchNoExcept(
-    OperationContext* opCtx,
-    const NamespaceString& nss,
-    boost::optional<ChunkVersion> chunkVersionReceived) noexcept;
+Status onShardVersionMismatchNoExcept(OperationContext* opCtx,
+                                      const NamespaceString& nss,
+                                      boost::optional<ChunkVersion> shardVersionReceived) noexcept;
 
-void onCollectionPlacementVersionMismatch(OperationContext* opCtx,
-                                          const NamespaceString& nss,
-                                          boost::optional<ChunkVersion> chunkVersionReceived);
+void onShardVersionMismatch(OperationContext* opCtx,
+                            const NamespaceString& nss,
+                            boost::optional<ChunkVersion> shardVersionReceived);
 
 /**
  * Unconditionally get the shard's filtering metadata from the config server on the calling thread.
@@ -75,7 +73,7 @@ CollectionMetadata forceGetCurrentMetadata(OperationContext* opCtx, const Namesp
 
 /**
  * Unconditionally causes the shard's filtering metadata to be refreshed from the config server and
- * returns the resulting placement version (which might not have changed), or throws.
+ * returns the resulting shard version (which might not have changed), or throws.
  *
  * NOTE: Does network I/O and acquires collection lock on the specified namespace, so it must not be
  * called with a lock

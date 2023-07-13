@@ -36,8 +36,8 @@
 #include "mongo/db/json.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 #include "mongo/dbtests/dbtests.h"
+#include "mongo/unittest/unittest.h"
 
 namespace mongo {
 namespace ExpressionTests {
@@ -59,10 +59,6 @@ static BSONObj toBson(const Document& document) {
 /** Create a Document from a BSONObj. */
 Document fromBson(BSONObj obj) {
     return Document(obj);
-}
-
-std::string redactFieldNameForTest(StringData s) {
-    return str::stream() << "HASH(" << s << ")";
 }
 
 namespace FieldPath {
@@ -204,56 +200,6 @@ TEST(FieldPath, ScalarVariableWithDottedFieldPathOptimizesToConstantMissingValue
     ASSERT_VALUE_EQ(Value(), constantExpr->getValue());
 }
 
-TEST(FieldPath, SerializeWithRedaction) {
-    SerializationOptions options;
-    options.redactFieldNamesStrategy = redactFieldNameForTest;
-    options.redactFieldNames = true;
-
-    auto expCtx = ExpressionContextForTest{};
-    intrusive_ptr<Expression> expression =
-        ExpressionFieldPath::createPathFromString(&expCtx, "bar", expCtx.variablesParseState);
-    ASSERT_VALUE_EQ_AUTO(  // NOLINT
-        "\"$HASH(bar)\"",  // NOLINT (test auto-update)
-        expression->serialize(options));
-
-    // Repeat with a dotted path.
-    expression =
-        ExpressionFieldPath::createPathFromString(&expCtx, "a.b.c", expCtx.variablesParseState);
-    ASSERT_VALUE_EQ_AUTO(                // NOLINT
-        "\"$HASH(a).HASH(b).HASH(c)\"",  // NOLINT (test auto-update)
-        expression->serialize(options));
-
-    auto expr = [&](const std::string& json) {
-        return Expression::parseExpression(&expCtx, fromjson(json), expCtx.variablesParseState);
-    };
-
-    // Expression with multiple field paths.
-    expression = expr(R"({$and: [{$gt: ["$foo", 5]}, {$lt: ["$foo", 10]}]})");
-    ASSERT_VALUE_EQ_AUTO(  // NOLINT
-        "{$and: [{$gt: [\"$HASH(foo)\", {$const: 5}]}, {$lt: [\"$HASH(foo)\", {$const: 10}]}]}",  // NOLINT (test auto-update)
-        expression->serialize(options));
-
-    // Test that a variable followed by user fields is properly hashed.
-    std::string replacementChar = "?";
-    options.replacementForLiteralArgs = replacementChar;
-
-    expression = expr(R"({$gt: ["$$ROOT.a.b", 5]})");
-    ASSERT_VALUE_EQ_AUTO(                                        // NOLINT
-        "{$gt: [\"$$ROOT.HASH(a).HASH(b)\", {$const: \"?\"}]}",  // NOLINT (test auto-update)
-        expression->serialize(options));
-
-    expression = expr(R"({$gt: ["$foo", "$$NOW"]})");
-    ASSERT_VALUE_EQ_AUTO(                      // NOLINT
-        "{$gt: [\"$HASH(foo)\", \"$$NOW\"]}",  // NOLINT (test auto-update)
-        expression->serialize(options));
-
-    // Repeat the above test with a dotted path.
-    expression = expr(R"({$gt: ["$foo.a.b", "$$NOW"]})");
-    ASSERT_VALUE_EQ_AUTO(                                      // NOLINT
-        "{$gt: [\"$HASH(foo).HASH(a).HASH(b)\", \"$$NOW\"]}",  // NOLINT (test auto-update)
-        expression->serialize(options));
-}
-
 /** The field path itself is a dependency. */
 class Dependencies {
 public:
@@ -262,7 +208,7 @@ public:
         intrusive_ptr<Expression> expression =
             ExpressionFieldPath::deprecatedCreate(&expCtx, "a.b");
         DepsTracker dependencies;
-        expression::addDependencies(expression.get(), &dependencies);
+        expression->addDependencies(&dependencies);
         ASSERT_EQUALS(1U, dependencies.fields.size());
         ASSERT_EQUALS(1U, dependencies.fields.count("a.b"));
         ASSERT_EQUALS(false, dependencies.needWholeDocument);

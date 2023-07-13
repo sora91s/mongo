@@ -31,6 +31,8 @@
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog.h"
+#include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/util/uuid.h"
 

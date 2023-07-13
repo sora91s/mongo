@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/create_collection.h"
@@ -37,11 +38,6 @@
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/logv2/log.h"
 #include "mongo/stdx/unordered_map.h"
-#include "mongo/util/assert_util.h"
-#include "mongo/util/uuid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -73,27 +69,8 @@ ShouldRestoreDocument shouldRestoreDocument(OperationContext* opCtx,
     findRequest.setLimit(1);
 
     DBDirectClient client(opCtx);
-    auto resultCount = client.find(findRequest)->itcount();
-
-    // Log in cases where the schema is not adhered to.
-    if (resultCount == 0 && uuid) {
-        auto schemaCheckFindRequest =
-            FindCommandRequest(NamespaceString::kConfigsvrRestoreNamespace);
-        auto collectionsToRestore = client.find(schemaCheckFindRequest);
-        while (collectionsToRestore->more()) {
-            auto doc = collectionsToRestore->next();
-            try {
-                (void)UUID::parse(doc);
-            } catch (const AssertionException&) {
-                uasserted(ErrorCodes::BadValue,
-                          str::stream() << "The uuid field of '" << doc.toString() << "' in '"
-                                        << NamespaceString::kConfigsvrRestoreNamespace.toString()
-                                        << "' needs to be of type UUID");
-            }
-        }
-    }
-
-    return resultCount > 0 ? ShouldRestoreDocument::kYes : ShouldRestoreDocument::kNo;
+    return client.find(findRequest)->itcount() > 0 ? ShouldRestoreDocument::kYes
+                                                   : ShouldRestoreDocument::kNo;
 }
 
 std::set<std::string> getDatabasesToRestore(OperationContext* opCtx) {
@@ -120,16 +97,16 @@ std::set<std::string> getDatabasesToRestore(OperationContext* opCtx) {
 const stdx::unordered_map<NamespaceString,
                           std::pair<boost::optional<std::string>, boost::optional<std::string>>>
     kCollectionEntries = {
-        {NamespaceString::kConfigsvrChunksNamespace,
-         std::make_pair(boost::none, std::string("uuid"))},
-        {NamespaceString::kConfigsvrCollectionsNamespace,
+        {NamespaceString("config.chunks"), std::make_pair(boost::none, std::string("uuid"))},
+        {NamespaceString("config.collections"),
          std::make_pair(std::string("_id"), std::string("uuid"))},
-        {NamespaceString::kMigrationCoordinatorsNamespace,
+        {NamespaceString("config.locks"), std::make_pair(std::string("_id"), boost::none)},
+        {NamespaceString("config.migrationCoordinators"),
          std::make_pair(std::string("nss"), std::string("collectionUuid"))},
-        {NamespaceString::kConfigsvrTagsNamespace, std::make_pair(std::string("ns"), boost::none)},
-        {NamespaceString::kRangeDeletionNamespace,
+        {NamespaceString("config.tags"), std::make_pair(std::string("ns"), boost::none)},
+        {NamespaceString("config.rangeDeletions"),
          std::make_pair(std::string("nss"), std::string("collectionUuid"))},
-        {NamespaceString::kShardingDDLCoordinatorsNamespace,
+        {NamespaceString("config.system.sharding_ddl_coordinators"),
          std::make_pair(std::string("_id.namespace"), boost::none)}};
 
 class ConfigSvrRunRestoreCommand : public BasicCommand {
@@ -153,19 +130,18 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::internal)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::internal)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbname_unused,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         uassert(ErrorCodes::CommandFailed,
@@ -179,23 +155,24 @@ public:
         {
             // The "local.system.collections_to_restore" collection needs to exist prior to running
             // this command.
-            CollectionPtr restoreColl(CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(
-                opCtx, NamespaceString::kConfigsvrRestoreNamespace));
+            CollectionPtr restoreColl = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(
+                opCtx, NamespaceString::kConfigsvrRestoreNamespace);
             uassert(ErrorCodes::NamespaceNotFound,
                     str::stream() << "Collection " << NamespaceString::kConfigsvrRestoreNamespace
                                   << " is missing",
                     restoreColl);
         }
 
+        // Keeps track of database names for collections restored. Databases with no collections
+        // restored will have their entries removed in the config collections.
+        std::set<std::string> databasesRestored = getDatabasesToRestore(opCtx);
+
         for (const auto& collectionEntry : kCollectionEntries) {
             const NamespaceString& nss = collectionEntry.first;
-            boost::optional<std::string> nssFieldName = collectionEntry.second.first;
-            boost::optional<std::string> uuidFieldName = collectionEntry.second.second;
-
 
             LOGV2(6261300, "1st Phase - Restoring collection entries", logAttrs(nss));
-            CollectionPtr coll(
-                CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss));
+            CollectionPtr coll =
+                CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
             if (!coll) {
                 LOGV2(6261301, "Collection not found, skipping", logAttrs(nss));
                 continue;
@@ -207,6 +184,9 @@ public:
 
             while (cursor->more()) {
                 auto doc = cursor->next();
+
+                boost::optional<std::string> nssFieldName = collectionEntry.second.first;
+                boost::optional<std::string> uuidFieldName = collectionEntry.second.second;
 
                 boost::optional<NamespaceString> docNss = boost::none;
                 boost::optional<UUID> docUUID = boost::none;
@@ -229,11 +209,6 @@ public:
                     uassertStatusOK(swDocUUID);
 
                     docUUID = swDocUUID.getValue();
-                    LOGV2_DEBUG(6938701,
-                                1,
-                                "uuid found",
-                                "uuid"_attr = uuidFieldName,
-                                "docUUID"_attr = docUUID);
                 }
 
                 ShouldRestoreDocument shouldRestore = shouldRestoreDocument(opCtx, docNss, docUUID);
@@ -242,9 +217,7 @@ public:
                             1,
                             "Found document",
                             "doc"_attr = doc,
-                            "shouldRestore"_attr = shouldRestore,
-                            "db"_attr = coll->ns().db().toString(),
-                            "docNss"_attr = docNss);
+                            "shouldRestore"_attr = shouldRestore);
 
                 if (shouldRestore == ShouldRestoreDocument::kYes ||
                     shouldRestore == ShouldRestoreDocument::kMaybe) {
@@ -252,32 +225,22 @@ public:
                 }
 
                 // The collection for this document was not restored, delete it.
-                LOGV2_DEBUG(6938702,
-                            1,
-                            "Deleting collection that was not restored",
-                            "db"_attr = coll->ns().db().toString(),
-                            "uuid"_attr = coll->uuid(),
-                            "_id"_attr = doc.getField("_id"));
                 NamespaceStringOrUUID nssOrUUID(coll->ns().db().toString(), coll->uuid());
                 uassertStatusOK(repl::StorageInterface::get(opCtx)->deleteById(
                     opCtx, nssOrUUID, doc.getField("_id")));
             }
         }
 
-        // Keeps track of database names for collections restored. Databases with no collections
-        // restored will have their entries removed in the config collections.
-        std::set<std::string> databasesRestored = getDatabasesToRestore(opCtx);
-
         {
             const std::vector<NamespaceString> databasesEntries = {
-                NamespaceString::kConfigDatabasesNamespace};
+                NamespaceString("config.databases"), NamespaceString("config.locks")};
 
             // Remove database entries from the config collections if no collection for the given
             // database was restored.
             for (const NamespaceString& nss : databasesEntries) {
                 LOGV2(6261303, "2nd Phase - Restoring database entries", logAttrs(nss));
-                CollectionPtr coll(
-                    CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss));
+                CollectionPtr coll =
+                    CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
                 if (!coll) {
                     LOGV2(6261304, "Collection not found, skipping", logAttrs(nss));
                     return true;
@@ -303,9 +266,7 @@ public:
                                 1,
                                 "Found document",
                                 "doc"_attr = doc,
-                                "shouldRestore"_attr = shouldRestore,
-                                "db"_attr = coll->ns().db().toString(),
-                                "dbNss"_attr = dbNss.toString());
+                                "shouldRestore"_attr = shouldRestore);
 
                     if (shouldRestore) {
                         // This database had at least one collection restored.
@@ -313,12 +274,6 @@ public:
                     }
 
                     // No collection for this database was restored, delete it.
-                    LOGV2_DEBUG(6938703,
-                                1,
-                                "Deleting database that was not restored",
-                                "db"_attr = coll->ns().db().toString(),
-                                "uuid"_attr = coll->uuid(),
-                                "_id"_attr = doc.getField("_id"));
                     NamespaceStringOrUUID nssOrUUID(coll->ns().db().toString(), coll->uuid());
                     uassertStatusOK(repl::StorageInterface::get(opCtx)->deleteById(
                         opCtx, nssOrUUID, doc.getField("_id")));

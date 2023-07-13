@@ -34,125 +34,122 @@ DBCollection.prototype.getName = function() {
 
 DBCollection.prototype.help = function() {
     var shortName = this.getName();
-    print("DBCollection help");
-    print("\tdb." + shortName + ".find().help() - show DBCursor help");
-    print(
+    var res = "";
+    res += "DBCollection help \n";
+    res += "\tdb." + shortName + ".find().help() - show DBCursor help \n";
+    res += 
         "\tdb." + shortName +
-        ".bulkWrite( operations, <optional params> ) - bulk execute write operations, optional parameters are: w, wtimeout, j");
-    print(
+        ".bulkWrite( operations, <optional params> ) - bulk execute write operations, optional parameters are: w, wtimeout, j \n";
+    res += 
         "\tdb." + shortName +
-        ".count( query = {}, <optional params> ) - count the number of documents that matches the query, optional parameters are: limit, skip, hint, maxTimeMS");
-    print(
+        ".count( query = {}, <optional params> ) - count the number of documents that matches the query, optional parameters are: limit, skip, hint, maxTimeMS \n";
+    res += 
         "\tdb." + shortName +
-        ".countDocuments( query = {}, <optional params> ) - count the number of documents that matches the query, optional parameters are: limit, skip, hint, maxTimeMS");
-    print(
+        ".countDocuments( query = {}, <optional params> ) - count the number of documents that matches the query, optional parameters are: limit, skip, hint, maxTimeMS \n";
+    res += 
         "\tdb." + shortName +
-        ".estimatedDocumentCount( <optional params> ) - estimate the document count using collection metadata, optional parameters are: maxTimeMS");
-    print("\tdb." + shortName + ".convertToCapped(maxBytes) - calls {convertToCapped:'" +
-          shortName + "', size:maxBytes}} command");
-    print("\tdb." + shortName + ".createIndex(keypattern[,options])");
-    print("\tdb." + shortName + ".createIndexes([keypatterns], <options>)");
-    print("\tdb." + shortName + ".dataSize()");
-    print(
+        ".estimatedDocumentCount( <optional params> ) - estimate the document count using collection metadata, optional parameters are: maxTimeMS \n";
+    res += "\tdb." + shortName + ".convertToCapped(maxBytes) - calls {convertToCapped:'" +
+          shortName + "', size:maxBytes}} command \n";
+    res += "\tdb." + shortName + ".createIndex(keypattern[,options]) \n";
+    res += "\tdb." + shortName + ".createIndexes([keypatterns], <options>) \n";
+    res += "\tdb." + shortName + ".dataSize() \n";
+    res += 
         "\tdb." + shortName +
-        ".deleteOne( filter, <optional params> ) - delete first matching document, optional parameters are: w, wtimeout, j");
-    print(
+        ".deleteOne( filter, <optional params> ) - delete first matching document, optional parameters are: w, wtimeout, j \n";
+    res += 
         "\tdb." + shortName +
-        ".deleteMany( filter, <optional params> ) - delete all matching documents, optional parameters are: w, wtimeout, j");
-    print("\tdb." + shortName + ".distinct( key, query, <optional params> ) - e.g. db." +
-          shortName + ".distinct( 'x' ), optional parameters are: maxTimeMS");
-    print("\tdb." + shortName + ".drop() drop the collection");
-    print("\tdb." + shortName + ".dropIndex(index) - e.g. db." + shortName +
-          ".dropIndex( \"indexName\" ) or db." + shortName + ".dropIndex( { \"indexKey\" : 1 } )");
-    print("\tdb." + shortName + ".hideIndex(index) - e.g. db." + shortName +
-          ".hideIndex( \"indexName\" ) or db." + shortName + ".hideIndex( { \"indexKey\" : 1 } )");
-    print("\tdb." + shortName + ".unhideIndex(index) - e.g. db." + shortName +
+        ".deleteMany( filter, <optional params> ) - delete all matching documents, optional parameters are: w, wtimeout, j \n";
+    res += "\tdb." + shortName + ".distinct( key, query, <optional params> ) - e.g. db." +
+          shortName + ".distinct( 'x' ), optional parameters are: maxTimeMS \n";
+    res += "\tdb." + shortName + ".drop() drop the collection \n";
+    res += "\tdb." + shortName + ".dropIndex(index) - e.g. db." + shortName +
+          ".dropIndex( \"indexName\" ) or db." + shortName + ".dropIndex( { \"indexKey\" : 1 } ) \n";
+    res += "\tdb." + shortName + ".hideIndex(index) - e.g. db." + shortName +
+          ".hideIndex( \"indexName\" ) or db." + shortName + ".hideIndex( { \"indexKey\" : 1 } ) \n";
+    res += "\tdb." + shortName + ".unhideIndex(index) - e.g. db." + shortName +
           ".unhideIndex( \"indexName\" ) or db." + shortName +
-          ".unhideIndex( { \"indexKey\" : 1 } )");
-    print("\tdb." + shortName + ".dropIndexes()");
-    print("\tdb." + shortName + ".explain().help() - show explain help");
-    print("\tdb." + shortName + ".reIndex()");
-    print(
+          ".unhideIndex( { \"indexKey\" : 1 } ) \n";
+    res += "\tdb." + shortName + ".dropIndexes() \n";
+    res += "\tdb." + shortName + ".explain().help() - show explain help \n";
+    res += "\tdb." + shortName + ".reIndex() \n";
+    res += 
         "\tdb." + shortName +
-        ".find([query],[fields]) - query is an optional query filter. fields is optional set of fields to return.");
-    print("\t                                              e.g. db." + shortName +
-          ".find( {x:77} , {name:1, x:1} )");
-    print("\tdb." + shortName + ".find(...).count()");
-    print("\tdb." + shortName + ".find(...).limit(n)");
-    print("\tdb." + shortName + ".find(...).skip(n)");
-    print("\tdb." + shortName + ".find(...).sort(...)");
-    print("\tdb." + shortName + ".findOne([query], [fields], [options], [readConcern])");
-    print(
+        ".find([query],[fields]) - query is an optional query filter. fields is optional set of fields to return. \n";
+    res += "\t                                              e.g. db." + shortName +
+          ".find( {x:77} , {name:1, x:1} ) \n";
+    res += "\tdb." + shortName + ".find(...).count() \n";
+    res += "\tdb." + shortName + ".find(...).limit(n) \n";
+    res += "\tdb." + shortName + ".find(...).skip(n) \n";
+    res += "\tdb." + shortName + ".find(...).sort(...) \n";
+    res += "\tdb." + shortName + ".findOne([query], [fields], [options], [readConcern]) \n";
+    res += 
         "\tdb." + shortName +
-        ".findOneAndDelete( filter, <optional params> ) - delete first matching document, optional parameters are: projection, sort, maxTimeMS");
-    print(
+        ".findOneAndDelete( filter, <optional params> ) - delete first matching document, optional parameters are: projection, sort, maxTimeMS \n";
+    res += 
         "\tdb." + shortName +
-        ".findOneAndReplace( filter, replacement, <optional params> ) - replace first matching document, optional parameters are: projection, sort, maxTimeMS, upsert, returnNewDocument");
-    print(
+        ".findOneAndReplace( filter, replacement, <optional params> ) - replace first matching document, optional parameters are: projection, sort, maxTimeMS, upsert, returnNewDocument \n";
+    res += 
         "\tdb." + shortName +
-        ".findOneAndUpdate( filter, <update object or pipeline>, <optional params> ) - update first matching document, optional parameters are: projection, sort, maxTimeMS, upsert, returnNewDocument");
-    print("\tdb." + shortName + ".getDB() get DB object associated with collection");
-    print("\tdb." + shortName + ".getPlanCache() get query plan cache associated with collection");
-    print("\tdb." + shortName + ".getIndexes()");
-    print("\tdb." + shortName + ".insert(obj)");
-    print(
+        ".findOneAndUpdate( filter, <update object or pipeline>, <optional params> ) - update first matching document, optional parameters are: projection, sort, maxTimeMS, upsert, returnNewDocument \n";
+    res += "\tdb." + shortName + ".getDB() get DB object associated with collection \n";
+    res += "\tdb." + shortName + ".getPlanCache() get query plan cache associated with collection \n";
+    res += "\tdb." + shortName + ".getIndexes() \n";
+    res += "\tdb." + shortName + ".insert(obj) \n";
+    res += 
         "\tdb." + shortName +
-        ".insertOne( obj, <optional params> ) - insert a document, optional parameters are: w, wtimeout, j");
-    print(
+        ".insertOne( obj, <optional params> ) - insert a document, optional parameters are: w, wtimeout, j \n";
+    res += 
         "\tdb." + shortName +
-        ".insertMany( [objects], <optional params> ) - insert multiple documents, optional parameters are: w, wtimeout, j");
-    print("\tdb." + shortName + ".mapReduce( mapFunction , reduceFunction , <optional params> )");
-    print(
+        ".insertMany( [objects], <optional params> ) - insert multiple documents, optional parameters are: w, wtimeout, j \n";
+    res += "\tdb." + shortName + ".mapReduce( mapFunction , reduceFunction , <optional params> ) \n";
+    res += 
         "\tdb." + shortName +
-        ".aggregate( [pipeline], <optional params> ) - performs an aggregation on a collection; returns a cursor");
-    print("\tdb." + shortName + ".remove(query)");
-    print(
+        ".aggregate( [pipeline], <optional params> ) - performs an aggregation on a collection; returns a cursor \n";
+    res += "\tdb." + shortName + ".remove(query) \n";
+    res += 
         "\tdb." + shortName +
-        ".replaceOne( filter, replacement, <optional params> ) - replace the first matching document, optional parameters are: upsert, w, wtimeout, j");
-    print("\tdb." + shortName +
-          ".renameCollection( newName , <dropTarget> ) renames the collection.");
-    print(
+        ".replaceOne( filter, replacement, <optional params> ) - replace the first matching document, optional parameters are: upsert, w, wtimeout, j \n";
+    res += "\tdb." + shortName +
+          ".renameCollection( newName , <dropTarget> ) renames the collection. \n";
+    res += 
         "\tdb." + shortName +
-        ".runCommand( name , <options> ) runs a db command with the given name where the first param is the collection name");
-    print("\tdb." + shortName + ".save(obj)");
-    print("\tdb." + shortName + ".stats({scale: N, indexDetails: true/false, " +
-          "indexDetailsKey: <index key>, indexDetailsName: <index name>})");
-    // print("\tdb." + shortName + ".diskStorageStats({[extent: <num>,] [granularity: <bytes>,]
-    // ...}) - analyze record layout on disk");
-    // print("\tdb." + shortName + ".pagesInRAM({[extent: <num>,] [granularity: <bytes>,] ...}) -
-    // analyze resident memory pages");
-    print("\tdb." + shortName +
-          ".storageSize() - includes free space allocated to this collection");
-    print("\tdb." + shortName + ".totalIndexSize() - size in bytes of all the indexes");
-    print("\tdb." + shortName + ".totalSize() - storage allocated for all data and indexes");
-    print(
+        ".runCommand( name , <options> ) runs a db command with the given name where the first param is the collection name \n";
+    res += "\tdb." + shortName + ".save(obj) \n";
+    res += "\tdb." + shortName + ".stats({scale: N, indexDetails: true/false, " +
+          "indexDetailsKey: <index key>, indexDetailsName: <index name>}) \n";
+    res += "\tdb." + shortName +
+          ".storageSize() - includes free space allocated to this collection \n";
+    res += "\tdb." + shortName + ".totalIndexSize() - size in bytes of all the indexes \n";
+    res += "\tdb." + shortName + ".totalSize() - storage allocated for all data and indexes \n";
+    res += 
         "\tdb." + shortName +
-        ".update( query, <update object or pipeline>[, upsert_bool, multi_bool] ) - instead of two flags, you can pass an object with fields: upsert, multi, hint, let");
-    print(
+        ".update( query, <update object or pipeline>[, upsert_bool, multi_bool] ) - instead of two flags, you can pass an object with fields: upsert, multi, hint, let \n";
+    res += 
         "\tdb." + shortName +
-        ".updateOne( filter, <update object or pipeline>, <optional params> ) - update the first matching document, optional parameters are: upsert, w, wtimeout, j, hint, let");
-    print(
+        ".updateOne( filter, <update object or pipeline>, <optional params> ) - update the first matching document, optional parameters are: upsert, w, wtimeout, j, hint, let \n";
+    res += 
         "\tdb." + shortName +
-        ".updateMany( filter, <update object or pipeline>, <optional params> ) - update all matching documents, optional parameters are: upsert, w, wtimeout, j, hint, let");
-    print("\tdb." + shortName + ".validate( <full> ) - SLOW");
-    print("\tdb." + shortName + ".getShardVersion() - only for use with sharding");
-    print("\tdb." + shortName +
-          ".getShardDistribution() - prints statistics about data distribution in the cluster");
-    print(
+        ".updateMany( filter, <update object or pipeline>, <optional params> ) - update all matching documents, optional parameters are: upsert, w, wtimeout, j, hint, let \n";
+    res += "\tdb." + shortName + ".validate( <full> ) - SLOW \n";
+    res += "\tdb." + shortName + ".getShardVersion() - only for use with sharding \n";
+    res += "\tdb." + shortName +
+          ".getShardDistribution() - prints statistics about data distribution in the cluster \n";
+    res += 
         "\tdb." + shortName +
-        ".getSplitKeysForChunks( <maxChunkSize> ) - calculates split points over all chunks and returns splitter function");
-    print(
+        ".getSplitKeysForChunks( <maxChunkSize> ) - calculates split points over all chunks and returns splitter function \n";
+    res += 
         "\tdb." + shortName +
-        ".getWriteConcern() - returns the write concern used for any operations on this collection, inherited from server/db if set");
-    print(
+        ".getWriteConcern() - returns the write concern used for any operations on this collection, inherited from server/db if set \n";
+    res += 
         "\tdb." + shortName +
-        ".setWriteConcern( <write concern doc> ) - sets the write concern for writes to the collection");
-    print(
+        ".setWriteConcern( <write concern doc> ) - sets the write concern for writes to the collection \n";
+    res += 
         "\tdb." + shortName +
-        ".unsetWriteConcern( <write concern doc> ) - unsets the write concern for writes to the collection");
-    print("\tdb." + shortName +
-          ".latencyStats() - display operation latency histograms for this collection");
-    return __magicNoPrint;
+        ".unsetWriteConcern( <write concern doc> ) - unsets the write concern for writes to the collection \n";
+    res += "\tdb." + shortName +
+          ".latencyStats() - display operation latency histograms for this collection \n"; 
+    return res;
 };
 
 DBCollection.prototype.getFullName = function() {
@@ -219,7 +216,7 @@ DBCollection.prototype._massageObject = function(q) {
     throw Error("don't know how to massage : " + type);
 };
 
-DBCollection.prototype.find = function(filter, projection, limit, skip, batchSize, options) {
+DBCollection.prototype.find = function(query, fields, limit, skip, batchSize, options) {
     // Verify that API version parameters are not supplied via the shell helper.
     assert.noAPIParams(options);
 
@@ -227,8 +224,8 @@ DBCollection.prototype.find = function(filter, projection, limit, skip, batchSiz
                              this._db,
                              this,
                              this._fullName,
-                             this._massageObject(filter),
-                             projection,
+                             this._massageObject(query),
+                             fields,
                              limit,
                              skip,
                              batchSize,
@@ -244,7 +241,8 @@ DBCollection.prototype.find = function(filter, projection, limit, skip, batchSiz
 
         const client = session._getSessionAwareClient();
         const readConcern = client.getReadConcern(session);
-        if (readConcern !== null && client.canUseReadConcern(session, cursor._convertToCommand())) {
+        if (readConcern !== null &&
+            client.canUseReadConcern(session, cursor._convertToCommand(true))) {
             cursor.readConcern(readConcern.level);
         }
     }
@@ -252,9 +250,8 @@ DBCollection.prototype.find = function(filter, projection, limit, skip, batchSiz
     return cursor;
 };
 
-DBCollection.prototype.findOne = function(filter, projection, options, readConcern, collation) {
-    var cursor =
-        this.find(filter, projection, -1 /* limit */, 0 /* skip*/, 0 /* batchSize */, options);
+DBCollection.prototype.findOne = function(query, fields, options, readConcern, collation) {
+    var cursor = this.find(query, fields, -1 /* limit */, 0 /* skip*/, 0 /* batchSize */, options);
 
     if (readConcern) {
         cursor = cursor.readConcern(readConcern);
@@ -533,8 +530,8 @@ DBCollection.prototype.save = function(obj, opts) {
     if (obj == null)
         throw Error("can't save a null");
 
-    if (typeof (obj) == "number" || typeof (obj) == "string" || Array.isArray(obj))
-        throw Error("can't save a number, a string or an array");
+    if (typeof (obj) == "number" || typeof (obj) == "string")
+        throw Error("can't save a number or string");
 
     if (typeof (obj._id) == "undefined") {
         obj._id = new ObjectId();
@@ -1503,17 +1500,18 @@ PlanCache.prototype.shellPrint = PlanCache.prototype.toString;
  */
 PlanCache.prototype.help = function() {
     var shortName = this.getName();
-    print("PlanCache help");
-    print("\tdb." + shortName + ".getPlanCache().help() - show PlanCache help");
-    print("\tdb." + shortName + ".getPlanCache().clear() - " +
-          "drops all cached queries in a collection");
-    print("\tdb." + shortName +
+    var res = "";
+    res += "PlanCache help";
+    res += "\tdb." + shortName + ".getPlanCache().help() - show PlanCache help";
+    res += "\tdb." + shortName + ".getPlanCache().clear() - " +
+          "drops all cached queries in a collection";
+    res += "\tdb." + shortName +
           ".getPlanCache().clearPlansByQuery(query[, projection, sort, collation]) - " +
-          "drops query shape from plan cache");
-    print("\tdb." + shortName + ".getPlanCache().list([pipeline]) - " +
+          "drops query shape from plan cache";
+    res += "\tdb." + shortName + ".getPlanCache().list([pipeline]) - " +
           "displays a serialization of the plan cache for this collection, " +
-          "after applying an optional aggregation pipeline");
-    return __magicNoPrint;
+          "after applying an optional aggregation pipeline";
+    return res;
 };
 
 /**

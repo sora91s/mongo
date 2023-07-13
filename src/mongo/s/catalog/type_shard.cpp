@@ -40,6 +40,8 @@
 
 namespace mongo {
 
+const NamespaceString ShardType::ConfigNS("config.shards");
+
 const BSONField<std::string> ShardType::name("_id");
 const BSONField<std::string> ShardType::host("host");
 const BSONField<bool> ShardType::draining("draining");
@@ -153,17 +155,17 @@ StatusWith<ShardType> ShardType::fromBSON(const BSONObj& source) {
 }
 
 Status ShardType::validate() const {
-    if (!_name.has_value() || _name->empty()) {
+    if (!_name.is_initialized() || _name->empty()) {
         return Status(ErrorCodes::NoSuchKey,
                       str::stream() << "missing " << name.name() << " field");
     }
 
-    if (!_host.has_value() || _host->empty()) {
+    if (!_host.is_initialized() || _host->empty()) {
         return Status(ErrorCodes::NoSuchKey,
                       str::stream() << "missing " << host.name() << " field");
     }
 
-    if (_maxSizeMB.has_value() && getMaxSizeMB() < 0) {
+    if (_maxSizeMB.is_initialized() && getMaxSizeMB() < 0) {
         return Status(ErrorCodes::BadValue, str::stream() << "maxSize can't be negative");
     }
 
@@ -219,7 +221,7 @@ void ShardType::setTags(const std::vector<std::string>& tags) {
 }
 
 void ShardType::setState(const ShardState state) {
-    invariant(!_state.has_value());
+    invariant(!_state.is_initialized());
     _state = state;
 }
 

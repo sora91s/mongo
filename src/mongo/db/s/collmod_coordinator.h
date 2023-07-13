@@ -35,9 +35,7 @@
 
 namespace mongo {
 
-class CollModCoordinator final
-    : public RecoverableShardingDDLCoordinator<CollModCoordinatorDocument,
-                                               CollModCoordinatorPhaseEnum> {
+class CollModCoordinator final : public ShardingDDLCoordinator {
 public:
     using StateDoc = CollModCoordinatorDocument;
     using Phase = CollModCoordinatorPhaseEnum;
@@ -46,7 +44,9 @@ public:
 
     void checkIfOptionsConflict(const BSONObj& doc) const override;
 
-    void appendCommandInfo(BSONObjBuilder* cmdInfoBuilder) const override;
+    boost::optional<BSONObj> reportForCurrentOp(
+        MongoProcessInterface::CurrentOpConnectionsMode connMode,
+        MongoProcessInterface::CurrentOpSessionsMode sessionMode) noexcept override;
 
     /**
      * Waits for the termination of the parent DDLCoordinator (so all the resources are liberated)
@@ -74,12 +74,31 @@ private:
         std::vector<ShardId> shardsOwningChunks;
     };
 
-    StringData serializePhase(const Phase& phase) const override {
-        return CollModCoordinatorPhase_serializer(phase);
+    ShardingDDLCoordinatorMetadata const& metadata() const override {
+        return _doc.getShardingDDLCoordinatorMetadata();
     }
 
     ExecutorFuture<void> _runImpl(std::shared_ptr<executor::ScopedTaskExecutor> executor,
                                   const CancellationToken& token) noexcept override;
+
+    template <typename Func>
+    auto _executePhase(const Phase& newPhase, Func&& func) {
+        return [=] {
+            const auto& currPhase = _doc.getPhase();
+
+            if (currPhase > newPhase) {
+                // Do not execute this phase if we already reached a subsequent one.
+                return;
+            }
+            if (currPhase < newPhase) {
+                // Persist the new phase if this is the first time we are executing it.
+                _enterPhase(newPhase);
+            }
+            return func();
+        };
+    }
+
+    void _enterPhase(Phase newPhase);
 
     void _performNoopRetryableWriteOnParticipants(
         OperationContext* opCtx, const std::shared_ptr<executor::TaskExecutor>& executor);
@@ -88,8 +107,9 @@ private:
 
     void _saveShardingInfoOnCoordinatorIfNecessary(OperationContext* opCtx);
 
-    // TODO SERVER-68008 Remove once 7.0 becomes last LTS
-    bool _isPre61Compatible() const;
+    BSONObj _initialState;
+    mutable Mutex _docMutex = MONGO_MAKE_LATCH("CollModCoordinator::_docMutex");
+    CollModCoordinatorDocument _doc;
 
     const mongo::CollModRequest _request;
 

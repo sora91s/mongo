@@ -72,11 +72,11 @@ class TestChange final : public RecoveryUnit::Change {
 public:
     TestChange(int* count) : _count(count) {}
 
-    void commit(OperationContext* opCtx, boost::optional<Timestamp>) override {
+    void commit(boost::optional<Timestamp>) override {
         *_count = *_count + 1;
     }
 
-    void rollback(OperationContext* opCtx) override {
+    void rollback() override {
         *_count = *_count - 1;
     }
 
@@ -88,7 +88,7 @@ TEST_F(RecoveryUnitTestHarness, CommitUnitOfWork) {
     Lock::GlobalLock globalLk(opCtx.get(), MODE_IX);
     const auto rs = harnessHelper->createRecordStore(opCtx.get(), "table1");
     opCtx->lockState()->beginWriteUnitOfWork();
-    ru->beginUnitOfWork(opCtx->readOnly());
+    ru->beginUnitOfWork(opCtx.get());
     StatusWith<RecordId> s = rs->insertRecord(opCtx.get(), "data", 4, Timestamp());
     ASSERT_TRUE(s.isOK());
     ASSERT_EQUALS(1, rs->numRecords(opCtx.get()));
@@ -102,7 +102,7 @@ TEST_F(RecoveryUnitTestHarness, AbortUnitOfWork) {
     Lock::GlobalLock globalLk(opCtx.get(), MODE_IX);
     const auto rs = harnessHelper->createRecordStore(opCtx.get(), "table1");
     opCtx->lockState()->beginWriteUnitOfWork();
-    ru->beginUnitOfWork(opCtx->readOnly());
+    ru->beginUnitOfWork(opCtx.get());
     StatusWith<RecordId> s = rs->insertRecord(opCtx.get(), "data", 4, Timestamp());
     ASSERT_TRUE(s.isOK());
     ASSERT_EQUALS(1, rs->numRecords(opCtx.get()));
@@ -115,13 +115,13 @@ TEST_F(RecoveryUnitTestHarness, CommitAndRollbackChanges) {
     int count = 0;
     const auto rs = harnessHelper->createRecordStore(opCtx.get(), "table1");
 
-    ru->beginUnitOfWork(opCtx->readOnly());
+    ru->beginUnitOfWork(opCtx.get());
     ru->registerChange(std::make_unique<TestChange>(&count));
     ASSERT_EQUALS(count, 0);
     ru->commitUnitOfWork();
     ASSERT_EQUALS(count, 1);
 
-    ru->beginUnitOfWork(opCtx->readOnly());
+    ru->beginUnitOfWork(opCtx.get());
     ru->registerChange(std::make_unique<TestChange>(&count));
     ASSERT_EQUALS(count, 1);
     ru->abortUnitOfWork();
@@ -132,8 +132,9 @@ TEST_F(RecoveryUnitTestHarness, CheckIsActiveWithCommit) {
     Lock::GlobalLock globalLk(opCtx.get(), MODE_IX);
     const auto rs = harnessHelper->createRecordStore(opCtx.get(), "table1");
     opCtx->lockState()->beginWriteUnitOfWork();
-    ru->beginUnitOfWork(opCtx->readOnly());
-    ASSERT_TRUE(ru->isActive());
+    ru->beginUnitOfWork(opCtx.get());
+    // TODO SERVER-51787: to re-enable this.
+    // ASSERT_TRUE(ru->isActive());
     StatusWith<RecordId> s = rs->insertRecord(opCtx.get(), "data", 4, Timestamp());
     ru->commitUnitOfWork();
     opCtx->lockState()->endWriteUnitOfWork();
@@ -144,8 +145,9 @@ TEST_F(RecoveryUnitTestHarness, CheckIsActiveWithAbort) {
     Lock::GlobalLock globalLk(opCtx.get(), MODE_IX);
     const auto rs = harnessHelper->createRecordStore(opCtx.get(), "table1");
     opCtx->lockState()->beginWriteUnitOfWork();
-    ru->beginUnitOfWork(opCtx->readOnly());
-    ASSERT_TRUE(ru->isActive());
+    ru->beginUnitOfWork(opCtx.get());
+    // TODO SERVER-51787: to re-enable this.
+    // ASSERT_TRUE(ru->isActive());
     StatusWith<RecordId> s = rs->insertRecord(opCtx.get(), "data", 4, Timestamp());
     ru->abortUnitOfWork();
     opCtx->lockState()->endWriteUnitOfWork();
@@ -154,7 +156,7 @@ TEST_F(RecoveryUnitTestHarness, CheckIsActiveWithAbort) {
 
 TEST_F(RecoveryUnitTestHarness, BeginningUnitOfWorkDoesNotIncrementSnapshotId) {
     auto snapshotIdBefore = ru->getSnapshotId();
-    ru->beginUnitOfWork(opCtx->readOnly());
+    ru->beginUnitOfWork(opCtx.get());
     ASSERT_EQ(snapshotIdBefore, ru->getSnapshotId());
     ru->abortUnitOfWork();
 }
@@ -172,14 +174,14 @@ TEST_F(RecoveryUnitTestHarness, AbandonSnapshotIncrementsSnapshotId) {
 
 TEST_F(RecoveryUnitTestHarness, CommitUnitOfWorkIncrementsSnapshotId) {
     auto snapshotIdBefore = ru->getSnapshotId();
-    ru->beginUnitOfWork(opCtx->readOnly());
+    ru->beginUnitOfWork(opCtx.get());
     ru->commitUnitOfWork();
     ASSERT_NE(snapshotIdBefore, ru->getSnapshotId());
 }
 
 TEST_F(RecoveryUnitTestHarness, AbortUnitOfWorkIncrementsSnapshotId) {
     auto snapshotIdBefore = ru->getSnapshotId();
-    ru->beginUnitOfWork(opCtx->readOnly());
+    ru->beginUnitOfWork(opCtx.get());
     ru->abortUnitOfWork();
     ASSERT_NE(snapshotIdBefore, ru->getSnapshotId());
 }
@@ -193,7 +195,7 @@ TEST_F(RecoveryUnitTestHarness, AbandonSnapshotCommitMode) {
 
     const auto rs = harnessHelper->createRecordStore(opCtx.get(), "table1");
     opCtx->lockState()->beginWriteUnitOfWork();
-    ru->beginUnitOfWork(opCtx->readOnly());
+    ru->beginUnitOfWork(opCtx.get());
     StatusWith<RecordId> rid1 = rs->insertRecord(opCtx.get(), "ABC", 3, Timestamp());
     StatusWith<RecordId> rid2 = rs->insertRecord(opCtx.get(), "123", 3, Timestamp());
     ASSERT_TRUE(rid1.isOK());
@@ -229,17 +231,6 @@ TEST_F(RecoveryUnitTestHarness, AbandonSnapshotCommitMode) {
     ASSERT_EQ(strncmp(recordAfterAbandon->data.data(), "123", 3), 0);
 }
 
-TEST_F(RecoveryUnitTestHarness, FlipReadOnly) {
-    ru->beginUnitOfWork(/*readOnly=*/true);
-    ru->endReadOnlyUnitOfWork();
-
-    ru->beginUnitOfWork(/*readOnly=*/false);
-    ru->commitUnitOfWork();
-
-    ru->beginUnitOfWork(/*readOnly=*/false);
-    ru->abortUnitOfWork();
-}
-
 DEATH_TEST_F(RecoveryUnitTestHarness, RegisterChangeMustBeInUnitOfWork, "invariant") {
     int count = 0;
     opCtx->recoveryUnit()->registerChange(std::make_unique<TestChange>(&count));
@@ -254,7 +245,7 @@ DEATH_TEST_F(RecoveryUnitTestHarness, AbortMustBeInUnitOfWork, "invariant") {
 }
 
 DEATH_TEST_F(RecoveryUnitTestHarness, CannotHaveUnfinishedUnitOfWorkOnExit, "invariant") {
-    opCtx->recoveryUnit()->beginUnitOfWork(opCtx->readOnly());
+    opCtx->recoveryUnit()->beginUnitOfWork(opCtx.get());
 }
 
 DEATH_TEST_F(RecoveryUnitTestHarness, PrepareMustBeInUnitOfWork, "invariant") {
@@ -267,23 +258,13 @@ DEATH_TEST_F(RecoveryUnitTestHarness, PrepareMustBeInUnitOfWork, "invariant") {
 }
 
 DEATH_TEST_F(RecoveryUnitTestHarness, WaitUntilDurableMustBeOutOfUnitOfWork, "invariant") {
-    opCtx->recoveryUnit()->beginUnitOfWork(opCtx->readOnly());
+    opCtx->recoveryUnit()->beginUnitOfWork(opCtx.get());
     opCtx->recoveryUnit()->waitUntilDurable(opCtx.get());
 }
 
 DEATH_TEST_F(RecoveryUnitTestHarness, AbandonSnapshotMustBeOutOfUnitOfWork, "invariant") {
-    opCtx->recoveryUnit()->beginUnitOfWork(opCtx->readOnly());
+    opCtx->recoveryUnit()->beginUnitOfWork(opCtx.get());
     opCtx->recoveryUnit()->abandonSnapshot();
-}
-
-DEATH_TEST_F(RecoveryUnitTestHarness, CommitInReadOnly, "invariant") {
-    opCtx->recoveryUnit()->beginUnitOfWork(/*readOnly=*/true);
-    opCtx->recoveryUnit()->commitUnitOfWork();
-}
-
-DEATH_TEST_F(RecoveryUnitTestHarness, AbortInReadOnly, "invariant") {
-    opCtx->recoveryUnit()->beginUnitOfWork(/*readOnly=*/true);
-    opCtx->recoveryUnit()->abortUnitOfWork();
 }
 
 }  // namespace

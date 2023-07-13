@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -44,9 +45,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 
 namespace {
@@ -54,7 +52,7 @@ namespace {
 ShardsvrSetUserWriteBlockMode makeShardsvrSetUserWriteBlockModeCommand(
     bool block, ShardsvrSetUserWriteBlockModePhaseEnum phase) {
     ShardsvrSetUserWriteBlockMode shardsvrSetUserWriteBlockModeCmd;
-    shardsvrSetUserWriteBlockModeCmd.setDbName(DatabaseName::kAdmin);
+    shardsvrSetUserWriteBlockModeCmd.setDbName(NamespaceString::kAdminDb);
     SetUserWriteBlockModeRequest setUserWriteBlockModeRequest(block /* global */);
     shardsvrSetUserWriteBlockModeCmd.setSetUserWriteBlockModeRequest(
         std::move(setUserWriteBlockModeRequest));
@@ -74,7 +72,7 @@ void sendSetUserWriteBlockModeCmdToAllShards(OperationContext* opCtx,
         makeShardsvrSetUserWriteBlockModeCommand(block, phase);
 
     sharding_util::sendCommandToShards(opCtx,
-                                       shardsvrSetUserWriteBlockModeCmd.getDbName().db(),
+                                       shardsvrSetUserWriteBlockModeCmd.getDbName(),
                                        CommandHelpers::appendMajorityWriteConcern(
                                            shardsvrSetUserWriteBlockModeCmd.toBSON(osi.toBSON())),
                                        allShards,
@@ -84,8 +82,8 @@ void sendSetUserWriteBlockModeCmdToAllShards(OperationContext* opCtx,
 }  // namespace
 
 bool SetUserWriteBlockModeCoordinator::hasSameOptions(const BSONObj& otherDocBSON) const {
-    const auto otherDoc =
-        StateDoc::parse(IDLParserContext("SetUserWriteBlockModeCoordinatorDocument"), otherDocBSON);
+    const auto otherDoc = StateDoc::parse(
+        IDLParserErrorContext("SetUserWriteBlockModeCoordinatorDocument"), otherDocBSON);
 
     return _doc.getBlock() == otherDoc.getBlock();
 }
@@ -145,7 +143,7 @@ ExecutorFuture<void> SetUserWriteBlockModeCoordinator::_runImpl(
     std::shared_ptr<executor::ScopedTaskExecutor> executor,
     const CancellationToken& token) noexcept {
     return ExecutorFuture<void>(**executor)
-        .then(_buildPhaseHandler(
+        .then(_executePhase(
             Phase::kPrepare,
             [this, anchor = shared_from_this()] {
                 auto opCtxHolder = cc().makeOperationContext();
@@ -195,7 +193,7 @@ ExecutorFuture<void> SetUserWriteBlockModeCoordinator::_runImpl(
                                                     WriteConcerns::kMajorityWriteConcernNoTimeout,
                                                     &ignoreResult));
             }))
-        .then(_buildPhaseHandler(Phase::kComplete, [this, anchor = shared_from_this()] {
+        .then(_executePhase(Phase::kComplete, [this, anchor = shared_from_this()] {
             auto opCtxHolder = cc().makeOperationContext();
             auto* opCtx = opCtxHolder.get();
             auto executor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();

@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -34,48 +35,17 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 
 using std::string;
 
 void WiredTigerEngineRuntimeConfigParameter::append(OperationContext* opCtx,
-                                                    BSONObjBuilder* b,
-                                                    StringData name,
-                                                    const boost::optional<TenantId>&) {
-    *b << name << _data.first;
+                                                    BSONObjBuilder& b,
+                                                    const std::string& name) {
+    b << name << _data.first;
 }
 
-Status validateExtraDiagnostics(const std::vector<std::string>& value,
-                                const boost::optional<TenantId>& tenantId) {
-    try {
-        std::set<std::string> flagArr = {"all",
-                                         "concurrent_access",
-                                         "data_validation",
-                                         "invalid_op",
-                                         "out_of_order",
-                                         "panic",
-                                         "slow_operation",
-                                         "visibility"};
-        for (const auto& diagFlag : value) {
-            bool exists = std::find(flagArr.begin(), flagArr.end(), diagFlag) != flagArr.end();
-
-            if (!exists) {
-                return Status(ErrorCodes::BadValue,
-                              fmt::format("'{}' is not a valid flag option", diagFlag));
-            }
-        }
-    } catch (...) {
-        return exceptionToStatus();
-    }
-
-    return Status::OK();
-}
-
-Status WiredTigerEngineRuntimeConfigParameter::setFromString(StringData str,
-                                                             const boost::optional<TenantId>&) {
+Status WiredTigerEngineRuntimeConfigParameter::setFromString(const std::string& str) {
     size_t pos = str.find('\0');
     if (pos != std::string::npos) {
         return Status(ErrorCodes::BadValue,
@@ -91,7 +61,7 @@ Status WiredTigerEngineRuntimeConfigParameter::setFromString(StringData str,
           "config"_attr = str);
 
     invariant(_data.second);
-    int ret = _data.second->reconfigure(str.toString().c_str());
+    int ret = _data.second->reconfigure(str.c_str());
     if (ret != 0) {
         const char* errorStr = wiredtiger_strerror(ret);
         string result = (str::stream() << "WiredTiger reconfiguration failed with error code ("
@@ -104,20 +74,18 @@ Status WiredTigerEngineRuntimeConfigParameter::setFromString(StringData str,
         return Status(ErrorCodes::BadValue, result);
     }
 
-    _data.first = str.toString();
+    _data.first = str;
     return Status::OK();
 }
 
-Status WiredTigerDirectoryForIndexesParameter::setFromString(StringData,
-                                                             const boost::optional<TenantId>&) {
+Status WiredTigerDirectoryForIndexesParameter::setFromString(const std::string&) {
     return {ErrorCodes::IllegalOperation,
             str::stream() << name() << " cannot be set via setParameter"};
 };
 void WiredTigerDirectoryForIndexesParameter::append(OperationContext* opCtx,
-                                                    BSONObjBuilder* builder,
-                                                    StringData name,
-                                                    const boost::optional<TenantId>&) {
-    builder->append(name, wiredTigerGlobalOptions.directoryForIndexes);
+                                                    BSONObjBuilder& builder,
+                                                    const std::string& name) {
+    builder.append(name, wiredTigerGlobalOptions.directoryForIndexes);
 }
 
 }  // namespace mongo

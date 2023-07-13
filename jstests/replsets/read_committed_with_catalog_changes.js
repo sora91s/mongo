@@ -23,14 +23,11 @@
  *
  * @tags: [
  *   requires_majority_read_concern,
- *   # This test is incompatible with earlier implementations of point-in-time catalog lookups.
- *   requires_fcv_70,
  * ]
  */
 
 load("jstests/libs/parallelTester.js");  // For Thread.
 load("jstests/libs/write_concern_util.js");
-load("jstests/libs/feature_flag_util.js");
 
 (function() {
 "use strict";
@@ -207,18 +204,10 @@ const testCases = {
 
 // Assertion helpers. These must get all state as arguments rather than through closure since
 // they may be passed in to a Thread.
-function assertReadsBlock(db, coll) {
+function assertReadsBlock(coll) {
     var res = coll.runCommand('find', {"readConcern": {"level": "majority"}, "maxTimeMS": 5000});
-
-    // When point-in-time catalog reads are enabled, reads no longer block waiting for the majority
-    // commit point to advance and allow reading earlier than the minimum visible snapshot.
-    if (FeatureFlagUtil.isEnabled(db, "PointInTimeCatalogLookups")) {
-        assert.commandWorked(res);
-    } else {
-        assert.commandFailedWithCode(res,
-                                     ErrorCodes.MaxTimeMSExpired,
-                                     "Expected read of " + coll.getFullName() + " to block");
-    }
+    assert.commandFailedWithCode(
+        res, ErrorCodes.MaxTimeMSExpired, "Expected read of " + coll.getFullName() + " to block");
 }
 
 function assertReadsSucceed(coll, timeoutMs = 20000) {
@@ -305,7 +294,7 @@ for (var testName in testCases) {
     // Perform the op and ensure that blocked collections block and unblocked ones don't.
     test.performOp(mainDB);
     assertReadsSucceed(otherDBCollection);
-    test.blockedCollections.forEach((name) => assertReadsBlock(mainDB, mainDB[name]));
+    test.blockedCollections.forEach((name) => assertReadsBlock(mainDB[name]));
     test.unblockedCollections.forEach((name) => assertReadsSucceed(mainDB[name]));
 
     // Use background threads to test that reads that start blocked can complete if the
@@ -330,7 +319,7 @@ for (var testName in testCases) {
     try {
         // Try the committed read again after sleeping to ensure that it still blocks even if it
         // isn't immediately after the operation.
-        test.blockedCollections.forEach((name) => assertReadsBlock(mainDB, mainDB[name]));
+        test.blockedCollections.forEach((name) => assertReadsBlock(mainDB[name]));
 
         // Restart oplog application on the secondary and ensure the blocked collections become
         // unblocked.

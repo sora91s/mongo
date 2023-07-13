@@ -67,10 +67,8 @@ load('jstests/libs/fail_point_util.js');
  *
  * @param {string} [optional] name the name of the test being run
  * @param {Object} [optional] replSet the ReplSetTest instance to adopt
- * @param {Object} [optional] nodeOptions command-line options to apply to all nodes in the replica
- *     set. Ignored if 'replSet' is provided.
  */
-function RollbackTest(name = "RollbackTest", replSet, nodeOptions) {
+function RollbackTest(name = "RollbackTest", replSet) {
     const State = {
         kStopped: "kStopped",
         kRollbackOps: "kRollbackOps",
@@ -106,7 +104,7 @@ function RollbackTest(name = "RollbackTest", replSet, nodeOptions) {
     let lastRBID;
 
     // Make sure we have a replica set up and running.
-    replSet = (replSet === undefined) ? performStandardSetup(nodeOptions) : replSet;
+    replSet = (replSet === undefined) ? performStandardSetup() : replSet;
     validateAndUseSetup(replSet);
 
     // Majority writes in the initial phase, before transitionToRollbackOperations(), should be
@@ -206,12 +204,12 @@ function RollbackTest(name = "RollbackTest", replSet, nodeOptions) {
      *
      * Note: One of the secondaries will have a priority of 0.
      */
-    function performStandardSetup(nodeOptions) {
-        nodeOptions = nodeOptions || {};
+    function performStandardSetup() {
+        let nodeOptions = {};
         if (TestData.logComponentVerbosity) {
-            nodeOptions["setParameter"] = nodeOptions["setParameter"] || {};
-            nodeOptions["setParameter"]["logComponentVerbosity"] =
-                tojsononeline(TestData.logComponentVerbosity);
+            nodeOptions["setParameter"] = {
+                "logComponentVerbosity": tojsononeline(TestData.logComponentVerbosity)
+            };
         }
         if (TestData.syncdelay) {
             nodeOptions["syncdelay"] = TestData.syncdelay;

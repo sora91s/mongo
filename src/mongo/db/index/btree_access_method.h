@@ -60,7 +60,7 @@ private:
                    KeyStringSet* keys,
                    KeyStringSet* multikeyMetadataKeys,
                    MultikeyPaths* multikeyPaths,
-                   const boost::optional<RecordId>& id) const final;
+                   boost::optional<RecordId> id) const final;
 
     // Our keys differ for V0 and V1.
     std::unique_ptr<BtreeKeyGenerator> _keyGenerator;

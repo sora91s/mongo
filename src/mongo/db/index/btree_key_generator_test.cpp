@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/logv2/log.h"
 #include "mongo/unittest/unittest.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 using namespace mongo;
 using std::cout;
@@ -118,8 +116,12 @@ bool testKeygen(const BSONObj& kp,
         fixed.push_back(BSONElement());
     }
 
-    auto keyGen = std::make_unique<BtreeKeyGenerator>(
-        fieldNames, fixed, sparse, KeyString::Version::kLatestVersion, Ordering::make(BSONObj()));
+    auto keyGen = std::make_unique<BtreeKeyGenerator>(fieldNames,
+                                                      fixed,
+                                                      sparse,
+                                                      collator,
+                                                      KeyString::Version::kLatestVersion,
+                                                      Ordering::make(BSONObj()));
 
     auto runTest = [&](bool skipMultikey) {
         //
@@ -130,7 +132,7 @@ bool testKeygen(const BSONObj& kp,
         SharedBufferFragmentBuilder allocator(BufBuilder::kDefaultInitSizeBytes);
         KeyStringSet actualKeys;
         MultikeyPaths actualMultikeyPaths;
-        keyGen->getKeys(allocator, obj, skipMultikey, &actualKeys, &actualMultikeyPaths, collator);
+        keyGen->getKeys(allocator, obj, skipMultikey, &actualKeys, &actualMultikeyPaths);
 
         //
         // Check that the results match the expected result.

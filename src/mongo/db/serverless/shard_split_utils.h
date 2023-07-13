@@ -30,9 +30,9 @@
 #pragma once
 
 #include "mongo/client/sdam/topology_listener.h"
-#include "mongo/db/repl/optime_with.h"
 #include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/serverless/shard_split_state_machine_gen.h"
+
 
 namespace mongo {
 namespace serverless {
@@ -64,7 +64,7 @@ repl::ReplSetConfig makeSplitConfig(const repl::ReplSetConfig& config,
 
 /**
  * Inserts the shard split state document 'stateDoc' into
- * 'config.shardSplitDonors' collection. Also, creates the collection if not present
+ * 'config.tenantSplitDonors' collection. Also, creates the collection if not present
  * before inserting the document.
  *
  * NOTE: A state doc might get inserted based on a decision made out of a stale read within a
@@ -121,7 +121,7 @@ public:
     void onServerHeartbeatSucceededEvent(const HostAndPort& hostAndPort, BSONObj reply) final;
 
     // Fulfilled when all nodes have accepted the split.
-    SharedSemiFuture<HostAndPort> getSplitAcceptedFuture() const;
+    SharedSemiFuture<void> getFuture() const;
 
 private:
     mutable Mutex _mutex =
@@ -130,8 +130,9 @@ private:
     bool _fulfilled{false};
     const size_t _numberOfRecipient;
     std::string _recipientSetName;
-    stdx::unordered_map<HostAndPort, repl::OpTimeWith<std::string>> _reportedSetNames;
-    SharedPromise<HostAndPort> _promise;
+    std::map<HostAndPort, std::string> _reportedSetNames;
+    bool _hasPrimary{false};
+    SharedPromise<void> _promise;
 };
 
 }  // namespace serverless

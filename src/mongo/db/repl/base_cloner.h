@@ -162,7 +162,7 @@ protected:
 
     mutable Mutex _mutex = MONGO_MAKE_LATCH(_clonerName + "::_mutex"_sd);
 
-    StringData getClonerName() const {
+    const StringData getClonerName() const {
         return _clonerName;
     }
 

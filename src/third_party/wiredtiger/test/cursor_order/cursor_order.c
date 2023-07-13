@@ -66,9 +66,9 @@ main(int argc, char *argv[])
     cfg->append_inserters = 1;
     cfg->conn = NULL;
     cfg->ftype = ROW;
-    cfg->max_nops = WT_MILLION;
+    cfg->max_nops = 1000000;
     cfg->multiple_files = false;
-    cfg->nkeys = WT_THOUSAND;
+    cfg->nkeys = 1000;
     cfg->reverse_scanners = 5;
     cfg->reverse_scan_ops = 10;
     cfg->thread_finish = false;
@@ -168,15 +168,17 @@ main(int argc, char *argv[])
 static void
 wt_connect(SHARED_CONFIG *cfg, char *config_open)
 {
-    static WT_EVENT_HANDLER event_handler = {handle_error, handle_message, NULL, NULL, NULL};
+    static WT_EVENT_HANDLER event_handler = {
+      handle_error, handle_message, NULL, NULL /* Close handler. */
+    };
     char config[512];
 
     testutil_clean_work_dir(home);
     testutil_make_work_dir(home);
 
-    testutil_check(__wt_snprintf(config, sizeof(config),
-      "create,statistics=(all),statistics_log=(json,on_close,wait=1),error_prefix=\"%s\",%s%s",
-      progname, config_open == NULL ? "" : ",", config_open == NULL ? "" : config_open));
+    testutil_check(
+      __wt_snprintf(config, sizeof(config), "create,statistics=(all),error_prefix=\"%s\",%s%s",
+        progname, config_open == NULL ? "" : ",", config_open == NULL ? "" : config_open));
 
     testutil_check(wiredtiger_open(home, &event_handler, config, &cfg->conn));
 }

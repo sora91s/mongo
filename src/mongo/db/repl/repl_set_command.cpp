@@ -36,15 +36,13 @@
 namespace mongo {
 namespace repl {
 
-Status ReplSetCommand::checkAuthForOperation(OperationContext* opCtx,
-                                             const DatabaseName&,
-                                             const BSONObj&) const {
-    if (!AuthorizationSession::get(opCtx->getClient())
-             ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                getAuthActionSet())) {
+Status ReplSetCommand::checkAuthForCommand(Client* client,
+                                           const std::string& dbname,
+                                           const BSONObj& cmdObj) const {
+    if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+            ResourcePattern::forClusterResource(), getAuthActionSet())) {
         return {ErrorCodes::Unauthorized, "Unauthorized"};
     }
-
     return Status::OK();
 }
 

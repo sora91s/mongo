@@ -9,6 +9,7 @@
  * TODO SERVER-61231: shard merge can't handle restart, adapt this test.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -18,14 +19,17 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
 load("jstests/aggregation/extras/utils.js");
 load("jstests/libs/fail_point_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 load("jstests/libs/uuid_util.js");
 
 let tenantMigrationTest = new TenantMigrationTest({name: jsTestName(), sharedOptions: {nodes: 1}});
 
-const tenantId = ObjectId().str;
+const tenantId = "testTenantId";
 const collName = "testColl";
 const transactionsNS = "config.transactions";
 
@@ -270,4 +274,5 @@ const assertTransactionEntries = (donorTxnEntries, recipientTxnEntries) => {
     assertTransactionEntries(updatedDonorTxnEntries, recipientTxnEntries);
 
     tenantMigrationTest.stop();
+})();
 })();

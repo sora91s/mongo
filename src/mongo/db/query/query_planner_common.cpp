@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/logv2/redaction.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -69,7 +67,7 @@ bool QueryPlannerCommon::scanDirectionsEqual(QuerySolutionNode* node, int direct
     }
 
     for (size_t i = 0; i < node->children.size(); ++i) {
-        if (!scanDirectionsEqual(node->children[i].get(), direction)) {
+        if (!scanDirectionsEqual(node->children[i], direction)) {
             return false;
         }
     }
@@ -116,7 +114,7 @@ void QueryPlannerCommon::reverseScans(QuerySolutionNode* node, bool reverseCollS
     }
 
     for (size_t i = 0; i < node->children.size(); ++i) {
-        reverseScans(node->children[i].get(), reverseCollScans);
+        reverseScans(node->children[i], reverseCollScans);
     }
 }
 

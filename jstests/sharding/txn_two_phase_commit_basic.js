@@ -8,7 +8,6 @@
 (function() {
 'use strict';
 
-load("jstests/libs/fail_point_util.js");
 load('jstests/sharding/libs/sharded_transactions_helpers.js');
 
 const dbName = "test";
@@ -185,11 +184,14 @@ const testCommitProtocol = function(shouldCommit, simulateNetworkFailures) {
 
     // Turn on failpoints so that the coordinator hangs after each write it does, so that the
     // test can check that the write happened correctly.
-    const hangBeforeWaitingForParticipantListWriteConcernFp = configureFailPoint(
-        coordinator, "hangBeforeWaitingForParticipantListWriteConcern", {}, "alwaysOn");
-
-    const hangBeforeWaitingForDecisionWriteConcernFp =
-        configureFailPoint(coordinator, "hangBeforeWaitingForDecisionWriteConcern", {}, "alwaysOn");
+    assert.commandWorked(coordinator.adminCommand({
+        configureFailPoint: "hangBeforeWaitingForParticipantListWriteConcern",
+        mode: "alwaysOn",
+    }));
+    assert.commandWorked(coordinator.adminCommand({
+        configureFailPoint: "hangBeforeWaitingForDecisionWriteConcern",
+        mode: "alwaysOn",
+    }));
 
     // Run commitTransaction through a parallel shell.
     let awaitResult;
@@ -200,15 +202,21 @@ const testCommitProtocol = function(shouldCommit, simulateNetworkFailures) {
     }
 
     // Check that the coordinator wrote the participant list.
-    hangBeforeWaitingForParticipantListWriteConcernFp.wait();
+    waitForFailpoint("Hit hangBeforeWaitingForParticipantListWriteConcern failpoint", txnNumber);
     checkParticipantListMatches(coordinator, lsid, txnNumber, expectedParticipantList);
-    hangBeforeWaitingForParticipantListWriteConcernFp.off();
+    assert.commandWorked(coordinator.adminCommand({
+        configureFailPoint: "hangBeforeWaitingForParticipantListWriteConcern",
+        mode: "off",
+    }));
 
     // Check that the coordinator wrote the decision.
-    hangBeforeWaitingForDecisionWriteConcernFp.wait();
+    waitForFailpoint("Hit hangBeforeWaitingForDecisionWriteConcern failpoint", txnNumber);
     checkParticipantListMatches(coordinator, lsid, txnNumber, expectedParticipantList);
     checkDecisionIs(coordinator, lsid, txnNumber, (shouldCommit ? "commit" : "abort"));
-    hangBeforeWaitingForDecisionWriteConcernFp.off();
+    assert.commandWorked(coordinator.adminCommand({
+        configureFailPoint: "hangBeforeWaitingForDecisionWriteConcern",
+        mode: "off",
+    }));
 
     // Check that the coordinator deleted its persisted state.
     awaitResult();

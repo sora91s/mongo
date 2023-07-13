@@ -30,48 +30,18 @@
 #include "mongo/db/query/optimizer/explain.h"
 
 #include "mongo/db/exec/sbe/values/bson.h"
-#include "mongo/db/query/optimizer/cascades/rewriter_rules.h"
-#include "mongo/db/query/optimizer/defs.h"
+#include "mongo/db/query/optimizer/cascades/memo.h"
 #include "mongo/db/query/optimizer/node.h"
-#include "mongo/db/query/optimizer/utils/path_utils.h"
 #include "mongo/util/assert_util.h"
-
 
 namespace mongo::optimizer {
 
-ABTPrinter::ABTPrinter(PlanAndProps planAndProps, const ExplainVersion explainVersion)
-    : _planAndProps(std::move(planAndProps)), _explainVersion(explainVersion) {}
-
 BSONObj ABTPrinter::explainBSON() const {
-    const auto explainPlanStr = [&](std::string planStr) {
-        BSONObjBuilder builder;
-        builder.append("plan", std::move(planStr));
-        return builder.done().getOwned();
-    };
-
-    switch (_explainVersion) {
-        case ExplainVersion::V1:
-            return explainPlanStr(ExplainGenerator::explain(_planAndProps._node));
-
-        case ExplainVersion::V2:
-            return explainPlanStr(ExplainGenerator::explainV2(_planAndProps._node));
-
-        case ExplainVersion::V2Compact:
-            return explainPlanStr(ExplainGenerator::explainV2Compact(_planAndProps._node));
-
-        case ExplainVersion::V3:
-            return ExplainGenerator::explainBSONObj(_planAndProps._node,
-                                                    true /*displayProperties*/,
-                                                    nullptr /*memoInterface*/,
-                                                    _planAndProps._map);
-
-        case ExplainVersion::Vmax:
-            // Should not be seeing this value here.
-            break;
-    }
-
-    MONGO_UNREACHABLE;
+    return ExplainGenerator::explainBSONObj(
+        _abtTree, true /*displayProperties*/, nullptr /*Memo*/, _nodeToPropsMap);
 }
+
+enum class ExplainVersion { V1, V2, V3, Vmax };
 
 bool constexpr operator<(const ExplainVersion v1, const ExplainVersion v2) {
     return static_cast<int>(v1) < static_cast<int>(v2);
@@ -100,18 +70,6 @@ struct CommandStruct {
 
 using CommandVector = std::vector<CommandStruct>;
 
-/**
- * Helper class for building indented, multiline strings.
- *
- * The main operations it supports are:
- *   - Print a single value, of any type that supports '<<' to std::ostream.
- *   - Indent/unindent, and add newlines.
- *   - Print another ExplainPrinterImpl, preserving its 2D layout.
- *
- * Being able to print another whole printer makes it easy to build these 2D strings
- * bottom-up, without passing around a std::ostream. It also allows displaying
- * child elements in a different order than they were visited.
- */
 template <const ExplainVersion version = kDefaultExplainVersion>
 class ExplainPrinterImpl {
 public:
@@ -121,7 +79,6 @@ public:
           _osDirty(false),
           _indentCount(0),
           _childrenRemaining(0),
-          _inlineNextChild(false),
           _cmdInsertPos(-1) {}
 
     ~ExplainPrinterImpl() {
@@ -142,25 +99,12 @@ public:
           _osDirty(other._osDirty),
           _indentCount(other._indentCount),
           _childrenRemaining(other._childrenRemaining),
-          _inlineNextChild(other._inlineNextChild),
           _cmdInsertPos(other._cmdInsertPos) {}
 
     template <class T>
     ExplainPrinterImpl& print(const T& t) {
         _os << t;
         _osDirty = true;
-        return *this;
-    }
-
-    template <class TagType>
-    ExplainPrinterImpl& print(const StrongStringAlias<TagType>& t) {
-        print(t.value().empty() ? "<empty>" : t.value());
-        return *this;
-    }
-
-    template <class TagType>
-    ExplainPrinterImpl& print(const StrongDoubleAlias<TagType>& t) {
-        print(t._value);
         return *this;
     }
 
@@ -193,21 +137,13 @@ public:
         return print(other);
     }
 
-    ExplainPrinterImpl& setChildCount(const size_t childCount, const bool noInline = false) {
-        if (version == ExplainVersion::V1) {
-            return *this;
-        }
-
-        if (!noInline && version == ExplainVersion::V2Compact && childCount == 1) {
-            _inlineNextChild = true;
+    ExplainPrinterImpl& setChildCount(const size_t childCount) {
+        if (version > ExplainVersion::V1) {
             _childrenRemaining = childCount;
-            return *this;
-        }
-
-        _childrenRemaining = childCount;
-        indent("");
-        for (int i = 0; i < _childrenRemaining - 1; i++) {
-            indent("|");
+            indent("");
+            for (int i = 0; i < _childrenRemaining - 1; i++) {
+                indent("|");
+            }
         }
         return *this;
     }
@@ -239,6 +175,7 @@ public:
         std::ostringstream os;
         std::vector<std::string> linePrefix;
 
+        bool firstAddLine = true;
         for (const auto& cmd : _cmd) {
             switch (cmd._type) {
                 case CommandType::Indent:
@@ -257,22 +194,18 @@ public:
                         }
                     }
                     os << cmd._str << "\n";
+
+                    firstAddLine = false;
                     break;
                 }
 
-                default: {
-                    MONGO_UNREACHABLE;
-                }
+                default: { MONGO_UNREACHABLE; }
             }
         }
 
         return os.str();
     }
 
-    /**
-     * Ends the current line, if there is one. Repeated calls do not create
-     * blank lines.
-     */
     void newLine() {
         if (!_osDirty) {
             return;
@@ -319,25 +252,8 @@ private:
                     _os << element._str;
                 }
             }
-        } else if (_inlineNextChild) {
-            _inlineNextChild = false;
-            // Print 'other' without starting a new line.
-            // Embed its first line into our current one, and keep the rest of its commands.
-            bool first = true;
-            for (const CommandStruct& element : other.getCommands()) {
-                if (first && element._type == CommandType::AddLine) {
-                    _os << singleLevelSpacer << element._str;
-                } else {
-                    newLine();
-                    _cmd.push_back(element);
-                }
-                first = false;
-            }
         } else {
             newLine();
-            // If 'hadChildrenRemaining' then 'other' represents a child of 'this', which means
-            // there was a prior call to setChildCount() that added indentation for it.
-            // If '! hadChildrenRemaining' then create indentation for it now.
             if (!hadChildrenRemaining) {
                 indent();
             }
@@ -366,22 +282,11 @@ private:
         _cmd.emplace_back(CommandType::Unindent, "");
     }
 
-    // Holds completed lines, and indent/unIndent commands.
-    // When '_cmdInsertPos' is nonnegative, some of these lines and commands belong
-    // after the currently-being-built line.
     CommandVector _cmd;
-    // Holds the incomplete line currently being built. Once complete this will become the last
-    // line, unless '_cmdInsertPos' is nonnegative.
     std::ostringstream _os;
-    // True means we have an incomplete line in '_os'.
-    // Once the line is completed with newLine(), this flag is false until
-    // we begin building a new one with print().
     bool _osDirty;
     int _indentCount;
     int _childrenRemaining;
-    bool _inlineNextChild;
-    // When nonnegative, indicates the insertion point where completed lines
-    // should be added to '_cmd'. -1 means completed lines will be added at the end.
     int _cmdInsertPos;
 };
 
@@ -456,19 +361,9 @@ public:
     }
 
     ExplainPrinterImpl& print(const std::string& s) {
-        printStringInternal(s);
+        auto [tag, val] = sbe::value::makeNewString(s);
+        addValue(tag, val);
         return *this;
-    }
-
-    template <class TagType>
-    ExplainPrinterImpl& print(const StrongStringAlias<TagType>& s) {
-        printStringInternal(s.value().toString());
-        return *this;
-    }
-
-    template <class TagType>
-    ExplainPrinterImpl& print(const StrongDoubleAlias<TagType>& v) {
-        return print(v._value);
     }
 
     ExplainPrinterImpl& print(const char* s) {
@@ -510,26 +405,12 @@ public:
         return *this;
     }
 
-    template <size_t N>
-    ExplainPrinterImpl& fieldName(const char (&name)[N],
-                                  const ExplainVersion minVersion = ExplainVersion::V1,
-                                  const ExplainVersion maxVersion = ExplainVersion::Vmax) {
-        fieldNameInternal(name, minVersion, maxVersion);
-        return *this;
-    }
-
     ExplainPrinterImpl& fieldName(const std::string& name,
                                   const ExplainVersion minVersion = ExplainVersion::V1,
                                   const ExplainVersion maxVersion = ExplainVersion::Vmax) {
-        fieldNameInternal(name, minVersion, maxVersion);
-        return *this;
-    }
-
-    template <class TagType>
-    ExplainPrinterImpl& fieldName(const StrongStringAlias<TagType>& name,
-                                  const ExplainVersion minVersion = ExplainVersion::V1,
-                                  const ExplainVersion maxVersion = ExplainVersion::Vmax) {
-        fieldNameInternal(name.value().toString(), minVersion, maxVersion);
+        if (minVersion <= version && maxVersion >= version) {
+            _nextFieldName = name;
+        }
         return *this;
     }
 
@@ -539,21 +420,6 @@ public:
     }
 
 private:
-    ExplainPrinterImpl& printStringInternal(const std::string& s) {
-        auto [tag, val] = sbe::value::makeNewString(s);
-        addValue(tag, val);
-        return *this;
-    }
-
-    ExplainPrinterImpl& fieldNameInternal(const std::string& name,
-                                          const ExplainVersion minVersion,
-                                          const ExplainVersion maxVersion) {
-        if (minVersion <= version && maxVersion >= version) {
-            _nextFieldName = name;
-        }
-        return *this;
-    }
-
     ExplainPrinterImpl& print(ExplainPrinterImpl& other, const bool append) {
         auto [tag, val] = other.moveValue();
         addValue(tag, val, append);
@@ -577,7 +443,7 @@ private:
     void addValue(sbe::value::TypeTags tag, sbe::value::Value val, const bool append = false) {
         if (!_initialized) {
             _initialized = true;
-            _canAppend = _nextFieldName.has_value();
+            _canAppend = !_nextFieldName.empty();
             if (_canAppend) {
                 std::tie(_tag, _val) = sbe::value::makeNewObject();
             } else {
@@ -593,7 +459,7 @@ private:
         }
 
         if (append) {
-            uassert(6624073, "Field name is not set", !_nextFieldName.has_value());
+            uassert(6624073, "Field name is not empty", _nextFieldName.empty());
             uassert(6624349,
                     "Other printer does not contain Object",
                     tag == sbe::value::TypeTags::Object);
@@ -604,19 +470,19 @@ private:
                 addField(obj->field(i), fieldTag, fieldVal);
             }
         } else {
-            tassert(6751700, "Missing field name to serialize", _nextFieldName);
-            addField(*_nextFieldName, tag, val);
-            _nextFieldName = boost::none;
+            addField(_nextFieldName, tag, val);
+            _nextFieldName.clear();
         }
     }
 
     void addField(const std::string& fieldName, sbe::value::TypeTags tag, sbe::value::Value val) {
+        uassert(6624074, "Field name is empty", !fieldName.empty());
         uassert(6624075, "Duplicate field name", _fieldNameSet.insert(fieldName).second);
         sbe::value::getObjectView(_val)->push_back(fieldName, tag, val);
     }
 
     void reset() {
-        _nextFieldName = boost::none;
+        _nextFieldName.clear();
         _initialized = false;
         _canAppend = false;
         _tag = sbe::value::TypeTags::Nothing;
@@ -624,8 +490,7 @@ private:
         _fieldNameSet.clear();
     }
 
-    // Cannot assume empty means non-existent, so use optional<>.
-    boost::optional<std::string> _nextFieldName;
+    std::string _nextFieldName;
     bool _initialized;
     bool _canAppend;
     sbe::value::TypeTags _tag;
@@ -640,17 +505,12 @@ public:
     using ExplainPrinter = ExplainPrinterImpl<version>;
 
     ExplainGeneratorTransporter(bool displayProperties = false,
-                                const cascades::MemoExplainInterface* memoInterface = nullptr,
-                                const NodeToGroupPropsMap& nodeMap = {},
-                                const boost::optional<const NodeCEMap&>& nodeCEMap = boost::none)
-        : _displayProperties(displayProperties),
-          _memoInterface(memoInterface),
-          _nodeMap(nodeMap),
-          _nodeCEMap(nodeCEMap) {
+                                const cascades::Memo* memo = nullptr,
+                                const NodeToGroupPropsMap& nodeMap = {})
+        : _displayProperties(displayProperties), _memo(memo), _nodeMap(nodeMap) {
         uassert(6624005,
                 "Memo must be provided in order to display properties.",
-                !_displayProperties ||
-                    (_memoInterface != nullptr || version == ExplainVersion::V3));
+                !_displayProperties || (_memo != nullptr || version == ExplainVersion::V3));
     }
 
     /**
@@ -659,10 +519,7 @@ public:
      * no-op.
      */
     void maybePrintProps(ExplainPrinter& nodePrinter, const Node& node) {
-        tassert(6701800,
-                "Cannot have both _displayProperties and _nodeCEMap set.",
-                !(_displayProperties && _nodeCEMap));
-        if (_nodeCEMap || !_displayProperties || _nodeMap.empty()) {
+        if (!_displayProperties || version != ExplainVersion::V3 || _nodeMap.empty()) {
             return;
         }
         auto it = _nodeMap.find(&node);
@@ -676,16 +533,12 @@ public:
         ExplainPrinter propsPrinter;
         propsPrinter.fieldName("cost")
             .print(props._cost.getCost())
-            .separator(", ")
             .fieldName("localCost")
             .print(props._localCost.getCost())
-            .separator(", ")
             .fieldName("adjustedCE")
             .print(props._adjustedCE)
-            .separator(", ")
             .fieldName("planNodeID")
             .print(props._planNodeId)
-            .separator(", ")
             .fieldName("logicalProperties")
             .print(logPropPrinter)
             .fieldName("physicalProperties")
@@ -693,25 +546,6 @@ public:
         ExplainPrinter res;
         res.fieldName("properties").print(propsPrinter);
         nodePrinter.printAppend(res);
-    }
-
-    void nodeCEPropsPrint(ExplainPrinter& nodePrinter, const ABT& n, const Node& node) {
-        tassert(6701801,
-                "Cannot have both _displayProperties and _nodeCEMap set.",
-                !(_displayProperties && _nodeCEMap));
-        // Only allow in V2 and V3 explain. No point in printing CE when we have a delegator
-        // node.
-        if (!_nodeCEMap || version == ExplainVersion::V1 || n.is<MemoLogicalDelegatorNode>() ||
-            n.is<MemoPhysicalDelegatorNode>()) {
-            return;
-        }
-        auto it = _nodeCEMap->find(&node);
-        uassert(6701802, "Failed to find node ce", it != _nodeCEMap->end());
-        const CEType ce = it->second;
-
-        ExplainPrinter propsPrinter;
-        propsPrinter.fieldName("ce").print(ce);
-        nodePrinter.printAppend(propsPrinter);
     }
 
     static void printBooleanFlag(ExplainPrinter& printer,
@@ -728,7 +562,7 @@ public:
         } else if constexpr (version == ExplainVersion::V3) {
             printer.fieldName(name).print(flag);
         } else {
-            MONGO_UNREACHABLE;
+            static_assert("Unknown version");
         }
     }
 
@@ -744,100 +578,47 @@ public:
         }
     }
 
-    template <class T>
-    static void printProjectionsUnordered(ExplainPrinter& printer, const T& projections) {
-        if constexpr (version < ExplainVersion::V3) {
-            if (!projections.empty()) {
-                printer.separator("{");
-                bool first = true;
-                for (const ProjectionName& projectionName : projections) {
-                    if (first) {
-                        first = false;
-                    } else {
-                        printer.separator(", ");
-                    }
-                    printer.print(projectionName);
-                }
-                printer.separator("}");
-            }
-        } else if constexpr (version == ExplainVersion::V3) {
-            std::vector<ExplainPrinter> printers;
-            for (const ProjectionName& projectionName : projections) {
-                ExplainPrinter local;
-                local.print(projectionName);
-                printers.push_back(std::move(local));
-            }
-            printer.print(printers);
-        } else {
-            MONGO_UNREACHABLE;
-        }
-    }
-
-    template <class T>
-    static void printProjectionsOrdered(ExplainPrinter& printer, const T& projections) {
-        ProjectionNameOrderedSet projectionSet(projections.cbegin(), projections.cend());
-        printProjectionsUnordered(printer, projectionSet);
-    }
-
-    static void printProjection(ExplainPrinter& printer, const ProjectionName& projection) {
-        printProjectionsUnordered(printer, ProjectionNameVector{projection});
-    }
-
-    static void printCorrelatedProjections(ExplainPrinter& printer,
-                                           const ProjectionNameSet& projections) {
-        printer.fieldName("correlatedProjections", ExplainVersion::V3);
-        printProjectionsOrdered(printer, projections);
-    }
-
-
     /**
      * Nodes
      */
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const References& references,
-                             std::vector<ExplainPrinter> inResults) {
+    ExplainPrinter transport(const References& references, std::vector<ExplainPrinter> inResults) {
         ExplainPrinter printer;
-        if constexpr (version < ExplainVersion::V3) {
-            // The ref block is redundant for V1 and V2. We typically explain the references in the
-            // blocks ([]) of the individual elements.
-        } else if constexpr (version == ExplainVersion::V3) {
-            printer.printAppend(inResults);
-        } else {
-            MONGO_UNREACHABLE;
-        }
+        printer.separator("RefBlock: ").printAppend(inResults);
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const ExpressionBinder& binders,
+    ExplainPrinter transport(const ExpressionBinder& binders,
                              std::vector<ExplainPrinter> inResults) {
-        ExplainPrinter printer;
-        if constexpr (version < ExplainVersion::V3) {
-            // The bind block is redundant for V1-V2 type explains, as the bound projections can be
-            // inferred from the field projection map; so here we print nothing.
-            return printer;
-        } else if constexpr (version == ExplainVersion::V3) {
-            std::map<ProjectionName, ExplainPrinter> ordered;
-            for (size_t idx = 0; idx < inResults.size(); ++idx) {
-                ordered.emplace(binders.names()[idx], std::move(inResults[idx]));
-            }
-            printer.separator("BindBlock:");
-            for (auto& [name, child] : ordered) {
-                printer.separator(" ").fieldName(name).print(child);
-            }
-        } else {
-            MONGO_UNREACHABLE;
+        std::map<std::string, ExplainPrinter> ordered;
+        for (size_t idx = 0; idx < inResults.size(); ++idx) {
+            ordered.emplace(binders.names()[idx], std::move(inResults[idx]));
         }
+
+        ExplainPrinter printer;
+        printer.separator("BindBlock:");
+
+        for (auto& [name, child] : ordered) {
+            if constexpr (version < ExplainVersion::V3) {
+                ExplainPrinter local;
+                local.print("[").print(name).print("]").print(child);
+                printer.print(local);
+            } else if constexpr (version == ExplainVersion::V3) {
+                printer.separator(" ").fieldName(name).print(child);
+            } else {
+                static_assert("Unknown version");
+            }
+        }
+
         return printer;
     }
 
     static void printFieldProjectionMap(ExplainPrinter& printer, const FieldProjectionMap& map) {
         std::map<FieldNameType, ProjectionName> ordered;
-        if (const auto& projName = map._ridProjection) {
-            ordered.emplace("<rid>", *projName);
+        if (!map._ridProjection.empty()) {
+            ordered["<rid>"] = map._ridProjection;
         }
-        if (const auto& projName = map._rootProjection) {
-            ordered.emplace("<root>", *projName);
+        if (!map._rootProjection.empty()) {
+            ordered["<root>"] = map._rootProjection;
         }
         for (const auto& entry : map._fieldProjections) {
             ordered.insert(entry);
@@ -860,367 +641,253 @@ public:
             }
             printer.fieldName("fieldProjectionMap").print(local);
         } else {
-            MONGO_UNREACHABLE;
+            static_assert("Unknown version");
         }
     }
 
-    ExplainPrinter transport(const ABT& n, const ScanNode& node, ExplainPrinter bindResult) {
+    ExplainPrinter transport(const ScanNode& node, ExplainPrinter bindResult) {
         ExplainPrinter printer("Scan");
         maybePrintProps(printer, node);
+
         printer.separator(" [")
             .fieldName("scanDefName", ExplainVersion::V3)
-            .print(node.getScanDefName());
-
-        if constexpr (version < ExplainVersion::V3) {
-            printer.separator(", ");
-            printProjection(printer, node.getProjectionName());
-        }
-        printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        printer.fieldName("bindings", ExplainVersion::V3).print(bindResult);
+            .print(node.getScanDefName())
+            .separator("]")
+            .fieldName("bindings", ExplainVersion::V3)
+            .print(bindResult);
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const PhysicalScanNode& node,
-                             ExplainPrinter bindResult) {
+    ExplainPrinter transport(const PhysicalScanNode& node, ExplainPrinter bindResult) {
         ExplainPrinter printer("PhysicalScan");
         maybePrintProps(printer, node);
+
         printer.separator(" [{");
         printFieldProjectionMap(printer, node.getFieldProjectionMap());
         printer.separator("}, ")
             .fieldName("scanDefName", ExplainVersion::V3)
             .print(node.getScanDefName());
+
         printBooleanFlag(printer, "parallel", node.useParallelScan());
-        printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        printer.fieldName("bindings", ExplainVersion::V3).print(bindResult);
+
+        printer.separator("]").fieldName("bindings", ExplainVersion::V3).print(bindResult);
+
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n, const ValueScanNode& node, ExplainPrinter bindResult) {
+    ExplainPrinter transport(const ValueScanNode& node, ExplainPrinter bindResult) {
         ExplainPrinter valuePrinter = generate(node.getValueArray());
 
-        // Specifically not printing optional logical properties here. They can be displayed with
-        // the properties explain.
         ExplainPrinter printer("ValueScan");
         maybePrintProps(printer, node);
-        printer.separator(" [");
-        printBooleanFlag(printer, "hasRID", node.getHasRID());
-        printer.fieldName("hasRID")
-            .print(node.getHasRID())
+        printer.separator(" [")
             .fieldName("arraySize")
             .print(node.getArraySize())
-            .separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        printer.fieldName("values", ExplainVersion::V3)
+            .separator("]")
+            .fieldName("values", ExplainVersion::V3)
             .print(valuePrinter)
             .fieldName("bindings", ExplainVersion::V3)
             .print(bindResult);
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n, const CoScanNode& node) {
+    ExplainPrinter transport(const CoScanNode& node) {
         ExplainPrinter printer("CoScan");
         maybePrintProps(printer, node);
         printer.separator(" []");
-        nodeCEPropsPrint(printer, n, node);
         return printer;
     }
 
-    void printBound(ExplainPrinter& printer, const BoundRequirement& bound) {
-        if constexpr (version < ExplainVersion::V3) {
-            // Since we are printing on a single level, use V1 printer in order to avoid children
-            // being reversed. Also note that we are specifically not printing inclusive flag here.
-            // The inclusion is explained by the caller.
-
-            ExplainGeneratorTransporter<ExplainVersion::V1> gen;
-            auto boundPrinter = gen.generate(bound.getBound());
-            printer.printSingleLevel(boundPrinter);
-        } else if constexpr (version == ExplainVersion::V3) {
-            printer.fieldName("inclusive").print(bound.isInclusive());
-            {
-                ExplainPrinter boundPrinter = generate(bound.getBound());
-                printer.fieldName("bound").print(boundPrinter);
-            }
-        } else {
-            MONGO_UNREACHABLE;
-        }
-    }
-
-    void printBound(ExplainPrinter& printer, const CompoundBoundRequirement& bound) {
-        if constexpr (version < ExplainVersion::V3) {
-            const bool manyConstants = bound.size() > 1 && bound.isConstant();
-            if (manyConstants) {
-                printer.print("Const [");
-            }
-
-            bool first = true;
-            for (const auto& entry : bound.getBound()) {
-                if (first) {
-                    first = false;
-                } else {
-                    printer.print(" | ");
-                }
-
-                if (manyConstants) {
-                    std::ostringstream os;
-                    os << entry.cast<Constant>()->get();
-                    printer.print(os.str());
-                } else {
-                    ExplainGeneratorTransporter<ExplainVersion::V1> gen;
-                    auto boundPrinter = gen.generate(entry);
-                    printer.printSingleLevel(boundPrinter);
-                }
-            }
-
-            if (manyConstants) {
-                printer.print("]");
-            }
-        } else if constexpr (version == ExplainVersion::V3) {
-            printer.fieldName("inclusive").print(bound.isInclusive());
-
-            std::vector<ExplainPrinter> printers;
-            for (const auto& entry : bound.getBound()) {
-                printers.push_back(generate(entry));
-            }
-            printer.fieldName("bound").print(printers);
-        } else {
-            MONGO_UNREACHABLE;
-        }
-    }
-
-    template <class T>
-    void printInterval(ExplainPrinter& printer, const T& interval) {
-        const auto& lowBound = interval.getLowBound();
-        const auto& highBound = interval.getHighBound();
+    void printInterval(ExplainPrinter& printer, const IntervalRequirement& interval) {
+        const BoundRequirement& lowBound = interval.getLowBound();
+        const BoundRequirement& highBound = interval.getHighBound();
 
         if constexpr (version < ExplainVersion::V3) {
-            // Shortened output for half-open, fully open and point intervals.
-            if (interval.isFullyOpen()) {
-                printer.print("<fully open>");
-            } else if (interval.isEquality()) {
-                printer.print("=");
-                printBound(printer, lowBound);
-            } else if (lowBound.isMinusInf()) {
-                printer.print("<");
-                if (highBound.isInclusive()) {
-                    printer.print("=");
-                }
-                printBound(printer, highBound);
-            } else if (highBound.isPlusInf()) {
-                printer.print(">");
-                if (lowBound.isInclusive()) {
-                    printer.print("=");
-                }
-                printBound(printer, lowBound);
+            const auto printBoundFn = [](ExplainPrinter& printer, const ABT& bound) {
+                // Since we are printing on a single level, use V1 printer in order to avoid
+                // children being reversed.
+                ExplainGeneratorTransporter<ExplainVersion::V1> gen;
+                auto boundPrinter = gen.generate(bound);
+                printer.printSingleLevel(boundPrinter);
+            };
+
+            printer.print(lowBound.isInclusive() ? "[" : "(");
+            if (lowBound.isInfinite()) {
+                printer.print("-inf");
             } else {
-                // Output for a generic interval.
-
-                printer.print(lowBound.isInclusive() ? "[" : "(");
-                printBound(printer, lowBound);
-
-                printer.print(", ");
-                printBound(printer, highBound);
-
-                printer.print(highBound.isInclusive() ? "]" : ")");
+                printBoundFn(printer, lowBound.getBound());
             }
+
+            printer.print(", ");
+            if (highBound.isInfinite()) {
+                printer.print("+inf");
+            } else {
+                printBoundFn(printer, highBound.getBound());
+            }
+
+            printer.print(highBound.isInclusive() ? "]" : ")");
         } else if constexpr (version == ExplainVersion::V3) {
             ExplainPrinter lowBoundPrinter;
-            printBound(lowBoundPrinter, lowBound);
-            ExplainPrinter highBoundPrinter;
-            printBound(highBoundPrinter, highBound);
+            lowBoundPrinter.fieldName("inclusive")
+                .print(lowBound.isInclusive())
+                .fieldName("infinite")
+                .print(lowBound.isInfinite());
+            if (!lowBound.isInfinite()) {
+                ExplainPrinter boundPrinter = generate(lowBound.getBound());
+                lowBoundPrinter.fieldName("bound").print(boundPrinter);
+            }
 
-            ExplainPrinter local;
-            local.fieldName("lowBound")
+            ExplainPrinter highBoundPrinter;
+            highBoundPrinter.fieldName("inclusive")
+                .print(highBound.isInclusive())
+                .fieldName("infinite")
+                .print(highBound.isInfinite());
+            if (!highBound.isInfinite()) {
+                ExplainPrinter boundPrinter = generate(highBound.getBound());
+                highBoundPrinter.fieldName("bound").print(boundPrinter);
+            }
+
+            printer.fieldName("lowBound")
                 .print(lowBoundPrinter)
                 .fieldName("highBound")
                 .print(highBoundPrinter);
-            printer.print(local);
         } else {
-            MONGO_UNREACHABLE;
+            static_assert("Version not implemented");
         }
     }
 
-    template <class T>
-    std::string printInterval(const T& interval) {
+    std::string printInterval(const IntervalRequirement& interval) {
         ExplainPrinter printer;
         printInterval(printer, interval);
         return printer.str();
     }
 
-    void printPartialSchemaEntry(ExplainPrinter& printer, const PartialSchemaEntry& entry) {
-        const auto& [key, req] = entry;
+    ExplainPrinter printIntervalExpr(const IntervalReqExpr::Node& intervalExpr) {
+        IntervalPrinter<IntervalReqExpr> intervalPrinter(*this);
+        return intervalPrinter.print(intervalExpr);
+    }
 
-        if (const auto& projName = key._projectionName) {
-            printer.fieldName("refProjection").print(*projName).separator(", ");
+    void printInterval(ExplainPrinter& printer, const MultiKeyIntervalRequirement& interval) {
+        if constexpr (version < ExplainVersion::V3) {
+            bool first = true;
+            for (const auto& entry : interval) {
+                if (first) {
+                    first = false;
+                } else {
+                    printer.print(", ");
+                }
+                printInterval(printer, entry);
+            }
+        } else if constexpr (version == ExplainVersion::V3) {
+            std::vector<ExplainPrinter> printers;
+            for (const auto& entry : interval) {
+                ExplainPrinter local;
+                printInterval(local, entry);
+                printers.push_back(std::move(local));
+            }
+            printer.print(printers);
+        } else {
+            static_assert("Version not implemented");
         }
-        ExplainPrinter pathPrinter = generate(key._path);
-        printer.fieldName("path").separator("'").printSingleLevel(pathPrinter).separator("', ");
-
-        if (const auto& boundProjName = req.getBoundProjectionName()) {
-            printer.fieldName("boundProjection").print(*boundProjName).separator(", ");
-        }
-
-        printer.fieldName("intervals");
-        {
-            ExplainPrinter intervals = printIntervalExpr<IntervalRequirement>(req.getIntervals());
-            printer.printSingleLevel(intervals, "" /*singleLevelSpacer*/);
-        }
-
-        printBooleanFlag(printer, "perfOnly", req.getIsPerfOnly());
     }
 
     template <class T>
-    ExplainPrinter printIntervalExpr(const typename BoolExpr<T>::Node& intervalExpr) {
-        const auto printFn = [this](ExplainPrinter& printer, const T& interval) {
-            printInterval(printer, interval);
-        };
-
-        ExplainPrinter printer;
-        BoolExprPrinter<T>{printFn}.print(printer, intervalExpr);
-        return printer;
-    }
-
-    ExplainPrinter printPartialSchemaRequirements(
-        const typename BoolExpr<PartialSchemaEntry>::Node& reqs) {
-        const auto printFn = [this](ExplainPrinter& printer, const PartialSchemaEntry& entry) {
-            printPartialSchemaEntry(printer, entry);
-        };
-
-        ExplainPrinter printer;
-        BoolExprPrinter<PartialSchemaEntry>{printFn}.print(printer, reqs);
-        return printer;
-    }
-
-    template <class T>
-    class BoolExprPrinter {
+    class IntervalPrinter {
     public:
-        using PrinterFn = std::function<void(ExplainPrinter& printer, const T& t)>;
+        IntervalPrinter(ExplainGeneratorTransporter& instance) : _instance(instance) {}
 
-        BoolExprPrinter(const PrinterFn& tPrinter) : _tPrinter(tPrinter) {}
-
-        void operator()(const typename BoolExpr<T>::Node& n,
-                        const typename BoolExpr<T>::Atom& node,
-                        ExplainPrinter& printer,
-                        const size_t extraBraceCount) {
-            for (size_t i = 0; i <= extraBraceCount; i++) {
-                printer.separator("{");
-            }
-            _tPrinter(printer, node.getExpr());
-            for (size_t i = 0; i <= extraBraceCount; i++) {
-                printer.separator("}");
-            }
+        ExplainPrinter transport(const typename T::Atom& node) {
+            ExplainPrinter printer;
+            printer.separator("{");
+            _instance.printInterval(printer, node.getExpr());
+            printer.separator("}");
+            return printer;
         }
 
-        template <bool isConjunction, class NodeType>
-        void print(const NodeType& node, ExplainPrinter& printer, const size_t extraBraceCount) {
-            const auto& children = node.nodes();
-
+        template <bool isConjunction>
+        ExplainPrinter print(std::vector<ExplainPrinter> childResults) {
             if constexpr (version < ExplainVersion::V3) {
-                if (children.empty()) {
-                    return;
-                }
-                if (children.size() == 1) {
-                    children.front().visit(*this, printer, extraBraceCount + 1);
-                    return;
-                }
-
-                for (size_t i = 0; i <= extraBraceCount; i++) {
-                    printer.separator("{");
-                }
+                ExplainPrinter printer;
+                printer.separator("{");
 
                 bool first = true;
-                for (const auto& child : children) {
+                for (ExplainPrinter& child : childResults) {
                     if (first) {
                         first = false;
                     } else if constexpr (isConjunction) {
-                        printer.separator(" ^ ");
+                        printer.print(" ^ ");
                     } else {
-                        printer.separator(" U ");
+                        printer.print(" U ");
                     }
-
-                    ExplainPrinter local;
-                    child.visit(*this, local, 0 /*extraBraceCount*/);
-                    printer.print(local);
+                    printer.print(child);
                 }
+                printer.separator("}");
 
-                for (size_t i = 0; i <= extraBraceCount; i++) {
-                    printer.separator("}");
-                }
+                return printer;
             } else if constexpr (version == ExplainVersion::V3) {
-                std::vector<ExplainPrinter> childResults;
-                for (const auto& child : children) {
-                    ExplainPrinter local;
-                    child.visit(*this, local, 0 /*extraBraceCount*/);
-                    childResults.push_back(std::move(local));
-                }
-
+                ExplainPrinter printer;
                 if constexpr (isConjunction) {
                     printer.fieldName("conjunction");
                 } else {
                     printer.fieldName("disjunction");
                 }
                 printer.print(childResults);
+                return printer;
             } else {
-                MONGO_UNREACHABLE;
+                static_assert("Version not implemented");
             }
         }
 
-        void operator()(const typename BoolExpr<T>::Node& n,
-                        const typename BoolExpr<T>::Conjunction& node,
-                        ExplainPrinter& printer,
-                        const size_t extraBraceCount) {
-            print<true /*isConjunction*/>(node, printer, extraBraceCount);
+        ExplainPrinter transport(const typename T::Conjunction& node,
+                                 std::vector<ExplainPrinter> childResults) {
+            return print<true /*isConjunction*/>(std::move(childResults));
         }
 
-        void operator()(const typename BoolExpr<T>::Node& n,
-                        const typename BoolExpr<T>::Disjunction& node,
-                        ExplainPrinter& printer,
-                        const size_t extraBraceCount) {
-            print<false /*isConjunction*/>(node, printer, extraBraceCount);
+        ExplainPrinter transport(const typename T::Disjunction& node,
+                                 std::vector<ExplainPrinter> childResults) {
+            return print<false /*isConjunction*/>(std::move(childResults));
         }
 
-        void print(ExplainPrinter& printer, const typename BoolExpr<T>::Node& expr) {
-            expr.visit(*this, printer, 0 /*extraBraceCount*/);
+        ExplainPrinter print(const typename T::Node& intervals) {
+            return algebra::transport<false>(intervals, *this);
         }
 
     private:
-        const PrinterFn& _tPrinter;
+        ExplainGeneratorTransporter& _instance;
     };
 
-    ExplainPrinter transport(const ABT& n, const IndexScanNode& node, ExplainPrinter bindResult) {
+    ExplainPrinter transport(const IndexScanNode& node, ExplainPrinter bindResult) {
         ExplainPrinter printer("IndexScan");
         maybePrintProps(printer, node);
+
         printer.separator(" [{");
         printFieldProjectionMap(printer, node.getFieldProjectionMap());
         printer.separator("}, ");
 
+        const auto& spec = node.getIndexSpecification();
         printer.fieldName("scanDefName")
-            .print(node.getScanDefName())
+            .print(spec.getScanDefName())
             .separator(", ")
             .fieldName("indexDefName")
-            .print(node.getIndexDefName())
+            .print(spec.getIndexDefName())
             .separator(", ");
 
         printer.fieldName("interval").separator("{");
-        printInterval(printer, node.getIndexInterval());
+        printInterval(printer, spec.getInterval());
         printer.separator("}");
 
-        printBooleanFlag(printer, "reversed", node.isIndexReverseOrder());
+        printBooleanFlag(printer, "reversed", spec.isReverseOrder());
 
-        printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        printer.fieldName("bindings", ExplainVersion::V3).print(bindResult);
+        printer.separator("]").fieldName("bindings", ExplainVersion::V3).print(bindResult);
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const SeekNode& node,
+    ExplainPrinter transport(const SeekNode& node,
                              ExplainPrinter bindResult,
                              ExplainPrinter refsResult) {
         ExplainPrinter printer("Seek");
         maybePrintProps(printer, node);
+
         printer.separator(" [")
             .fieldName("ridProjection")
             .print(node.getRIDProjectionName())
@@ -1229,10 +896,8 @@ public:
         printer.separator("}, ")
             .fieldName("scanDefName", ExplainVersion::V3)
             .print(node.getScanDefName())
-            .separator("]");
-        nodeCEPropsPrint(printer, n, node);
-
-        printer.setChildCount(2)
+            .separator("]")
+            .setChildCount(2)
             .fieldName("bindings", ExplainVersion::V3)
             .print(bindResult)
             .fieldName("references", ExplainVersion::V3)
@@ -1241,19 +906,19 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n, const MemoLogicalDelegatorNode& node) {
+    ExplainPrinter transport(const MemoLogicalDelegatorNode& node) {
         ExplainPrinter printer("MemoLogicalDelegator");
         maybePrintProps(printer, node);
         printer.separator(" [").fieldName("groupId").print(node.getGroupId()).separator("]");
-        nodeCEPropsPrint(printer, n, node);
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const MemoPhysicalDelegatorNode& node) {
+    ExplainPrinter transport(const MemoPhysicalDelegatorNode& node) {
         const auto id = node.getNodeId();
 
         if (_displayProperties) {
-            const auto& result = *_memoInterface->getPhysicalNodes(id._groupId).at(id._index);
+            const auto& group = _memo->getGroup(id._groupId);
+            const auto& result = group._physicalNodes.at(id._index);
             uassert(6624076,
                     "Physical delegator must be pointing to an optimized result.",
                     result._nodeInfo.has_value());
@@ -1267,8 +932,7 @@ public:
                 return nodePrinter;
             }
 
-            ExplainPrinter logPropPrinter =
-                printLogicalProps("Logical", _memoInterface->getLogicalProps(id._groupId));
+            ExplainPrinter logPropPrinter = printLogicalProps("Logical", group._logicalProperties);
             ExplainPrinter physPropPrinter = printPhysProps("Physical", result._physProps);
 
             ExplainPrinter printer("Properties");
@@ -1303,15 +967,13 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const FilterNode& node,
+    ExplainPrinter transport(const FilterNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter filterResult) {
         ExplainPrinter printer("Filter");
         maybePrintProps(printer, node);
-        printer.separator(" []");
-        nodeCEPropsPrint(printer, n, node);
-        printer.setChildCount(2)
+        printer.separator(" []")
+            .setChildCount(2)
             .fieldName("filter", ExplainVersion::V3)
             .print(filterResult)
             .fieldName("child", ExplainVersion::V3)
@@ -1319,104 +981,58 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const EvaluationNode& node,
+    ExplainPrinter transport(const EvaluationNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter projectionResult) {
         ExplainPrinter printer("Evaluation");
         maybePrintProps(printer, node);
-
-        if constexpr (version < ExplainVersion::V3) {
-            const ABT& expr = node.getProjection();
-
-            printer.separator(" [");
-            // The bind block (projectionResult) is empty in V1-V2 explains. In the case of the
-            // Evaluation node, the bind block may have useful information about the embedded
-            // expression, so we make sure to print the projected expression.
-            printProjection(printer, node.getProjectionName());
-            if (const auto ref = getTrivialExprPtr<EvalPath>(expr); !ref.empty()) {
-                ExplainPrinter local = generate(ref);
-                printer.separator(" = ").printSingleLevel(local).separator("]");
-
-                nodeCEPropsPrint(printer, n, node);
-                printer.setChildCount(1, true /*noInline*/);
-            } else {
-                printer.separator("]");
-
-                nodeCEPropsPrint(printer, n, node);
-                printer.setChildCount(2);
-
-                auto pathPrinter = generate(expr);
-                printer.print(pathPrinter);
-            }
-        } else if constexpr (version == ExplainVersion::V3) {
-            nodeCEPropsPrint(printer, n, node);
-            printer.fieldName("projection").print(projectionResult);
-        } else {
-            MONGO_UNREACHABLE;
-        }
-
-        printer.fieldName("child", ExplainVersion::V3).print(childResult);
+        printer.separator(" []")
+            .setChildCount(2)
+            .fieldName("projection", ExplainVersion::V3)
+            .print(projectionResult)
+            .fieldName("child", ExplainVersion::V3)
+            .print(childResult);
         return printer;
     }
 
     void printPartialSchemaReqMap(ExplainPrinter& parent, const PartialSchemaRequirements& reqMap) {
-        ExplainPrinter reqs =
-            reqMap.isNoop() ? ExplainPrinter() : printPartialSchemaRequirements(reqMap.getRoot());
-        parent.fieldName("requirements").print(reqs);
-    }
-
-    void printResidualRequirements(ExplainPrinter& parent,
-                                   const ResidualRequirements& residualReqs) {
         std::vector<ExplainPrinter> printers;
-        for (const auto& [key, req, entryIndex] : residualReqs) {
+        for (const auto& [key, req] : reqMap) {
             ExplainPrinter local;
 
-            if (const auto& projName = key._projectionName) {
-                local.fieldName("refProjection").print(*projName).separator(", ");
-            }
+            local.fieldName("refProjection").print(key._projectionName).separator(", ");
             ExplainPrinter pathPrinter = generate(key._path);
             local.fieldName("path").separator("'").printSingleLevel(pathPrinter).separator("', ");
 
-            if (const auto& boundProjName = req.getBoundProjectionName()) {
-                local.fieldName("boundProjection").print(*boundProjName).separator(", ");
+            if (req.hasBoundProjectionName()) {
+                local.fieldName("boundProjection")
+                    .print(req.getBoundProjectionName())
+                    .separator(", ");
             }
 
             local.fieldName("intervals");
             {
-                ExplainPrinter intervals =
-                    printIntervalExpr<IntervalRequirement>(req.getIntervals());
+                ExplainPrinter intervals = printIntervalExpr(req.getIntervals());
                 local.printSingleLevel(intervals, "" /*singleLevelSpacer*/);
             }
-            local.separator(", ").fieldName("entryIndex").print(entryIndex);
 
             printers.push_back(std::move(local));
         }
 
-        parent.fieldName("residualReqs").print(printers);
+        parent.fieldName("requirementsMap").print(printers);
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const SargableNode& node,
+    ExplainPrinter transport(const SargableNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter bindResult,
                              ExplainPrinter refsResult) {
-        const auto& scanParams = node.getScanParams();
-
         ExplainPrinter printer("Sargable");
         maybePrintProps(printer, node);
         printer.separator(" [")
             .fieldName("target", ExplainVersion::V3)
             .print(IndexReqTargetEnum::toString[static_cast<int>(node.getTarget())])
-            .separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        size_t childCount = scanParams ? 5 : 4;
-        // In V3 only we include the ref block (see at the end of this function), so V3 has one
-        // more child.
-        if constexpr (version == ExplainVersion::V3) {
-            childCount++;
-        }
-        printer.setChildCount(childCount);
+            .separator("]")
+            .setChildCount(5);
 
         if constexpr (version < ExplainVersion::V3) {
             ExplainPrinter local;
@@ -1425,146 +1041,141 @@ public:
         } else if constexpr (version == ExplainVersion::V3) {
             printPartialSchemaReqMap(printer, node.getReqMap());
         } else {
-            MONGO_UNREACHABLE;
+            static_assert("Unknown version");
         }
 
-        {
-            std::vector<ExplainPrinter> candidateIndexesPrinters;
-            for (size_t index = 0; index < node.getCandidateIndexes().size(); index++) {
-                const CandidateIndexEntry& candidateIndexEntry =
-                    node.getCandidateIndexes().at(index);
-
-                ExplainPrinter local;
-                local.fieldName("candidateId")
-                    .print(index + 1)
-                    .separator(", ")
-                    .fieldName("indexDefName", ExplainVersion::V3)
-                    .print(candidateIndexEntry._indexDefName)
-                    .separator(", ");
-
-                local.separator("{");
-                printFieldProjectionMap(local, candidateIndexEntry._fieldProjectionMap);
-                local.separator("}, {");
-
-                {
-                    if constexpr (version < ExplainVersion::V3) {
-                        bool first = true;
-                        for (const auto type : candidateIndexEntry._predTypes) {
-                            if (first) {
-                                first = false;
-                            } else {
-                                local.print(", ");
-                            }
-                            local.print(IndexFieldPredTypeEnum::toString[static_cast<int>(type)]);
-                        }
-                    } else if constexpr (version == ExplainVersion::V3) {
-                        std::vector<ExplainPrinter> printers;
-                        for (const auto type : candidateIndexEntry._predTypes) {
-                            ExplainPrinter local1;
-                            local1.print(IndexFieldPredTypeEnum::toString[static_cast<int>(type)]);
-                            printers.push_back(std::move(local1));
-                        }
-                        local.fieldName("predType").print(printers);
-                    } else {
-                        MONGO_UNREACHABLE;
-                    }
-                }
-
-                local.separator("}, ");
-                {
-                    if (candidateIndexEntry._eqPrefixes.size() == 1) {
-                        local.fieldName("intervals", ExplainVersion::V3);
-
-                        ExplainPrinter intervals = printIntervalExpr<CompoundIntervalRequirement>(
-                            candidateIndexEntry._eqPrefixes.front()._interval);
-                        local.printSingleLevel(intervals, "" /*singleLevelSpacer*/);
-                    } else {
-                        std::vector<ExplainPrinter> eqPrefixPrinters;
-                        for (const auto& entry : candidateIndexEntry._eqPrefixes) {
-                            ExplainPrinter eqPrefixPrinter;
-                            eqPrefixPrinter.fieldName("startPos", ExplainVersion::V3)
-                                .print(entry._startPos)
-                                .separator(", ");
-
-                            ExplainPrinter intervals =
-                                printIntervalExpr<CompoundIntervalRequirement>(entry._interval);
-                            eqPrefixPrinter.separator("[")
-                                .fieldName("interval", ExplainVersion::V3)
-                                .printSingleLevel(intervals, "" /*singleLevelSpacer*/)
-                                .separator("]");
-
-                            eqPrefixPrinters.push_back(std::move(eqPrefixPrinter));
-                        }
-
-                        local.print(eqPrefixPrinters);
-                    }
-                }
-
-                if (const auto& residualReqs = candidateIndexEntry._residualRequirements;
-                    !residualReqs.empty()) {
-                    if constexpr (version < ExplainVersion::V3) {
-                        ExplainPrinter residualReqMapPrinter;
-                        printResidualRequirements(residualReqMapPrinter, residualReqs);
-                        local.print(residualReqMapPrinter);
-                    } else if (version == ExplainVersion::V3) {
-                        printResidualRequirements(local, residualReqs);
-                    } else {
-                        MONGO_UNREACHABLE;
-                    }
-                }
-
-                candidateIndexesPrinters.push_back(std::move(local));
-            }
-            ExplainPrinter candidateIndexesPrinter;
-            candidateIndexesPrinter.fieldName("candidateIndexes").print(candidateIndexesPrinters);
-            printer.printAppend(candidateIndexesPrinter);
-        }
-
-        if (scanParams) {
+        std::vector<ExplainPrinter> candidateIndexesPrinters;
+        size_t candidateIndex = 0;
+        for (const auto& [indexDefName, candidateIndexEntry] : node.getCandidateIndexMap()) {
+            candidateIndex++;
             ExplainPrinter local;
-            local.separator("{");
-            printFieldProjectionMap(local, scanParams->_fieldProjectionMap);
-            local.separator("}");
+            local.fieldName("candidateId")
+                .print(candidateIndex)
+                .separator(", ")
+                .fieldName("indexDefName", ExplainVersion::V3)
+                .print(indexDefName)
+                .separator(", ");
 
-            if (const auto& residualReqs = scanParams->_residualRequirements;
-                !residualReqs.empty()) {
+            local.separator("{");
+            printFieldProjectionMap(local, candidateIndexEntry._fieldProjectionMap);
+            local.separator("}, {");
+
+            {
+                std::set<size_t> orderedFields;
+                for (const size_t fieldId : candidateIndexEntry._fieldsToCollate) {
+                    orderedFields.insert(fieldId);
+                }
+
+                if constexpr (version < ExplainVersion::V3) {
+                    bool first = true;
+                    for (const size_t fieldId : orderedFields) {
+                        if (first) {
+                            first = false;
+                        } else {
+                            local.print(", ");
+                        }
+                        local.print(fieldId);
+                    }
+                } else if constexpr (version == ExplainVersion::V3) {
+                    std::vector<ExplainPrinter> printers;
+                    for (const size_t fieldId : orderedFields) {
+                        ExplainPrinter local1;
+                        local1.print(fieldId);
+                        printers.push_back(std::move(local1));
+                    }
+                    local.fieldName("fieldsToCollate").print(printers);
+                } else {
+                    static_assert("Unknown version");
+                }
+            }
+
+            local.separator("}, ").fieldName("intervals", ExplainVersion::V3);
+            {
+                IntervalPrinter<MultiKeyIntervalReqExpr> intervalPrinter(*this);
+                ExplainPrinter intervals = intervalPrinter.print(candidateIndexEntry._intervals);
+                local.printSingleLevel(intervals, "" /*singleLevelSpacer*/);
+            }
+
+            if (!candidateIndexEntry._residualRequirements.empty()) {
                 if constexpr (version < ExplainVersion::V3) {
                     ExplainPrinter residualReqMapPrinter;
-                    printResidualRequirements(residualReqMapPrinter, residualReqs);
+                    printPartialSchemaReqMap(residualReqMapPrinter,
+                                             candidateIndexEntry._residualRequirements);
                     local.print(residualReqMapPrinter);
                 } else if (version == ExplainVersion::V3) {
-                    printResidualRequirements(local, residualReqs);
+                    printPartialSchemaReqMap(local, candidateIndexEntry._residualRequirements);
                 } else {
-                    MONGO_UNREACHABLE;
+                    static_assert("Unknown version");
                 }
             }
 
-            ExplainPrinter scanParamsPrinter;
-            scanParamsPrinter.fieldName("scanParams").print(local);
-            printer.printAppend(scanParamsPrinter);
-        }
+            if (!candidateIndexEntry._residualKeyMap.empty()) {
+                std::vector<ExplainPrinter> residualKeyMapPrinters;
+                for (const auto& [queryKey, residualKey] : candidateIndexEntry._residualKeyMap) {
+                    ExplainPrinter local1;
 
-        printer.fieldName("bindings", ExplainVersion::V3).print(bindResult);
-        if constexpr (version == ExplainVersion::V3) {
-            printer.fieldName("references", ExplainVersion::V3).print(refsResult);
+                    ExplainPrinter pathPrinter = generate(queryKey._path);
+                    local1.fieldName("queryRefProjection")
+                        .print(queryKey._projectionName)
+                        .separator(", ")
+                        .fieldName("queryPath")
+                        .separator("'")
+                        .printSingleLevel(pathPrinter)
+                        .separator("', ")
+                        .fieldName("residualRefProjection")
+                        .print(residualKey._projectionName)
+                        .separator(", ");
+
+                    ExplainPrinter pathPrinter1 = generate(residualKey._path);
+                    local1.fieldName("residualPath")
+                        .separator("'")
+                        .printSingleLevel(pathPrinter1)
+                        .separator("'");
+
+                    residualKeyMapPrinters.push_back(std::move(local1));
+                }
+
+                local.fieldName("residualKeyMap").print(residualKeyMapPrinters);
+
+                std::vector<ExplainPrinter> projNamePrinters;
+                for (const ProjectionName& projName :
+                     candidateIndexEntry._residualRequirementsTempProjections) {
+                    ExplainPrinter local1;
+                    local1.print(projName);
+                    projNamePrinters.push_back(std::move(local1));
+                }
+                local.fieldName("tempProjections").print(projNamePrinters);
+            }
+
+            candidateIndexesPrinters.push_back(std::move(local));
         }
-        printer.fieldName("child", ExplainVersion::V3).print(childResult);
+        ExplainPrinter candidateIndexesPrinter;
+        candidateIndexesPrinter.fieldName("candidateIndexes").print(candidateIndexesPrinters);
+
+        printer.printAppend(candidateIndexesPrinter)
+            .fieldName("bindings", ExplainVersion::V3)
+            .print(bindResult)
+            .fieldName("references", ExplainVersion::V3)
+            .print(refsResult)
+            .fieldName("child", ExplainVersion::V3)
+            .print(childResult);
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const RIDIntersectNode& node,
+    ExplainPrinter transport(const RIDIntersectNode& node,
                              ExplainPrinter leftChildResult,
                              ExplainPrinter rightChildResult) {
         ExplainPrinter printer("RIDIntersect");
         maybePrintProps(printer, node);
+
         printer.separator(" [")
             .fieldName("scanProjectionName", ExplainVersion::V3)
             .print(node.getScanProjectionName());
+        printBooleanFlag(printer, "hasLeftIntervals", node.hasLeftIntervals());
+        printBooleanFlag(printer, "hasRightIntervals", node.hasRightIntervals());
 
-        printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        printer.setChildCount(2)
+        printer.separator("]")
+            .setChildCount(2)
             .maybeReverse()
             .fieldName("leftChild", ExplainVersion::V3)
             .print(leftChildResult)
@@ -1573,44 +1184,45 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const RIDUnionNode& node,
-                             ExplainPrinter leftChildResult,
-                             ExplainPrinter rightChildResult) {
-        ExplainPrinter printer("RIDUnion");
-        maybePrintProps(printer, node);
-        printer.separator(" [")
-            .fieldName("scanProjectionName", ExplainVersion::V3)
-            .print(node.getScanProjectionName());
-
-        printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        printer.setChildCount(2)
-            .maybeReverse()
-            .fieldName("leftChild", ExplainVersion::V3)
-            .print(leftChildResult)
-            .fieldName("rightChild", ExplainVersion::V3)
-            .print(rightChildResult);
-        return printer;
-    }
-
-    ExplainPrinter transport(const ABT& n,
-                             const BinaryJoinNode& node,
+    ExplainPrinter transport(const BinaryJoinNode& node,
                              ExplainPrinter leftChildResult,
                              ExplainPrinter rightChildResult,
                              ExplainPrinter filterResult) {
         ExplainPrinter printer("BinaryJoin");
         maybePrintProps(printer, node);
+
         printer.separator(" [")
             .fieldName("joinType")
-            .print(JoinTypeEnum::toString[static_cast<int>(node.getJoinType())])
-            .separator(", ");
+            .print(JoinTypeEnum::toString[static_cast<int>(node.getJoinType())]);
 
-        printCorrelatedProjections(printer, node.getCorrelatedProjectionNames());
+        if constexpr (version < ExplainVersion::V3) {
+            if (!node.getCorrelatedProjectionNames().empty()) {
+                printer.print(", {");
+                bool first = true;
+                for (const ProjectionName& projectionName : node.getCorrelatedProjectionNames()) {
+                    if (first) {
+                        first = false;
+                    } else {
+                        printer.print(", ");
+                    }
+                    printer.print(projectionName);
+                }
+                printer.print("}");
+            }
+        } else if constexpr (version == ExplainVersion::V3) {
+            std::vector<ExplainPrinter> printers;
+            for (const ProjectionName& projectionName : node.getCorrelatedProjectionNames()) {
+                ExplainPrinter local;
+                local.print(projectionName);
+                printers.push_back(std::move(local));
+            }
+            printer.fieldName("correlatedProjections").print(printers);
+        } else {
+            static_assert("Version not implemented");
+        }
 
-        printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        printer.setChildCount(3)
+        printer.separator("]")
+            .setChildCount(3)
             .fieldName("expression", ExplainVersion::V3)
             .print(filterResult)
             .maybeReverse()
@@ -1643,22 +1255,21 @@ public:
             }
             printer.print(printers);
         } else {
-            MONGO_UNREACHABLE;
+            static_assert("Version not implemented");
         }
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const HashJoinNode& node,
+    ExplainPrinter transport(const HashJoinNode& node,
                              ExplainPrinter leftChildResult,
                              ExplainPrinter rightChildResult,
                              ExplainPrinter /*refsResult*/) {
         ExplainPrinter printer("HashJoin");
         maybePrintProps(printer, node);
+
         printer.separator(" [")
             .fieldName("joinType")
             .print(JoinTypeEnum::toString[static_cast<int>(node.getJoinType())])
             .separator("]");
-        nodeCEPropsPrint(printer, n, node);
 
         ExplainPrinter joinConditionPrinter;
         printEqualityJoinCondition(joinConditionPrinter, node.getLeftKeys(), node.getRightKeys());
@@ -1674,15 +1285,13 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const MergeJoinNode& node,
+    ExplainPrinter transport(const MergeJoinNode& node,
                              ExplainPrinter leftChildResult,
                              ExplainPrinter rightChildResult,
                              ExplainPrinter /*refsResult*/) {
         ExplainPrinter printer("MergeJoin");
         maybePrintProps(printer, node);
         printer.separator(" []");
-        nodeCEPropsPrint(printer, n, node);
 
         ExplainPrinter joinConditionPrinter;
         printEqualityJoinCondition(joinConditionPrinter, node.getLeftKeys(), node.getRightKeys());
@@ -1704,7 +1313,7 @@ public:
             }
             collationPrinter.print(printers);
         } else {
-            MONGO_UNREACHABLE;
+            static_assert("Version not implemented");
         }
 
         printer.setChildCount(4)
@@ -1720,63 +1329,14 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const SortedMergeNode& node,
-                             std::vector<ExplainPrinter> childResults,
-                             ExplainPrinter bindResult,
-                             ExplainPrinter /*refsResult*/) {
-        ExplainPrinter printer("SortedMerge");
-        maybePrintProps(printer, node);
-        printer.separator(" []");
-        nodeCEPropsPrint(printer, n, node);
-        printer.setChildCount(childResults.size() + 2);
-        printCollationProperty(printer, node.getCollationReq(), false /*directToParent*/);
-        printer.fieldName("bindings", ExplainVersion::V3).print(bindResult);
-        printer.maybeReverse().fieldName("children", ExplainVersion::V3).print(childResults);
-        return printer;
-    }
-
-    ExplainPrinter transport(const ABT& n,
-                             const NestedLoopJoinNode& node,
-                             ExplainPrinter leftChildResult,
-                             ExplainPrinter rightChildResult,
-                             ExplainPrinter filterResult) {
-        ExplainPrinter printer("NestedLoopJoin");
-        maybePrintProps(printer, node);
-        printer.separator(" [")
-            .fieldName("joinType")
-            .print(JoinTypeEnum::toString[static_cast<int>(node.getJoinType())])
-            .separator(", ");
-
-        printCorrelatedProjections(printer, node.getCorrelatedProjectionNames());
-
-        printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
-        printer.setChildCount(3)
-            .fieldName("expression", ExplainVersion::V3)
-            .print(filterResult)
-            .maybeReverse()
-            .fieldName("leftChild", ExplainVersion::V3)
-            .print(leftChildResult)
-            .fieldName("rightChild", ExplainVersion::V3)
-            .print(rightChildResult);
-        return printer;
-    }
-
-    ExplainPrinter transport(const ABT& n,
-                             const UnionNode& node,
+    ExplainPrinter transport(const UnionNode& node,
                              std::vector<ExplainPrinter> childResults,
                              ExplainPrinter bindResult,
                              ExplainPrinter /*refsResult*/) {
         ExplainPrinter printer("Union");
         maybePrintProps(printer, node);
-        if constexpr (version < ExplainVersion::V3) {
-            printer.separator(" [");
-            printProjectionsOrdered(printer, node.binder().names());
-            printer.separator("]");
-        }
-        nodeCEPropsPrint(printer, n, node);
-        printer.setChildCount(childResults.size() + 1)
+        printer.separator(" []")
+            .setChildCount(childResults.size() + 1)
             .fieldName("bindings", ExplainVersion::V3)
             .print(bindResult)
             .maybeReverse()
@@ -1785,8 +1345,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const GroupByNode& node,
+    ExplainPrinter transport(const GroupByNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter bindAggResult,
                              ExplainPrinter refsAggResult,
@@ -1801,30 +1360,11 @@ public:
         ExplainPrinter printer("GroupBy");
         maybePrintProps(printer, node);
         printer.separator(" [");
-
-        const auto printTypeFn = [&]() {
+        if (version >= ExplainVersion::V3 || node.getType() != GroupNodeType::Complete) {
             printer.fieldName("type", ExplainVersion::V3)
                 .print(GroupNodeTypeEnum::toString[static_cast<int>(node.getType())]);
-        };
-        bool displayGroupings = true;
-        if constexpr (version < ExplainVersion::V3) {
-            displayGroupings = false;
-            const auto& gbProjNames = node.getGroupByProjectionNames();
-            printProjectionsUnordered(printer, gbProjNames);
-            if (node.getType() != GroupNodeType::Complete) {
-                if (!gbProjNames.empty()) {
-                    printer.separator(", ");
-                }
-                printTypeFn();
-            }
-        } else if constexpr (version == ExplainVersion::V3) {
-            printTypeFn();
-        } else {
-            MONGO_UNREACHABLE;
         }
-
         printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
 
         std::vector<ExplainPrinter> aggPrinters;
         for (const auto& [projectionName, index] : ordered) {
@@ -1839,9 +1379,7 @@ public:
         }
 
         ExplainPrinter gbPrinter;
-        if (displayGroupings) {
-            gbPrinter.fieldName("groupings").print(refsGbResult);
-        }
+        gbPrinter.fieldName("groupings").print(refsGbResult);
 
         ExplainPrinter aggPrinter;
         aggPrinter.fieldName("aggregations").print(aggPrinters);
@@ -1854,24 +1392,16 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const UnwindNode& node,
+    ExplainPrinter transport(const UnwindNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter bindResult,
                              ExplainPrinter refsResult) {
         ExplainPrinter printer("Unwind");
         maybePrintProps(printer, node);
+
         printer.separator(" [");
-
-        if constexpr (version < ExplainVersion::V3) {
-            printProjectionsUnordered(
-                printer,
-                ProjectionNameVector{node.getProjectionName(), node.getPIDProjectionName()});
-        }
-
-        printBooleanFlag(printer, "retainNonArrays", node.getRetainNonArrays(), true /*addComma*/);
+        printBooleanFlag(printer, "retainNonArrays", node.getRetainNonArrays(), false /*addComma*/);
         printer.separator("]");
-        nodeCEPropsPrint(printer, n, node);
 
         printer.setChildCount(2)
             .fieldName("bind", ExplainVersion::V3)
@@ -1900,117 +1430,32 @@ public:
         });
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const UniqueNode& node,
+    ExplainPrinter transport(const UniqueNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter /*refsResult*/) {
         ExplainPrinter printer("Unique");
         maybePrintProps(printer, node);
 
-        if constexpr (version < ExplainVersion::V3) {
-            printer.separator(" [");
-            printProjectionsOrdered(printer, node.getProjections());
-            printer.separator("]");
-
-            nodeCEPropsPrint(printer, n, node);
-            printer.setChildCount(1, true /*noInline*/);
-        } else if constexpr (version == ExplainVersion::V3) {
-            nodeCEPropsPrint(printer, n, node);
-            printPropertyProjections(printer, node.getProjections(), false /*directToParent*/);
-        } else {
-            MONGO_UNREACHABLE;
-        }
-
-        printer.fieldName("child", ExplainVersion::V3).print(childResult);
-        return printer;
-    }
-
-    ExplainPrinter transport(const ABT& n,
-                             const SpoolProducerNode& node,
-                             ExplainPrinter childResult,
-                             ExplainPrinter filterResult,
-                             ExplainPrinter bindResult,
-                             ExplainPrinter refsResult) {
-        ExplainPrinter printer("SpoolProducer");
-        maybePrintProps(printer, node);
-
-        printer.separator(" [")
-            .fieldName("type", ExplainVersion::V3)
-            .print(SpoolProducerTypeEnum::toString[static_cast<int>(node.getType())])
-            .separator(", ")
-            .fieldName("id")
-            .print(node.getSpoolId());
-        if constexpr (version < ExplainVersion::V3) {
-            printer.separator(", ");
-            printProjectionsOrdered(printer, node.binder().names());
-        }
-        printer.separator("]");
-
-        nodeCEPropsPrint(printer, n, node);
-        printer.setChildCount(3);
-        printer.fieldName("filter", ExplainVersion::V3).print(filterResult);
-        printer.fieldName("bindings", ExplainVersion::V3).print(bindResult);
+        printer.separator(" []").setChildCount(2);
+        printPropertyProjections(printer, node.getProjections(), false /*directToParent*/);
         printer.fieldName("child", ExplainVersion::V3).print(childResult);
 
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const SpoolConsumerNode& node,
-                             ExplainPrinter bindResult) {
-        ExplainPrinter printer("SpoolConsumer");
-        maybePrintProps(printer, node);
-
-        printer.separator(" [")
-            .fieldName("type", ExplainVersion::V3)
-            .print(SpoolConsumerTypeEnum::toString[static_cast<int>(node.getType())])
-            .separator(", ")
-            .fieldName("id")
-            .print(node.getSpoolId());
-        if constexpr (version < ExplainVersion::V3) {
-            printer.separator(", ");
-            printProjectionsOrdered(printer, node.binder().names());
-        }
-        printer.separator("]");
-
-        nodeCEPropsPrint(printer, n, node);
-        printer.fieldName("bindings", ExplainVersion::V3).print(bindResult);
-
-        return printer;
-    }
-
-    ExplainPrinter transport(const ABT& n,
-                             const CollationNode& node,
+    ExplainPrinter transport(const CollationNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter refsResult) {
         ExplainPrinter printer("Collation");
         maybePrintProps(printer, node);
 
-        if constexpr (version < ExplainVersion::V3) {
-            printer.separator(" [{");
-            bool first = true;
-            for (const auto& [projName, op] : node.getProperty().getCollationSpec()) {
-                if (first) {
-                    first = false;
-                } else {
-                    printer.separator(", ");
-                }
-                printer.print(projName).separator(": ").print(
-                    CollationOpEnum::toString[static_cast<int>(op)]);
-            }
-            printer.separator("}]");
+        printer.separator(" []").setChildCount(3);
+        printCollationProperty(printer, node.getProperty(), false /*directToParent*/);
+        printer.fieldName("references", ExplainVersion::V3)
+            .print(refsResult)
+            .fieldName("child", ExplainVersion::V3)
+            .print(childResult);
 
-            nodeCEPropsPrint(printer, n, node);
-            printer.setChildCount(1, true /*noInline*/);
-        } else if constexpr (version == ExplainVersion::V3) {
-            nodeCEPropsPrint(printer, n, node);
-            printCollationProperty(printer, node.getProperty(), false /*directToParent*/);
-            printer.fieldName("references", ExplainVersion::V3).print(refsResult);
-        } else {
-            MONGO_UNREACHABLE;
-        }
-
-        printer.fieldName("child", ExplainVersion::V3).print(childResult);
         return printer;
     }
 
@@ -2044,33 +1489,12 @@ public:
         });
     }
 
-    ExplainPrinter transport(const ABT& n, const LimitSkipNode& node, ExplainPrinter childResult) {
+    ExplainPrinter transport(const LimitSkipNode& node, ExplainPrinter childResult) {
         ExplainPrinter printer("LimitSkip");
         maybePrintProps(printer, node);
-        printer.separator(" [");
 
-        // If we have version < V3, inline the limit skip.
-        if constexpr (version < ExplainVersion::V3) {
-            const auto& prop = node.getProperty();
-            printer.fieldName("limit");
-            if (prop.hasLimit()) {
-                printer.print(prop.getLimit());
-            } else {
-                printer.print("(none)");
-            }
-            printer.separator(", ").fieldName("skip").print(prop.getSkip()).separator("]");
-            nodeCEPropsPrint(printer, n, node);
-            // Do not inline LimitSkip, since it's not a path.
-            printer.setChildCount(1, true /*noInline*/);
-        } else if (version == ExplainVersion::V3) {
-            printer.separator("]");
-            nodeCEPropsPrint(printer, n, node);
-            printer.setChildCount(2);
-            printLimitSkipProperty(printer, node.getProperty(), false /*directToParent*/);
-        } else {
-            MONGO_UNREACHABLE;
-        }
-
+        printer.separator(" []").setChildCount(2);
+        printLimitSkipProperty(printer, node.getProperty(), false /*directToParent*/);
         printer.fieldName("child", ExplainVersion::V3).print(childResult);
 
         return printer;
@@ -2128,16 +1552,13 @@ public:
         printPropertyProjections(parent, property.getProjections().getVector(), directToParent);
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const ExchangeNode& node,
+    ExplainPrinter transport(const ExchangeNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter refsResult) {
         ExplainPrinter printer("Exchange");
         maybePrintProps(printer, node);
-        printer.separator(" []");
-        nodeCEPropsPrint(printer, n, node);
 
-        printer.setChildCount(3);
+        printer.separator(" []").setChildCount(3);
         printDistributionProperty(printer, node.getProperty(), false /*directToParent*/);
         printer.fieldName("references", ExplainVersion::V3)
             .print(refsResult)
@@ -2152,8 +1573,10 @@ public:
 
         void operator()(const properties::LogicalProperty&,
                         const properties::ProjectionAvailability& prop) {
-            const auto& propProj = prop.getProjections();
-            ProjectionNameOrderedSet ordered(propProj.cbegin(), propProj.cend());
+            ProjectionNameOrderedSet ordered;
+            for (const ProjectionName& projection : prop.getProjections()) {
+                ordered.insert(projection);
+            }
 
             std::vector<ExplainPrinter> printers;
             for (const ProjectionName& projection : ordered) {
@@ -2172,18 +1595,17 @@ public:
             cePrinter.fieldName("ce").print(prop.getEstimate());
             fieldPrinters.push_back(std::move(cePrinter));
 
-            if (const auto& partialSchemaKeyCE = prop.getPartialSchemaKeyCE();
-                !partialSchemaKeyCE.empty()) {
+            if (!prop.getPartialSchemaKeyCEMap().empty()) {
                 std::vector<ExplainPrinter> reqPrinters;
-                for (const auto& [key, ce] : partialSchemaKeyCE) {
+                for (const auto& [key, ce] : prop.getPartialSchemaKeyCEMap()) {
                     ExplainGeneratorTransporter<version> gen;
                     ExplainPrinter pathPrinter = gen.generate(key._path);
 
                     ExplainPrinter local;
-                    if (const auto& projName = key._projectionName) {
-                        local.fieldName("refProjection").print(*projName).separator(", ");
-                    }
-                    local.fieldName("path")
+                    local.fieldName("refProjection")
+                        .print(key._projectionName)
+                        .separator(", ")
+                        .fieldName("path")
                         .separator("'")
                         .printSingleLevel(pathPrinter)
                         .separator("', ")
@@ -2211,13 +1633,14 @@ public:
                 .separator(", ")
                 .fieldName("scanDefName")
                 .print(prop.getScanDefName());
-            printBooleanFlag(printer, "eqPredsOnly", prop.getEqPredsOnly());
-            printBooleanFlag(printer, "hasProperInterval", prop.hasProperInterval());
+            printBooleanFlag(printer, "possiblyEqPredsOnly", prop.getPossiblyEqPredsOnly());
             printer.separator("]");
 
             if (!prop.getSatisfiedPartialIndexes().empty()) {
-                const auto& satisfiedIndexes = prop.getSatisfiedPartialIndexes();
-                std::set<std::string> ordered{satisfiedIndexes.cbegin(), satisfiedIndexes.cend()};
+                std::set<std::string> ordered;
+                for (const auto& indexName : prop.getSatisfiedPartialIndexes()) {
+                    ordered.insert(indexName);
+                }
 
                 std::vector<ExplainPrinter> printers;
                 for (const auto& indexName : ordered) {
@@ -2233,8 +1656,10 @@ public:
 
         void operator()(const properties::LogicalProperty&,
                         const properties::CollectionAvailability& prop) {
-            const auto& scanDefSet = prop.getScanDefSet();
-            std::set<std::string> orderedSet{scanDefSet.cbegin(), scanDefSet.cend()};
+            std::set<std::string> orderedSet;
+            for (const std::string& scanDef : prop.getScanDefSet()) {
+                orderedSet.insert(scanDef);
+            }
 
             std::vector<ExplainPrinter> printers;
             for (const std::string& scanDef : orderedSet) {
@@ -2255,10 +1680,8 @@ public:
             struct Comparator {
                 bool operator()(const properties::DistributionRequirement& d1,
                                 const properties::DistributionRequirement& d2) const {
-                    const properties::DistributionAndProjections& distr1 =
-                        d1.getDistributionAndProjections();
-                    const properties::DistributionAndProjections& distr2 =
-                        d2.getDistributionAndProjections();
+                    const auto& distr1 = d1.getDistributionAndProjections();
+                    const auto& distr2 = d2.getDistributionAndProjections();
 
                     if (distr1._type < distr2._type) {
                         return true;
@@ -2270,9 +1693,10 @@ public:
                 }
             };
 
-            const auto& distribSet = prop.getDistributionSet();
-            std::set<properties::DistributionRequirement, Comparator> ordered{distribSet.cbegin(),
-                                                                              distribSet.cend()};
+            std::set<properties::DistributionRequirement, Comparator> ordered;
+            for (const auto& distributionProp : prop.getDistributionSet()) {
+                ordered.insert(distributionProp);
+            }
 
             std::vector<ExplainPrinter> printers;
             for (const auto& distributionProp : ordered) {
@@ -2340,7 +1764,7 @@ public:
     template <class P, class V, class C>
     static ExplainPrinter printProps(const std::string& description, const C& props) {
         ExplainPrinter printer;
-        if constexpr (version < ExplainVersion::V3) {
+        if (version < ExplainVersion::V3) {
             printer.print(description).print(":");
         }
 
@@ -2369,58 +1793,41 @@ public:
         return printProps<properties::PhysProperty, PhysPropPrintVisitor>(description, props);
     }
 
-    ExplainPrinter transport(const ABT& n,
-                             const RootNode& node,
+    ExplainPrinter transport(const RootNode& node,
                              ExplainPrinter childResult,
                              ExplainPrinter refsResult) {
         ExplainPrinter printer("Root");
         maybePrintProps(printer, node);
 
-        if constexpr (version < ExplainVersion::V3) {
-            printer.separator(" [");
-            printProjectionsOrdered(printer, node.getProperty().getProjections().getVector());
-            printer.separator("]");
-            nodeCEPropsPrint(printer, n, node);
-            printer.setChildCount(1, true /*noInline*/);
-        } else if constexpr (version == ExplainVersion::V3) {
-            nodeCEPropsPrint(printer, n, node);
-            printer.setChildCount(3);
-            printProjectionRequirementProperty(
-                printer, node.getProperty(), false /*directToParent*/);
-            printer.fieldName("references", ExplainVersion::V3).print(refsResult);
-        } else {
-            MONGO_UNREACHABLE;
-        }
+        printer.separator(" []").setChildCount(3);
+        printProjectionRequirementProperty(printer, node.getProperty(), false /*directToParent*/);
+        printer.fieldName("references", ExplainVersion::V3)
+            .print(refsResult)
+            .fieldName("child", ExplainVersion::V3)
+            .print(childResult);
 
-        printer.fieldName("child", ExplainVersion::V3).print(childResult);
         return printer;
     }
 
     /**
      * Expressions
      */
-    ExplainPrinter transport(const ABT& /*n*/, const Blackhole& expr) {
+    ExplainPrinter transport(const Blackhole& expr) {
         ExplainPrinter printer("Blackhole");
         printer.separator(" []");
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const Constant& expr) {
+    ExplainPrinter transport(const Constant& expr) {
         ExplainPrinter printer("Const");
-        printer.separator(" [").fieldName("tag", ExplainVersion::V3);
-
-        if (version == ExplainVersion::V3) {
-            std::stringstream ss;
-            ss << expr.get().first;
-            std::string tagAsString = ss.str();
-            printer.print(tagAsString);
-        }
-
-        printer.fieldName("value", ExplainVersion::V3).print(expr.get()).separator("]");
+        printer.separator(" [")
+            .fieldName("value", ExplainVersion::V3)
+            .print(expr.get())
+            .separator("]");
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const Variable& expr) {
+    ExplainPrinter transport(const Variable& expr) {
         ExplainPrinter printer("Variable");
         printer.separator(" [")
             .fieldName("name", ExplainVersion::V3)
@@ -2429,7 +1836,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const UnaryOp& expr, ExplainPrinter inResult) {
+    ExplainPrinter transport(const UnaryOp& expr, ExplainPrinter inResult) {
         ExplainPrinter printer("UnaryOp");
         printer.separator(" [")
             .fieldName("op", ExplainVersion::V3)
@@ -2441,8 +1848,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const BinaryOp& expr,
+    ExplainPrinter transport(const BinaryOp& expr,
                              ExplainPrinter leftResult,
                              ExplainPrinter rightResult) {
         ExplainPrinter printer("BinaryOp");
@@ -2460,8 +1866,7 @@ public:
     }
 
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const If& expr,
+    ExplainPrinter transport(const If& expr,
                              ExplainPrinter condResult,
                              ExplainPrinter thenResult,
                              ExplainPrinter elseResult) {
@@ -2478,8 +1883,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const Let& expr,
+    ExplainPrinter transport(const Let& expr,
                              ExplainPrinter bindResult,
                              ExplainPrinter exprResult) {
         ExplainPrinter printer("Let");
@@ -2496,9 +1900,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const LambdaAbstraction& expr,
-                             ExplainPrinter inResult) {
+    ExplainPrinter transport(const LambdaAbstraction& expr, ExplainPrinter inResult) {
         ExplainPrinter printer("LambdaAbstraction");
         printer.separator(" [")
             .fieldName("variable", ExplainVersion::V3)
@@ -2510,8 +1912,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const LambdaApplication& expr,
+    ExplainPrinter transport(const LambdaApplication& expr,
                              ExplainPrinter lambdaResult,
                              ExplainPrinter argumentResult) {
         ExplainPrinter printer("LambdaApplication");
@@ -2525,9 +1926,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const FunctionCall& expr,
-                             std::vector<ExplainPrinter> argResults) {
+    ExplainPrinter transport(const FunctionCall& expr, std::vector<ExplainPrinter> argResults) {
         ExplainPrinter printer("FunctionCall");
         printer.separator(" [")
             .fieldName("name", ExplainVersion::V3)
@@ -2542,8 +1941,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const EvalPath& expr,
+    ExplainPrinter transport(const EvalPath& expr,
                              ExplainPrinter pathResult,
                              ExplainPrinter inputResult) {
         ExplainPrinter printer("EvalPath");
@@ -2557,8 +1955,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const EvalFilter& expr,
+    ExplainPrinter transport(const EvalFilter& expr,
                              ExplainPrinter pathResult,
                              ExplainPrinter inputResult) {
         ExplainPrinter printer("EvalFilter");
@@ -2575,7 +1972,7 @@ public:
     /**
      * Paths
      */
-    ExplainPrinter transport(const ABT& /*n*/, const PathConstant& path, ExplainPrinter inResult) {
+    ExplainPrinter transport(const PathConstant& path, ExplainPrinter inResult) {
         ExplainPrinter printer("PathConstant");
         printer.separator(" []")
             .setChildCount(1)
@@ -2584,7 +1981,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathLambda& path, ExplainPrinter inResult) {
+    ExplainPrinter transport(const PathLambda& path, ExplainPrinter inResult) {
         ExplainPrinter printer("PathLambda");
         printer.separator(" []")
             .setChildCount(1)
@@ -2593,13 +1990,13 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathIdentity& path) {
+    ExplainPrinter transport(const PathIdentity& path) {
         ExplainPrinter printer("PathIdentity");
         printer.separator(" []");
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathDefault& path, ExplainPrinter inResult) {
+    ExplainPrinter transport(const PathDefault& path, ExplainPrinter inResult) {
         ExplainPrinter printer("PathDefault");
         printer.separator(" []")
             .setChildCount(1)
@@ -2608,9 +2005,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const PathCompare& path,
-                             ExplainPrinter valueResult) {
+    ExplainPrinter transport(const PathCompare& path, ExplainPrinter valueResult) {
         ExplainPrinter printer("PathCompare");
         printer.separator(" [")
             .fieldName("op", ExplainVersion::V3)
@@ -2622,10 +2017,10 @@ public:
         return printer;
     }
 
-    static void printPathProjections(ExplainPrinter& printer, const FieldNameOrderedSet& names) {
+    static void printPathProjections(ExplainPrinter& printer, const std::set<std::string>& names) {
         if constexpr (version < ExplainVersion::V3) {
             bool first = true;
-            for (const FieldNameType& s : names) {
+            for (const std::string& s : names) {
                 if (first) {
                     first = false;
                 } else {
@@ -2635,18 +2030,18 @@ public:
             }
         } else if constexpr (version == ExplainVersion::V3) {
             std::vector<ExplainPrinter> printers;
-            for (const FieldNameType& s : names) {
+            for (const std::string& s : names) {
                 ExplainPrinter local;
                 local.print(s);
                 printers.push_back(std::move(local));
             }
             printer.fieldName("projections").print(printers);
         } else {
-            MONGO_UNREACHABLE;
+            static_assert("Unknown version");
         }
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathDrop& path) {
+    ExplainPrinter transport(const PathDrop& path) {
         ExplainPrinter printer("PathDrop");
         printer.separator(" [");
         printPathProjections(printer, path.getNames());
@@ -2654,7 +2049,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathKeep& path) {
+    ExplainPrinter transport(const PathKeep& path) {
         ExplainPrinter printer("PathKeep");
         printer.separator(" [");
         printPathProjections(printer, path.getNames());
@@ -2662,42 +2057,28 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathObj& path) {
+    ExplainPrinter transport(const PathObj& path) {
         ExplainPrinter printer("PathObj");
         printer.separator(" []");
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathArr& path) {
+    ExplainPrinter transport(const PathArr& path) {
         ExplainPrinter printer("PathArr");
         printer.separator(" []");
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathTraverse& path, ExplainPrinter inResult) {
+    ExplainPrinter transport(const PathTraverse& path, ExplainPrinter inResult) {
         ExplainPrinter printer("PathTraverse");
-        printer.separator(" [");
-
-        if constexpr (version < ExplainVersion::V3) {
-            if (path.getMaxDepth() == PathTraverse::kUnlimited) {
-                printer.print("inf");
-            } else {
-                printer.print(path.getMaxDepth());
-            }
-        } else if constexpr (version == ExplainVersion::V3) {
-            printer.fieldName("maxDepth", ExplainVersion::V3).print(path.getMaxDepth());
-        } else {
-            MONGO_UNREACHABLE;
-        }
-
-        printer.separator("]")
+        printer.separator(" []")
             .setChildCount(1)
             .fieldName("input", ExplainVersion::V3)
             .print(inResult);
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathField& path, ExplainPrinter inResult) {
+    ExplainPrinter transport(const PathField& path, ExplainPrinter inResult) {
         ExplainPrinter printer("PathField");
         printer.separator(" [")
             .fieldName("path", ExplainVersion::V3)
@@ -2709,7 +2090,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const PathGet& path, ExplainPrinter inResult) {
+    ExplainPrinter transport(const PathGet& path, ExplainPrinter inResult) {
         ExplainPrinter printer("PathGet");
         printer.separator(" [")
             .fieldName("path", ExplainVersion::V3)
@@ -2721,8 +2102,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const PathComposeM& path,
+    ExplainPrinter transport(const PathComposeM& path,
                              ExplainPrinter leftResult,
                              ExplainPrinter rightResult) {
         ExplainPrinter printer("PathComposeM");
@@ -2736,8 +2116,7 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/,
-                             const PathComposeA& path,
+    ExplainPrinter transport(const PathComposeA& path,
                              ExplainPrinter leftResult,
                              ExplainPrinter rightResult) {
         ExplainPrinter printer("PathComposeA");
@@ -2751,14 +2130,14 @@ public:
         return printer;
     }
 
-    ExplainPrinter transport(const ABT& /*n*/, const Source& expr) {
+    ExplainPrinter transport(const Source& expr) {
         ExplainPrinter printer("Source");
         printer.separator(" []");
         return printer;
     }
 
     ExplainPrinter generate(const ABT& node) {
-        return algebra::transport<true>(node, *this);
+        return algebra::transport<false>(node, *this);
     }
 
     void printPhysNodeInfo(ExplainPrinter& printer, const cascades::PhysNodeInfo& nodeInfo) {
@@ -2775,34 +2154,30 @@ public:
             .fieldName("adjustedCE")
             .print(nodeInfo._adjustedCE);
 
-        ExplainGeneratorTransporter<version> subGen(
-            _displayProperties, _memoInterface, _nodeMap, nodeInfo._nodeCEMap);
-        ExplainPrinter nodePrinter = subGen.generate(nodeInfo._node);
+        ExplainPrinter nodePrinter = generate(nodeInfo._node);
         printer.separator(", ").fieldName("node").print(nodePrinter);
     }
 
     ExplainPrinter printMemo() {
         std::vector<ExplainPrinter> groupPrinters;
-        for (size_t groupId = 0; groupId < _memoInterface->getGroupCount(); groupId++) {
+        for (size_t groupId = 0; groupId < _memo->getGroupCount(); groupId++) {
+            const cascades::Group& group = _memo->getGroup(groupId);
+
             ExplainPrinter groupPrinter;
             groupPrinter.fieldName("groupId").print(groupId).setChildCount(3);
             {
-                ExplainPrinter logicalPropPrinter = printLogicalProps(
-                    "Logical properties", _memoInterface->getLogicalProps(groupId));
+                ExplainPrinter logicalPropPrinter =
+                    printLogicalProps("Logical properties", group._logicalProperties);
                 groupPrinter.fieldName("logicalProperties", ExplainVersion::V3)
                     .print(logicalPropPrinter);
             }
 
             {
                 std::vector<ExplainPrinter> logicalNodePrinters;
-                const ABTVector& logicalNodes = _memoInterface->getLogicalNodes(groupId);
+                const ABTVector& logicalNodes = group._logicalNodes.getVector();
                 for (size_t i = 0; i < logicalNodes.size(); i++) {
                     ExplainPrinter local;
-                    local.fieldName("logicalNodeId").print(i).separator(", ");
-                    const auto rule = _memoInterface->getRules(groupId).at(i);
-                    local.fieldName("rule").print(
-                        cascades::LogicalRewriterTypeEnum::toString[static_cast<int>(rule)]);
-
+                    local.fieldName("logicalNodeId").print(i);
                     ExplainPrinter nodePrinter = generate(logicalNodes.at(i));
                     local.fieldName("node", ExplainVersion::V3).print(nodePrinter);
 
@@ -2816,7 +2191,7 @@ public:
 
             {
                 std::vector<ExplainPrinter> physicalNodePrinters;
-                for (const auto& physOptResult : _memoInterface->getPhysicalNodes(groupId)) {
+                for (const auto& physOptResult : group._physicalNodes.getNodes()) {
                     ExplainPrinter local;
                     local.fieldName("physicalNodeId")
                         .print(physOptResult->_index)
@@ -2827,12 +2202,6 @@ public:
                         local.print(physOptResult->_costLimit.toString());
                     } else {
                         local.print(physOptResult->_costLimit.getCost());
-                    }
-
-                    if (physOptResult->_nodeInfo) {
-                        const cascades::PhysicalRewriteType rule = physOptResult->_nodeInfo->_rule;
-                        local.separator(", ").fieldName("rule").print(
-                            cascades::PhysicalRewriterTypeEnum::toString[static_cast<int>(rule)]);
                     }
 
                     ExplainPrinter propPrinter =
@@ -2878,70 +2247,47 @@ private:
     const bool _displayProperties;
 
     // We don't own this.
-    const cascades::MemoExplainInterface* _memoInterface;
+    const cascades::Memo* _memo;
     const NodeToGroupPropsMap& _nodeMap;
-    boost::optional<const NodeCEMap&> _nodeCEMap;
 };
-
-using ExplainGeneratorV1 = ExplainGeneratorTransporter<ExplainVersion::V1>;
-using ExplainGeneratorV2 = ExplainGeneratorTransporter<ExplainVersion::V2>;
-using ExplainGeneratorV2Compact = ExplainGeneratorTransporter<ExplainVersion::V2Compact>;
-using ExplainGeneratorV3 = ExplainGeneratorTransporter<ExplainVersion::V3>;
 
 std::string ExplainGenerator::explain(const ABT& node,
                                       const bool displayProperties,
-                                      const cascades::MemoExplainInterface* memoInterface,
+                                      const cascades::Memo* memo,
                                       const NodeToGroupPropsMap& nodeMap) {
-    ExplainGeneratorV1 gen(displayProperties, memoInterface, nodeMap);
+    ExplainGeneratorTransporter gen(displayProperties, memo, nodeMap);
     return gen.generate(node).str();
 }
 
 std::string ExplainGenerator::explainV2(const ABT& node,
                                         const bool displayProperties,
-                                        const cascades::MemoExplainInterface* memoInterface,
+                                        const cascades::Memo* memo,
                                         const NodeToGroupPropsMap& nodeMap) {
-    ExplainGeneratorV2 gen(displayProperties, memoInterface, nodeMap);
+    ExplainGeneratorTransporter<ExplainVersion::V2> gen(displayProperties, memo, nodeMap);
     return gen.generate(node).str();
-}
-
-std::string ExplainGenerator::explainV2Compact(const ABT& node,
-                                               const bool displayProperties,
-                                               const cascades::MemoExplainInterface* memoInterface,
-                                               const NodeToGroupPropsMap& nodeMap) {
-    ExplainGeneratorV2Compact gen(displayProperties, memoInterface, nodeMap);
-    return gen.generate(node).str();
-}
-
-std::string ExplainGenerator::explainNode(const ABT& node) {
-    if (node.empty()) {
-        return "Empty\n";
-    }
-    return explainV2(node);
 }
 
 std::pair<sbe::value::TypeTags, sbe::value::Value> ExplainGenerator::explainBSON(
     const ABT& node,
     const bool displayProperties,
-    const cascades::MemoExplainInterface* memoInterface,
+    const cascades::Memo* memo,
     const NodeToGroupPropsMap& nodeMap) {
-    ExplainGeneratorV3 gen(displayProperties, memoInterface, nodeMap);
+    ExplainGeneratorTransporter<ExplainVersion::V3> gen(displayProperties, memo, nodeMap);
     return gen.generate(node).moveValue();
-}
-
-BSONObj convertSbeValToBSONObj(const std::pair<sbe::value::TypeTags, sbe::value::Value> val) {
-    uassert(6624070, "Expected an object", val.first == sbe::value::TypeTags::Object);
-    sbe::value::ValueGuard vg(val.first, val.second);
-
-    BSONObjBuilder builder;
-    sbe::bson::convertToBsonObj(builder, sbe::value::getObjectView(val.second));
-    return builder.done().getOwned();
 }
 
 BSONObj ExplainGenerator::explainBSONObj(const ABT& node,
                                          const bool displayProperties,
-                                         const cascades::MemoExplainInterface* memoInterface,
+                                         const cascades::Memo* memo,
                                          const NodeToGroupPropsMap& nodeMap) {
-    return convertSbeValToBSONObj(explainBSON(node, displayProperties, memoInterface, nodeMap));
+    auto [tag, val] =
+        optimizer::ExplainGenerator::explainBSON(node, displayProperties, memo, nodeMap);
+    uassert(6624070, "Expected an object", tag == sbe::value::TypeTags::Object);
+    sbe::value::ValueGuard vg(tag, val);
+
+    BSONObjBuilder builder;
+    sbe::bson::convertToBsonObj(builder, sbe::value::getObjectView(val));
+    return builder.done().getOwned();
 }
 
 template <class PrinterType>
@@ -2992,12 +2338,8 @@ static void printBSONstr(PrinterType& printer,
     }
 }
 
-std::string ExplainGenerator::explainBSONStr(const ABT& node,
-                                             bool displayProperties,
-                                             const cascades::MemoExplainInterface* memoInterface,
-                                             const NodeToGroupPropsMap& nodeMap) {
-    const auto [tag, val] = explainBSON(node, displayProperties, memoInterface, nodeMap);
-    sbe::value::ValueGuard vg(tag, val);
+std::string ExplainGenerator::printBSON(const sbe::value::TypeTags tag,
+                                        const sbe::value::Value val) {
     ExplainPrinterImpl<ExplainVersion::V2> printer;
     printBSONstr(printer, tag, val);
     return printer.str();
@@ -3005,61 +2347,61 @@ std::string ExplainGenerator::explainBSONStr(const ABT& node,
 
 std::string ExplainGenerator::explainLogicalProps(const std::string& description,
                                                   const properties::LogicalProps& props) {
-    return ExplainGeneratorV2::printLogicalProps(description, props).str();
+    return ExplainGeneratorTransporter<ExplainVersion::V2>::printLogicalProps(description, props)
+        .str();
 }
 
 std::string ExplainGenerator::explainPhysProps(const std::string& description,
                                                const properties::PhysProps& props) {
-    return ExplainGeneratorV2::printPhysProps(description, props).str();
+    return ExplainGeneratorTransporter<ExplainVersion::V2>::printPhysProps(description, props)
+        .str();
 }
 
-std::string ExplainGenerator::explainMemo(const cascades::MemoExplainInterface& memoInterface) {
-    ExplainGeneratorV2 gen(false /*displayProperties*/, &memoInterface);
+std::string ExplainGenerator::explainMemo(const cascades::Memo& memo) {
+    ExplainGeneratorTransporter<ExplainVersion::V2> gen(false /*displayProperties*/, &memo);
     return gen.printMemo().str();
 }
 
 std::pair<sbe::value::TypeTags, sbe::value::Value> ExplainGenerator::explainMemoBSON(
-    const cascades::MemoExplainInterface& memoInterface) {
-    ExplainGeneratorV3 gen(false /*displayProperties*/, &memoInterface);
+    const cascades::Memo& memo) {
+    ExplainGeneratorTransporter<ExplainVersion::V3> gen(false /*displayProperties*/, &memo);
     return gen.printMemo().moveValue();
 }
 
-BSONObj ExplainGenerator::explainMemoBSONObj(const cascades::MemoExplainInterface& memoInterface) {
-    return convertSbeValToBSONObj(explainMemoBSON(memoInterface));
-}
-
 std::string ExplainGenerator::explainPartialSchemaReqMap(const PartialSchemaRequirements& reqMap) {
-    ExplainGeneratorV2 gen;
-    ExplainGeneratorV2::ExplainPrinter result;
+    ExplainGeneratorTransporter<ExplainVersion::V2> gen;
+    ExplainGeneratorTransporter<ExplainVersion::V2>::ExplainPrinter result;
     gen.printPartialSchemaReqMap(result, reqMap);
     return result.str();
 }
 
-std::string ExplainGenerator::explainResidualRequirements(const ResidualRequirements& resReqs) {
-    ExplainGeneratorV2 gen;
-    ExplainGeneratorV2::ExplainPrinter result;
-    gen.printResidualRequirements(result, resReqs);
-    return result.str();
-}
-
 std::string ExplainGenerator::explainInterval(const IntervalRequirement& interval) {
-    ExplainGeneratorV2 gen;
-    return gen.printInterval(interval);
-}
-
-std::string ExplainGenerator::explainInterval(const CompoundIntervalRequirement& interval) {
-    ExplainGeneratorV2 gen;
+    ExplainGeneratorTransporter<ExplainVersion::V2> gen;
     return gen.printInterval(interval);
 }
 
 std::string ExplainGenerator::explainIntervalExpr(const IntervalReqExpr::Node& intervalExpr) {
-    ExplainGeneratorV2 gen;
-    return gen.printIntervalExpr<IntervalRequirement>(intervalExpr).str();
+    ExplainGeneratorTransporter<ExplainVersion::V2> gen;
+    return gen.printIntervalExpr(intervalExpr).str();
 }
 
-std::string ExplainGenerator::explainIntervalExpr(
-    const CompoundIntervalReqExpr::Node& intervalExpr) {
-    ExplainGeneratorV2 gen;
-    return gen.printIntervalExpr<CompoundIntervalRequirement>(intervalExpr).str();
+std::string _printNode(const ABT& node) {
+    if (node.empty()) {
+        return "Empty\n";
+    }
+    return ExplainGenerator::explainV2(node);
 }
+
+std::string _printInterval(const IntervalRequirement& interval) {
+    return ExplainGenerator::explainInterval(interval);
+}
+
+std::string _printLogicalProps(const properties::LogicalProps& props) {
+    return ExplainGenerator::explainLogicalProps("Logical Properties", props);
+}
+
+std::string _printPhysProps(const properties::PhysProps& props) {
+    return ExplainGenerator::explainPhysProps("Physical Properties", props);
+}
+
 }  // namespace mongo::optimizer

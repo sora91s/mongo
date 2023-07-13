@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/db/query/collation/collator_interface.h"
 
 namespace mongo {

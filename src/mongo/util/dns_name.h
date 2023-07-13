@@ -315,9 +315,7 @@ public:
      * case.
      */
     friend bool operator==(const HostName& lhs, const HostName& rhs) {
-        auto lens = [](const auto& h) {
-            return std::tie(h._fullyQualified, h._nameComponents);
-        };
+        auto lens = [](const auto& h) { return std::tie(h._fullyQualified, h._nameComponents); };
         return lens(lhs) == lens(rhs);
     }
 

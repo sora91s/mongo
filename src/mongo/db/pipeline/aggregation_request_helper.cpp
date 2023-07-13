@@ -49,17 +49,15 @@ namespace aggregation_request_helper {
 /**
  * Validate the aggregate command object.
  */
-void validate(OperationContext* opCtx,
-              const BSONObj& cmdObj,
+void validate(const BSONObj& cmdObj,
               const NamespaceString& nss,
               boost::optional<ExplainOptions::Verbosity> explainVerbosity);
 
-AggregateCommandRequest parseFromBSON(OperationContext* opCtx,
-                                      const DatabaseName& dbName,
+AggregateCommandRequest parseFromBSON(const std::string& dbName,
                                       const BSONObj& cmdObj,
                                       boost::optional<ExplainOptions::Verbosity> explainVerbosity,
                                       bool apiStrict) {
-    return parseFromBSON(opCtx, parseNs(dbName, cmdObj), cmdObj, explainVerbosity, apiStrict);
+    return parseFromBSON(parseNs(dbName, cmdObj), cmdObj, explainVerbosity, apiStrict);
 }
 
 StatusWith<AggregateCommandRequest> parseFromBSONForTests(
@@ -68,27 +66,25 @@ StatusWith<AggregateCommandRequest> parseFromBSONForTests(
     boost::optional<ExplainOptions::Verbosity> explainVerbosity,
     bool apiStrict) {
     try {
-        return parseFromBSON(/*opCtx=*/nullptr, nss, cmdObj, explainVerbosity, apiStrict);
+        return parseFromBSON(nss, cmdObj, explainVerbosity, apiStrict);
     } catch (const AssertionException&) {
         return exceptionToStatus();
     }
 }
 
 StatusWith<AggregateCommandRequest> parseFromBSONForTests(
-    const DatabaseName& dbName,
+    const std::string& dbName,
     const BSONObj& cmdObj,
     boost::optional<ExplainOptions::Verbosity> explainVerbosity,
     bool apiStrict) {
     try {
-        return parseFromBSON(
-            /*opCtx=*/nullptr, dbName, cmdObj, explainVerbosity, apiStrict);
+        return parseFromBSON(dbName, cmdObj, explainVerbosity, apiStrict);
     } catch (const AssertionException&) {
         return exceptionToStatus();
     }
 }
 
-AggregateCommandRequest parseFromBSON(OperationContext* opCtx,
-                                      NamespaceString nss,
+AggregateCommandRequest parseFromBSON(NamespaceString nss,
                                       const BSONObj& cmdObj,
                                       boost::optional<ExplainOptions::Verbosity> explainVerbosity,
                                       bool apiStrict) {
@@ -104,9 +100,8 @@ AggregateCommandRequest parseFromBSON(OperationContext* opCtx,
     }
 
     AggregateCommandRequest request(nss);
-    request =
-        AggregateCommandRequest::parse(IDLParserContext("aggregate", apiStrict, nss.tenantId()),
-                                       cmdObjChanged ? cmdObjBob.obj() : cmdObj);
+    request = AggregateCommandRequest::parse(IDLParserErrorContext("aggregate", apiStrict),
+                                             cmdObjChanged ? cmdObjBob.obj() : cmdObj);
 
     if (explainVerbosity) {
         uassert(ErrorCodes::FailedToParse,
@@ -116,11 +111,11 @@ AggregateCommandRequest parseFromBSON(OperationContext* opCtx,
         request.setExplain(explainVerbosity);
     }
 
-    validate(opCtx, cmdObj, nss, explainVerbosity);
+    validate(cmdObj, nss, explainVerbosity);
     return request;
 }
 
-NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) {
+NamespaceString parseNs(const std::string& dbname, const BSONObj& cmdObj) {
     auto firstElement = cmdObj.firstElement();
 
     if (firstElement.isNumber()) {
@@ -129,14 +124,14 @@ NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) {
                               << firstElement.fieldNameStringData()
                               << "' field must specify a collection name or 1",
                 firstElement.number() == 1);
-        return NamespaceString::makeCollectionlessAggregateNSS(dbName);
+        return NamespaceString::makeCollectionlessAggregateNSS(dbname);
     } else {
         uassert(ErrorCodes::TypeMismatch,
                 str::stream() << "collection name has invalid type: "
                               << typeName(firstElement.type()),
                 firstElement.type() == BSONType::String);
 
-        const NamespaceString nss(dbName, firstElement.valueStringData());
+        const NamespaceString nss(dbname, firstElement.valueStringData());
 
         uassert(ErrorCodes::InvalidNamespace,
                 str::stream() << "Invalid namespace specified '" << nss.ns() << "'",
@@ -154,8 +149,7 @@ Document serializeToCommandDoc(const AggregateCommandRequest& request) {
     return Document(request.toBSON(BSONObj()).getOwned());
 }
 
-void validate(OperationContext* opCtx,
-              const BSONObj& cmdObj,
+void validate(const BSONObj& cmdObj,
               const NamespaceString& nss,
               boost::optional<ExplainOptions::Verbosity> explainVerbosity) {
     bool hasCursorElem = cmdObj.hasField(AggregateCommandRequest::kCursorFieldName);
@@ -219,14 +213,6 @@ void validateRequestForAPIVersion(const OperationContext* opCtx,
                                  "'apiStrict: true' in API Version "
                               << apiVersion,
                 isInternalClient);
-    }
-}
-
-void validateRequestFromClusterQueryWithoutShardKey(const AggregateCommandRequest& request) {
-    if (request.getIsClusterQueryWithoutShardKeyCmd()) {
-        uassert(ErrorCodes::InvalidOptions,
-                "Only mongos can set the isClusterQueryWithoutShardKeyCmd field",
-                request.getFromMongos());
     }
 }
 
@@ -295,8 +281,9 @@ mongo::SimpleCursorOptions parseAggregateCursorFromBSON(const BSONElement& curso
             "cursor field must be missing or an object",
             cursorElem.type() == mongo::Object);
 
-    SimpleCursorOptions cursor = SimpleCursorOptions::parse(
-        IDLParserContext(AggregateCommandRequest::kCursorFieldName), cursorElem.embeddedObject());
+    SimpleCursorOptions cursor =
+        SimpleCursorOptions::parse(IDLParserErrorContext(AggregateCommandRequest::kCursorFieldName),
+                                   cursorElem.embeddedObject());
     if (!cursor.getBatchSize())
         cursor.setBatchSize(aggregation_request_helper::kDefaultBatchSize);
 

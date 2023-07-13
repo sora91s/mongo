@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
 
 #include "mongo/platform/basic.h"
 
@@ -40,109 +41,7 @@
 #include "mongo/util/functional.h"
 #include "mongo/util/string_map.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
-
 namespace mongo::column_keygen {
-
-ColumnKeyGenerator::ColumnKeyGenerator(BSONObj keyPattern, BSONObj pathProjection)
-    : _proj(createProjectionExecutor(keyPattern, pathProjection)),
-      _keyPattern(keyPattern),
-      _pathProjection(pathProjection),
-      _projTree(createProjectionTree()){};
-
-ColumnStoreProjection ColumnKeyGenerator::createProjectionExecutor(BSONObj keyPattern,
-                                                                   BSONObj pathProjection) {
-    auto expCtx = make_intrusive<ExpressionContext>(nullptr, nullptr, NamespaceString());
-    auto projection = getASTProjection(keyPattern, pathProjection);
-    auto policies = ProjectionPolicies::columnStoreIndexSpecProjectionPolicies();
-    return ColumnStoreProjection{projection_executor::buildProjectionExecutor(
-        expCtx, &projection, policies, projection_executor::kDefaultBuilderParams)};
-}
-
-projection_ast::Projection ColumnKeyGenerator::getASTProjection(BSONObj keyPattern,
-                                                                BSONObj pathProjection) {
-    // We should never have a key pattern that contains more than a single element.
-    invariant(keyPattern.nFields() == 1);
-
-    // The keyPattern is either { "$**": "columnstore" } for all paths or { "path.$**":
-    // "columnstore" } for a single subtree. If we are indexing a single subtree, then we will
-    // project just that path.
-    auto indexRoot = keyPattern.firstElement().fieldNameStringData();
-    auto suffixPos = indexRoot.find(kSubtreeSuffix);
-    auto idPresent = indexRoot.startsWith("_id."_sd);
-
-    // If we're indexing a single subtree, we can't also specify a path projection.
-    invariant(suffixPos == std::string::npos || pathProjection.isEmpty());
-
-    // If this is a subtree projection, the projection spec is { "path.to.subtree.$**":
-    // "columnstore" }. Otherwise, we use the path projection from the original command object. For
-    // the subtree projection, we exclude the "_id" field unless the subtree is rooted off of "_id".
-    BSONObj projSpec;
-    if (suffixPos != std::string::npos) {
-        auto path = indexRoot.substr(0, suffixPos);
-        projSpec = idPresent ? BSON(path << 1) : BSON(path << 1 << "_id" << 0);
-    } else {
-        projSpec = pathProjection;
-    }
-
-    // Construct a dummy ExpressionContext for ProjectionExecutor. It's OK to set the
-    // ExpressionContext's OperationContext and CollatorInterface to 'nullptr' and the namespace
-    // string to '' here; since we ban computed fields from the projection, the ExpressionContext
-    // will never be used.
-    auto expCtx = make_intrusive<ExpressionContext>(nullptr, nullptr, NamespaceString());
-    auto policies = ProjectionPolicies::columnStoreIndexSpecProjectionPolicies();
-    auto projection = projection_ast::parseAndAnalyze(expCtx, projSpec, policies);
-    return projection;
-}
-
-ColumnProjectionTree ColumnKeyGenerator::createProjectionTree() {
-    const bool isInclusion =
-        _proj.exec()->getType() == TransformerInterface::TransformerType::kInclusionProjection;
-
-    auto proj = getASTProjection(_keyPattern, _pathProjection);
-
-    // The user explicitly excluded _id in an inclusion projection. This is legal syntax, but
-    // the node indicating that _id is excluded doesn't need to be in the tree.
-    if (auto idField =
-            dynamic_cast<projection_ast::BooleanConstantASTNode*>(proj.root()->getChild("_id"));
-        isInclusion && idField && !idField->value()) {
-        proj.root()->removeChild("_id");
-    }
-
-    // Performs BFS on Projection AST, while simultaenously creating
-    // ColumnProjectionTree used for Columnar Index Key generation.
-    std::queue<projection_ast::ProjectionPathASTNode*> astQueue;
-    astQueue.push(proj.root());
-
-    std::unique_ptr<ColumnProjectionNode> root = std::make_unique<ColumnProjectionNode>();
-    std::queue<ColumnProjectionNode*> columnQueue;
-    columnQueue.push(root.get());
-    while (!astQueue.empty()) {
-        projection_ast::ProjectionPathASTNode* astCurr = astQueue.front();
-        astQueue.pop();
-        ColumnProjectionNode* columnCurr = columnQueue.front();
-        columnQueue.pop();
-        const auto& children = astCurr->children();
-        const auto& fieldNames = astCurr->fieldNames();
-        for (size_t i = 0; i < children.size(); ++i) {
-            auto fieldName = fieldNames[i];
-            std::unique_ptr<ColumnProjectionNode> columnChild =
-                std::make_unique<ColumnProjectionNode>();
-            columnCurr->addChild(fieldName, std::move(columnChild));
-            // If astChild is an internal node, we add to queue and continue BFS.
-            if (auto astChild =
-                    dynamic_cast<projection_ast::ProjectionPathASTNode*>(children[i].get());
-                astChild) {
-                // We are guaranteed that child and corresponding fieldname are located in same
-                // index in both vectors.
-                astQueue.push(astChild);
-                columnQueue.push(columnCurr->getChild(fieldName));
-            }
-        }
-    }
-    return ColumnProjectionTree(isInclusion, std::move(root));
-}
-
 namespace {
 
 /**
@@ -163,8 +62,9 @@ bool identicalBSONElementArrays(const std::vector<BSONElement>& lhs,
 /**
  * This class handles the logic of key generation for columnar indexes. It produces
  * UnencodedCellViews, which have all of the data that should be put in the index values, but it is
- * not responsible for encoding that data into a flat buffer. This final serialization step is
- * handled by the 'writeEncodedCell' function.
+ * not responsible for encoding that data into a flat buffer. That is handled by XXX.
+ *
+ * TODO once the code for that that is written (SERVER-64766) update this to replace the XXX.
  *
  * "Shredding" is an informal term for taking a single BSON document and splitting it into the data
  * for each unique path. The data at each path should be sufficient to reconstruct the object in
@@ -181,17 +81,9 @@ public:
      */
     enum PathsAndCells : bool { kOnlyPaths = false, kPathsAndCells = true };
 
-    explicit ColumnShredder(const BSONObj& obj,
-                            const ColumnProjectionTree* projTree,
-                            PathsAndCells pathsAndCells = kPathsAndCells)
-        : _pathsAndCells(pathsAndCells), _projTree(projTree) {
-        // We keep track of parameter belowProjLeaf to handle cases where every subfield of an
-        // included path should also be included.
-        walkObj(_paths[ColumnStore::kRowIdPath],
-                obj,
-                _projTree->root(),
-                false /* belowProjLeaf */,
-                true /* isRoot */);
+    explicit ColumnShredder(const BSONObj& obj, PathsAndCells pathsAndCells = kPathsAndCells)
+        : _pathsAndCells(pathsAndCells) {
+        walkObj(_paths[ColumnStore::kRowIdPath], obj, /*isRoot=*/true);
     }
 
     void visitPaths(function_ref<void(PathView)> cb) const {
@@ -209,59 +101,17 @@ public:
         }
     }
 
-    static void multiVisit(
-        const std::vector<BsonRecord>& recs,
-        function_ref<void(PathView, const BsonRecord& record, const UnencodedCellView&)> cb,
-        const ColumnProjectionTree* projTree) {
-        const size_t count = recs.size();
-        if (count == 0)
-            return;
-
-        std::vector<ColumnShredder> shredders;
-        shredders.reserve(count);
-        for (auto&& rec : recs) {
-            shredders.emplace_back(*rec.docPtr, projTree);
-        }
-
-        if (count == 1) {
-            // Don't need to merge if just 1 record.
-            shredders[0].visitCells([&](PathView path, const UnencodedCellView& cell) {  //
-                cb(path, recs[0], cell);
-            });
-            return;
-        }
-
-        // Mapping: column name -> [raw cells and indexes to recs and shredders]
-        StringDataMap<std::vector<std::pair<RawCellValue*, size_t>>> columns;
-        for (size_t i = 0; i < count; i++) {
-            for (auto&& [path, rcv] : shredders[i]._paths) {
-                auto&& vec = columns[path];
-                if (vec.empty())
-                    vec.reserve(count);  // Optimize for columns existing in all records.
-                vec.emplace_back(&rcv, i);
-            }
-        }
-
-        for (auto&& [path, rows] : columns) {
-            for (auto&& [rcv, i] : rows) {
-                cb(path, recs[i], shredders[i].makeCellView(path, *rcv));
-            }
-        }
-    }
-
-    static void visitDiff(
-        const BSONObj& oldObj,
-        const BSONObj& newObj,
-        function_ref<void(ColumnKeyGenerator::DiffAction, PathView, const UnencodedCellView*)> cb,
-        const ColumnProjectionTree* projTree) {
-        auto oldShredder = ColumnShredder(oldObj, projTree);
-        auto newShredder = ColumnShredder(newObj, projTree);
+    static void visitDiff(const BSONObj& oldObj,
+                          const BSONObj& newObj,
+                          function_ref<void(DiffAction, PathView, const UnencodedCellView*)> cb) {
+        auto oldShredder = ColumnShredder(oldObj);
+        auto newShredder = ColumnShredder(newObj);
 
         for (auto&& [path, rawCellNew] : newShredder._paths) {
             auto itOld = oldShredder._paths.find(path);
             if (itOld == oldShredder._paths.end()) {
                 auto cell = newShredder.makeCellView(path, rawCellNew);
-                cb(ColumnKeyGenerator::kInsert, path, &cell);
+                cb(kInsert, path, &cell);
                 continue;
             }
 
@@ -275,12 +125,12 @@ public:
 
 
             auto cell = newShredder.makeCellView(path, rawCellNew);
-            cb(ColumnKeyGenerator::kUpdate, path, &cell);
+            cb(kUpdate, path, &cell);
         }
 
         for (auto&& [path, _] : oldShredder._paths) {
             if (!newShredder._paths.contains(path)) {
-                cb(ColumnKeyGenerator::kDelete, path, nullptr);
+                cb(kDelete, path, nullptr);
             }
         }
     }
@@ -310,13 +160,6 @@ private:
         bool childrenMustBeSparse = false;
         bool hasDoubleNestedArrays = false;
         bool hasDuplicateFields = false;
-
-        // Used to detect duplicate fields in BSON objects. As the DFS in 'walkObj()' iterates the
-        // fields in a target object (the "visitor" object), it remembers each field it observed by
-        // marking this '_previousVisitor' with the visitor object's identifier. If the object
-        // iterator encounters the same field name twice, it will descend into the resulting path a
-        // second time and see that it already visited the corresponding RawCellValue.
-        size_t _previousVisitor = 0;
 
         bool operator==(const RawCellValue& rhs) const {
             const RawCellValue& lhs = *this;
@@ -362,6 +205,7 @@ private:
             cell->sparseness = kNotSparse;
             return false;
         }
+
         auto parentIt = _paths.find(*parentPath);
         invariant(parentIt != _paths.end());
         auto& parent = parentIt->second;
@@ -371,12 +215,7 @@ private:
         return isSparse;
     }
 
-    void walkObj(RawCellValue& cell,
-                 const BSONObj& obj,
-                 ColumnProjectionNode* node,
-                 bool belowProjLeaf,
-                 bool isRoot = false) {
-
+    void walkObj(RawCellValue& cell, const BSONObj& obj, bool isRoot = false) {
         if (_pathsAndCells) {
             cell.nNonEmptySubobjects++;
             if (!isRoot) {
@@ -391,58 +230,28 @@ private:
         if (_pathsAndCells && !isRoot)
             _currentArrayInfo += '{';
 
-        // As 'walkObj()' traverses the BSONObj graph, it uses an integer index as a unique
-        // identifier for each object it visits.
-        const auto objectIdentifier = ++_nextObjectIdentifier;
         for (auto [name, elem] : obj) {
             // We skip fields in some edge cases such as dots in the field name. This may also throw
             // if the field name contains invalid UTF-8 in a way that would break the index.
             if (shouldSkipField(name))
                 continue;
+
             ON_BLOCK_EXIT([&, oldPathSize = _currentPath.size()] {  //
                 _currentPath.resize(oldPathSize);
             });
             if (!isRoot)
                 _currentPath += '.';
             _currentPath += name;
-            auto childNode = node ? node->getChild(elem.fieldNameStringData()) : nullptr;
-            // If belowProjLeaf is true, then we know we have entered a subfield of an already
-            // included path, so we create the cell.
-            // If childNode exists and is the final field in the path, we create the cell if it is
-            // an inclusion projection.
-            // If childNode does not exist, we create the cell if it is an exclusion projection.
-            // If childNode exists, we create the cell if it is not the final field in the path,
-            // regardless of the type of projection.
-            if (belowProjLeaf || static_cast<bool>(childNode) == _projTree->isInclusion() ||
-                (childNode && !childNode->isLeaf())) {
-                auto& subCell = _paths[_currentPath];
 
-                // Detect cases where 'obj' has two fields with the same name. We avoid a separate
-                // duplicate-detection loop by marking the '_previousVisitor' member of each
-                // RawCellValue that we visit in _this_ loop. If we re-visit a RawCellValue, it
-                // means we followed the same path twice and therefore the same field of this
-                // BSONObj.
-                if (objectIdentifier == subCell._previousVisitor || cell.hasDuplicateFields) {
-                    // Objects with duplicate fields are possible but are not present in most user
-                    // data. Instead of trying to store their array info, we force projections to
-                    // fall back to the document store.
-                    subCell.arrayInfoBuf.clear();
-                    subCell.hasDuplicateFields = true;
-                }
-                subCell._previousVisitor = objectIdentifier;
-
-                subCell.nSeen++;
-                if (_inDoubleNestedArray)
-                    subCell.hasDoubleNestedArrays = true;
-                handleElem(subCell, elem, childNode, belowProjLeaf);
-            }
+            auto& subCell = _paths[_currentPath];
+            subCell.nSeen++;
+            if (_inDoubleNestedArray)
+                subCell.hasDoubleNestedArrays = true;
+            handleElem(subCell, elem);
         }
     }
 
-    void walkArray(RawCellValue& cell,
-                   const BSONObj& arr,
-                   ColumnProjectionNode* node,
-                   bool belowProjLeaf) {
+    void walkArray(RawCellValue& cell, const BSONObj& arr) {
         DecimalCounter<unsigned> index;
 
         for (auto elem : arr) {
@@ -475,27 +284,19 @@ private:
             }
 
             // Note: always same cell, since array traversal never changes path.
-            handleElem(cell, elem, node, belowProjLeaf);
+            handleElem(cell, elem);
         }
     }
 
-    void handleElem(RawCellValue& cell,
-                    const BSONElement& elem,
-                    ColumnProjectionNode* node,
-                    bool belowProjLeaf) {
-        if (node && node->isLeaf()) {
-            // If child is a leaf in the projection tree, then the remaining
-            // sub-documents are automatically in the projection.
-            belowProjLeaf = true;
-        }
+    void handleElem(RawCellValue& cell, const BSONElement& elem) {
         // Only recurse on non-empty objects and arrays. Empty objects and arrays are handled as
         // scalars.
         if (elem.type() == Object) {
             if (auto obj = elem.Obj(); !obj.isEmpty())
-                return walkObj(cell, obj, node, belowProjLeaf);
+                return walkObj(cell, obj);
         } else if (elem.type() == Array) {
             if (auto obj = elem.Obj(); !obj.isEmpty())
-                return walkArray(cell, obj, node, belowProjLeaf);
+                return walkArray(cell, obj);
         }
 
         if (_pathsAndCells) {
@@ -514,6 +315,11 @@ private:
 
     void appendToArrayInfo(RawCellValue& rcd, char finalByte) {
         dassert(finalByte == '|' || finalByte == 'o');
+
+        auto foundDuplicateField = [&] {
+            rcd.arrayInfoBuf.clear();
+            rcd.hasDuplicateFields = true;
+        };
 
         if (rcd.hasDuplicateFields) {
             // arrayInfo should be left empty in this case.
@@ -537,27 +343,40 @@ private:
         // Make better names for symmetry (and to prevent accidental modifications):
         StringData oldPosition = rcd.lastPosition;
         StringData newPosition = _currentArrayInfo;
-        invariant(!oldPosition.empty() && !newPosition.empty());
+
+        if (MONGO_unlikely(oldPosition.empty() || newPosition.empty())) {
+            // This can only happen if there is a duplicate field at the top level.
+            return foundDuplicateField();
+        }
 
         auto [oldIt, newIt] = std::mismatch(oldPosition.begin(),  //
                                             oldPosition.end(),
                                             newPosition.begin(),
                                             newPosition.end());
-        invariant(newIt != newPosition.end());
-        invariant(*newIt != '[');
+        if (MONGO_unlikely(newIt == newPosition.end())) {
+            // This can only happen if there is a duplicate field in an array, because otherwise
+            // the raw array infos must differ by an index in some array.
+            return foundDuplicateField();
+        }
 
         // Walk back to start of differing elem. Important to use newIt here because if they are
         // in the same array, oldIt may have an implicitly encoded 0 index, while newIt must
         // have a higher index.
         while (*newIt != '[') {
-            invariant(*newIt >= '0' && *newIt <= '9');
+            if (MONGO_unlikely(!(*newIt >= '0' && *newIt <= '9'))) {
+                // Non-index difference can only happen if there are duplicate fields in an array.
+                return foundDuplicateField();
+            }
             invariant(newIt > newPosition.begin());
             dassert(oldIt > oldPosition.begin());  // oldIt and newIt are at same index.
             --newIt;
             --oldIt;
         }
         invariant(oldIt < oldPosition.end());
-        invariant(*oldIt == '[');
+        if (MONGO_unlikely(*oldIt != '[')) {
+            // This is another type of non-index difference.
+            return foundDuplicateField();
+        }
 
         // Close out arrays past the first mismatch in LIFO order.
         for (auto revOldIt = oldPosition.end() - 1; revOldIt != oldIt; --revOldIt) {
@@ -569,13 +388,17 @@ private:
         }
 
         // Now process the mismatch. It must be a difference in array index (checked above).
-        invariant(*oldIt == '[' && *newIt == '[');
+        dassert(*oldIt == '[' && *newIt == '[');
         ++oldIt;
         ++newIt;
         const auto oldIx = ColumnStore::readArrInfoNumber(&oldIt, oldPosition.end());
         const auto newIx = ColumnStore::readArrInfoNumber(&newIt, newPosition.end());
 
-        invariant(newIx > oldIx);
+        if (MONGO_unlikely(newIx <= oldIx)) {
+            // If this element is at a same or lower index, we must have hit a duplicate field
+            // above and restarted the array indexing.
+            return foundDuplicateField();
+        }
         const auto delta = newIx - oldIx;
         const auto skips = delta - 1;
         if (skips == 0) {
@@ -712,37 +535,22 @@ private:
     bool _inDoubleNestedArray = false;
 
     const PathsAndCells _pathsAndCells = kPathsAndCells;
-
-    const ColumnProjectionTree* _projTree;
-
-    // This count gets used by the depth-first search in 'walkObj()' to choose a unique integer
-    // identifier for each BSONObj that it visits.
-    size_t _nextObjectIdentifier = 0;
 };
 }  // namespace
 
-void ColumnKeyGenerator::visitCellsForInsert(
-    const BSONObj& obj, function_ref<void(PathView, const UnencodedCellView&)> cb) const {
-    ColumnShredder(obj, &_projTree).visitCells(cb);
+void visitCellsForInsert(const BSONObj& obj,
+                         function_ref<void(PathView, const UnencodedCellView&)> cb) {
+    ColumnShredder(obj).visitCells(cb);
 }
 
-void ColumnKeyGenerator::visitCellsForInsert(
-    const std::vector<BsonRecord>& recs,
-    function_ref<void(PathView, const BsonRecord& record, const UnencodedCellView&)> cb) const {
-    ColumnShredder::multiVisit(recs, cb, &_projTree);
+void visitPathsForDelete(const BSONObj& obj, function_ref<void(PathView)> cb) {
+    ColumnShredder(obj, ColumnShredder::kOnlyPaths).visitPaths(cb);
 }
 
-void ColumnKeyGenerator::visitPathsForDelete(const BSONObj& obj,
-                                             function_ref<void(PathView)> cb) const {
-    ColumnShredder(obj, &_projTree, ColumnShredder::kOnlyPaths).visitPaths(cb);
-}
-
-void ColumnKeyGenerator::visitDiffForUpdate(
-    const BSONObj& oldObj,
-    const BSONObj& newObj,
-    function_ref<void(ColumnKeyGenerator::DiffAction, PathView, const UnencodedCellView*)> cb)
-    const {
-    ColumnShredder::visitDiff(oldObj, newObj, cb, &_projTree);
+void visitDiffForUpdate(const BSONObj& oldObj,
+                        const BSONObj& newObj,
+                        function_ref<void(DiffAction, PathView, const UnencodedCellView*)> cb) {
+    ColumnShredder::visitDiff(oldObj, newObj, cb);
 }
 
 bool operator==(const UnencodedCellView& lhs, const UnencodedCellView& rhs) {

@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#include <iostream>
 
 #include "mongo/platform/basic.h"
 
@@ -41,6 +42,8 @@
 #include "mongo/util/functional.h"
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/scopeguard.h"
+
+using namespace std;
 
 namespace mongo {
 namespace mozjs {
@@ -244,6 +247,20 @@ bool MozJSProxyScope::exec(StringData code,
     return out;
 }
 
+bool MozJSProxyScope::execAndGetResult(StringData code,
+                           const std::string& name,
+                           bool printResult,
+                           bool reportError,
+                           bool assertOnError,
+                           std::string& res,
+                           int timeoutMs) {
+    bool out;
+    run([&] {
+        out = _implScope->execAndGetResult(code, name, printResult, reportError, assertOnError, res, timeoutMs);
+    });
+    return out;
+}
+
 void MozJSProxyScope::injectNative(const char* field, NativeFunction func, void* data) {
     run([&] { _implScope->injectNative(field, func, data); });
 }
@@ -288,9 +305,7 @@ void MozJSProxyScope::run(Closure&& closure) {
 
 template <typename Closure>
 void MozJSProxyScope::runWithoutInterruptionExceptAtGlobalShutdown(Closure&& closure) {
-    auto toRun = [&] {
-        run(std::forward<Closure>(closure));
-    };
+    auto toRun = [&] { run(std::forward<Closure>(closure)); };
 
     if (_opCtx) {
         return _opCtx->runWithoutInterruptionExceptAtGlobalShutdown(toRun);
@@ -312,9 +327,7 @@ void MozJSProxyScope::runOnImplThread(unique_function<void()> f) {
 
     Interruptible* interruptible = _opCtx ? _opCtx : Interruptible::notInterruptible();
 
-    auto pred = [&] {
-        return _state == State::ImplResponse;
-    };
+    auto pred = [&] { return _state == State::ImplResponse; };
 
     try {
         interruptible->waitForConditionOrInterrupt(_proxyCondvar, lk, pred);
@@ -325,7 +338,6 @@ void MozJSProxyScope::runOnImplThread(unique_function<void()> f) {
         // update _status after the wait, otherwise it would get overwritten in implThread
         _status = ex.toStatus();
     }
-
     _state = State::Idle;
 
     // Clear the _status state and throw it if necessary

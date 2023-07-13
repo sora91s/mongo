@@ -38,18 +38,13 @@
 namespace mongo::optimizer {
 
 /**
- * Marker class for paths. Mutually exclusive with nodes and expressions.
- */
-class PathSyntaxSort {};
-
-/**
- * A constant path element - any input value is disregarded and replaced by the result of the child
- * expression. The child expression does not depend on the values unpacked by the path.
+ * A constant path element - any input value is disregarded and replaced by the result of (constant)
+ * expression.
  *
  * It could also be expressed as lambda that ignores its input: \ _ . c
  */
-class PathConstant final : public ABTOpFixedArity<1>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<1>;
+class PathConstant final : public Operator<PathConstant, 1>, public PathSyntaxSort {
+    using Base = Operator<PathConstant, 1>;
 
 public:
     PathConstant(ABT inConstant) : Base(std::move(inConstant)) {
@@ -73,8 +68,8 @@ public:
  * A lambda path element - the expression must be a single argument lambda. The lambda is applied
  * with the input value.
  */
-class PathLambda final : public ABTOpFixedArity<1>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<1>;
+class PathLambda final : public Operator<PathLambda, 1>, public PathSyntaxSort {
+    using Base = Operator<PathLambda, 1>;
 
 public:
     PathLambda(ABT inLambda) : Base(std::move(inLambda)) {
@@ -88,17 +83,14 @@ public:
     const ABT& getLambda() const {
         return get<0>();
     }
-    ABT& getLambda() {
-        return get<0>();
-    }
 };
 
 /**
- * An identity path element. Returns the input undisturbed. It can be expressed as lambda : \ x . x.
+ * An identity path element - the input is not disturbed at all.
  *
- * Not permitted under EvalFilter.
+ * It could also be expressed as lambda : \ x . x
  */
-class PathIdentity final : public ABTOpFixedArity<0>, public PathSyntaxSort {
+class PathIdentity final : public Operator<PathIdentity, 0>, public PathSyntaxSort {
 public:
     bool operator==(const PathIdentity& other) const {
         return true;
@@ -106,14 +98,11 @@ public:
 };
 
 /**
- * A default path element - combines an existence check with a replacement step.
- * Under EvalPath:  If input is Nothing then return the result of the child expression, otherwise
- *      return the input undisturbed.
- * Under EvalFilter: If input is Nothing then return the result of the child expression, otherwise
- *      return the child expression negated.
+ * A default path element - If input is Nothing then return the result of expression (assumed to
+ * return non-Nothing) otherwise return the input undisturbed.
  */
-class PathDefault final : public ABTOpFixedArity<1>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<1>;
+class PathDefault final : public Operator<PathDefault, 1>, public PathSyntaxSort {
+    using Base = Operator<PathDefault, 1>;
 
 public:
     PathDefault(ABT inDefault) : Base(std::move(inDefault)) {
@@ -130,20 +119,17 @@ public:
 };
 
 /**
- * A comparison path element - compares the input value to the result of the child expression using
- * a comparison operator, and returns a boolean indicating the result of the comparison. The child
- * expression does not depend on the values unpacked by the path.
- *
- * Not permitted under EvalPath.
+ * A comparison path element - the input value is compared to the result of (constant) expression.
+ * The actual semantics (return value) depends on what component is evaluating the paths (i.e.
+ * filter or project).
  */
-class PathCompare : public ABTOpFixedArity<1>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<1>;
+class PathCompare : public Operator<PathCompare, 1>, public PathSyntaxSort {
+    using Base = Operator<PathCompare, 1>;
 
     Operations _cmp;
 
 public:
     PathCompare(Operations inCmp, ABT inVal) : Base(std::move(inVal)), _cmp(inCmp) {
-        tassert(6684500, "Comparison op expected", isComparisonOp(_cmp));
         assertExprSort(getVal());
     }
 
@@ -165,55 +151,53 @@ public:
 };
 
 /**
- * A drop path element - If the input is an object, drops the specified fields, otherwise returns
- * the input unmodified. The fields are treated as simple field paths.
- *
- * Not permitted under EvalFilter.
+ * A drop path element - drops fields from the input if it is an object otherwise returns it
+ * undisturbed.
  */
-class PathDrop final : public ABTOpFixedArity<0>, public PathSyntaxSort {
+class PathDrop final : public Operator<PathDrop, 0>, public PathSyntaxSort {
 public:
-    PathDrop(FieldNameOrderedSet inNames) : _names(std::move(inNames)) {}
+    using NameSet = std::set<std::string>;
+
+    PathDrop(NameSet inNames) : _names(std::move(inNames)) {}
 
     bool operator==(const PathDrop& other) const {
         return _names == other._names;
     }
 
-    const auto& getNames() const {
+    const NameSet& getNames() const {
         return _names;
     }
 
 private:
-    const FieldNameOrderedSet _names;
+    const NameSet _names;
 };
 
 /**
- * A keep path element - If the input is an object, keeps the specified fields, otherwise returns
- * the input unmodified. The fields are treated as simple field paths.
- *
- * Not permitted in EvalFilter.
+ * A keep path element - keeps fields from the input if it is an object otherwise returns it
+ * undisturbed.
  */
-class PathKeep final : public ABTOpFixedArity<0>, public PathSyntaxSort {
+class PathKeep final : public Operator<PathKeep, 0>, public PathSyntaxSort {
 public:
-    PathKeep(FieldNameOrderedSet inNames) : _names(std::move(inNames)) {}
+    using NameSet = std::set<std::string>;
+
+    PathKeep(NameSet inNames) : _names(std::move(inNames)) {}
 
     bool operator==(const PathKeep other) const {
         return _names == other._names;
     }
 
-    const auto& getNames() const {
+    const NameSet& getNames() const {
         return _names;
     }
 
 private:
-    const FieldNameOrderedSet _names;
+    const NameSet _names;
 };
 
 /**
- * Combines an object type check with a potential replacement.
- * Under EvalPath: If input is an object then return it unmodified, otherwise return Nothing.
- * Under EvalFilter: If input is an object then return true, otherwise return false.
+ * Returns input undisturbed if it is an object otherwise return Nothing.
  */
-class PathObj final : public ABTOpFixedArity<0>, public PathSyntaxSort {
+class PathObj final : public Operator<PathObj, 0>, public PathSyntaxSort {
 public:
     bool operator==(const PathObj& other) const {
         return true;
@@ -221,11 +205,9 @@ public:
 };
 
 /**
- * Combines an array type check with a potential replacement.
- * Under EvalPath: If input is an object then return it unmodified, otherwise return Nothing.
- * Under EvalFilter: If input is an object then return true, otherwise return false.
+ * Returns input undisturbed if it is an array otherwise return Nothing.
  */
-class PathArr final : public ABTOpFixedArity<0>, public PathSyntaxSort {
+class PathArr final : public Operator<PathArr, 0>, public PathSyntaxSort {
 public:
     bool operator==(const PathArr& other) const {
         return true;
@@ -233,37 +215,18 @@ public:
 };
 
 /**
- * A traverse path element - if the input is not an array, applies the inner path to the input.
- * Otherwise, recursively evaluates on each element of the array.
- *
- * Under EvalPath: re-assembles the result from each element into an array, and returns the array.
- * Under EvalFilter: returns true if the inner path applied to any of the array elements is true.
- *
- * Specifies a maximum depth of the traversal: how many nested arrays are we allowed to descend. "0"
- * denotes unlimited depth.
+ * A traverse path element - apply the inner path to every element of an array.
  */
-class PathTraverse final : public ABTOpFixedArity<1>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<1>;
+class PathTraverse final : public Operator<PathTraverse, 1>, public PathSyntaxSort {
+    using Base = Operator<PathTraverse, 1>;
 
 public:
-    static constexpr size_t kUnlimited = 0;
-    static constexpr size_t kSingleLevel = 1;
-
-    PathTraverse(const size_t maxDepth, ABT inPath) : Base(std::move(inPath)), _maxDepth(maxDepth) {
+    PathTraverse(ABT inPath) : Base(std::move(inPath)) {
         assertPathSort(getPath());
-
-        // TODO SERVER-67306: Support different maxDepth values.
-        tassert(6743600,
-                "maxDepth must be either 0 or 1",
-                maxDepth == kUnlimited || maxDepth == kSingleLevel);
     }
 
     bool operator==(const PathTraverse& other) const {
-        return getPath() == other.getPath() && _maxDepth == other._maxDepth;
-    }
-
-    size_t getMaxDepth() const {
-        return _maxDepth;
+        return getPath() == other.getPath();
     }
 
     const ABT& getPath() const {
@@ -273,27 +236,17 @@ public:
     ABT& getPath() {
         return get<0>();
     }
-
-private:
-    const size_t _maxDepth;
 };
 
 /**
- * A field path element - models the act of setting a field in an object. Extracts the specified
- * field from the input and runs the inner path with that value following "get" semantics. Then,
- * 1. If its input is an object: sets the field in the input to the result.
- * 2. If the input is not an object: returns the input unmodified if the inner path returned
- *    Nothing, otherwise returns an object with the single field and the result as its value.
- *
- * Not permitted in EvalFilter.
+ * A field path element - apply the inner path to an object field.
  */
-class PathField final : public ABTOpFixedArity<1>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<1>;
-    FieldNameType _name;
+class PathField final : public Operator<PathField, 1>, public PathSyntaxSort {
+    using Base = Operator<PathField, 1>;
+    std::string _name;
 
 public:
-    PathField(FieldNameType inName, ABT inPath)
-        : Base(std::move(inPath)), _name(std::move(inName)) {
+    PathField(std::string inName, ABT inPath) : Base(std::move(inPath)), _name(std::move(inName)) {
         assertPathSort(getPath());
     }
 
@@ -315,18 +268,14 @@ public:
 };
 
 /**
- * A get path element. If the input is an object and the specified field exists in it, gets the
- * value for the field, and returns the result of the inner path applied to the value. Otherwise,
- * returns the result of the inner path applied to Nothing.
- *
- * The specified field name is treated as a simple path.
+ * A get path element - similar to the path element.
  */
-class PathGet final : public ABTOpFixedArity<1>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<1>;
-    FieldNameType _name;
+class PathGet final : public Operator<PathGet, 1>, public PathSyntaxSort {
+    using Base = Operator<PathGet, 1>;
+    std::string _name;
 
 public:
-    PathGet(FieldNameType inName, ABT inPath) : Base(std::move(inPath)), _name(std::move(inName)) {
+    PathGet(std::string inName, ABT inPath) : Base(std::move(inPath)), _name(std::move(inName)) {
         assertPathSort(getPath());
     }
 
@@ -349,13 +298,9 @@ public:
 
 /**
  * A multiplicative composition path element.
- * Under EvalPath: evaluates the first inner path evaluated over the input, and then evaluates the
- * second inner path over that result.
- * Under EvalFilter: evaluates both inner paths over the input. Returns true if both inner paths
- * return true.
  */
-class PathComposeM final : public ABTOpFixedArity<2>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<2>;
+class PathComposeM final : public Operator<PathComposeM, 2>, public PathSyntaxSort {
+    using Base = Operator<PathComposeM, 2>;
 
 public:
     PathComposeM(ABT inPath1, ABT inPath2) : Base(std::move(inPath1), std::move(inPath2)) {
@@ -370,26 +315,17 @@ public:
     const ABT& getPath1() const {
         return get<0>();
     }
-    ABT& getPath1() {
-        return get<0>();
-    }
 
     const ABT& getPath2() const {
-        return get<1>();
-    }
-    ABT& getPath2() {
         return get<1>();
     }
 };
 
 /**
- * An additive composition path element. Runs the inner paths with the input and returns true if
- * either inner path returns true.
- *
- * Not permitted within EvalPath.
+ * An additive composition path element.
  */
-class PathComposeA final : public ABTOpFixedArity<2>, public PathSyntaxSort {
-    using Base = ABTOpFixedArity<2>;
+class PathComposeA final : public Operator<PathComposeA, 2>, public PathSyntaxSort {
+    using Base = Operator<PathComposeA, 2>;
 
 public:
     PathComposeA(ABT inPath1, ABT inPath2) : Base(std::move(inPath1), std::move(inPath2)) {

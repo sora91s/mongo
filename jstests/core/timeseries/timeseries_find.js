@@ -2,15 +2,14 @@
  * Test that variable-type fields are found correctly in timeseries collections.
  *
  * @tags: [
- *   # Explain of a resolved view must be executed by mongos.
- *   directly_against_shardsvrs_incompatible,
- *   # This test depends on certain writes ending up in the same bucket. Stepdowns may result in
- *   # writes splitting between two primaries, and thus different buckets.
- *   does_not_support_stepdowns,
- *   # Requires pipeline optimization to run in order to produce expected explain output
- *   requires_pipeline_optimization,
- *   # We need a timeseries collection.
- *   requires_timeseries,
+ *     does_not_support_transactions,
+ *     does_not_support_stepdowns,
+ *     requires_pipeline_optimization,
+ *     requires_timeseries,
+ *     # Required because of deficiencies in the burnin multiversion system.
+ *     requires_fcv_51,
+ *     # Explain of a resolved view must be executed by mongos.
+ *     directly_against_shardsvrs_incompatible,
  * ]
  */
 
@@ -41,7 +40,7 @@ function runTest(docs, query, results) {
     docs.forEach(d => tsColl.insert(Object.assign({[timeFieldName]: new Date("2021-01-01")}, d)));
 
     // Check that the result is in the result set.
-    assert.docEq(results, tsColl.aggregate(pipeline).toArray());
+    assert.docEq(tsColl.aggregate(pipeline).toArray(), results);
 
     // Ensure $type operator was not used.
     const explain = tsColl.explain().aggregate(pipeline);

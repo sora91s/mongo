@@ -57,11 +57,6 @@ struct ClusterInsertCmdD {
         // which triggers an invariant, so only shard servers can run this.
         uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
     }
-
-    static void checkCanExplainHere(OperationContext* opCtx) {
-        uasserted(ErrorCodes::CommandNotSupported,
-                  "Cannot explain a cluster insert command on a mongod");
-    }
 };
 ClusterInsertCmdBase<ClusterInsertCmdD> clusterInsertCmdD;
 
@@ -88,10 +83,6 @@ struct ClusterUpdateCmdD {
         // which triggers an invariant, so only shard servers can run this.
         uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
     }
-
-    static void checkCanExplainHere(OperationContext* opCtx) {
-        uasserted(ErrorCodes::CommandNotSupported, "Explain on a clusterDelete is not supported");
-    }
 };
 ClusterUpdateCmdBase<ClusterUpdateCmdD> clusterUpdateCmdD;
 
@@ -117,11 +108,6 @@ struct ClusterDeleteCmdD {
         // A cluster command on the config server may attempt to use a ShardLocal to target itself,
         // which triggers an invariant, so only shard servers can run this.
         uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
-    }
-
-    static void checkCanExplainHere(OperationContext* opCtx) {
-        uasserted(ErrorCodes::CommandNotSupported,
-                  "Cannot explain a cluster delete command on a mongod");
     }
 };
 ClusterDeleteCmdBase<ClusterDeleteCmdD> clusterDeleteCmdD;

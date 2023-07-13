@@ -36,12 +36,12 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/query/cursor_response.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_client_cursor_impl.h"
 #include "mongo/s/query/cluster_client_cursor_params.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/s/transaction_router.h"
 
 namespace mongo {
@@ -97,7 +97,6 @@ StatusWith<BSONObj> storePossibleCursor(OperationContext* opCtx,
 
     if (incomingCursorResponse.getValue().getCursorId() == CursorId(0)) {
         CurOp::get(opCtx)->debug().cursorExhausted = true;
-        collectTelemetryMongos(opCtx);
         return cmdResult;
     }
 
@@ -130,18 +129,17 @@ StatusWith<BSONObj> storePossibleCursor(OperationContext* opCtx,
 
     auto ccc = ClusterClientCursorImpl::make(opCtx, std::move(executor), std::move(params));
     ccc->incNBatches();
-    collectTelemetryMongos(opCtx, ccc);
     // We don't expect to use this cursor until a subsequent getMore, so detach from the current
     // OperationContext until then.
     ccc->detachFromOperationContext();
-    auto authUser = AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserName();
+    auto authUsers = AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames();
     auto clusterCursorId =
         cursorManager->registerCursor(opCtx,
                                       ccc.releaseCursor(),
                                       requestedNss,
                                       ClusterCursorManager::CursorType::SingleTarget,
                                       ClusterCursorManager::CursorLifetime::Mortal,
-                                      authUser);
+                                      authUsers);
     if (!clusterCursorId.isOK()) {
         return clusterCursorId.getStatus();
     }

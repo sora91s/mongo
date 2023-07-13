@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -71,7 +69,7 @@ public:
             hangInShardsvrSetClusterParameter.pauseWhileSet();
 
             SetClusterParameter setClusterParameterRequest(request().getCommandParameter());
-            setClusterParameterRequest.setDbName(DatabaseName::kAdmin);
+            setClusterParameterRequest.setDbName(NamespaceString::kAdminDb);
             std::unique_ptr<ServerParameterService> parameterService =
                 std::make_unique<ClusterParameterService>();
             DBDirectClient client(opCtx);
@@ -79,8 +77,7 @@ public:
             SetClusterParameterInvocation invocation{std::move(parameterService), dbService};
             // Use local write concern for setClusterParameter, the idea is that the command is
             // being called with majority write concern, so, we'll wait for majority after checking
-            // out the session. Note that we use the force option for invoke -- the config server
-            // should already have checked isEnabled + validate for us.
+            // out the session.
             bool writePerformed = invocation.invoke(opCtx,
                                                     setClusterParameterRequest,
                                                     request().getClusterParameterTime(),
@@ -89,7 +86,7 @@ public:
                 // Since no write happened on this txnNumber, we need to make a dummy write so
                 // that secondaries can be aware of this txn.
                 DBDirectClient client(opCtx);
-                client.update(NamespaceString::kServerConfigurationNamespace,
+                client.update(NamespaceString::kServerConfigurationNamespace.ns(),
                               BSON("_id"
                                    << "SetClusterParameterStats"),
                               BSON("$inc" << BSON("count" << 1)),
@@ -127,10 +124,6 @@ public:
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
-    }
-
-    bool supportsRetryableWrite() const final {
-        return true;
     }
 } shardsvrSetClusterParameterCmd;
 

@@ -45,17 +45,9 @@ bool applyProjectionToOneField(projection_executor::ProjectionExecutor* executor
  * Applies the projection to each field from the 'fields' set and stores it in the returned set
  * if the projection would allow that field to remain in a document.
  **/
-template <typename Container>
 stdx::unordered_set<std::string> applyProjectionToFields(
-    projection_executor::ProjectionExecutor* executor, Container const& fields) {
-    stdx::unordered_set<std::string> out;
-    for (const auto& field : fields) {
-        if (applyProjectionToOneField(executor, field)) {
-            out.insert(field);
-        }
-    }
-    return out;
-}
+    projection_executor::ProjectionExecutor* executor,
+    const stdx::unordered_set<std::string>& fields);
 
 /**
  * Applies a positional projection on the first array found in the 'path' on a projection
@@ -98,7 +90,7 @@ Document applyFindPositionalProjection(const Document& preImage,
  * If the 'matchExpr' does not match the input document, the function returns a missing value.
  *
  * Since the $elemMatch projection cannot be used with a nested field, the 'path' value must not
- * be a dotted path, otherwise a tassert will be triggered.
+ * be a dotted path, otherwise an invariant will be triggered.
  */
 Value applyFindElemMatchProjection(const Document& input,
                                    const MatchExpression& matchExpr,

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_set_config.h"
 #include "mongo/embedded/not_implemented.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 namespace mongo {
 namespace embedded {
@@ -397,10 +395,6 @@ Status ReplicationCoordinatorEmbedded::setMaintenanceMode(OperationContext*, boo
     UASSERT_NOT_IMPLEMENTED;
 }
 
-bool ReplicationCoordinatorEmbedded::shouldDropSyncSourceAfterShardSplit(OID replicaSetId) const {
-    UASSERT_NOT_IMPLEMENTED;
-}
-
 Status ReplicationCoordinatorEmbedded::processReplSetSyncFrom(OperationContext*,
                                                               const HostAndPort&,
                                                               BSONObjBuilder*) {
@@ -429,8 +423,7 @@ Status ReplicationCoordinatorEmbedded::doOptimizedReconfig(OperationContext* opC
 }
 
 Status ReplicationCoordinatorEmbedded::awaitConfigCommitment(OperationContext* opCtx,
-                                                             bool waitForOplogCommitment,
-                                                             long long term) {
+                                                             bool waitForOplogCommitment) {
     UASSERT_NOT_IMPLEMENTED;
 }
 
@@ -646,14 +639,6 @@ void ReplicationCoordinatorEmbedded::recordIfCWWCIsSetOnConfigServerOnStartup(
 ReplicationCoordinatorEmbedded::WriteConcernTagChanges*
 ReplicationCoordinatorEmbedded::getWriteConcernTagChanges() {
     UASSERT_NOT_IMPLEMENTED;
-}
-
-repl::SplitPrepareSessionManager* ReplicationCoordinatorEmbedded::getSplitPrepareSessionManager() {
-    UASSERT_NOT_IMPLEMENTED;
-}
-
-bool ReplicationCoordinatorEmbedded::isRetryableWrite(OperationContext* opCtx) const {
-    return false;
 }
 
 }  // namespace embedded

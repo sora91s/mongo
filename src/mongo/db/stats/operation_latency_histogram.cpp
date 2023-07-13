@@ -99,7 +99,7 @@ void OperationLatencyHistogram::_append(const HistogramData& data,
                                         BSONObjBuilder* builder) const {
 
     uint64_t filteredCount = 0;
-    bool filterBuckets = slowMSBucketsOnly && serverGlobalParams.slowMS.load() >= 0;
+    bool filterBuckets = slowMSBucketsOnly && serverGlobalParams.slowMS >= 0;
     size_t lowestFilteredBound = 0;
 
     BSONObjBuilder histogramBuilder(builder->subobjStart(key));
@@ -111,8 +111,7 @@ void OperationLatencyHistogram::_append(const HistogramData& data,
             }
 
             if (filterBuckets &&
-                (kLowerBounds[i] / 1000) >=
-                    static_cast<unsigned int>(serverGlobalParams.slowMS.load())) {
+                (kLowerBounds[i] / 1000) >= static_cast<unsigned int>(serverGlobalParams.slowMS)) {
                 if (lowestFilteredBound == 0) {
                     lowestFilteredBound = kLowerBounds[i];
                 }

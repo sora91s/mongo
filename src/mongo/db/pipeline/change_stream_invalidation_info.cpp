@@ -33,6 +33,11 @@
 #include "mongo/bson/bsonobjbuilder.h"
 
 namespace mongo {
+    
+void initMyChangeStreamInvalidationInfo() {
+
+}
+
 namespace {
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(ChangeStreamInvalidationInfo);

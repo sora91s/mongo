@@ -1,5 +1,6 @@
 """Utility functions for udb."""
 
+# pylint: disable=unused-argument,missing-docstring,no-self-use
 import os
 import re
 from typing import Optional
@@ -175,6 +176,7 @@ class LoadDistTest(gdb.Command):
 
         return None
 
+    # pylint: disable=too-many-branches,too-many-locals
     def invoke(self, args, from_tty):
         """GDB Command API invoke."""
         arglist = args.split()

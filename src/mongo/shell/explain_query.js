@@ -90,22 +90,25 @@ var DBExplainQuery = (function() {
                 // True means to always apply the skip and limit values.
                 innerCmd = this._query._convertToCountCmd(this._applySkipLimit);
             } else {
-                innerCmd = this._query._convertToCommand();
+                var canAttachReadPref = false;
+                innerCmd = this._query._convertToCommand(canAttachReadPref);
             }
 
             var explainCmd = {explain: innerCmd};
             explainCmd["verbosity"] = this._verbosity;
-
-            // If "maxTimeMS" or "$readPreference" are  set on 'innerCmd', they need to be
-            // propagated to the top-level of 'explainCmd' in order to have the intended effect.
+            // If "maxTimeMS" is set on innerCmd, it needs to be propagated to the top-level
+            // of explainCmd so that it has the intended effect.
             if (innerCmd.hasOwnProperty("maxTimeMS")) {
                 explainCmd.maxTimeMS = innerCmd.maxTimeMS;
             }
-            if (innerCmd.hasOwnProperty("$readPreference")) {
-                explainCmd["$readPreference"] = innerCmd["$readPreference"];
-            }
 
             var explainDb = this._query._db;
+
+            if ("$readPreference" in this._query._query) {
+                var prefObj = this._query._query.$readPreference;
+                explainCmd = explainDb._attachReadPreferenceToCommand(explainCmd, prefObj);
+            }
+
             var explainResult = explainDb.runReadCommand(explainCmd, null, this._query._options);
 
             return Explainable.throwOrReturn(explainResult);
@@ -152,27 +155,28 @@ var DBExplainQuery = (function() {
          * Display help text.
          */
         this.help = function() {
-            print("Explain query methods");
-            print("\t.finish() - sends explain command to the server and returns the result");
-            print("\t.forEach(func) - apply a function to the explain results");
-            print("\t.hasNext() - whether this explain query still has a result to retrieve");
-            print("\t.next() - alias for .finish()");
-            print("Explain query modifiers");
-            print("\t.addOption(n)");
-            print("\t.batchSize(n)");
-            print("\t.comment(comment)");
-            print("\t.collation(collationSpec)");
-            print("\t.count()");
-            print("\t.hint(hintSpec)");
-            print("\t.limit(n)");
-            print("\t.maxTimeMS(n)");
-            print("\t.max(idxDoc)");
-            print("\t.min(idxDoc)");
-            print("\t.readPref(mode, tagSet)");
-            print("\t.showDiskLoc()");
-            print("\t.skip(n)");
-            print("\t.sort(sortSpec)");
-            return __magicNoPrint;
+            var res = "";
+            res += "Explain query methods\n";
+            res += "\t.finish() - sends explain command to the server and returns the result\n";
+            res += "\t.forEach(func) - apply a function to the explain results\n";
+            res += "\t.hasNext() - whether this explain query still has a result to retrieve\n";
+            res += "\t.next() - alias for .finish()\n";
+            res += "Explain query modifiers\n";
+            res += "\t.addOption(n)\n";
+            res += "\t.batchSize(n)\n";
+            res += "\t.comment(comment)\n";
+            res += "\t.collation(collationSpec)\n";
+            res += "\t.count()\n";
+            res += "\t.hint(hintSpec)\n";
+            res += "\t.limit(n)\n";
+            res += "\t.maxTimeMS(n)\n";
+            res += "\t.max(idxDoc)\n";
+            res += "\t.min(idxDoc)\n";
+            res += "\t.readPref(mode, tagSet)\n";
+            res += "\t.showDiskLoc()\n";
+            res += "\t.skip(n)\n";
+            res += "\t.sort(sortSpec)\n";
+            return res;
         };
     }
 

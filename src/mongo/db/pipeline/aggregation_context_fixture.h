@@ -33,7 +33,6 @@
 #include <memory>
 
 #include "mongo/db/concurrency/locker_noop_client_observer.h"
-#include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/db/service_context_test_fixture.h"
 #include "mongo/unittest/temp_dir.h"
@@ -47,8 +46,7 @@ namespace mongo {
 class AggregationContextFixture : public ServiceContextTest {
 public:
     AggregationContextFixture()
-        : AggregationContextFixture(NamespaceString::createNamespaceString_forTest(
-              boost::none, "unittests", "pipeline_test")) {}
+        : AggregationContextFixture(NamespaceString("unittests.pipeline_test")) {}
 
     AggregationContextFixture(NamespaceString nss) {
         auto service = getServiceContext();
@@ -77,23 +75,4 @@ private:
     ServiceContext::UniqueOperationContext _opCtx;
     boost::intrusive_ptr<ExpressionContextForTest> _expCtx;
 };
-
-// A custom-deleter which disposes a DocumentSource when it goes out of scope.
-struct DocumentSourceDeleter {
-    void operator()(DocumentSource* docSource) {
-        docSource->dispose();
-        delete docSource;
-    }
-};
-
-class ServerlessAggregationContextFixture : public AggregationContextFixture {
-public:
-    ServerlessAggregationContextFixture()
-        : AggregationContextFixture(NamespaceString::createNamespaceString_forTest(
-              TenantId(OID::gen()), "unittests", "pipeline_test")) {}
-
-    const std::string _targetDb = "test";
-    const std::string _targetColl = "target_collection";
-};
-
 }  // namespace mongo

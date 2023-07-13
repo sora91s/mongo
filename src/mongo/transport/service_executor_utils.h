@@ -29,12 +29,25 @@
 
 #pragma once
 
-#include "mongo/transport/service_executor.h"
+#include <functional>
+
 #include "mongo/transport/session.h"
 #include "mongo/util/functional.h"
 
-namespace mongo::transport {
+namespace mongo {
 
-Status launchServiceWorkerThread(unique_function<void()> task);
+namespace transport {
+class ServiceExecutor;
+}
 
-}  // namespace mongo::transport
+Status launchServiceWorkerThread(unique_function<void()> task) noexcept;
+
+/* The default implementation for "ServiceExecutor::runOnDataAvailable()", which blocks the caller
+ * thread until data is available for reading. On success, it schedules "callback" on "executor".
+ * Other implementations (e.g., "ServiceExecutorFixed") may provide asynchronous variants.
+ */
+void scheduleCallbackOnDataAvailable(const transport::SessionHandle& session,
+                                     unique_function<void(Status)> callback,
+                                     transport::ServiceExecutor* executor) noexcept;
+
+}  // namespace mongo

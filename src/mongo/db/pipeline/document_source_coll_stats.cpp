@@ -65,8 +65,8 @@ intrusive_ptr<DocumentSource> DocumentSourceCollStats::createFromBson(
     uassert(40166,
             str::stream() << "$collStats must take a nested object but found: " << specElem,
             specElem.type() == BSONType::Object);
-    auto spec =
-        DocumentSourceCollStatsSpec::parse(IDLParserContext(kStageName), specElem.embeddedObject());
+    auto spec = DocumentSourceCollStatsSpec::parse(IDLParserErrorContext(kStageName),
+                                                   specElem.embeddedObject());
 
     return make_intrusive<DocumentSourceCollStats>(pExpCtx, std::move(spec));
 }
@@ -74,11 +74,10 @@ intrusive_ptr<DocumentSource> DocumentSourceCollStats::createFromBson(
 BSONObj DocumentSourceCollStats::makeStatsForNs(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
     const NamespaceString& nss,
-    const DocumentSourceCollStatsSpec& spec,
-    const boost::optional<BSONObj>& filterObj) {
+    const DocumentSourceCollStatsSpec& spec) {
     BSONObjBuilder builder;
 
-    builder.append("ns", NamespaceStringUtil::serialize(nss));
+    builder.append("ns", nss.ns());
 
     auto shardName = expCtx->mongoProcessInterface->getShardName(expCtx->opCtx);
 
@@ -97,10 +96,9 @@ BSONObj DocumentSourceCollStats::makeStatsForNs(
     if (auto storageStats = spec.getStorageStats()) {
         // If the storageStats field exists, it must have been validated as an object when parsing.
         BSONObjBuilder storageBuilder(builder.subobjStart("storageStats"));
-        uassertStatusOKWithContext(
-            expCtx->mongoProcessInterface->appendStorageStats(
-                expCtx->opCtx, nss, *storageStats, &storageBuilder, filterObj),
-            "Unable to retrieve storageStats in $collStats stage");
+        uassertStatusOKWithContext(expCtx->mongoProcessInterface->appendStorageStats(
+                                       expCtx->opCtx, nss, *storageStats, &storageBuilder),
+                                   "Unable to retrieve storageStats in $collStats stage");
         storageBuilder.doneFast();
     }
 

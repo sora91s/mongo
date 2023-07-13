@@ -31,8 +31,6 @@
 
 #include <memory>
 
-#include "mongo/db/index/column_key_generator.h"
-#include "mongo/db/index/columns_access_method.h"
 #include "mongo/db/index/duplicate_key_tracker.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index/multikey_paths.h"
@@ -55,7 +53,7 @@ public:
      */
     enum class DrainYieldPolicy { kNoYield, kYield };
 
-    enum class Op { kInsert, kDelete, kUpdate };
+    enum class Op { kInsert, kDelete };
 
     /**
      * Indicates whether to record duplicate keys that have been inserted into the index. When set
@@ -69,7 +67,7 @@ public:
      * table to store any duplicate key constraint violations found during the build, if the index
      * being built has uniqueness constraints.
      */
-    IndexBuildInterceptor(OperationContext* opCtx, const IndexCatalogEntry* entry);
+    IndexBuildInterceptor(OperationContext* opCtx, IndexCatalogEntry* entry);
 
     /**
      * Finds the temporary table associated with storing writes during this index build. Only used
@@ -78,7 +76,7 @@ public:
      * violations found during the build, if the index being built has uniqueness constraints.
      */
     IndexBuildInterceptor(OperationContext* opCtx,
-                          const IndexCatalogEntry* entry,
+                          IndexCatalogEntry* entry,
                           StringData sideWritesIdent,
                           boost::optional<StringData> duplicateKeyTrackerIdent,
                           boost::optional<StringData> skippedRecordTrackerIdent);
@@ -101,20 +99,6 @@ public:
                      const MultikeyPaths& multikeyPaths,
                      Op op,
                      int64_t* numKeysOut);
-
-    /**
-     * Client writes that are concurrent with a column store index build will have their index
-     * updates written to a temporary table. After the index table scan is complete, these updates
-     * will be applied to the underlying index table.
-     *
-     * On success, 'numKeysWrittenOut' will contain the number of keys that will be inserted or
-     * updated by applying the side write and 'numKeysDeletedOut' will contain the number of keys
-     * that will be removed.
-     */
-    Status sideWrite(OperationContext* opCtx,
-                     const std::vector<column_keygen::CellPatch>& keys,
-                     int64_t* numKeysWrittenOut,
-                     int64_t* numKeysDeletedOut);
 
     /**
      * Given a duplicate key, record the key for later verification by a call to
@@ -189,6 +173,7 @@ public:
 private:
     using SideWriteRecord = std::pair<RecordId, BSONObj>;
 
+
     Status _applyWrite(OperationContext* opCtx,
                        const CollectionPtr& coll,
                        const BSONObj& doc,
@@ -208,10 +193,8 @@ private:
                                    FailPoint* fp,
                                    long long iteration) const;
 
-    Status _finishSideWrite(OperationContext* opCtx, const std::vector<BSONObj>& toInsert);
-
     // The entry for the index that is being built.
-    const IndexCatalogEntry* _indexCatalogEntry;
+    IndexCatalogEntry* _indexCatalogEntry;
 
     // This temporary record store records intercepted keys that will be written into the index by
     // calling drainWritesIntoIndex(). It is owned by the interceptor and dropped along with it.
@@ -241,4 +224,5 @@ private:
         MONGO_MAKE_LATCH("IndexBuildInterceptor::_multikeyPathMutex");
     boost::optional<MultikeyPaths> _multikeyPaths;
 };
+
 }  // namespace mongo

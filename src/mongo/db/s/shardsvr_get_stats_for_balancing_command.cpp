@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
@@ -37,9 +38,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/get_stats_for_balancing_gen.h"
 #include "mongo/s/sharding_feature_flags_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -76,7 +74,7 @@ public:
 
         Reply typedRun(OperationContext* opCtx) {
             uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
 
             uassert(ErrorCodes::InvalidOptions,
                     "At least one collection must be specified",
@@ -119,8 +117,13 @@ public:
                 return 0LL;
             }
 
-            const long long numOrphanDocs =
-                BalancerStatsRegistry::get(opCtx)->getCollNumOrphanDocs(*collUUID);
+            const long long numOrphanDocs = [&] {
+                if (!feature_flags::gOrphanTracking.isEnabled(
+                        serverGlobalParams.featureCompatibility)) {
+                    return 0LL;
+                }
+                return BalancerStatsRegistry::get(opCtx)->getCollNumOrphanDocs(*collUUID);
+            }();
 
             if (numRecords <= numOrphanDocs) {
                 // The number of records and the number of orphans documents are not updated

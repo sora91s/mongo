@@ -35,18 +35,17 @@
 #include "mongo/db/catalog/uncommitted_catalog_updates.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/assert_util.h"
 
 namespace mongo {
 namespace {
 
 bool collectionExists(OperationContext* opCtx, NamespaceString nss) {
-    return static_cast<bool>(
-        CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss));
+    return CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss) != nullptr;
 }
 
 class ConcurrentCreateCollectionTest {
@@ -62,13 +61,14 @@ public:
         auto op1 = client1->makeOperationContext();
         auto op2 = client2->makeOperationContext();
 
-        Lock::DBLock dbLk1(op1.get(), competingNss.dbName(), LockMode::MODE_IX);
+        Lock::DBLock dbLk1(op1.get(), competingNss.db(), LockMode::MODE_IX);
         Lock::CollectionLock collLk1(op1.get(), competingNss, LockMode::MODE_IX);
-        Lock::DBLock dbLk2(op2.get(), competingNss.dbName(), LockMode::MODE_IX);
+        Lock::DBLock dbLk2(op2.get(), competingNss.db(), LockMode::MODE_IX);
         Lock::CollectionLock collLk2(op2.get(), competingNss, LockMode::MODE_IX);
 
+        const TenantDatabaseName competingTenantDbName(boost::none, competingNss.db());
         Database* db =
-            DatabaseHolder::get(op1.get())->openDb(op1.get(), competingNss.dbName(), nullptr);
+            DatabaseHolder::get(op1.get())->openDb(op1.get(), competingTenantDbName, nullptr);
 
         {
             WriteUnitOfWork wuow1(op1.get());

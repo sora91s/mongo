@@ -2,6 +2,7 @@
  * Tests that migration certificates do not show up in the logs.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -10,7 +11,10 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
+load("jstests/replsets/libs/tenant_migration_test.js");
 load("jstests/libs/uuid_util.js");
 
 function assertNoCertificateOrPrivateKeyLogsForCmd(conn, cmdName) {
@@ -36,11 +40,10 @@ const recipientPrimary = tenantMigrationTest.getRecipientPrimary();
 
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
-        tenantId: ObjectId().str,
+        tenantId: "slowCommands",
     };
 
-    TenantMigrationTest.assertCommitted(
-        tenantMigrationTest.runMigration(migrationOpts, {automaticForgetMigration: false}));
+    TenantMigrationTest.assertCommitted(tenantMigrationTest.runMigration(migrationOpts));
 
     assertNoCertificateOrPrivateKeyLogsForCmd(donorPrimary, "donorStartMigration");
     assertNoCertificateOrPrivateKeyLogsForCmd(recipientPrimary, "recipientSyncData");
@@ -56,3 +59,4 @@ const recipientPrimary = tenantMigrationTest.getRecipientPrimary();
 })();
 
 tenantMigrationTest.stop();
+})();

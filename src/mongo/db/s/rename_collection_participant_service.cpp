@@ -27,7 +27,9 @@
  *    it in the license file.
  */
 
-#include "mongo/db/s/rename_collection_participant_service.h"
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/db/catalog/collection_catalog.h"
@@ -38,16 +40,17 @@
 #include "mongo/db/s/drop_collection_coordinator.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/range_deletion_util.h"
+#include "mongo/db/s/recoverable_critical_section_service.h"
+#include "mongo/db/s/rename_collection_participant_service.h"
+#include "mongo/db/s/shard_metadata_util.h"
 #include "mongo/db/s/sharding_ddl_util.h"
-#include "mongo/db/s/sharding_recovery_service.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/future_util.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 namespace mongo {
+
 namespace {
 
 const Backoff kExponentialBackoff(Seconds(1), Milliseconds::max());
@@ -56,11 +59,29 @@ const Backoff kExponentialBackoff(Seconds(1), Milliseconds::max());
  * Drop the collection locally and clear stale metadata from cache collections.
  */
 void dropCollectionLocally(OperationContext* opCtx, const NamespaceString& nss) {
-    DropCollectionCoordinator::dropCollectionLocally(opCtx, nss, false /* fromMigrate */);
+    bool knownNss = [&]() {
+        try {
+            DropCollectionCoordinator::dropCollectionLocally(opCtx, nss);
+            return true;
+        } catch (const ExceptionFor<ErrorCodes::NamespaceNotFound>&) {
+            return false;
+        }
+    }();
+
     LOGV2_DEBUG(5515100,
                 1,
-                "Dropped target collection locally on renameCollection participant.",
-                "namespace"_attr = nss);
+                "Dropped target collection locally on renameCollection participant",
+                "namespace"_attr = nss,
+                "collectionExisted"_attr = knownNss);
+}
+
+/* Clear the CollectionShardingRuntime entry for the specified namespace */
+void clearFilteringMetadata(OperationContext* opCtx, const NamespaceString& nss) {
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+    Lock::DBLock dbLock(opCtx, nss.db(), MODE_IX);
+    Lock::CollectionLock collLock(opCtx, nss, MODE_IX);
+    auto* csr = CollectionShardingRuntime::get(opCtx, nss);
+    csr->clearFilteringMetadata(opCtx);
 }
 
 /*
@@ -73,7 +94,7 @@ void renameOrDropTarget(OperationContext* opCtx,
                         const UUID& sourceUUID,
                         const boost::optional<UUID>& targetUUID) {
     {
-        Lock::DBLock dbLock(opCtx, toNss.dbName(), MODE_IS);
+        Lock::DBLock dbLock(opCtx, toNss.db(), MODE_IS);
         Lock::CollectionLock collLock(opCtx, toNss, MODE_IS);
         const auto targetCollPtr =
             CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, toNss);
@@ -90,7 +111,7 @@ void renameOrDropTarget(OperationContext* opCtx,
     }
 
     {
-        Lock::DBLock dbLock(opCtx, fromNss.dbName(), MODE_IS);
+        Lock::DBLock dbLock(opCtx, fromNss.db(), MODE_IS);
         Lock::CollectionLock collLock(opCtx, fromNss, MODE_IS);
         // ensure idempotency by checking sourceUUID
         const auto sourceCollPtr =
@@ -113,7 +134,6 @@ void renameOrDropTarget(OperationContext* opCtx,
         deleteRangeDeletionTasksForRename(opCtx, fromNss, toNss);
     }
 }
-
 }  // namespace
 
 RenameCollectionParticipantService* RenameCollectionParticipantService::getService(
@@ -138,7 +158,7 @@ RenameParticipantInstance::~RenameParticipantInstance() {
 
 bool RenameParticipantInstance::hasSameOptions(const BSONObj& participantDoc) {
     const auto otherDoc = RenameCollectionParticipantDocument::parse(
-        IDLParserContext("RenameCollectionParticipantDocument"), participantDoc);
+        IDLParserErrorContext("RenameCollectionParticipantDocument"), participantDoc);
 
     const auto& selfReq = _doc.getRenameCollectionRequest().toBSON();
     const auto& otherReq = otherDoc.getRenameCollectionRequest().toBSON();
@@ -152,7 +172,7 @@ boost::optional<BSONObj> RenameParticipantInstance::reportForCurrentOp(
 
     BSONObjBuilder cmdBob;
     if (const auto& optComment = _doc.getForwardableOpMetadata().getComment()) {
-        cmdBob.append(optComment.value().firstElement());
+        cmdBob.append(optComment.get().firstElement());
     }
     BSONObjBuilder bob;
     bob.append("type", "op");
@@ -280,7 +300,7 @@ SemiFuture<void> RenameParticipantInstance::_runImpl(
     std::shared_ptr<executor::ScopedTaskExecutor> executor,
     const CancellationToken& token) noexcept {
     return ExecutorFuture<void>(**executor)
-        .then(_buildPhaseHandler(
+        .then(_executePhase(
             Phase::kBlockCRUDAndSnapshotRangeDeletions,
             [this, anchor = shared_from_this()] {
                 auto opCtxHolder = cc().makeOperationContext();
@@ -289,7 +309,7 @@ SemiFuture<void> RenameParticipantInstance::_runImpl(
                 // Acquire source/target critical sections
                 const auto reason =
                     sharding_ddl_util::getCriticalSectionReasonForRename(fromNss(), toNss());
-                auto service = ShardingRecoveryService::get(opCtx);
+                auto service = RecoverableCriticalSectionService::get(opCtx);
                 service->acquireRecoverableCriticalSectionBlockWrites(
                     opCtx, fromNss(), reason, ShardingCatalogClient::kLocalWriteConcern);
                 service->promoteRecoverableCriticalSectionToBlockAlsoReads(
@@ -304,26 +324,22 @@ SemiFuture<void> RenameParticipantInstance::_runImpl(
                 // tasks (the submission will serialize on the renamed collection's metadata
                 // refresh).
                 {
-                    Lock::DBLock dbLock(opCtx, fromNss().dbName(), MODE_IX);
+                    Lock::DBLock dbLock(opCtx, fromNss().db(), MODE_IX);
                     Lock::CollectionLock collLock(opCtx, fromNss(), MODE_IX);
-                    auto scopedCsr =
-                        CollectionShardingRuntime::assertCollectionLockedAndAcquireExclusive(
-                            opCtx, fromNss());
-                    scopedCsr->clearFilteringMetadataForDroppedCollection(opCtx);
+                    auto* csr = CollectionShardingRuntime::get(opCtx, fromNss());
+                    csr->clearFilteringMetadataForDroppedCollection(opCtx);
                 }
 
                 {
-                    Lock::DBLock dbLock(opCtx, toNss().dbName(), MODE_IX);
+                    Lock::DBLock dbLock(opCtx, toNss().db(), MODE_IX);
                     Lock::CollectionLock collLock(opCtx, toNss(), MODE_IX);
-                    auto scopedCsr =
-                        CollectionShardingRuntime::assertCollectionLockedAndAcquireExclusive(
-                            opCtx, toNss());
-                    scopedCsr->clearFilteringMetadata(opCtx);
+                    auto* csr = CollectionShardingRuntime::get(opCtx, toNss());
+                    csr->clearFilteringMetadata(opCtx);
                 }
 
                 snapshotRangeDeletionsForRename(opCtx, fromNss(), toNss());
             }))
-        .then(_buildPhaseHandler(
+        .then(_executePhase(
             Phase::kRenameLocalAndRestoreRangeDeletions,
             [this, anchor = shared_from_this()] {
                 auto opCtxHolder = cc().makeOperationContext();
@@ -339,25 +355,25 @@ SemiFuture<void> RenameParticipantInstance::_runImpl(
 
                 restoreRangeDeletionTasksForRename(opCtx, toNss());
             }))
-        .then(_buildPhaseHandler(
-            Phase::kDeleteFromRangeDeletions,
-            [this, anchor = shared_from_this()] {
-                auto opCtxHolder = cc().makeOperationContext();
-                auto* opCtx = opCtxHolder.get();
-                deleteRangeDeletionTasksForRename(opCtx, fromNss(), toNss());
+        .then(
+            _executePhase(Phase::kDeleteFromRangeDeletions,
+                          [this, anchor = shared_from_this()] {
+                              auto opCtxHolder = cc().makeOperationContext();
+                              auto* opCtx = opCtxHolder.get();
+                              deleteRangeDeletionTasksForRename(opCtx, fromNss(), toNss());
 
-                {
-                    stdx::lock_guard<Latch> lg(_mutex);
-                    if (!_blockCRUDAndRenameCompletionPromise.getFuture().isReady()) {
-                        _blockCRUDAndRenameCompletionPromise.setFrom(Status::OK());
-                    }
-                }
+                              {
+                                  stdx::lock_guard<Latch> lg(_mutex);
+                                  if (!_blockCRUDAndRenameCompletionPromise.getFuture().isReady()) {
+                                      _blockCRUDAndRenameCompletionPromise.setFrom(Status::OK());
+                                  }
+                              }
 
-                LOGV2(5515106,
-                      "Collection locally renamed, waiting for CRUD to be unblocked",
-                      "fromNs"_attr = fromNss(),
-                      "toNs"_attr = toNss());
-            }))
+                              LOGV2(5515106,
+                                    "Collection locally renamed, waiting for CRUD to be unblocked",
+                                    "fromNs"_attr = fromNss(),
+                                    "toNs"_attr = toNss());
+                          }))
         .then([this, anchor = shared_from_this()] {
             if (_doc.getPhase() < Phase::kUnblockCRUD) {
                 return _canUnblockCRUDPromise.getFuture();
@@ -365,28 +381,22 @@ SemiFuture<void> RenameParticipantInstance::_runImpl(
 
             return SemiFuture<void>::makeReady().share();
         })
-        .then(_buildPhaseHandler(
+        .then(_executePhase(
             Phase::kUnblockCRUD,
             [this, anchor = shared_from_this()] {
                 auto opCtxHolder = cc().makeOperationContext();
                 auto* opCtx = opCtxHolder.get();
 
                 // Release source/target critical sections
-                // Note: Use 'throwIfReasonDiffers=false' on the destination collection because as
-                // soon as the critical section is released migrations can start. In case this phase
-                // needs to be retried, we could then encounter a critical section related to a
-                // migration. It is not needed for the source collection because no migration can
-                // start until it first becomes sharded, which cannot happen until the DDLLock is
-                // released.
                 const auto reason =
                     BSON("command"
                          << "rename"
                          << "from" << fromNss().toString() << "to" << toNss().toString());
-                auto service = ShardingRecoveryService::get(opCtx);
+                auto service = RecoverableCriticalSectionService::get(opCtx);
                 service->releaseRecoverableCriticalSection(
                     opCtx, fromNss(), reason, ShardingCatalogClient::kLocalWriteConcern);
                 service->releaseRecoverableCriticalSection(
-                    opCtx, toNss(), reason, WriteConcerns::kMajorityWriteConcernNoTimeout, false);
+                    opCtx, toNss(), reason, WriteConcerns::kMajorityWriteConcernNoTimeout);
 
                 LOGV2(5515107, "CRUD unblocked", "fromNs"_attr = fromNss(), "toNs"_attr = toNss());
             }))

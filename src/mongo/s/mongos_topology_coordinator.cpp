@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/logv2/log.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/db/shutdown_in_progress_quiesce_info.h"
 #include "mongo/s/mongos_topology_coordinator.h"
 #include "mongo/util/fail_point.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -171,11 +169,11 @@ std::shared_ptr<const MongosHelloResponse> MongosTopologyCoordinator::awaitHello
     LOGV2_DEBUG(4695502,
                 1,
                 "Waiting for a hello response from a topology change or until deadline",
-                "deadline"_attr = deadline.value(),
+                "deadline"_attr = deadline.get(),
                 "currentMongosTopologyVersionCounter"_attr = _topologyVersion.getCounter());
 
     auto statusWithHello =
-        futureGetNoThrowWithDeadline(opCtx, future, deadline.value(), opCtx->getTimeoutError());
+        futureGetNoThrowWithDeadline(opCtx, future, deadline.get(), opCtx->getTimeoutError());
     auto status = statusWithHello.getStatus();
 
     setCustomErrorInHelloResponseMongoS.execute([&](const BSONObj& data) {

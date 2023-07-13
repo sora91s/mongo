@@ -59,14 +59,10 @@ public:
     bool hasTasks() override;
 
     // Override to make scheduleWork() fail during testing.
-    ShouldFailScheduleWorkRequestFn shouldFailScheduleWorkRequest = []() {
-        return false;
-    };
+    ShouldFailScheduleWorkRequestFn shouldFailScheduleWorkRequest = []() { return false; };
 
     // Override to make scheduleWorkAt() fail during testing.
-    ShouldFailScheduleWorkRequestFn shouldFailScheduleWorkAtRequest = []() {
-        return false;
-    };
+    ShouldFailScheduleWorkRequestFn shouldFailScheduleWorkAtRequest = []() { return false; };
 
     // If the predicate returns true, scheduleWork() will schedule the task 1 second later instead
     // of running immediately. This allows us to test cancellation handling in callbacks scheduled
@@ -77,9 +73,7 @@ public:
 
     // Override to make scheduleRemoteCommand fail during testing.
     ShouldFailScheduleRemoteCommandRequestFn shouldFailScheduleRemoteCommandRequest =
-        [](const executor::RemoteCommandRequestOnAny&) {
-            return false;
-        };
+        [](const executor::RemoteCommandRequestOnAny&) { return false; };
 };
 
 }  // namespace repl

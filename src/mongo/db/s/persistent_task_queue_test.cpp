@@ -38,7 +38,7 @@
 namespace mongo {
 namespace {
 
-const NamespaceString kNss = NamespaceString::createNamespaceString_forTest("test", "foo");
+const NamespaceString kNss = NamespaceString("test", "foo");
 
 struct TestTask {
     std::string key;
@@ -49,7 +49,7 @@ struct TestTask {
     TestTask(BSONObj bson)
         : key(bson.getField("key").String()), val(bson.getField("value").Int()) {}
 
-    static TestTask parse(IDLParserContext, BSONObj bson) {
+    static TestTask parse(IDLParserErrorContext, BSONObj bson) {
         return TestTask{bson};
     }
 
@@ -83,10 +83,9 @@ void killOps(ServiceContext* serviceCtx) {
 class PersistentTaskQueueTest : public ShardServerTestFixture {
     void setUp() override {
         ShardServerTestFixture::setUp();
-        AutoGetDb autoDb(operationContext(), kNss.dbName(), MODE_IX);
+        AutoGetDb autoDb(operationContext(), kNss.db(), MODE_IX);
         Lock::CollectionLock collLock(operationContext(), kNss, MODE_IX);
-        CollectionShardingRuntime::assertCollectionLockedAndAcquireExclusive(operationContext(),
-                                                                             kNss)
+        CollectionShardingRuntime::get(operationContext(), kNss)
             ->setFilteringMetadata(operationContext(), CollectionMetadata());
     }
 };
@@ -242,8 +241,8 @@ TEST_F(PersistentTaskQueueTest, TestWakeupOnEmptyQueue) {
     auto opCtx = operationContext();
     PersistentTaskQueue<TestTask> q(opCtx, kNss);
 
-    auto result = stdx::async(stdx::launch::async, [this, &q] {
-        ThreadClient tc("TestWakeupOnEmptyQueue", getServiceContext());
+    auto result = stdx::async(stdx::launch::async, [&q] {
+        ThreadClient tc("RangeDeletionService", getGlobalServiceContext());
         auto opCtx = tc->makeOperationContext();
 
         stdx::this_thread::sleep_for(stdx::chrono::milliseconds(500));
@@ -262,8 +261,8 @@ TEST_F(PersistentTaskQueueTest, TestInterruptedWhileWaitingOnCV) {
 
     unittest::Barrier barrier(2);
 
-    auto result = stdx::async(stdx::launch::async, [this, &q, &barrier] {
-        ThreadClient tc("TestInterruptedWhileWaitingOnCV", getServiceContext());
+    auto result = stdx::async(stdx::launch::async, [opCtx, &q, &barrier] {
+        ThreadClient tc("RangeDeletionService", getGlobalServiceContext());
         auto opCtx = tc->makeOperationContext();
 
         barrier.countDownAndWait();
@@ -286,8 +285,8 @@ TEST_F(PersistentTaskQueueTest, TestKilledOperationContextWhileWaitingOnCV) {
 
     unittest::Barrier barrier(2);
 
-    auto result = stdx::async(stdx::launch::async, [this, &q, &barrier] {
-        ThreadClient tc("TestKilledOperationContextWhileWaitingOnCV", getServiceContext());
+    auto result = stdx::async(stdx::launch::async, [opCtx, &q, &barrier] {
+        ThreadClient tc("RangeDeletionService", getGlobalServiceContext());
         {
             stdx::lock_guard<Client> lk(*tc.get());
             tc->setSystemOperationKillableByStepdown(lk);

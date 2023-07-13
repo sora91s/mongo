@@ -68,7 +68,8 @@ TEST(SharedFuture, isReady_shared_TSAN_OK) {
     auto fut = async([&] {
                    done = true;
                    return 1;
-               }).share();
+               })
+                   .share();
     //(void)*const_cast<volatile bool*>(&done);  // Data Race! Uncomment to make sure TSAN works.
     while (!fut.isReady()) {
     }
@@ -297,9 +298,7 @@ public:
 TEST(SharedFuture, ConcurrentTest_Simple) {
     SharedPromise<void> promise;
     auto shared = promise.getFuture();
-    JoinThread thread{stdx::thread{[&] {
-        shared.get();
-    }}};
+    JoinThread thread{stdx::thread{[&] { shared.get(); }}};
     stdx::this_thread::yield();  // Slightly increase the chance of racing.
     promise.emplaceValue();
 }

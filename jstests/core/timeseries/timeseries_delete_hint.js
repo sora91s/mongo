@@ -1,19 +1,17 @@
 /**
  * Tests running the delete command with a hint on a time-series collection.
  * @tags: [
-
+ *   assumes_no_implicit_collection_creation_after_drop,
+ *   does_not_support_stepdowns,
+ *   does_not_support_transactions,
+ *   requires_fcv_51,
+ *   requires_getmore,
  *   # $currentOp can't run with a readConcern other than 'local'.
  *   assumes_read_concern_unchanged,
  *   # This test only synchronizes deletes on the primary.
  *   assumes_read_preference_unchanged,
  *   # Fail points in this test do not exist on mongos.
  *   assumes_against_mongod_not_mongos,
- *   # This test depends on certain writes ending up in the same bucket. Stepdowns may result in
- *   # writes splitting between two primaries, and thus different buckets.
- *   does_not_support_stepdowns,
- *   # We need a timeseries collection.
- *   requires_timeseries,
- *   # Uses parallel shell to wait on fail point
  *   uses_parallel_shell,
  * ]
  */
@@ -23,6 +21,11 @@
 load("jstests/libs/curop_helpers.js");
 load("jstests/libs/feature_flag_util.js");
 load('jstests/libs/parallel_shell_helpers.js');
+
+if (!FeatureFlagUtil.isEnabled(db, "TimeseriesUpdatesAndDeletes")) {
+    jsTestLog("Skipping test because the time-series updates and deletes feature flag is disabled");
+    return;
+}
 
 const timeFieldName = "time";
 const metaFieldName = "tag";
@@ -68,7 +71,7 @@ const validateDeleteIndex = (docsToInsert,
                 : assert.commandWorked(
                       testDB.runCommand({delete: coll.getName(), deletes: deleteQuery}));
             assert.eq(res["n"], expectedNRemoved);
-            assert.docEq(expectedRemainingDocs, coll.find({}, {_id: 0}).toArray());
+            assert.docEq(coll.find({}, {_id: 0}).toArray(), expectedRemainingDocs);
             assert(coll.drop());
         },
         docsToInsert,

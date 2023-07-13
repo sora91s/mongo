@@ -66,10 +66,9 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* client = opCtx->getClient();
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
 
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
                 ResourcePattern::forClusterResource(), ActionType::serverStatus)) {
@@ -82,7 +81,7 @@ public:
         }
 
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
-                ResourcePattern::forExactNamespace(NamespaceString::kRsOplogNamespace),
+                ResourcePattern::forExactNamespace(NamespaceString("local", "oplog.rs")),
                 ActionType::collStats)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
@@ -91,7 +90,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& db,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
 

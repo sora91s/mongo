@@ -33,15 +33,9 @@
 #include <array>
 #include <iterator>
 
-#include "mongo/util/assert_util.h"
-
 namespace mongo::str {
 namespace {
 constexpr char kHexChar[] = "0123456789abcdef";
-
-struct NoopBuffer {
-    void append(const char* begin, const char* end) {}
-};
 
 // Appends the bytes in the range [begin, end) to the output buffer,
 // which can either be a fmt::memory_buffer, or a std::string.
@@ -123,9 +117,7 @@ void escape(Buffer& buffer,
     };
 
     // Helper function to write a valid one byte UTF-8 sequence from the input stream
-    auto writeValid1Byte = [&]() {
-        singleHandler(flushAndWrite, *it);
-    };
+    auto writeValid1Byte = [&]() { singleHandler(flushAndWrite, *it); };
 
     // Helper function to write a valid two byte UTF-8 sequence from the input stream
     auto writeValid2Byte = [&]() {
@@ -140,9 +132,7 @@ void escape(Buffer& buffer,
     // Helper function to write an invalid UTF-8 sequence from the input stream
     // Will try and write up to num bytes but bail if we reach the end of the input.
     // Updates the position of 'it'.
-    auto writeInvalid = [&](uint8_t c) {
-        invalidByteHandler(flushAndWrite, c);
-    };
+    auto writeInvalid = [&](uint8_t c) { invalidByteHandler(flushAndWrite, c); };
 
 
     while (it != inLast) {
@@ -505,32 +495,5 @@ std::string escapeForJSON(StringData str, size_t maxLength, size_t* wouldWrite) 
     std::string buffer;
     escapeForJSONCommon(buffer, str, maxLength, wouldWrite);
     return buffer;
-}
-
-bool validUTF8(StringData str) {
-    // No-op buffer and handlers, defined to re-use escape method logic.
-    NoopBuffer buffer;
-    auto singleByteHandler = [](const auto& writer, uint8_t unescaped) {
-    };
-    auto twoByteEscaper = [](const auto& writer, uint8_t first, uint8_t second) {
-    };
-
-    // Throws an exception when an invalid UTF8 character is detected.
-    auto invalidByteHandler = [](const auto& writer, uint8_t) {
-        uasserted(ErrorCodes::BadValue, "Invalid UTF-8 Character");
-    };
-
-    try {
-        escape(buffer,
-               str,
-               std::move(singleByteHandler),
-               std::move(invalidByteHandler),
-               std::move(twoByteEscaper),
-               std::string::npos,
-               nullptr);
-        return true;
-    } catch (const ExceptionFor<ErrorCodes::BadValue>&) {
-        return false;
-    }
 }
 }  // namespace mongo::str

@@ -87,15 +87,17 @@ public:
             repl::ReadConcernArgs::get(opCtx) =
                 repl::ReadConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
 
-            const auto shardAndCollVers = uassertStatusOK(
+            const BSONObj shardAndCollVers = uassertStatusOK(
                 ShardingCatalogManager::get(opCtx)->commitChunksMerge(opCtx,
                                                                       ns(),
                                                                       request().getEpoch(),
                                                                       request().getTimestamp(),
                                                                       request().getCollectionUUID(),
                                                                       request().getChunkRange(),
-                                                                      request().getShard()));
-            return ConfigSvrMergeResponse{shardAndCollVers.shardPlacementVersion};
+                                                                      request().getShard(),
+                                                                      request().getValidAfter()));
+            return ConfigSvrMergeResponse{ChunkVersion::fromBSONPositionalOrNewerFormat(
+                shardAndCollVers[ChunkVersion::kShardVersionField])};
         }
 
     private:

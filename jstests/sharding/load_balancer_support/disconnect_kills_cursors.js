@@ -1,4 +1,6 @@
 /**
+ * @tags: [requires_fcv_53]
+ *
  * Tests that when a load-balanced client disconnects, its cursors are killed.
  */
 

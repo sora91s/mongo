@@ -45,10 +45,9 @@ class InternalSchemaAllElemMatchFromIndexMatchExpression final
     : public ArrayMatchingMatchExpression {
 public:
     static constexpr StringData kName = "$_internalSchemaAllElemMatchFromIndex"_sd;
-    static constexpr int kNumChildren = 1;
 
     InternalSchemaAllElemMatchFromIndexMatchExpression(
-        boost::optional<StringData> path,
+        StringData path,
         long long index,
         std::unique_ptr<ExpressionWithPlaceholder> expression,
         clonable_ptr<ErrorAnnotation> annotation = nullptr);
@@ -78,7 +77,7 @@ public:
 
     void debugString(StringBuilder& debug, int indentationLevel) const final;
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final;
+    BSONObj getSerializedRightHandSide() const final;
 
     bool equivalent(const MatchExpression* other) const final;
 
@@ -94,16 +93,16 @@ public:
     }
 
     size_t numChildren() const final {
-        return kNumChildren;
+        return 1;
     }
 
     MatchExpression* getChild(size_t i) const final {
-        tassert(6400200, "Out-of-bounds access to child of MatchExpression.", i < kNumChildren);
+        invariant(i == 0);
         return _expression->getFilter();
     }
 
     void resetChild(size_t i, MatchExpression* other) {
-        tassert(6329407, "Out-of-bounds access to child of MatchExpression.", i < kNumChildren);
+        tassert(6329407, "Out-of-bounds access to child of MatchExpression.", i < numChildren());
         _expression->resetFilter(other);
     };
 

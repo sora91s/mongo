@@ -1,23 +1,27 @@
 /**
  * Commits a shard split and abort it due to timeout prior to marking it for garbage collection and
  * checks that we recover the tenant access blockers since the split is aborted but not marked as
- *  garbage collectable. Checks that `abortOpTime` and `blockOpTime` are set.
- * @tags: [requires_fcv_63, serverless]
+ *  garbage collectable. Checks that `abortOpTime` and `blockTimestamp` are set.
+ * @tags: [requires_fcv_52, featureFlagShardSplit]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    assertMigrationState,
-    findSplitOperation,
-    ShardSplitTest
-} from "jstests/serverless/libs/shard_split_test.js";
+load("jstests/libs/fail_point_util.js");                         // for "configureFailPoint"
+load('jstests/libs/parallel_shell_helpers.js');                  // for "startParallelShell"
+load("jstests/noPassthrough/libs/server_parameter_helpers.js");  // for "setParameter"
+load("jstests/serverless/libs/basic_serverless_test.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 
-load("jstests/libs/fail_point_util.js");  // for "configureFailPoint"
+(function() {
+"use strict";
 
 // Skip db hash check because secondary is left with a different config.
 TestData.skipCheckDBHashes = true;
 
-const test = new ShardSplitTest({
+const recipientTagName = "recipientNode";
+const recipientSetName = "recipient";
+const test = new BasicServerlessTest({
+    recipientTagName,
+    recipientSetName,
     quickGarbageCollection: true,
     nodeOptions: {
         setParameter: {
@@ -29,25 +33,30 @@ const test = new ShardSplitTest({
 test.addRecipientNodes();
 
 let donorPrimary = test.donor.getPrimary();
+const migrationId = UUID();
 
+assert.isnull(findMigration(donorPrimary, migrationId));
 // Pause the shard split before waiting to mark the doc for garbage collection.
-let fp = configureFailPoint(donorPrimary.getDB("admin"), "pauseShardSplitAfterBlocking");
+let fp = configureFailPoint(donorPrimary.getDB("admin"), "pauseShardSplitAfterDecision");
 
-const tenantIds = [ObjectId(), ObjectId()];
-const operation = test.createSplitOperation(tenantIds);
-assert.commandFailed(operation.commit());
+const tenantIds = ["tenant5", "tenant6"];
+
+assert.commandFailed(donorPrimary.adminCommand(
+    {commitShardSplit: 1, migrationId, recipientTagName, recipientSetName, tenantIds}));
+
 fp.wait();
 
-assertMigrationState(donorPrimary, operation.migrationId, "aborted");
+assertMigrationState(donorPrimary, migrationId, "aborted");
 
 test.stop({shouldRestart: true});
 
 test.donor.startSet({restart: true});
 
 donorPrimary = test.donor.getPrimary();
-assert(findSplitOperation(donorPrimary, operation.migrationId), "There must be a config document");
+assert(findMigration(donorPrimary, migrationId), "There must be a config document");
 
 test.validateTenantAccessBlockers(
-    operation.migrationId, tenantIds, TenantMigrationTest.DonorAccessState.kAborted);
+    migrationId, tenantIds, TenantMigrationTest.DonorAccessState.kAborted);
 
 test.stop();
+})();

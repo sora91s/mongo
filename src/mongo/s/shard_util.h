@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard.h"
 
 namespace mongo {
@@ -78,20 +79,20 @@ StatusWith<long long> retrieveCollectionShardSize(OperationContext* opCtx,
 /**
  * Ask the specified shard to figure out the split points for a given chunk.
  *
- * - shardId: the shard id to query.
- * - nss: namespace, which owns the chunk.
- * - shardKeyPattern: the shard key which corresponds to this sharded namespace.
- * - chunkRange: bounds of the chunk to search for split points on.
- * - chunkSizeBytes: chunk size to target in bytes.
- * - limit: limits the number of split points to search. Unspecified means no limit
+ * shardId The shard id to query.
+ * nss Namespace, which owns the chunk.
+ * shardKeyPattern The shard key which corresponds to this sharded namespace.
+ * chunkRange Bounds of the chunk to be split.
+ * chunkSize Chunk size to target in bytes.
+ * maxObjs Limits the number of objects in each chunk. Zero means max, unspecified means use the
+ *         server default.
  */
 StatusWith<std::vector<BSONObj>> selectChunkSplitPoints(OperationContext* opCtx,
                                                         const ShardId& shardId,
                                                         const NamespaceString& nss,
                                                         const ShardKeyPattern& shardKeyPattern,
                                                         const ChunkRange& chunkRange,
-                                                        long long chunkSizeBytes,
-                                                        boost::optional<int> limit = boost::none);
+                                                        long long chunkSizeBytes);
 
 /**
  * Asks the specified shard to split the chunk described by min/maxKey into the respective split
@@ -101,8 +102,7 @@ StatusWith<std::vector<BSONObj>> selectChunkSplitPoints(OperationContext* opCtx,
  * shardId The shard, which currently owns the chunk.
  * nss Namespace, which owns the chunk.
  * shardKeyPattern The shard key which corresponds to this sharded namespace.
- * epoch The expected collection epoch when doing the split.
- * timestamp The expected collection timestamp when doing the split
+ * collectionVersion The expected collection version when doing the split.
  * chunkRange Bounds of the chunk to be split.
  * splitPoints The set of points at which the chunk should be split.
  */
@@ -113,6 +113,7 @@ StatusWith<boost::optional<ChunkRange>> splitChunkAtMultiplePoints(
     const ShardKeyPattern& shardKeyPattern,
     const OID& epoch,
     const Timestamp& timestamp,
+    ChunkVersion shardVersion,
     const ChunkRange& chunkRange,
     const std::vector<BSONObj>& splitPoints);
 

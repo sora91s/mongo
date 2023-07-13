@@ -30,19 +30,22 @@
 #pragma once
 
 #include "mongo/base/error_extra_info.h"
-#include "mongo/db/database_name.h"
+
 #include "mongo/util/uuid.h"
 
 namespace mongo {
+    
+void initMyCollectionUuidMisInfo();
+
 class CollectionUUIDMismatchInfo final : public ErrorExtraInfo {
 public:
     static constexpr auto code = ErrorCodes::CollectionUUIDMismatch;
 
-    explicit CollectionUUIDMismatchInfo(DatabaseName dbName,
+    explicit CollectionUUIDMismatchInfo(std::string db,
                                         UUID collectionUUID,
                                         std::string expectedCollection,
                                         boost::optional<std::string> actualCollection)
-        : _dbName(std::move(dbName)),
+        : _db(std::move(db)),
           _collectionUUID(std::move(collectionUUID)),
           _expectedCollection(std::move(expectedCollection)),
           _actualCollection(std::move(actualCollection)) {}
@@ -51,8 +54,8 @@ public:
 
     void serialize(BSONObjBuilder* builder) const override;
 
-    const auto& dbName() const {
-        return _dbName;
+    const auto& db() const {
+        return _db;
     }
 
     const auto& collectionUUID() const {
@@ -68,7 +71,7 @@ public:
     }
 
 private:
-    DatabaseName _dbName;
+    std::string _db;
     UUID _collectionUUID;
     std::string _expectedCollection;
     boost::optional<std::string> _actualCollection;

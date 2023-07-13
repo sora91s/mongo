@@ -31,17 +31,14 @@
 
 #include "mongo/db/exec/sbe/stages/project.h"
 
-#include "mongo/db/exec/sbe/expressions/compile_ctx.h"
 #include "mongo/db/exec/sbe/size_estimator.h"
 
 namespace mongo {
 namespace sbe {
 ProjectStage::ProjectStage(std::unique_ptr<PlanStage> input,
                            value::SlotMap<std::unique_ptr<EExpression>> projects,
-                           PlanNodeId nodeId,
-                           bool participateInTrialRunTracking)
-    : PlanStage("project"_sd, nodeId, participateInTrialRunTracking),
-      _projects(std::move(projects)) {
+                           PlanNodeId nodeId)
+    : PlanStage("project"_sd, nodeId), _projects(std::move(projects)) {
     _children.emplace_back(std::move(input));
 }
 
@@ -50,10 +47,8 @@ std::unique_ptr<PlanStage> ProjectStage::clone() const {
     for (auto& [k, v] : _projects) {
         projects.emplace(k, v->clone());
     }
-    return std::make_unique<ProjectStage>(_children[0]->clone(),
-                                          std::move(projects),
-                                          _commonStats.nodeId,
-                                          _participateInTrialRunTracking);
+    return std::make_unique<ProjectStage>(
+        _children[0]->clone(), std::move(projects), _commonStats.nodeId);
 }
 
 void ProjectStage::prepare(CompileCtx& ctx) {
@@ -160,13 +155,13 @@ size_t ProjectStage::estimateCompileTimeSize() const {
 }
 
 void ProjectStage::doSaveState(bool relinquishCursor) {
-    if (!relinquishCursor) {
+    if (!slotsAccessible() || !relinquishCursor) {
         return;
     }
 
     for (auto& [slotId, codeAndAccessor] : _fields) {
         auto& [code, accessor] = codeAndAccessor;
-        prepareForYielding(accessor, slotsAccessible());
+        prepareForYielding(accessor);
     }
 }
 

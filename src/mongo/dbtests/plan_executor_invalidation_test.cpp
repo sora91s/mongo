@@ -31,7 +31,6 @@
 
 #include "mongo/client/dbclient_cursor.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/catalog/collection_yield_restore.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
@@ -53,8 +52,7 @@ namespace mongo {
 
 using std::unique_ptr;
 
-static const NamespaceString nss =
-    NamespaceString::createNamespaceString_forTest("unittests.PlanExecutorInvalidationTest");
+static const NamespaceString nss("unittests.PlanExecutorInvalidationTest");
 
 /**
  * Test fixture for verifying that plan executors correctly raise errors when invalidating events
@@ -65,10 +63,10 @@ public:
     PlanExecutorInvalidationTest()
         : _client(&_opCtx), _expCtx(make_intrusive<ExpressionContext>(&_opCtx, nullptr, nss)) {
         _ctx.reset(new dbtests::WriteContextForTests(&_opCtx, nss.ns()));
-        _client.dropCollection(nss);
+        _client.dropCollection(nss.ns());
 
         for (int i = 0; i < N(); ++i) {
-            _client.insert(nss, BSON("foo" << i));
+            _client.insert(nss.ns(), BSON("foo" << i));
         }
 
         _refreshCollection();
@@ -97,7 +95,7 @@ public:
                                         std::move(ws),
                                         std::move(scan),
                                         &collection(),
-                                        PlanYieldPolicy::YieldPolicy::NO_YIELD,
+                                        PlanYieldPolicy::YieldPolicy::YIELD_MANUAL,
                                         QueryPlannerParams::DEFAULT);
 
         ASSERT_OK(statusWithPlanExecutor.getStatus());
@@ -116,7 +114,7 @@ public:
                                           startKey,
                                           endKey,
                                           BoundInclusion::kIncludeBothStartAndEndKeys,
-                                          PlanYieldPolicy::YieldPolicy::NO_YIELD);
+                                          PlanYieldPolicy::YieldPolicy::YIELD_MANUAL);
     }
 
     int N() {
@@ -124,31 +122,31 @@ public:
     }
 
     bool dropDatabase(const std::string& dbname) {
-        bool res = _client.dropDatabase({boost::none, dbname});
+        bool res = _client.dropDatabase(dbname);
         _refreshCollection();
         return res;
     }
 
     bool dropCollection(const std::string& ns) {
-        bool res = _client.dropCollection(NamespaceString(ns));
+        bool res = _client.dropCollection(ns);
         _refreshCollection();
         return res;
     }
 
-    void dropIndexes(const NamespaceString& nss) {
-        _client.dropIndexes(nss);
+    void dropIndexes(const std::string& ns) {
+        _client.dropIndexes(ns);
         _refreshCollection();
     }
 
-    void dropIndex(const NamespaceString& nss, BSONObj keys) {
-        _client.dropIndex(nss, keys);
+    void dropIndex(const std::string& ns, BSONObj keys) {
+        _client.dropIndex(ns, keys);
         _refreshCollection();
     }
 
     void renameCollection(const std::string& to) {
         BSONObj info;
         ASSERT_TRUE(_client.runCommand(
-            DatabaseName(boost::none, "admin"),
+            "admin",
             BSON("renameCollection" << nss.ns() << "to" << to << "dropTarget" << true),
             info));
         _refreshCollection();
@@ -191,8 +189,7 @@ public:
 
 private:
     void _refreshCollection() {
-        _coll = CollectionPtr(
-            CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, nss));
+        _coll = CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, nss);
     }
 
     BSONObj _makeMinimalIndexSpec(BSONObj keyPattern) {
@@ -215,8 +212,8 @@ TEST_F(PlanExecutorInvalidationTest, ExecutorToleratesDeletedDocumentsDuringYiel
     exec->saveState();
 
     // Delete some data, namely the next 2 things we'd expect.
-    _client.remove(nss, BSON("foo" << 10));
-    _client.remove(nss, BSON("foo" << 11));
+    _client.remove(nss.ns(), BSON("foo" << 10));
+    _client.remove(nss.ns(), BSON("foo" << 11));
 
     exec->restoreState(&collection());
 
@@ -270,7 +267,7 @@ TEST_F(PlanExecutorInvalidationTest, CollScanExecutorDoesNotDieWhenAllIndicesDro
     }
 
     exec->saveState();
-    dropIndexes(nss);
+    dropIndexes(nss.ns());
     exec->restoreState(&collection());
 
     // Read the rest of the collection.
@@ -293,7 +290,7 @@ TEST_F(PlanExecutorInvalidationTest, CollScanExecutorDoesNotDieWhenOneIndexDropp
     }
 
     exec->saveState();
-    dropIndex(nss, BSON("foo" << 1));
+    dropIndex(nss.ns(), BSON("foo" << 1));
     exec->restoreState(&collection());
 
     // Read the rest of the collection.
@@ -321,7 +318,7 @@ TEST_F(PlanExecutorInvalidationTest, IxscanExecutorDiesWhenAllIndexesDropped) {
 
     // Drop the index which the plan executor is scanning while the executor is in a saved state.
     exec->saveState();
-    dropIndexes(nss);
+    dropIndexes(nss.ns());
 
     // Restoring the executor should throw.
     ASSERT_THROWS_CODE(exec->restoreState(&collection()), DBException, ErrorCodes::QueryPlanKilled);
@@ -342,7 +339,7 @@ TEST_F(PlanExecutorInvalidationTest, IxscanExecutorDiesWhenIndexBeingScannedIsDr
 
     // Drop all indexes while the executor is saved.
     exec->saveState();
-    dropIndex(nss, keyPattern);
+    dropIndex(nss.ns(), keyPattern);
 
     // Restoring the executor should throw.
     ASSERT_THROWS_CODE(exec->restoreState(&collection()), DBException, ErrorCodes::QueryPlanKilled);
@@ -366,7 +363,7 @@ TEST_F(PlanExecutorInvalidationTest, IxscanExecutorSurvivesWhenUnrelatedIndexIsD
     // Drop an index which the plan executor is *not* scanning while the executor is in a saved
     // state.
     exec->saveState();
-    dropIndex(nss, keyPatternBar);
+    dropIndex(nss.ns(), keyPatternBar);
     exec->restoreState(&collection());
 
     // Scan the rest of the index.

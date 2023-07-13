@@ -12,6 +12,14 @@ load("jstests/libs/write_concern_util.js");  // For stopReplicationOnSecondaries
 
 const rst = new ReplSetTest({nodes: 2, nodeOptions: {enableMajorityReadConcern: ""}});
 
+// Skip this test if running with --nojournal and WiredTiger.
+if (jsTest.options().noJournal &&
+    (!jsTest.options().storageEngine || jsTest.options().storageEngine === "wiredTiger")) {
+    print("Skipping test because running WiredTiger without journaling isn't a valid" +
+          " replica set configuration");
+    return;
+}
+
 rst.startSet();
 rst.initiate();
 
@@ -79,7 +87,7 @@ rst.awaitLastOpCommitted();
 
 // Verify that the expected doc is returned because it has been committed.
 let doc = cst.getOneChange(cursor);
-assert.docEq("insert", doc.operationType);
-assert.docEq({_id: 2}, doc.fullDocument);
+assert.docEq(doc.operationType, "insert");
+assert.docEq(doc.fullDocument, {_id: 2});
 rst.stopSet();
 }());

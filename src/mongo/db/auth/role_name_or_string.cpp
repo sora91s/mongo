@@ -45,10 +45,9 @@ const T& variant_get(const U* variant) {
     return *value;
 }
 
-RoleName RoleNameOrString::getRoleName(const DatabaseName& dbname) const {
+RoleName RoleNameOrString::getRoleName(StringData dbname) const {
     if (std::holds_alternative<RoleName>(_roleName)) {
-        auto role = variant_get<RoleName>(&_roleName);
-        return RoleName(role.getName(), role.getDB(), dbname.tenantId());
+        return variant_get<RoleName>(&_roleName);
     } else {
         dassert(std::holds_alternative<std::string>(_roleName));
         return RoleName(variant_get<std::string>(&_roleName), dbname);

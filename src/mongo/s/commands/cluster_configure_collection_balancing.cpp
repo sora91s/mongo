@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -44,9 +45,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/configure_collection_balancing_gen.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 namespace {
 
@@ -61,7 +59,7 @@ public:
         StringData kStatusField = "status"_sd;
 
         void typedRun(OperationContext* opCtx) {
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
             const NamespaceString& nss = ns();
 
             ConfigsvrConfigureCollectionBalancing configsvrRequest(nss);
@@ -72,7 +70,7 @@ public:
             auto cmdResponse = uassertStatusOK(configShard->runCommandWithFixedRetryAttempts(
                 opCtx,
                 ReadPreferenceSetting(ReadPreference::PrimaryOnly),
-                DatabaseName::kAdmin.toString(),
+                NamespaceString::kAdminDb.toString(),
                 configsvrRequest.toBSON({}),
                 Shard::RetryPolicy::kIdempotent));
 

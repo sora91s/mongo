@@ -3,6 +3,7 @@
  * completes or is interrupted when the state doc collection is dropped.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -11,17 +12,15 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    getNumBlockedReads,
-    getNumBlockedWrites,
-    makeX509OptionsForTest
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
 load("jstests/libs/write_concern_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 function startReadThread(node, dbName, collName, afterClusterTime) {
     let readThread = new Thread((host, dbName, collName, afterClusterTime) => {
@@ -51,7 +50,7 @@ function setup() {
     const donorRst = new ReplSetTest({
         nodes: 3,
         name: "donorRst",
-        nodeOptions: Object.assign(makeX509OptionsForTest().donor, {
+        nodeOptions: Object.assign(TenantMigrationUtil.makeX509OptionsForTest().donor, {
             setParameter: {
                 tenantMigrationGarbageCollectionDelayMS: 1,
                 ttlMonitorSleepSecs: 1,
@@ -78,6 +77,7 @@ function setup() {
     };
 }
 
+const kTenantIdPrefix = "testTenantId";
 const kDbName = "testDb";
 const kCollName = "testColl";
 
@@ -87,7 +87,7 @@ const kCollName = "testColl";
     const {tenantMigrationTest, donorRst, teardown} = setup();
     const donorPrimary = tenantMigrationTest.getDonorPrimary();
     const donorsColl = donorPrimary.getCollection(TenantMigrationTest.kConfigDonorsNS);
-    const tenantId = ObjectId().str;
+    const tenantId = kTenantIdPrefix + "LaggedSecondaryMigrationAborted";
     const dbName = tenantId + "_" + kDbName;
     assert.commandWorked(
         donorPrimary.getDB(dbName).runCommand({insert: kCollName, documents: [{_id: 0}]}));
@@ -108,10 +108,10 @@ const kCollName = "testColl";
 
     // Run a read command against one of the secondaries, and wait for it to block.
     const laggedSecondary = donorRst.getSecondary();
-    const donorDoc = donorsColl.findOne({_id: migrationId});
+    const donorDoc = donorsColl.findOne({tenantId: tenantId});
     assert.neq(null, donorDoc);
     const readThread = startReadThread(laggedSecondary, dbName, kCollName, donorDoc.blockTimestamp);
-    assert.soon(() => getNumBlockedReads(laggedSecondary, tenantId) == 1);
+    assert.soon(() => TenantMigrationUtil.getNumBlockedReads(laggedSecondary, tenantId) == 1);
 
     // Disable snapshotting on that secondary, and wait for the migration to abort and be garbage
     // collected. That way the secondary is guaranteed to observe the write to set expireAt before
@@ -137,7 +137,7 @@ const kCollName = "testColl";
     const {tenantMigrationTest, donorRst, teardown} = setup();
     const donorPrimary = tenantMigrationTest.getDonorPrimary();
     const donorsColl = donorPrimary.getCollection(TenantMigrationTest.kConfigDonorsNS);
-    const tenantId = ObjectId().str;
+    const tenantId = kTenantIdPrefix + "LaggedSecondaryMigrationCommitted";
     const dbName = tenantId + "_" + kDbName;
     assert.commandWorked(
         donorPrimary.getDB(dbName).runCommand({insert: kCollName, documents: [{_id: 0}]}));
@@ -156,10 +156,10 @@ const kCollName = "testColl";
 
     // Run a read command against one of the secondaries, and wait for it to block.
     const laggedSecondary = donorRst.getSecondary();
-    const donorDoc = donorsColl.findOne({_id: migrationId});
+    const donorDoc = donorsColl.findOne({tenantId: tenantId});
     assert.neq(null, donorDoc);
     const readThread = startReadThread(laggedSecondary, dbName, kCollName, donorDoc.blockTimestamp);
-    assert.soon(() => getNumBlockedReads(laggedSecondary, tenantId) == 1);
+    assert.soon(() => TenantMigrationUtil.getNumBlockedReads(laggedSecondary, tenantId) == 1);
 
     // Disable snapshotting on that secondary, and wait for the migration to commit and be garbage
     // collected. That way the secondary is guaranteed to observe the write to set expireAt before
@@ -184,7 +184,7 @@ const kCollName = "testColl";
     const {tenantMigrationTest, donorRst, teardown} = setup();
     const donorPrimary = tenantMigrationTest.getDonorPrimary();
     const donorsColl = donorPrimary.getCollection(TenantMigrationTest.kConfigDonorsNS);
-    const tenantId = ObjectId().str;
+    const tenantId = kTenantIdPrefix + "DropStateDocCollection";
     const dbName = tenantId + "_" + kDbName;
     assert.commandWorked(
         donorPrimary.getDB(dbName).runCommand({insert: kCollName, documents: [{_id: 0}]}));
@@ -201,19 +201,20 @@ const kCollName = "testColl";
     blockingFp.wait();
 
     // Run a read command and a write command against the primary, and wait for them to block.
-    const donorDoc = donorsColl.findOne({_id: migrationId});
+    const donorDoc = donorsColl.findOne({tenantId: tenantId});
     assert.neq(null, donorDoc);
     const readThread = startReadThread(donorPrimary, dbName, kCollName, donorDoc.blockTimestamp);
     const writeThread = startWriteThread(donorPrimary, dbName, kCollName);
-    assert.soon(() => getNumBlockedReads(donorPrimary, tenantId) == 1);
-    assert.soon(() => getNumBlockedWrites(donorPrimary, tenantId) == 1);
+    assert.soon(() => TenantMigrationUtil.getNumBlockedReads(donorPrimary, tenantId) == 1);
+    assert.soon(() => TenantMigrationUtil.getNumBlockedWrites(donorPrimary, tenantId) == 1);
 
     // Cannot delete the donor state doc since it has not been marked as garbage collectable.
     assert.commandFailedWithCode(donorsColl.remove({}), ErrorCodes.IllegalOperation);
 
     // Cannot mark the state doc as garbage collectable before the migration commits or aborts.
     assert.commandFailedWithCode(
-        donorsColl.update({_id: migrationId}, {$set: {expireAt: new Date()}}), ErrorCodes.BadValue);
+        donorsColl.update({tenantId: tenantId}, {$set: {expireAt: new Date()}}),
+        ErrorCodes.BadValue);
 
     // Can drop the state doc collection but this will not cause all blocked reads and writes to
     // hang.
@@ -223,4 +224,5 @@ const kCollName = "testColl";
     blockingFp.off();
 
     teardown();
+})();
 })();

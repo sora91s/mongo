@@ -133,11 +133,9 @@ function testMoveChunk(shardKey) {
 
     // Error if either of the bounds is not a valid shard key.
     assert.commandFailedWithCode(
-        st.s0.adminCommand({moveChunk: ns, bounds: [NaN, aChunk.max], to: shard1}),
-        ErrorCodes.TypeMismatch);
+        st.s0.adminCommand({moveChunk: ns, bounds: [NaN, aChunk.max], to: shard1}), 10065);
     assert.commandFailedWithCode(
-        st.s0.adminCommand({moveChunk: ns, bounds: [aChunk.min, NaN], to: shard1}),
-        ErrorCodes.TypeMismatch);
+        st.s0.adminCommand({moveChunk: ns, bounds: [aChunk.min, NaN], to: shard1}), 10065);
 
     assert.commandWorked(
         st.s0.adminCommand({moveChunk: ns, bounds: [aChunk.min, aChunk.max], to: shard1}));

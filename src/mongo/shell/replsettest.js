@@ -231,14 +231,25 @@ var ReplSetTest = function(opts) {
      */
     function _isRunningWithoutJournaling(conn) {
         var result = asCluster(conn, function() {
-            // Persistent storage engines (WT) can only run with journal enabled.
             var serverStatus = assert.commandWorked(conn.adminCommand({serverStatus: 1}));
             if (serverStatus.storageEngine.hasOwnProperty('persistent')) {
-                if (serverStatus.storageEngine.persistent) {
-                    return false;
+                if (!serverStatus.storageEngine.persistent) {
+                    return true;
                 }
+            } else if (serverStatus.storageEngine.name == 'inMemory' ||
+                       serverStatus.storageEngine.name == 'ephemeralForTest') {
+                return true;
             }
-            return true;
+            var cmdLineOpts = assert.commandWorked(conn.adminCommand({getCmdLineOpts: 1}));
+            var getWithDefault = function(dict, key, dflt) {
+                if (dict[key] === undefined)
+                    return dflt;
+                return dict[key];
+            };
+            return !getWithDefault(
+                getWithDefault(getWithDefault(cmdLineOpts.parsed, "storage", {}), "journal", {}),
+                "enabled",
+                true);
         });
         return result;
     }
@@ -1417,11 +1428,14 @@ var ReplSetTest = function(opts) {
         // Set the FCV to 'last-lts'/'last-continuous' if we are running a mixed version replica
         // set. If this is a config server, the FCV will be set as part of ShardingTest.
         // versions are supported with the useRandomBinVersionsWithinReplicaSet option.
-        let setLastLTSFCV = (lastLTSBinVersionWasSpecifiedForSomeNode ||
-                             jsTest.options().useRandomBinVersionsWithinReplicaSet) &&
+        let setLastLTSFCV =
+            (lastLTSBinVersionWasSpecifiedForSomeNode ||
+             jsTest.options().useRandomBinVersionsWithinReplicaSet === "last-lts") &&
             !self.isConfigServer;
-        let setLastContinuousFCV = !setLastLTSFCV &&
-            lastContinuousBinVersionWasSpecifiedForSomeNode && !self.isConfigServer;
+        let setLastContinuousFCV =
+            (lastContinuousBinVersionWasSpecifiedForSomeNode ||
+             jsTest.options().useRandomBinVersionsWithinReplicaSet === "last-continuous") &&
+            !self.isConfigServer;
 
         if ((setLastLTSFCV || setLastContinuousFCV) &&
             jsTest.options().replSetFeatureCompatibilityVersion) {
@@ -1437,8 +1451,14 @@ var ReplSetTest = function(opts) {
             asCluster(self.nodes, function setFCV() {
                 let fcv = setLastLTSFCV ? lastLTSFCV : lastContinuousFCV;
                 print("Setting feature compatibility version for replica set to '" + fcv + "'");
-                assert.commandWorked(
-                    self.getPrimary().adminCommand({setFeatureCompatibilityVersion: fcv}));
+
+                // We are only able to call 'setFeatureCompatibilityVersion' to transition from
+                // last-lts to last-continuous with 'fromConfigServer: true'.
+                const cmd = {
+                    setFeatureCompatibilityVersion: fcv,
+                    fromConfigServer: true,
+                };
+                assert.commandWorked(self.getPrimary().adminCommand(cmd));
                 checkFCV(self.getPrimary().getDB("admin"), fcv);
 
                 // The server has a practice of adding a reconfig as part of upgrade/downgrade logic
@@ -1913,7 +1933,7 @@ var ReplSetTest = function(opts) {
                     if (friendlyEqual(rcmOpTime, {ts: Timestamp(0, 0), t: NumberLong(0)})) {
                         return false;
                     }
-                    if (globalThis.rs.compareOpTimes(rcmOpTime, primaryOpTime) < 0) {
+                    if (rs.compareOpTimes(rcmOpTime, primaryOpTime) < 0) {
                         return false;
                     }
                 }
@@ -2170,7 +2190,7 @@ var ReplSetTest = function(opts) {
 
             // If the node doesn't have a valid opTime, it likely hasn't received any writes from
             // the primary yet.
-            if (!globalThis.rs.isValidOpTime(secondaryOpTime)) {
+            if (!rs.isValidOpTime(secondaryOpTime)) {
                 print("ReplSetTest awaitReplication: optime for secondary #" + secondaryCount +
                       ", " + secondaryName + ", is " + tojson(secondaryOpTime) +
                       ", which is NOT valid.");
@@ -2179,12 +2199,11 @@ var ReplSetTest = function(opts) {
 
             // See if the node made progress. We count it as progress even if the node's last optime
             // went backwards because that means the node is in rollback.
-            let madeProgress =
-                (nodeProgress[index] &&
-                 (globalThis.rs.compareOpTimes(nodeProgress[index], secondaryOpTime) != 0));
+            let madeProgress = (nodeProgress[index] &&
+                                (rs.compareOpTimes(nodeProgress[index], secondaryOpTime) != 0));
             nodeProgress[index] = secondaryOpTime;
 
-            if (globalThis.rs.compareOpTimes(primaryLatestOpTime, secondaryOpTime) < 0) {
+            if (rs.compareOpTimes(primaryLatestOpTime, secondaryOpTime) < 0) {
                 primaryLatestOpTime = _getLastOpTime(primary);
                 print("ReplSetTest awaitReplication: optime for " + secondaryName +
                       " is newer, resetting latest primary optime to " +
@@ -2263,9 +2282,9 @@ var ReplSetTest = function(opts) {
         }
     };
 
-    this.getHashesUsingSessions = function(
-        sessions, dbName, {readAtClusterTime,
-                           skipTempCollections = false} = {skipTempCollections: false}) {
+    this.getHashesUsingSessions = function(sessions, dbName, {
+        readAtClusterTime,
+    } = {}) {
         return sessions.map(session => {
             const commandObj = {dbHash: 1};
             const db = session.getDatabase(dbName);
@@ -2278,9 +2297,6 @@ var ReplSetTest = function(opts) {
                     commandObj.$_internalReadAtClusterTime = readAtClusterTime;
                 }
             }
-            if (skipTempCollections) {
-                commandObj.skipTempCollections = 1;
-            }
 
             return assert.commandWorked(db.runCommand(commandObj));
         });
@@ -2288,7 +2304,7 @@ var ReplSetTest = function(opts) {
 
     // Gets the dbhash for the current primary and for all secondaries (or the members of
     // 'secondaries', if specified).
-    this.getHashes = function(dbName, secondaries, skipTempCollections) {
+    this.getHashes = function(dbName, secondaries) {
         assert.neq(dbName, 'local', 'Cannot run getHashes() on the "local" database');
 
         // _determineLiveSecondaries() repopulates both 'self._secondaries' and 'self._primary'. If
@@ -2302,7 +2318,7 @@ var ReplSetTest = function(opts) {
             })
         ].map(conn => conn.getDB('test').getSession());
 
-        const hashes = this.getHashesUsingSessions(sessions, dbName, {skipTempCollections});
+        const hashes = this.getHashesUsingSessions(sessions, dbName);
         return {primary: hashes[0], secondaries: hashes.slice(1)};
     };
 
@@ -2459,8 +2475,8 @@ var ReplSetTest = function(opts) {
                     const hasSecondaryIndexes =
                         replSetConfig.members[rst.getNodeId(secondary)].buildIndexes !== false;
 
-                    print(`checking db hash between primary: ${primary.host}, and secondary: ${
-                        secondary.host}`);
+                    print(
+                        `checking db hash between primary: ${primary} and secondary ${secondary}`);
                     success = DataConsistencyChecker.checkDBHash(primaryDBHash,
                                                                  primaryCollInfos,
                                                                  secondaryDBHash,
@@ -2752,14 +2768,13 @@ var ReplSetTest = function(opts) {
             defaults.serverless = true;
         }
 
-        const nodeOptions = this.nodeOptions["n" + n];
-        const hasBinVersion =
-            (options && options.binVersion) || (nodeOptions && nodeOptions.binVersion);
-        if (hasBinVersion && jsTest.options().useRandomBinVersionsWithinReplicaSet) {
+        if (options && options.binVersion &&
+            jsTest.options().useRandomBinVersionsWithinReplicaSet) {
             throw new Error(
                 "Can only specify one of binVersion and useRandomBinVersionsWithinReplicaSet, not both.");
         }
 
+        //
         // Note : this replaces the binVersion of the shared startSet() options the first time
         // through, so the full set is guaranteed to have different versions if size > 1.  If using
         // start() independently, independent version choices will be made
@@ -2780,7 +2795,7 @@ var ReplSetTest = function(opts) {
         } else {
             baseOptions = defaults;
         }
-        baseOptions = Object.merge(baseOptions, nodeOptions);
+        baseOptions = Object.merge(baseOptions, this.nodeOptions["n" + n]);
         options = Object.merge(baseOptions, options);
         if (options.hasOwnProperty("rsConfig")) {
             this.nodeOptions["n" + n] =
@@ -3342,34 +3357,18 @@ var ReplSetTest = function(opts) {
     /**
      * Constructor, which instantiates the ReplSetTest object from existing nodes.
      */
-    function _constructFromExistingNodes({
-        name,
-        serverless,
-        nodeHosts,
-        nodeOptions,
-        keyFile,
-        host,
-        waitForKeys,
-        pidValue = undefined
-    }) {
+    function _constructFromExistingNodes(
+        {name, serverless, nodeHosts, nodeOptions, keyFile, host, waitForKeys}) {
         print('Recreating replica set from existing nodes ' + tojson(nodeHosts));
 
         self.name = name;
         self.serverless = serverless;
         self.ports = nodeHosts.map(node => node.split(':')[1]);
-
-        let i = 0;
         self.nodes = nodeHosts.map((node) => {
             const conn = Mongo(node);
             conn.name = conn.host;
-            conn.port = node.split(':')[1];
-            if (pidValue !== undefined && pidValue[i] !== undefined) {
-                conn.pid = pidValue[i];
-                i++;
-            }
             return conn;
         });
-
         self.host = host;
         self.waitForKeys = waitForKeys;
         self.keyFile = keyFile;

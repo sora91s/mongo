@@ -48,12 +48,8 @@ std::pair<value::TypeTags, value::Value> convertFrom(const BSONElement& elem) {
 
 const char* advance(const char* be, size_t fieldNameSize);
 
-inline auto fieldNameAndLength(const char* be) noexcept {
+inline auto fieldNameView(const char* be) noexcept {
     return StringData{be + 1};
-}
-
-inline const char* fieldNameRaw(const char* be) noexcept {
-    return be + 1;
 }
 
 template <class ArrayBuilder>

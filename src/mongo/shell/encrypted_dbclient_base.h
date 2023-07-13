@@ -51,6 +51,7 @@
 #include "mongo/scripting/mozjs/objectwrapper.h"
 #include "mongo/scripting/mozjs/valuereader.h"
 #include "mongo/scripting/mozjs/valuewriter.h"
+#include "mongo/shell/encrypted_shell_options.h"
 #include "mongo/shell/kms.h"
 #include "mongo/shell/kms_gen.h"
 #include "mongo/shell/shell_options.h"
@@ -86,6 +87,7 @@ class EncryptedDBClientBase : public DBClientBase,
                               public FLEKeyVault {
 public:
     using DBClientBase::find;
+    using DBClientBase::query_DEPRECATED;
 
     EncryptedDBClientBase(std::unique_ptr<DBClientBase> conn,
                           ClientSideFLEOptions encryptionOptions,
@@ -93,6 +95,8 @@ public:
                           JSContext* cx);
 
     std::string getServerAddress() const final;
+
+    bool call(Message& toSend, Message& response, bool assertOk, std::string* actualServer) final;
 
     void say(Message& toSend, bool isRetry, std::string* actualServer) final;
 
@@ -128,8 +132,18 @@ public:
     void trace(JSTracer* trc) final;
 
     std::unique_ptr<DBClientCursor> find(FindCommandRequest findRequest,
-                                         const ReadPreferenceSetting& readPref,
-                                         ExhaustMode exhaustMode) final;
+                                         const ReadPreferenceSetting& readPref) final;
+
+    std::unique_ptr<DBClientCursor> query_DEPRECATED(
+        const NamespaceStringOrUUID& nsOrUuid,
+        const BSONObj& filter,
+        const Query& querySettings,
+        int limit,
+        int nToSkip,
+        const BSONObj* fieldsToReturn,
+        int queryOptions,
+        int batchSize,
+        boost::optional<BSONObj> readConcernObj = boost::none) final;
 
     bool isFailed() const final;
 
@@ -152,9 +166,6 @@ public:
 #endif
 
     KeyMaterial getKey(const UUID& uuid) final;
-    BSONObj getEncryptedKey(const UUID& uuid) final;
-
-    SymmetricKey& getKMSLocalKey() final;
 
 protected:
     BSONObj _decryptResponsePayload(BSONObj& reply, StringData databaseName, bool isFLE2);
@@ -200,13 +211,15 @@ protected:
 
     virtual RunCommandReturn handleEncryptionRequest(RunCommandParams params);
 
-    RunCommandReturn processResponseFLE1(RunCommandReturn result, const DatabaseName& databaseName);
+    RunCommandReturn processResponseFLE1(RunCommandReturn result, StringData databaseName);
 
-    RunCommandReturn processResponseFLE2(RunCommandReturn result);
+    RunCommandReturn processResponseFLE2(RunCommandReturn result, StringData DatabaseName);
 
-    RunCommandReturn prepareReply(RunCommandReturn result, BSONObj decryptedDoc);
+    RunCommandReturn prepareReply(RunCommandReturn result,
+                                  StringData databaseName,
+                                  BSONObj decryptedDoc);
 
-    BSONObj encryptDecryptCommand(const BSONObj& object, bool encrypt, const DatabaseName& dbName);
+    BSONObj encryptDecryptCommand(const BSONObj& object, bool encrypt, StringData databaseName);
 
     JS::Value getCollection() const;
 
@@ -225,8 +238,6 @@ protected:
     FLEDecryptionFrame createDecryptionFrame(ConstDataRange data);
 
 private:
-    void _call(Message& toSend, Message& response, std::string* actualServer) final;
-
     virtual void encryptMarking(const BSONObj& elem, BSONObjBuilder* builder, StringData elemName);
 
     void decryptPayload(ConstDataRange data, BSONObjBuilder* builder, StringData elemName);
@@ -251,7 +262,6 @@ private:
         kEncryptedDBCacheSize};
     JS::Heap<JS::Value> _collection;
     JSContext* _cx;
-    boost::optional<SymmetricKey> _localKey;
 };
 
 using ImplicitEncryptedDBClientCallback =

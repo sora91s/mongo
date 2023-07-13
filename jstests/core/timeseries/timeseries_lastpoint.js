@@ -2,15 +2,15 @@
  * Tests the optimization of "lastpoint"-type queries on time-series collections.
  *
  * @tags: [
+ *   does_not_support_stepdowns,
+ *   does_not_support_transactions,
+ *   requires_timeseries,
+ *   requires_pipeline_optimization,
+ *   requires_fcv_53,
+ *   # TODO (SERVER-63590): Investigate presence of getmore tag in timeseries jstests.
+ *   requires_getmore,
  *   # Explain of a resolved view must be executed by mongos.
  *   directly_against_shardsvrs_incompatible,
- *   # Testing last point optimization.
- *   requires_pipeline_optimization,
- *   # Refusing to run a test that issues an aggregation command with explain because it may return
- *   # incomplete results if interrupted by a stepdown.
- *   does_not_support_stepdowns,
- *   # We need a timeseries collection.
- *   requires_timeseries,
  * ]
  */
 (function() {
@@ -23,6 +23,11 @@ load("jstests/libs/analyze_plan.js");
 
 const testDB = TimeseriesAggTests.getTestDb();
 assert.commandWorked(testDB.dropDatabase());
+
+// Do not run the rest of the tests if the lastpoint optimization is disabled.
+if (!FeatureFlagUtil.isEnabled(db, "LastPointQuery")) {
+    return;
+}
 
 /**
  * Returns a lastpoint $group stage of the form:

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -37,7 +38,7 @@
 
 #if !defined(_WIN32)
 #include <arpa/inet.h>
-#include <cerrno>
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -69,9 +70,6 @@
 #include "mongo/util/str.h"
 #include "mongo/util/winutil.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
-
 namespace mongo {
 
 using std::pair;
@@ -98,9 +96,13 @@ bool setBlock(int fd, bool block) {
 #endif
 }
 
-void networkWarnWithDescription(const Socket& socket,
-                                StringData call,
-                                std::error_code ec = lastSocketError()) {
+void networkWarnWithDescription(const Socket& socket, StringData call, int errorCode = -1) {
+#ifdef _WIN32
+    if (errorCode == -1) {
+        errorCode = WSAGetLastError();
+    }
+#endif
+    auto ewd = errnoWithDescription(errorCode);
     LOGV2_WARNING(23190,
                   "failed to connect to {remoteSocketAddress}:{remoteSocketAddressPort}, "
                   "in({call}), reason: {error}",
@@ -108,7 +110,7 @@ void networkWarnWithDescription(const Socket& socket,
                   "remoteSocketAddress"_attr = socket.remoteAddr().getAddr(),
                   "remoteSocketAddressPort"_attr = socket.remoteAddr().getPort(),
                   "call"_attr = call,
-                  "error"_attr = errorMessage(ec));
+                  "error"_attr = ewd);
 }
 
 const double kMaxConnectTimeoutMS = 5000;
@@ -120,22 +122,18 @@ void setSockTimeouts(int sock, double secs) {
     DWORD timeout = secs * 1000;  // Windows timeout is a DWORD, in milliseconds.
     int status =
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char*>(&timeout), sizeof(DWORD));
-    if (report && (status == SOCKET_ERROR)) {
-        auto ec = lastSocketError();
+    if (report && (status == SOCKET_ERROR))
         LOGV2(23177,
               "unable to set SO_RCVTIMEO: {reason}",
               "Unable to set SO_RCVTIMEO",
-              "reason"_attr = errorMessage(ec));
-    }
+              "reason"_attr = errnoWithDescription(WSAGetLastError()));
     status =
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<char*>(&timeout), sizeof(DWORD));
-    if (kDebugBuild && report && (status == SOCKET_ERROR)) {
-        auto ec = lastSocketError();
+    if (kDebugBuild && report && (status == SOCKET_ERROR))
         LOGV2(23178,
               "unable to set SO_SNDTIMEO: {reason}",
               "Unable to set SO_SNDTIME0",
-              "reason"_attr = errorMessage(ec));
-    }
+              "reason"_attr = errnoWithDescription(WSAGetLastError()));
 #else
     struct timeval tv;
     tv.tv_sec = (int)secs;
@@ -159,37 +157,41 @@ void disableNagle(int sock) {
     const int level = SOL_SOCKET;
 #endif
 
-    if (setsockopt(sock, level, TCP_NODELAY, (char*)&x, sizeof(x))) {
-        auto ec = lastSocketError();
+    if (setsockopt(sock, level, TCP_NODELAY, (char*)&x, sizeof(x)))
         LOGV2_ERROR(23195,
                     "disableNagle failed: {error}",
                     "DisableNagle failed",
-                    "error"_attr = errorMessage(ec));
-    }
+                    "error"_attr = errnoWithDescription());
 
 #ifdef SO_KEEPALIVE
-    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (char*)&x, sizeof(x))) {
-        auto ec = lastSocketError();
+    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (char*)&x, sizeof(x)))
         LOGV2_ERROR(23196,
                     "SO_KEEPALIVE failed: {error}",
                     "SO_KEEPALIVE failed",
-                    "error"_attr = errorMessage(ec));
-    }
+                    "error"_attr = errnoWithDescription());
 #endif
 
     setSocketKeepAliveParams(sock, logv2::LogSeverity::Error());
 }
 
+int socketGetLastError() {
+#ifdef _WIN32
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
 SockAddr getLocalAddrForBoundSocketFd(int fd) {
     SockAddr result;
-    if (getsockname(fd, result.raw(), &result.addressSize)) {
-        auto ec = lastSocketError();
+    int rc = getsockname(fd, result.raw(), &result.addressSize);
+    if (rc != 0) {
         LOGV2_WARNING(23191,
                       "Could not resolve local address for socket with fd {fd}: "
                       "{error}",
                       "Could not resolve local address for socket with fd",
                       "fd"_attr = fd,
-                      "error"_attr = errorMessage(ec));
+                      "error"_attr = getAddrInfoStrError(socketGetLastError()));
         result = SockAddr();
     }
     return result;
@@ -321,15 +323,14 @@ bool Socket::connect(const SockAddr& remote, Milliseconds connectTimeoutMillis) 
     bool connectSucceeded = ::connect(_fd, _remote.raw(), _remote.addressSize) == 0;
 
     if (!connectSucceeded) {
-        auto ec = lastSocketError();
 #ifdef _WIN32
-        if (ec != systemError(WSAEWOULDBLOCK)) {
-            networkWarnWithDescription(*this, "connect", ec);
+        if (WSAGetLastError() != WSAEWOULDBLOCK) {
+            networkWarnWithDescription(*this, "connect");
             return false;
         }
 #else
-        if (ec != posixError(EINTR) && ec != posixError(EINPROGRESS)) {
-            networkWarnWithDescription(*this, "connect", ec);
+        if (errno != EINTR && errno != EINPROGRESS) {
+            networkWarnWithDescription(*this, "connect");
             return false;
         }
 #endif
@@ -379,8 +380,7 @@ bool Socket::connect(const SockAddr& remote, Milliseconds connectTimeoutMillis) 
                 return false;
             }
             if (optVal != 0) {
-                networkWarnWithDescription(
-                    *this, "checking socket for error after poll", systemError(optVal));
+                networkWarnWithDescription(*this, "checking socket for error after poll", optVal);
                 return false;
             }
 
@@ -570,15 +570,13 @@ int Socket::_recv(char* buf, int max) {
 }
 
 void Socket::handleSendError(int ret, const char* context) {
-    const auto ec = lastSocketError();
-    auto isTimeoutCode = [](std::error_code e) {
 #if defined(_WIN32)
-        return e == systemError(WSAETIMEDOUT);
+    const int mongo_errno = WSAGetLastError();
+    if (mongo_errno == WSAETIMEDOUT && _timeout != 0) {
 #else
-        return e == posixError(EAGAIN) || e == posixError(EWOULDBLOCK);
+    const int mongo_errno = errno;
+    if ((mongo_errno == EAGAIN || mongo_errno == EWOULDBLOCK) && _timeout != 0) {
 #endif
-    };
-    if (isTimeoutCode(ec) && _timeout != 0) {
         LOGV2_DEBUG(23181,
                     _logLevel.toInt(),
                     "Socket {context} send() timed out {remoteHost}",
@@ -586,13 +584,13 @@ void Socket::handleSendError(int ret, const char* context) {
                     "context"_attr = context,
                     "remoteHost"_attr = remoteString());
         throwSocketError(SocketErrorKind::SEND_TIMEOUT, remoteString());
-    } else if (ec != posixError(EINTR)) {
+    } else if (mongo_errno != EINTR) {
         LOGV2_DEBUG(23182,
                     _logLevel.toInt(),
                     "Socket {context} send() {error} {remoteHost}",
                     "Socket send() to remote host failed",
                     "context"_attr = context,
-                    "error"_attr = errorMessage(ec),
+                    "error"_attr = errnoWithDescription(mongo_errno),
                     "remoteHost"_attr = remoteString());
         throwSocketError(SocketErrorKind::SEND_ERROR, remoteString());
     }
@@ -608,20 +606,24 @@ void Socket::handleRecvError(int ret, int len) {
         throwSocketError(SocketErrorKind::CLOSED, remoteString());
     }
 
-    // ret < 0
-    auto ec = lastSocketError();
+// ret < 0
+#if defined(_WIN32)
+    int e = WSAGetLastError();
+#else
+    int e = errno;
 #if defined(EINTR)
-    if (ec == posixError(EINTR)) {
+    if (e == EINTR) {
         return;
     }
 #endif
-
-    if ((ec == posixError(EAGAIN)
-#if defined(_WIN32)
-         || ec == systemError(WSAETIMEDOUT)
 #endif
-             ) &&
-        _timeout > 0) {
+
+#if defined(_WIN32)
+    // Windows
+    if ((e == EAGAIN || e == WSAETIMEDOUT) && _timeout > 0) {
+#else
+    if (e == EAGAIN && _timeout > 0) {
+#endif
         // this is a timeout
         LOGV2_DEBUG(23184,
                     _logLevel.toInt(),
@@ -635,7 +637,7 @@ void Socket::handleRecvError(int ret, int len) {
                 _logLevel.toInt(),
                 "Socket recv() {error} {remoteHost}",
                 "Socket recv() error",
-                "error"_attr = errorMessage(ec),
+                "error"_attr = errnoWithDescription(e),
                 "remoteHost"_attr = remoteString());
     throwSocketError(SocketErrorKind::RECV_ERROR, remoteString());
 }
@@ -687,15 +689,14 @@ bool Socket::isStillConnected() {
     // Poll( info[], size, timeout ) - timeout == 0 => nonblocking
     int nEvents = socketPoll(&pollInfo, 1, 0);
 
-    auto ec = lastSocketError();
-    LOGV2_DEBUG(23186,
-                2,
-                "polling for status of connection to {remoteHost}, {errorOrEventDetected}",
-                "Polling for status of connection to remote host",
-                "remoteHost"_attr = remoteString(),
-                "errorOrEventDetected"_attr = (nEvents == 0        ? "no events"
-                                                   : nEvents == -1 ? "error detected"
-                                                                   : "event detected"));
+    LOGV2_DEBUG(
+        23186,
+        2,
+        "polling for status of connection to {remoteHost}, {errorOrEventDetected}",
+        "Polling for status of connection to remote host",
+        "remoteHost"_attr = remoteString(),
+        "errorOrEventDetected"_attr =
+            (nEvents == 0 ? "no events" : nEvents == -1 ? "error detected" : "event detected"));
 
     if (nEvents == 0) {
         // No events incoming, return still connected AFAWK
@@ -708,7 +709,7 @@ bool Socket::isStillConnected() {
                       "Socket poll() to remote host failed during connectivity check",
                       "idleTimeSecs"_attr = idleTimeSecs,
                       "remoteHost"_attr = remoteString(),
-                      "error"_attr = causedBy(errorMessage(ec)));
+                      "error"_attr = causedBy(errnoWithDescription()));
 
         // Return true since it's not clear that we're disconnected.
         return true;
@@ -730,7 +731,6 @@ bool Socket::isStillConnected() {
         int recvd = ::recv(_fd, testBuf, testBufLength, portRecvFlags);
 
         if (recvd < 0) {
-            auto ec = lastSocketError();
             // An error occurred during recv, warn and log errno
             LOGV2_WARNING(23194,
                           "Socket recv() failed during connectivity check (idle {idleTimeSecs} "
@@ -738,7 +738,7 @@ bool Socket::isStillConnected() {
                           "Socket recv() failed during connectivity check",
                           "idleTimeSecs"_attr = idleTimeSecs,
                           "remoteHost"_attr = remoteString(),
-                          "error"_attr = causedBy(errorMessage(ec)));
+                          "error"_attr = causedBy(errnoWithDescription()));
         } else if (recvd > 0) {
             // We got nonzero data from this socket, very weird?
             // Log and warn at runtime, log and abort at devtime

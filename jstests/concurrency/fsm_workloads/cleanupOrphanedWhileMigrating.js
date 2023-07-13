@@ -3,12 +3,11 @@
 /**
  * Performs range deletions while chunks are being moved.
  *
- * @tags: [requires_sharding, assumes_balancer_on, antithesis_incompatible]
+ * @tags: [requires_sharding, assumes_balancer_on]
  */
 
 load('jstests/concurrency/fsm_libs/extend_workload.js');
 load('jstests/concurrency/fsm_workloads/sharded_base_partitioned.js');
-load('jstests/concurrency/fsm_workload_helpers/balancer.js');
 
 var $config = extendWorkload($config, function($config, $super) {
     $config.threadCount = 5;
@@ -23,6 +22,26 @@ var $config = extendWorkload($config, function($config, $super) {
     // Total count of documents when initialized.
     $config.data.initialCount = numChunks * numDocs;
 
+    function executeCommandWithRetries(fn, sleepInterval, retries, name) {
+        let result = null;
+        let done = false;
+
+        while (retries > 0 && !done) {
+            result = fn();
+
+            if (result.ok) {
+                print("command succeeded: " + name);
+                done = true;
+            } else {
+                print("command failed: " + name);
+                printjson(result);
+                sleep(sleepInterval);
+            }
+        }
+
+        return result;
+    }
+
     // Run cleanupOrphaned on a random shard's primary node.
     $config.states.cleanupOrphans = function(db, collName, connCache) {
         const ns = db[collName].getFullName();
@@ -34,17 +53,21 @@ var $config = extendWorkload($config, function($config, $super) {
         const shard = connCache.shards[shardNames[randomIndex]];
         const shardPrimary = ChunkHelper.getPrimary(shard);
 
-        // Disable balancing so that waiting for orphan cleanup can converge quickly.
-        BalancerHelper.disableBalancerForCollection(db, ns);
+        let nextKey = {};
+        let result = null;
 
-        // Ensure the cleanup of all chunk orphans of the primary shard
-        assert.soonNoExcept(() => {
-            assert.commandWorked(shardPrimary.adminCommand({cleanupOrphaned: ns}));
-            return true;
-        }, undefined, 10 * 1000, 100);
+        let iteration = 0;
+        while (nextKey != null) {
+            result = executeCommandWithRetries(() => {
+                return shardPrimary.adminCommand(
+                    {cleanupOrphaned: ns, startingFromKey: nextKey, secondaryThrottle: true});
+            }, 100, 1000, "cleanupOrphaned");
 
-        // Reenable balancing.
-        BalancerHelper.enableBalancerForCollection(db, ns);
+            nextKey = result.stoppedAtKey;
+            iteration++;
+        }
+
+        assert(result.ok);
     };
 
     // Verify that counts are stable.
@@ -69,10 +92,6 @@ var $config = extendWorkload($config, function($config, $super) {
     $config.setup = function setup(db, collName, cluster) {
         const ns = db[collName].getFullName();
 
-        // Disallow balancing 'ns' during $setup so it does not interfere with the splits.
-        BalancerHelper.disableBalancerForCollection(db, ns);
-        BalancerHelper.joinBalancerRound(db);
-
         for (let chunkIndex = 0; chunkIndex < numChunks; chunkIndex++) {
             let bulk = db[collName].initializeUnorderedBulkOp();
 
@@ -86,12 +105,14 @@ var $config = extendWorkload($config, function($config, $super) {
             assertAlways.commandWorked(bulk.execute());
 
             if (chunkIndex > 0) {
-                assert.commandWorked(db.adminCommand({split: ns, middle: {skey: splitKey}}));
+                // Need to retry split command to avoid conflicting with moveChunks issued by the
+                // balancer.
+                let result = executeCommandWithRetries(() => {
+                    return db.adminCommand({split: ns, middle: {skey: splitKey}});
+                }, 100, 10, "split");
+                assertAlways.commandWorked(result);
             }
         }
-
-        // Allow balancing 'ns' again.
-        BalancerHelper.enableBalancerForCollection(db, ns);
     };
 
     $config.transitions = {

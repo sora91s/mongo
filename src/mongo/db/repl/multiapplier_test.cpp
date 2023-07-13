@@ -52,9 +52,7 @@ private:
 
 executor::ThreadPoolMock::Options MultiApplierTest::makeThreadPoolMockOptions() const {
     executor::ThreadPoolMock::Options options;
-    options.onCreateThread = []() {
-        Client::initThread("MultiApplierTest");
-    };
+    options.onCreateThread = []() { Client::initThread("MultiApplierTest"); };
     return options;
 }
 
@@ -68,18 +66,20 @@ void MultiApplierTest::setUp() {
  * Generates oplog entries with the given number used for the timestamp.
  */
 OplogEntry makeOplogEntry(int ts) {
-    return {DurableOplogEntry(OpTime(Timestamp(ts, 1), 1),                            // optime
-                              OpTypeEnum::kNoop,                                      // op type
-                              NamespaceString::createNamespaceString_forTest("a.a"),  // namespace
-                              boost::none,                                            // uuid
-                              boost::none,                                            // fromMigrate
-                              OplogEntry::kOplogVersion,                              // version
-                              BSONObj(),                                              // o
-                              boost::none,                                            // o2
-                              {},                                                     // sessionInfo
-                              boost::none,                                            // upsert
-                              Date_t(),       // wall clock time
-                              {},             // statement ids
+    return {DurableOplogEntry(OpTime(Timestamp(ts, 1), 1),  // optime
+                              boost::none,                  // hash
+                              OpTypeEnum::kNoop,            // op type
+                              boost::none,                  // tenant id
+                              NamespaceString("a.a"),       // namespace
+                              boost::none,                  // uuid
+                              boost::none,                  // fromMigrate
+                              OplogEntry::kOplogVersion,    // version
+                              BSONObj(),                    // o
+                              boost::none,                  // o2
+                              {},                           // sessionInfo
+                              boost::none,                  // upsert
+                              Date_t(),                     // wall clock time
+                              {},                           // statement ids
                               boost::none,    // optime of previous write within same transaction
                               boost::none,    // pre-image optime
                               boost::none,    // post-image optime
@@ -93,8 +93,7 @@ TEST_F(MultiApplierTest, InvalidConstruction) {
     auto multiApply = [](OperationContext*, std::vector<OplogEntry>) -> StatusWith<OpTime> {
         return Status(ErrorCodes::InternalError, "not implemented");
     };
-    auto callback = [](const Status&) {
-    };
+    auto callback = [](const Status&) {};
 
     // Null executor.
     ASSERT_THROWS_CODE_AND_WHAT(MultiApplier(nullptr, operations, multiApply, callback),
@@ -130,8 +129,7 @@ TEST_F(MultiApplierTest, MultiApplierTransitionsDirectlyToCompleteIfShutdownBefo
     auto multiApply = [](OperationContext*, std::vector<OplogEntry>) -> StatusWith<OpTime> {
         return OpTime();
     };
-    auto callback = [](const Status&) {
-    };
+    auto callback = [](const Status&) {};
 
     MultiApplier multiApplier(&getExecutor(), operations, multiApply, callback);
     ASSERT_EQUALS(MultiApplier::State::kPreStart, multiApplier.getState_forTest());
@@ -151,9 +149,7 @@ TEST_F(MultiApplierTest, MultiApplierInvokesCallbackWithCallbackCanceledStatusUp
     };
 
     auto callbackResult = getDetectableErrorStatus();
-    auto callback = [&](const Status& result) {
-        callbackResult = result;
-    };
+    auto callback = [&](const Status& result) { callbackResult = result; };
 
     MultiApplier multiApplier(&getExecutor(), operations, multiApply, callback);
     ASSERT_EQUALS(MultiApplier::State::kPreStart, multiApplier.getState_forTest());
@@ -189,9 +185,7 @@ TEST_F(MultiApplierTest, MultiApplierPassesMultiApplyErrorToCallback) {
     };
 
     auto callbackResult = getDetectableErrorStatus();
-    auto callback = [&](const Status& result) {
-        callbackResult = result;
-    };
+    auto callback = [&](const Status& result) { callbackResult = result; };
 
     MultiApplier multiApplier(&getExecutor(), operations, multiApply, callback);
     ASSERT_OK(multiApplier.startup());
@@ -220,9 +214,7 @@ TEST_F(MultiApplierTest, MultiApplierCatchesMultiApplyExceptionAndConvertsToCall
     };
 
     auto callbackResult = getDetectableErrorStatus();
-    auto callback = [&](const Status& result) {
-        callbackResult = result;
-    };
+    auto callback = [&](const Status& result) { callbackResult = result; };
 
     MultiApplier multiApplier(&getExecutor(), operations, multiApply, callback);
     ASSERT_OK(multiApplier.startup());

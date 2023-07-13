@@ -15,7 +15,6 @@ import shlex
 
 import pymongo.uri_parser
 
-from buildscripts.idl import gen_all_feature_flag_list
 from buildscripts.idl.lib import ALL_FEATURE_FLAG_FILE
 
 from buildscripts.resmokelib import config as _config
@@ -53,9 +52,14 @@ def _validate_options(parser, args):
             "Cannot use --replayFile with additional test files listed on the command line invocation."
         )
 
-    if args.additional_feature_flags_file and not os.path.isfile(
-            args.additional_feature_flags_file):
-        parser.error("The specified additional feature flags file does not exist.")
+    if args.run_all_feature_flag_tests or args.run_all_feature_flags_no_tests:
+        if not os.path.isfile(ALL_FEATURE_FLAG_FILE):
+            parser.error(
+                "To run tests with all feature flags, the %s file must exist and be placed in"
+                " your working directory. The file can be downloaded from the artifacts tarball"
+                " in Evergreen. Alternatively, if you know which feature flags you want to enable,"
+                " you can use the --additionalFeatureFlags command line argument" %
+                ALL_FEATURE_FLAG_FILE)
 
     def get_set_param_errors(process_params):
         agg_set_params = collections.defaultdict(list)
@@ -93,7 +97,7 @@ def _validate_options(parser, args):
         parser.error(str(error_msgs))
 
 
-def _validate_config(parser):
+def _validate_config(parser):  # pylint: disable=too-many-branches
     """Do validation on the config settings."""
 
     if _config.REPEAT_TESTS_MAX:
@@ -146,7 +150,7 @@ def _find_resmoke_wrappers():
     return list(candidate_installs)
 
 
-def _update_config_vars(values):
+def _update_config_vars(values):  # pylint: disable=too-many-statements,too-many-locals,too-many-branches
     """Update the variables of the config module."""
 
     config = _config.DEFAULTS.copy()
@@ -181,35 +185,27 @@ be invoked as either:
 - buildscripts/resmoke.py --installDir {shlex.quote(user_config['install_dir'])}""")
         raise RuntimeError(err)
 
-    def process_feature_flag_file(path):
-        with open(path) as fd:
-            return fd.read().split()
-
     def setup_feature_flags():
         _config.RUN_ALL_FEATURE_FLAG_TESTS = config.pop("run_all_feature_flag_tests")
-        _config.RUN_NO_FEATURE_FLAG_TESTS = config.pop("run_no_feature_flag_tests")
-        _config.ADDITIONAL_FEATURE_FLAGS_FILE = config.pop("additional_feature_flags_file")
+        _config.RUN_ALL_FEATURE_FLAGS = config.pop("run_all_feature_flags_no_tests")
 
+        # Running all feature flag tests implies running the fixtures with feature flags.
         if _config.RUN_ALL_FEATURE_FLAG_TESTS:
-            print("Generating: ", ALL_FEATURE_FLAG_FILE)
-            gen_all_feature_flag_list.gen_all_feature_flags_file()
+            _config.RUN_ALL_FEATURE_FLAGS = True
 
         all_ff = []
         enabled_feature_flags = []
         try:
-            all_ff = process_feature_flag_file(ALL_FEATURE_FLAG_FILE)
+            with open(ALL_FEATURE_FLAG_FILE) as fd:
+                all_ff = fd.read().split()
         except FileNotFoundError:
             # If we ask resmoke to run with all feature flags, the feature flags file
             # needs to exist.
-            if _config.RUN_ALL_FEATURE_FLAG_TESTS or _config.RUN_NO_FEATURE_FLAG_TESTS:
+            if _config.RUN_ALL_FEATURE_FLAGS:
                 raise
 
-        if _config.RUN_ALL_FEATURE_FLAG_TESTS:
+        if _config.RUN_ALL_FEATURE_FLAGS:
             enabled_feature_flags = all_ff[:]
-
-        if _config.ADDITIONAL_FEATURE_FLAGS_FILE:
-            enabled_feature_flags.extend(
-                process_feature_flag_file(_config.ADDITIONAL_FEATURE_FLAGS_FILE))
 
         # Specify additional feature flags from the command line.
         # Set running all feature flag tests to True if this options is specified.
@@ -222,7 +218,6 @@ be invoked as either:
     _config.ENABLED_FEATURE_FLAGS, all_feature_flags = setup_feature_flags()
     not_enabled_feature_flags = list(set(all_feature_flags) - set(_config.ENABLED_FEATURE_FLAGS))
 
-    _config.AUTO_KILL = config.pop("auto_kill")
     _config.ALWAYS_USE_LOG_FILES = config.pop("always_use_log_files")
     _config.BASE_PORT = int(config.pop("base_port"))
     _config.BACKUP_ON_RESTART_DIR = config.pop("backup_on_restart_dir")
@@ -235,7 +230,7 @@ be invoked as either:
     _config.EXCLUDE_WITH_ANY_TAGS.extend(
         utils.default_if_none(_tags_from_list(config.pop("exclude_with_any_tags")), []))
 
-    if _config.RUN_NO_FEATURE_FLAG_TESTS:
+    if _config.RUN_ALL_FEATURE_FLAGS and not _config.RUN_ALL_FEATURE_FLAG_TESTS:
         # Don't run any feature flag tests.
         _config.EXCLUDE_WITH_ANY_TAGS.extend(all_feature_flags)
     else:
@@ -307,9 +302,7 @@ or explicitly pass --installDir to the run subcommand of buildscripts/resmoke.py
             _config.CONFIG_FUZZ_SEED = int(_config.CONFIG_FUZZ_SEED)
         _config.MONGOD_SET_PARAMETERS, _config.WT_ENGINE_CONFIG, _config.WT_COLL_CONFIG, \
         _config.WT_INDEX_CONFIG = mongod_fuzzer_configs.fuzz_set_parameters(
-            _config.FUZZ_MONGOD_CONFIGS, _config.CONFIG_FUZZ_SEED, _config.MONGOD_SET_PARAMETERS)
-        _config.EXCLUDE_WITH_ANY_TAGS.extend(["uses_compact"])
-        _config.EXCLUDE_WITH_ANY_TAGS.extend(["requires_emptycapped"])
+            _config.CONFIG_FUZZ_SEED, _config.MONGOD_SET_PARAMETERS)
 
     _config.MONGOS_EXECUTABLE = _expand_user(config.pop("mongos_executable"))
     mongos_set_parameters = config.pop("mongos_set_parameters")
@@ -322,8 +315,6 @@ or explicitly pass --installDir to the run subcommand of buildscripts/resmoke.py
     _config.NUM_CLIENTS_PER_FIXTURE = config.pop("num_clients_per_fixture")
     _config.NUM_REPLSET_NODES = config.pop("num_replset_nodes")
     _config.NUM_SHARDS = config.pop("num_shards")
-    _config.CATALOG_SHARD = utils.pick_catalog_shard_node(
-        config.pop("catalog_shard"), _config.NUM_SHARDS)
     _config.PERF_REPORT_FILE = config.pop("perf_report_file")
     _config.CEDAR_REPORT_FILE = config.pop("cedar_report_file")
     _config.RANDOM_SEED = config.pop("seed")
@@ -378,13 +369,13 @@ or explicitly pass --installDir to the run subcommand of buildscripts/resmoke.py
     # Wiredtiger options. Prevent fuzzed wt configs from being overwritten unless user specifies it.
     wt_engine_config = config.pop("wt_engine_config")
     if wt_engine_config:
-        _config.WT_ENGINE_CONFIG = wt_engine_config
+        _config.WT_ENGINE_CONFIG = config.pop("wt_engine_config")
     wt_coll_config = config.pop("wt_coll_config")
     if wt_coll_config:
-        _config.WT_COLL_CONFIG = wt_coll_config
+        _config.WT_COLL_CONFIG = config.pop("wt_coll_config")
     wt_index_config = config.pop("wt_index_config")
     if wt_index_config:
-        _config.WT_INDEX_CONFIG = wt_index_config
+        _config.WT_INDEX_CONFIG = config.pop("wt_index_config")
 
     # Benchmark/Benchrun options.
     _config.BENCHMARK_FILTER = config.pop("benchmark_filter")

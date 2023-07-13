@@ -22,7 +22,7 @@ const viewNss = `${dbName}.${collName}`;
 const bucketNss = `${dbName}.system.buckets.${collName}`;
 const controlTimeField = `control.min.${timeField}`;
 
-function runBasicTest() {
+function runBasicTest(failPoint) {
     const st = new ShardingTest({shards: 2, rs: {nodes: 2}});
     const mongos = st.s0;
     const db = mongos.getDB(dbName);
@@ -36,6 +36,14 @@ function runBasicTest() {
 
     assert.commandWorked(
         db.createCollection(collName, {timeseries: {timeField: timeField, metaField: metaField}}));
+
+    // Setting collModPrimaryDispatching failpoint to make sure the fallback logic of dispatching
+    // collMod command at primary shard works.
+    if (failPoint) {
+        const primary = st.getPrimaryShard(dbName);
+        assert.commandWorked(
+            primary.adminCommand({configureFailPoint: failPoint, mode: 'alwaysOn'}));
+    }
 
     // Updates for timeField and metaField are disabled.
     assert.commandFailedWithCode(db.runCommand({collMod: collName, timeseries: {timeField: 'x'}}),
@@ -60,20 +68,29 @@ function runBasicTest() {
         key: {[metaField]: 1},
     }));
 
-    // Check that collMod commands works for the sharded time-series collection.
-    assert.commandWorked(db[collName].createIndex({'a': 1}));
-    assert.commandWorked(db.runCommand({collMod: collName, index: {name: 'a_1', hidden: true}}));
-    assert.commandWorked(db.runCommand({collMod: collName, index: {name: 'a_1', hidden: false}}));
+    // Normal collMod commands works for the sharded time-series collection.
+    assert.commandWorked(
+        db.runCommand({collMod: collName, index: {name: indexName, hidden: true}}));
+    assert.commandWorked(
+        db.runCommand({collMod: collName, index: {name: indexName, hidden: false}}));
 
-    // Granularity update works for sharded time-series collection, when we're using DDL
-    // coordinator logic.
-    const getGranularity = () => db.getSiblingDB('config')
-                                     .collections.findOne({_id: bucketNss})
-                                     .timeseriesFields.granularity;
-    assert.eq(getGranularity(), 'minutes');
-    assert.commandWorked(db.runCommand({collMod: collName, timeseries: {granularity: 'hours'}}));
-    assert.eq(getGranularity(), 'hours');
-    assert.eq(0, st.config.collections.countDocuments({allowMigrations: {$exists: true}}));
+    if (failPoint) {
+        // Granularity update disabled for sharded time-series collection, when we're using primary
+        // dispatching logic.
+        assert.commandFailedWithCode(
+            db.runCommand({collMod: collName, timeseries: {granularity: 'hours'}}),
+            ErrorCodes.NotImplemented);
+    } else {
+        // Granularity update works for sharded time-series collection, when we're using DDL
+        // coordinator logic.
+        const getGranularity = () => db.getSiblingDB('config')
+                                         .collections.findOne({_id: bucketNss})
+                                         .timeseriesFields.granularity;
+        assert.eq(getGranularity(), 'minutes');
+        assert.commandWorked(
+            db.runCommand({collMod: collName, timeseries: {granularity: 'hours'}}));
+        assert.eq(getGranularity(), 'hours');
+    }
     st.stop();
 }
 
@@ -89,7 +106,6 @@ function runReadAfterWriteTest() {
         shard0.getDB(dbName).adminCommand({getParameter: 1, featureCompatibilityVersion: 1}));
     if (MongoRunner.compareBinVersions(fcvResult.featureCompatibilityVersion.version, "6.0") < 0) {
         jsTestLog("FCV is less than 6.0, skip granularity update read after write test");
-        st.stop();
         return;
     }
 
@@ -137,8 +153,6 @@ function runReadAfterWriteTest() {
 
     failPoint.wait();
 
-    // While the collMod command on the config server is still being processed, inserts on the
-    // collection should be blocked.
     assert.commandFailedWithCode(
         mongos0.getDB(dbName).runCommand(
             {insert: collName, documents: [{[timeField]: ISODate()}], maxTimeMS: 2000}),
@@ -158,10 +172,11 @@ function runReadAfterWriteTest() {
     // Assert that we can use 'hours' granularity and find both documents through mongos1.
     assert.eq(mongos1.getDB(dbName).getCollection(collName).countDocuments({[timeField]: time}), 2);
 
-    assert.eq(0, st.config.collections.countDocuments({allowMigrations: {$exists: true}}));
     st.stop();
 }
 
+runBasicTest('collModPrimaryDispatching');
+runBasicTest('collModCoordinatorPre60Compatible');
 runBasicTest();
 
 runReadAfterWriteTest();

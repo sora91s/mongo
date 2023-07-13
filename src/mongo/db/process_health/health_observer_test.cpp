@@ -33,12 +33,8 @@
 #include "mongo/db/process_health/health_observer_mock.h"
 #include "mongo/db/process_health/health_observer_registration.h"
 #include "mongo/db/service_context.h"
-#include "mongo/logv2/log.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 
@@ -202,15 +198,14 @@ TEST_F(FaultManagerTest,
     RAIIServerParameterControllerForTest _serverParamController{"activeFaultDurationSecs", 5};
 
     AtomicWord<bool> shouldBlock{true};
-    registerMockHealthObserver(
-        FaultFacetType::kMock1,
-        [&shouldBlock] {
-            while (shouldBlock.load()) {
-                sleepFor(Milliseconds(1));
-            }
-            return Severity::kOk;
-        },
-        Milliseconds(100));
+    registerMockHealthObserver(FaultFacetType::kMock1,
+                               [&shouldBlock] {
+                                   while (shouldBlock.load()) {
+                                       sleepFor(Milliseconds(1));
+                                   }
+                                   return Severity::kOk;
+                               },
+                               Milliseconds(100));
 
     ASSERT_TRUE(manager().getFaultState() == FaultState::kStartupCheck);
 

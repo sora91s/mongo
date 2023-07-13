@@ -46,7 +46,7 @@ namespace mongo {
 class ScopedRangeDeleterLock {
 public:
     ScopedRangeDeleterLock(OperationContext* opCtx, LockMode mode)
-        : _resourceLock(opCtx, _mutex.getRid(), mode) {}
+        : _resourceLock(opCtx, opCtx->lockState(), _mutex.getRid(), mode) {}
 
 private:
     const Lock::ResourceLock _resourceLock;
@@ -103,7 +103,6 @@ public:
                                                    const UUID& collectionUUID) const;
 
 private:
-    void onSetCurrentConfig(OperationContext* opCtx) override final {}
     void onInitialDataAvailable(OperationContext* opCtx,
                                 bool isMajorityDataAvailable) override final {}
     void onStepUpBegin(OperationContext* opCtx, long long term) override final {}

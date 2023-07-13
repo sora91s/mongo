@@ -42,7 +42,7 @@ void setPrepareConflictBehaviorForReadConcernImpl(
 
 Status waitForReadConcernImpl(OperationContext* opCtx,
                               const repl::ReadConcernArgs& readConcernArgs,
-                              const DatabaseName& dbName,
+                              StringData dbName,
                               bool allowAfterClusterTime) {
     if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kLinearizableReadConcern) {
         return {ErrorCodes::NotImplemented, "linearizable read concern not supported on embedded"};

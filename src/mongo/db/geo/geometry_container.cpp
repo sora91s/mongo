@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/db/geo/geometry_container.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/str.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -319,9 +317,7 @@ bool GeometryContainer::contains(const GeometryContainer& otherContainer) const 
     }
 
     if (nullptr != otherContainer._polygon) {
-        tassert(7323500,
-                "Checking if geometry contains big polygon is not supported",
-                nullptr != otherContainer._polygon->s2Polygon);
+        invariant(nullptr != otherContainer._polygon->s2Polygon);
         return contains(*otherContainer._polygon->s2Polygon);
     }
 

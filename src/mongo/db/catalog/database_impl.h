@@ -30,26 +30,28 @@
 #pragma once
 
 #include "mongo/db/catalog/database.h"
-#include "mongo/db/database_name.h"
+#include "mongo/db/tenant_database_name.h"
 
 namespace mongo {
 
 class DatabaseImpl final : public Database {
 public:
-    explicit DatabaseImpl(const DatabaseName& dbName);
+    explicit DatabaseImpl(const TenantDatabaseName& tenantDbName);
 
-    void init(OperationContext*) final;
+    Status init(OperationContext*) final;
 
-    const DatabaseName& name() const final {
+    const TenantDatabaseName& name() const final {
         return _name;
     }
+
+    void clearTmpCollections(OperationContext* opCtx) const final;
 
     void setDropPending(OperationContext* opCtx, bool dropPending) final;
 
     bool isDropPending(OperationContext* opCtx) const final;
 
     void getStats(OperationContext* opCtx,
-                  DBStats* output,
+                  BSONObjBuilder* output,
                   bool includeFreeStorage,
                   double scale = 1) const final;
 
@@ -60,20 +62,16 @@ public:
      * If we are applying a 'drop' oplog entry on a secondary, 'dropOpTime' will contain the optime
      * of the oplog entry.
      *
-     * When fromMigrate is set, the related oplog entry will be marked with a 'fromMigrate' field to
-     * reduce its visibility (e.g. in change streams).
-     *
      * The caller should hold a DB X lock and ensure there are no index builds in progress on the
      * collection.
      */
     Status dropCollection(OperationContext* opCtx,
                           NamespaceString nss,
-                          repl::OpTime dropOpTime,
-                          bool markFromMigrate) const final;
+                          repl::OpTime dropOpTime) const final;
     Status dropCollectionEvenIfSystem(OperationContext* opCtx,
                                       NamespaceString nss,
                                       repl::OpTime dropOpTime,
-                                      bool markFromMigrate) const final;
+                                      bool markFromMigrate = false) const final;
 
     Status dropView(OperationContext* opCtx, NamespaceString viewName) const final;
 
@@ -84,22 +82,12 @@ public:
                         const BSONObj& idIndex,
                         bool fromMigrate) const final;
 
-    Status userCreateVirtualNS(OperationContext* opCtx,
-                               const NamespaceString& fullns,
-                               CollectionOptions opts,
-                               const VirtualCollectionOptions& vopts) const final;
-
     Collection* createCollection(OperationContext* opCtx,
                                  const NamespaceString& nss,
                                  const CollectionOptions& options = CollectionOptions(),
                                  bool createDefaultIndexes = true,
                                  const BSONObj& idIndex = BSONObj(),
                                  bool fromMigrate = false) const final;
-
-    Collection* createVirtualCollection(OperationContext* opCtx,
-                                        const NamespaceString& nss,
-                                        const CollectionOptions& opts,
-                                        const VirtualCollectionOptions& vopts) const final;
 
     Status createView(OperationContext* opCtx,
                       const NamespaceString& viewName,
@@ -116,18 +104,22 @@ public:
         return _viewsName;
     }
 
-private:
-    StatusWith<std::unique_ptr<CollatorInterface>> _validateCollator(OperationContext* opCtx,
-                                                                     CollectionOptions& opts) const;
-    Collection* _createCollection(
-        OperationContext* opCtx,
-        const NamespaceString& nss,
-        const CollectionOptions& opts = CollectionOptions(),
-        bool createDefaultIndexes = true,
-        const BSONObj& idIndex = BSONObj(),
-        bool fromMigrate = false,
-        const boost::optional<VirtualCollectionOptions>& vopts = boost::none) const;
+    /**
+     * Given an input pattern `collectionNameModel`, returns a namespace string where `%` characters
+     * are replaced with random alpha-numerics.
+     *
+     * When called while holding an exclusive database lock, the collection name is guaranteed to
+     * not exist. Otherwise the caller is responsible for acquiring locks to check uniqueness.
+     *
+     * Returns a NamespaceExists error status if multiple attempts fail to generate a possible
+     * unique name.
+     */
+    StatusWith<NamespaceString> makeUniqueCollectionNamespace(
+        OperationContext* opCtx, StringData collectionNameModel) const final;
 
+    void checkForIdIndexesAndDropPendingCollections(OperationContext* opCtx) const final;
+
+private:
     /**
      * Throws if there is a reason 'ns' cannot be created as a user collection. Namespace pattern
      * matching checks should be added to userAllowedCreateNS().
@@ -153,7 +145,7 @@ private:
                                 const NamespaceString& nss,
                                 Collection* collection) const;
 
-    const DatabaseName _name;  // "dbname"
+    const TenantDatabaseName _name;  // "dbname"
 
     const NamespaceString _viewsName;  // "dbname.system.views"
 

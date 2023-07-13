@@ -1,18 +1,16 @@
 /**
  * Tests the optimization of "lastpoint"-type queries on time-series collections.
  *
- * The test runs commands that are not allowed with security token: top.
  * @tags: [
- *   not_allowed_with_security_token,
+ *   does_not_support_stepdowns,
+ *   does_not_support_transactions,
+ *   requires_timeseries,
+ *   requires_pipeline_optimization,
+ *   requires_fcv_53,
+ *   # TODO (SERVER-63590): Investigate presence of getmore tag in timeseries jstests.
+ *   requires_getmore,
  *   # Explain of a resolved view must be executed by mongos.
  *   directly_against_shardsvrs_incompatible,
- *   # Testing last point optimization.
- *   requires_pipeline_optimization,
- *   # Refusing to run a test that issues an aggregation command with explain because it may return
- *   # incomplete results if interrupted by a stepdown.
- *   does_not_support_stepdowns,
- *   # We need a timeseries collection.
- *   requires_timeseries,
  * ]
  */
 (function() {
@@ -27,9 +25,8 @@ load("jstests/libs/feature_flag_util.js");
 const testDB = TimeseriesAggTests.getTestDb();
 assert.commandWorked(testDB.dropDatabase());
 
-// TODO SERVER-73509 The test doesn't work yet, even though this feature flag is gone.
-if (true /* previously guarded by featureFlagLastPointQuery */) {
-    jsTestLog("Skipping the test.");
+// Do not run the rest of the tests if the lastpoint optimization is disabled.
+if (!FeatureFlagUtil.isEnabled(db, "LastPointQuery")) {
     return;
 }
 

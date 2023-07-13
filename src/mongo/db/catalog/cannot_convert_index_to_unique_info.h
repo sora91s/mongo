@@ -34,6 +34,8 @@
 #include "mongo/bson/bsonobjbuilder.h"
 
 namespace mongo {
+    
+void initMyCannotConvertInfo();
 
 /**
  * Represents an error returned from the collMod command when an attempt to enforce the constraint

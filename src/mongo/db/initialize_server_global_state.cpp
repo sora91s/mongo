@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -61,15 +62,12 @@
 #include <TargetConditionals.h>
 #endif
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
-
-namespace mongo::initialize_server_global_state {
+namespace mongo {
 
 #ifndef _WIN32
 static void croak(StringData prefix, int savedErr = errno) {
-    std::cout << prefix << ": " << errorMessage(posixError(savedErr)) << std::endl;
-    quickExit(ExitCode::abrupt);
+    std::cout << prefix << ": " << errnoWithDescription(savedErr) << std::endl;
+    quickExit(EXIT_ABRUPT);
 }
 
 void signalForkSuccess() {
@@ -87,12 +85,11 @@ void signalForkSuccess() {
             if (savedErr == EPIPE)
                 break;  // The pipe read side has closed.
             else {
-                auto ec = posixError(savedErr);
                 LOGV2_WARNING(4656300,
                               "Write to child pipe failed",
-                              "errno"_attr = ec.value(),
-                              "errnoDesc"_attr = errorMessage(ec));
-                quickExit(ExitCode::fail);
+                              "errno"_attr = savedErr,
+                              "errnoDesc"_attr = errnoWithDescription(savedErr));
+                quickExit(1);
             }
         } else if (nw == 0) {
             continue;
@@ -101,11 +98,11 @@ void signalForkSuccess() {
         }
     }
     if (close(*f) == -1) {
-        auto ec = lastPosixError();
+        int savedErr = errno;
         LOGV2_WARNING(4656301,
                       "Closing write pipe failed",
-                      "errno"_attr = ec.value(),
-                      "errnoDesc"_attr = errorMessage(ec));
+                      "errno"_attr = savedErr,
+                      "errnoDesc"_attr = errnoWithDescription(savedErr));
     }
     *f = -1;
 }
@@ -190,22 +187,22 @@ static bool forkServer() {
     std::cout << "about to fork child process, waiting until server is ready for connections."
               << std::endl;
 
-    auto waitAndPropagate = [&](pid_t pid, ExitCode signalCode, bool verbose) {
+    auto waitAndPropagate = [&](pid_t pid, int signalCode, bool verbose) {
         int pstat;
         if (waitpid(pid, &pstat, 0) == -1)
             croak("waitpid");
         if (!WIFEXITED(pstat))
-            quickExit(signalCode);
+            quickExit(signalCode);  // child died from a signal
         if (int ec = WEXITSTATUS(pstat)) {
             if (verbose)
                 std::cout << "ERROR: child process failed, exited with " << ec << std::endl
                           << "To see additional information in this output, start without "
                           << "the \"--fork\" option." << std::endl;
-            quickExit(ExitCode::fail);
+            quickExit(ec);
         }
         if (verbose)
             std::cout << "child process started successfully, parent exiting" << std::endl;
-        quickExit(ExitCode::clean);
+        quickExit(0);
     };
 
     // Start in the <launcher> process.
@@ -215,7 +212,7 @@ static bool forkServer() {
             break;
         default:
             // In the <launcher> process
-            waitAndPropagate(middle, ExitCode::launcherMiddleError, true);
+            waitAndPropagate(middle, 50, true);
             break;
         case 0:
             break;
@@ -250,8 +247,8 @@ static bool forkServer() {
             if (nr == 0)
                 // pipe reached eof without the daemon signalling readiness.
                 // Wait for <daemon> to exit, and exit with its exit code.
-                waitAndPropagate(daemon, ExitCode::launcherError, false);
-            quickExit(ExitCode::clean);
+                waitAndPropagate(daemon, 51, false);
+            quickExit(0);
         } break;
         case 0:
             break;
@@ -287,7 +284,7 @@ static bool forkServer() {
 
 void forkServerOrDie() {
     if (!forkServer())
-        quickExit(ExitCode::fail);
+        quickExit(EXIT_FAILURE);
 }
 
 namespace {
@@ -398,12 +395,12 @@ MONGO_INITIALIZER_GENERAL(ServerLogRedirection,
  * Mongo server processes cannot safely call ::exit() or std::exit(), but
  * some third-party libraries may call one of those functions.  In that
  * case, to avoid static-destructor problems in the server, this exits the
- * process immediately with code ExitCode::fail.
+ * process immediately with code EXIT_FAILURE.
  *
  * TODO: Remove once exit() executes safely in mongo server processes.
  */
 static void shortCircuitExit() {
-    quickExit(ExitCode::fail);
+    quickExit(EXIT_FAILURE);
 }
 
 MONGO_INITIALIZER(RegisterShortCircuitExitHandler)(InitializerContext*) {
@@ -411,7 +408,7 @@ MONGO_INITIALIZER(RegisterShortCircuitExitHandler)(InitializerContext*) {
         uasserted(ErrorCodes::InternalError, "Failed setting short-circuit exit handler.");
 }
 
-bool checkSocketPath() {
+bool initializeServerGlobalState(ServiceContext* service, PidFileWrite pidWrite) {
 #ifndef _WIN32
     if (!serverGlobalParams.noUnixSocket &&
         !boost::filesystem::is_directory(serverGlobalParams.socket)) {
@@ -420,12 +417,14 @@ bool checkSocketPath() {
     }
 #endif
 
-    return true;
-}
+    if (!serverGlobalParams.pidFile.empty() && pidWrite == PidFileWrite::kWrite) {
+        if (!writePidFile(serverGlobalParams.pidFile)) {
+            // error message logged in writePidFile
+            return false;
+        }
+    }
 
-bool writePidFile() {
-    return serverGlobalParams.pidFile.empty() ? true
-                                              : mongo::writePidFile(serverGlobalParams.pidFile);
+    return true;
 }
 
 #ifndef _WIN32
@@ -468,8 +467,7 @@ MONGO_INITIALIZER_GENERAL(MungeUmask, ("EndStartupOptionHandling"), ("ServerLogR
 #endif
 
 // --setParameter honorSystemUmask
-Status HonorSystemUMaskServerParameter::setFromString(StringData value,
-                                                      const boost::optional<TenantId>&) {
+Status HonorSystemUMaskServerParameter::setFromString(const std::string& value) {
 #ifndef _WIN32
     if ((value == "0") || (value == "false")) {
         // false may be specified with processUmask
@@ -495,17 +493,15 @@ Status HonorSystemUMaskServerParameter::setFromString(StringData value,
 }
 
 void HonorSystemUMaskServerParameter::append(OperationContext*,
-                                             BSONObjBuilder* b,
-                                             StringData name,
-                                             const boost::optional<TenantId>&) {
+                                             BSONObjBuilder& b,
+                                             const std::string& name) {
 #ifndef _WIN32
-    *b << name << honorSystemUmask;
+    b << name << honorSystemUmask;
 #endif
 }
 
 // --setParameter processUmask
-Status ProcessUMaskServerParameter::setFromString(StringData value,
-                                                  const boost::optional<TenantId>&) {
+Status ProcessUMaskServerParameter::setFromString(const std::string& value) {
 #ifndef _WIN32
     if (honorSystemUmask) {
         return {ErrorCodes::BadValue,
@@ -513,8 +509,7 @@ Status ProcessUMaskServerParameter::setFromString(StringData value,
     }
 
     // Convert base from octal
-    auto vstr = value.toString();
-    const char* val = vstr.c_str();
+    const char* val = value.c_str();
     char* end = nullptr;
 
     auto mask = std::strtoul(val, &end, 8);
@@ -536,12 +531,11 @@ Status ProcessUMaskServerParameter::setFromString(StringData value,
 }
 
 void ProcessUMaskServerParameter::append(OperationContext*,
-                                         BSONObjBuilder* b,
-                                         StringData name,
-                                         const boost::optional<TenantId>&) {
+                                         BSONObjBuilder& b,
+                                         const std::string& name) {
 #ifndef _WIN32
-    *b << name << static_cast<int>(getUmaskOverride());
+    b << name << static_cast<int>(getUmaskOverride());
 #endif
 }
 
-}  // namespace mongo::initialize_server_global_state
+}  // namespace mongo

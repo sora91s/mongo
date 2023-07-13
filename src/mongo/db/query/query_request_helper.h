@@ -40,13 +40,15 @@
 
 namespace mongo {
 
+class QueryMessage;
 class Status;
+class Query;
 template <typename T>
 class StatusWith;
 
 /**
- * Parses the find command received from the user and makes the various fields more easily
- * accessible.
+ * Parses the QueryMessage or find command received from the user and makes the various fields
+ * more easily accessible.
  */
 namespace query_request_helper {
 
@@ -102,14 +104,13 @@ StatusWith<BSONObj> asAggregationCommand(const FindCommandRequest& findCommand);
  */
 bool isTextScoreMeta(BSONElement elt);
 
-// Historically for the OP_QUERY wire protocol message, read preference was sent to the server in a
-// "wrapped" form: {$query: <cmd payload>, $readPreference: ...}. Internally, this was converted to
-// the so-called "unwrapped" format for convenience:
+// Read preference is attached to commands in "wrapped" form, e.g.
+//   { $query: { <cmd>: ... } , <kWrappedReadPrefField>: { ... } }
 //
-//   {<cmd payload>, $queryOptions: {$readPreference: ...}}
-//
-// TODO SERVER-29091: This is a holdover from when OP_QUERY was supported by the server and should
-// be deleted.
+// However, mongos internally "unwraps" the read preference and adds it as a parameter to the
+// command, e.g.
+//  { <cmd>: ... , <kUnwrappedReadPrefField>: { <kWrappedReadPrefField>: { ... } } }
+static constexpr auto kWrappedReadPrefField = "$readPreference";
 static constexpr auto kUnwrappedReadPrefField = "$queryOptions";
 
 // Names of the maxTimeMS command and query option.
@@ -139,7 +140,7 @@ TailableModeEnum getTailableMode(const FindCommandRequest& findCommand);
 /**
  * Asserts whether the cursor response adhere to the format defined in IDL.
  */
-void validateCursorResponse(const BSONObj& outputAsBson, boost::optional<TenantId> tenantId);
+void validateCursorResponse(const BSONObj& outputAsBson);
 
 /**
  * Updates the projection object with a $meta projection for the showRecordId option.

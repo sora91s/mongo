@@ -27,7 +27,6 @@
  *    it in the license file.
  */
 
-#include <fmt/format.h>
 #include <queue>
 #include <vector>
 
@@ -51,7 +50,6 @@
 #include "mongo/db/query/planner_wildcard_helpers.h"
 #include "mongo/db/query/projection_ast_util.h"
 #include "mongo/db/query/query_planner_common.h"
-#include "mongo/db/query/util/set_util.h"
 
 namespace mongo {
 
@@ -115,8 +113,8 @@ void getAllSecondaryNamespacesHelper(const QuerySolutionNode* qsn,
         }
     }
 
-    for (auto&& child : qsn->children) {
-        getAllSecondaryNamespacesHelper(child.get(), mainNss, secondaryNssSet);
+    for (auto child : qsn->children) {
+        getAllSecondaryNamespacesHelper(child, mainNss, secondaryNssSet);
     }
 }
 }  // namespace
@@ -234,28 +232,13 @@ std::string QuerySolution::summaryString() const {
                     sb << " " << keyPattern;
                     break;
                 }
-                case STAGE_COLUMN_SCAN: {
-                    auto cixn = static_cast<const ColumnIndexScanNode*>(node);
-                    auto concat = [](const std::string& a, const std::string& b) {
-                        return a.empty() ? "'{}'"_format(b) : "{},'{}'"_format(a, b);
-                    };
-                    const std::string matchColumns = std::accumulate(
-                        cixn->matchFields.begin(), cixn->matchFields.end(), std::string{}, concat);
-                    const std::string outputColumns = std::accumulate(cixn->outputFields.begin(),
-                                                                      cixn->outputFields.end(),
-                                                                      std::string{},
-                                                                      concat);
-
-                    sb << " {{'match':[{}],'output':[{}]}}"_format(matchColumns, outputColumns);
-                    break;
-                }
                 default:
                     break;
             }
         }
 
         for (auto&& child : node->children) {
-            queue.push(child.get());
+            queue.push(child);
         }
     }
 
@@ -289,16 +272,19 @@ void QuerySolution::extendWith(std::unique_ptr<QuerySolutionNode> extensionRoot)
         tassert(5842800,
                 "Only chain extension trees are supported",
                 parentOfSentinel->children.size() == 1);
-        current = parentOfSentinel->children[0].get();
+        current = parentOfSentinel->children[0];
     }
-    parentOfSentinel->children[0] = std::move(_root);
+    parentOfSentinel->children[0] = _root.release();
+    delete current;  // The sentinel node itself isn't used anymore.
+
     setRoot(std::move(extensionRoot));
 }
 
 void QuerySolution::setRoot(std::unique_ptr<QuerySolutionNode> root) {
-    uassert(6882300, "QuerySolutionNode must be non null", root);
     _root = std::move(root);
-    _enumeratorExplainInfo.hitScanLimit = _root->getScanLimit();
+    if (_root) {
+        _enumeratorExplainInfo.hitScanLimit = _root->getScanLimit();
+    }
 
     QsnIdGenerator idGenerator;
     assignNodeIds(idGenerator, *_root);
@@ -340,15 +326,15 @@ void CollectionScanNode::appendToString(str::stream* ss, int indent) const {
     addCommon(ss, indent);
 }
 
-std::unique_ptr<QuerySolutionNode> CollectionScanNode::clone() const {
-    auto copy = std::make_unique<CollectionScanNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* CollectionScanNode::clone() const {
+    CollectionScanNode* copy = new CollectionScanNode();
+    cloneBaseData(copy);
 
     copy->name = this->name;
     copy->tailable = this->tailable;
     copy->direction = this->direction;
     copy->shouldTrackLatestOplogTimestamp = this->shouldTrackLatestOplogTimestamp;
-    copy->assertTsHasNotFallenOff = this->assertTsHasNotFallenOff;
+    copy->assertTsHasNotFallenOffOplog = this->assertTsHasNotFallenOffOplog;
     copy->shouldWaitForOplogVisibility = this->shouldWaitForOplogVisibility;
     copy->clusteredIndex = this->clusteredIndex;
     copy->hasCompatibleCollation = this->hasCompatibleCollation;
@@ -382,9 +368,9 @@ void VirtualScanNode::appendToString(str::stream* ss, int indent) const {
     addCommon(ss, indent);
 }
 
-std::unique_ptr<QuerySolutionNode> VirtualScanNode::clone() const {
-    auto copy = std::make_unique<VirtualScanNode>(docs, scanType, hasRecordId, indexKeyPattern);
-    cloneBaseData(copy.get());
+QuerySolutionNode* VirtualScanNode::clone() const {
+    auto copy = new VirtualScanNode(docs, scanType, hasRecordId, indexKeyPattern);
+    cloneBaseData(copy);
     return copy;
 }
 
@@ -431,9 +417,9 @@ FieldAvailability AndHashNode::getFieldAvailability(const string& field) const {
     return result;
 }
 
-std::unique_ptr<QuerySolutionNode> AndHashNode::clone() const {
-    auto copy = std::make_unique<AndHashNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* AndHashNode::clone() const {
+    AndHashNode* copy = new AndHashNode();
+    cloneBaseData(copy);
     return copy;
 }
 
@@ -476,9 +462,9 @@ FieldAvailability AndSortedNode::getFieldAvailability(const string& field) const
     return result;
 }
 
-std::unique_ptr<QuerySolutionNode> AndSortedNode::clone() const {
-    auto copy = std::make_unique<AndSortedNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* AndSortedNode::clone() const {
+    AndSortedNode* copy = new AndSortedNode();
+    cloneBaseData(copy);
     return copy;
 }
 
@@ -531,9 +517,9 @@ FieldAvailability OrNode::getFieldAvailability(const string& field) const {
     return result;
 }
 
-std::unique_ptr<QuerySolutionNode> OrNode::clone() const {
-    auto copy = std::make_unique<OrNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* OrNode::clone() const {
+    OrNode* copy = new OrNode();
+    cloneBaseData(copy);
 
     copy->dedup = this->dedup;
 
@@ -589,9 +575,9 @@ FieldAvailability MergeSortNode::getFieldAvailability(const string& field) const
     return result;
 }
 
-std::unique_ptr<QuerySolutionNode> MergeSortNode::clone() const {
-    auto copy = std::make_unique<MergeSortNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* MergeSortNode::clone() const {
+    MergeSortNode* copy = new MergeSortNode();
+    cloneBaseData(copy);
 
     copy->dedup = this->dedup;
     copy->sort = this->sort;
@@ -619,9 +605,9 @@ void FetchNode::appendToString(str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-std::unique_ptr<QuerySolutionNode> FetchNode::clone() const {
-    auto copy = std::make_unique<FetchNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* FetchNode::clone() const {
+    FetchNode* copy = new FetchNode();
+    cloneBaseData(copy);
     return copy;
 }
 
@@ -629,8 +615,8 @@ std::unique_ptr<QuerySolutionNode> FetchNode::clone() const {
 // IndexScanNode
 //
 
-IndexScanNode::IndexScanNode(IndexEntry indexEntry)
-    : index(std::move(indexEntry)),
+IndexScanNode::IndexScanNode(IndexEntry index)
+    : index(std::move(index)),
       direction(1),
       addKeyMetadata(false),
       shouldDedup(index.multikey),
@@ -693,12 +679,8 @@ FieldAvailability IndexScanNode::getFieldAvailability(const string& field) const
     for (auto&& elt : index.keyPattern) {
         // For $** indexes, the keyPattern is prefixed by a virtual field, '$_path'. We therefore
         // skip the first keyPattern field when deciding whether we can provide the requested field.
-        if (index.type == IndexType::INDEX_WILDCARD &&
-            keyPatternFieldIndex == index.wildcardFieldPos - 1) {
-            tassert(7246701,
-                    "Expected element at the position before the wildcard field to be the virtual "
-                    "field $_path.",
-                    elt.fieldNameStringData() == "$_path"_sd);
+        if (index.type == IndexType::INDEX_WILDCARD && !keyPatternFieldIndex) {
+            invariant(elt.fieldNameStringData() == "$_path"_sd);
             ++keyPatternFieldIndex;
             continue;
         }
@@ -877,10 +859,7 @@ bool confirmBoundsProvideSortComponentGivenMultikeyness(
     return true;
 }
 
-std::set<std::string> extractEqualityFields(
-    const IndexBounds& bounds,
-    const IndexEntry& index,
-    const std::vector<interval_evaluation_tree::IET>* iets) {
+std::set<std::string> extractEqualityFields(const IndexBounds& bounds, const IndexEntry& index) {
     std::set<std::string> equalityFields;
 
     // Find all equality predicate fields.
@@ -895,38 +874,9 @@ std::set<std::string> extractEqualityFields(
             if (!ival.isPoint()) {
                 continue;
             }
-
-            // If we have an IET for this field in our index bounds, we determine whether it
-            // guarantees that, upon evaluation, we will have point bounds for the corresponding
-            // field in our index. In particular, if the IET evaluates to a ConstNode or an equality
-            // EvalNode, then this field represents an equality.
-            if (iets && !iets->empty()) {
-                const auto& iet = (*iets)[i];
-                const auto* constNodePtr = iet.cast<interval_evaluation_tree::ConstNode>();
-                const auto* evalNodePtr = iet.cast<interval_evaluation_tree::EvalNode>();
-                const auto isEquality =
-                    evalNodePtr && evalNodePtr->matchType() == MatchExpression::MatchType::EQ;
-                if (!constNodePtr && !isEquality)
-                    continue;
-
-                // If we have 'constNodePtr', it must be the case that the interval that it contains
-                // is the same as 'ival'.
-                if (constNodePtr) {
-                    tassert(7426201,
-                            "'constNodePtr' must have a single interval",
-                            constNodePtr->oil.intervals.size() == 1);
-                    tassert(
-                        7426202,
-                        "'constNodePtr' must have the same point interval as the one in 'bounds'",
-                        constNodePtr->oil.intervals[0].equals(ival));
-                }
-            }
             equalityFields.insert(oil.name);
         }
     } else {
-        tassert(7426200,
-                "Should not have IETs when evaluating min/max index bounds",
-                !iets || iets->empty());
         BSONObjIterator keyIter(index.keyPattern);
         BSONObjIterator startIter(bounds.startKey);
         BSONObjIterator endIter(bounds.endKey);
@@ -949,8 +899,7 @@ ProvidedSortSet computeSortsForScan(const IndexEntry& index,
                                     int direction,
                                     const IndexBounds& bounds,
                                     const CollatorInterface* queryCollator,
-                                    const std::set<StringData>& multikeyFields,
-                                    const std::vector<interval_evaluation_tree::IET>* iets) {
+                                    const std::set<StringData>& multikeyFields) {
     BSONObj sortPatternProvidedByIndex = index.keyPattern;
 
     // If 'index' is the result of expanding a wildcard index, then its key pattern should look like
@@ -958,51 +907,26 @@ ProvidedSortSet computeSortsForScan(const IndexEntry& index,
     // key as opposed to real user data. We shouldn't report any sort orders including "$_path". In
     // fact, $-prefixed path components are illegal in queries in most contexts, so misinterpreting
     // this as a path in user-data could trigger subsequent assertions.
-    //
-    // An expanded compound wildcard index can be used to answer queries on non-wildcard prefix
-    // fields, in this case, the wildcard field is unknown. This expanded IndexEntry holds a key
-    // pattern with the wildcard field being the reserved path, "$_path". All following regular
-    // fields should not support any sort operation, therefore, we should strip all fields starting
-    // from the first "$_path" field.
     if (index.type == IndexType::INDEX_WILDCARD) {
-        tassert(7246700,
-                "The bounds did not have as many fields as the key pattern.",
-                static_cast<size_t>(index.keyPattern.nFields()) == bounds.fields.size());
+        invariant(bounds.fields.size() == 2u);
 
         // No sorts are provided if the bounds for '$_path' consist of multiple intervals. This can
         // happen for existence queries. For example, {a: {$exists: true}} results in bounds
         // [["a","a"], ["a.", "a/")] for '$_path' so that keys from documents where "a" is a nested
         // object are in bounds.
-        if (bounds.fields[index.wildcardFieldPos - 1].intervals.size() != 1u) {
+        if (bounds.fields[0].intervals.size() != 1u) {
             return {};
         }
 
-        BSONObjBuilder sortPatternStripped;
-        // Strip '$_path' and following fields out of 'sortPattern' and then proceed with regular
-        // sort analysis.
-        if (feature_flags::gFeatureFlagCompoundWildcardIndexes.isEnabledAndIgnoreFCV()) {
-            bool hasPathField = false;
-            for (auto elem : sortPatternProvidedByIndex) {
-                if (elem.fieldNameStringData() == "$_path"_sd) {
-                    if (hasPathField) {
-                        break;
-                    }
-                    hasPathField = true;
-                } else {
-                    sortPatternStripped.append(elem);
-                }
-            }
-            sortPatternProvidedByIndex = sortPatternStripped.obj();
-        } else {
-            BSONObjIterator it{sortPatternProvidedByIndex};
-            invariant(it.more());
-            auto pathElement = it.next();
-            invariant(pathElement.fieldNameStringData() == "$_path"_sd);
-            invariant(it.more());
-            auto secondElement = it.next();
-            invariant(!it.more());
-            sortPatternProvidedByIndex = BSONObjBuilder{}.append(secondElement).obj();
-        }
+        // Strip '$_path' out of 'sortPattern' and then proceed with regular sort analysis.
+        BSONObjIterator it{sortPatternProvidedByIndex};
+        invariant(it.more());
+        auto pathElement = it.next();
+        invariant(pathElement.fieldNameStringData() == "$_path"_sd);
+        invariant(it.more());
+        auto secondElement = it.next();
+        invariant(!it.more());
+        sortPatternProvidedByIndex = BSONObjBuilder{}.append(secondElement).obj();
     }
 
     //
@@ -1023,11 +947,6 @@ ProvidedSortSet computeSortsForScan(const IndexEntry& index,
     // sort order on this field or any subsequent fields. When we encounter such a field in the
     // index key pattern, we truncate it and any later fields to form the "base sort pattern".
     //
-    // When dealing with autoparameterization (that is, when 'iets' is non-empty), the requirement
-    // for a field to be considered an equality field is stricter. In particular, we must be able to
-    // prove that the index bounds will always yield point bounds for any future value of the input
-    // parameter.
-    //
     // Example, consider an index pattern {a: 1, b: 1, c: 1, d: 1},
     // - If the query predicate is {a: 1} and 'c' is a multikey field then, unsupportedFields = {c},
     // equalityFields = {a}, ignoreFields = {} and baseSortPattern = {b: 1}. Field 'a' is dropped
@@ -1047,7 +966,7 @@ ProvidedSortSet computeSortsForScan(const IndexEntry& index,
     // So we can provide sorts {a: 1, d: 1}, {a: 1, c: 1, d: 1} but not sort patterns that include
     // field 'b'.
     //
-    std::set<std::string> equalityFields = extractEqualityFields(bounds, index, iets);
+    std::set<std::string> equalityFields = extractEqualityFields(bounds, index);
     std::set<StringData> unsupportedFields;
     std::set<StringData> ignoreFields;
     if (!CollatorInterface::collatorsMatch(queryCollator, index.collator)) {
@@ -1107,8 +1026,7 @@ std::pair<ProvidedSortSet, std::set<StringData>> computeSortsAndMultikeyPathsFor
     const IndexEntry& index,
     int direction,
     const IndexBounds& bounds,
-    const CollatorInterface* queryCollator,
-    const std::vector<interval_evaluation_tree::IET>* iets) {
+    const CollatorInterface* queryCollator) {
     // If the index is multikey but does not have path-level multikey metadata, then this index
     // cannot provide any sorts and we need not populate 'multikeyFieldsOut'.
     if (index.multikey && index.multikeyPaths.empty()) {
@@ -1119,19 +1037,19 @@ std::pair<ProvidedSortSet, std::set<StringData>> computeSortsAndMultikeyPathsFor
     if (index.multikey) {
         multikeyFieldsOut = getMultikeyFields(index.keyPattern, index.multikeyPaths);
     }
-    return {computeSortsForScan(index, direction, bounds, queryCollator, multikeyFieldsOut, iets),
+    return {computeSortsForScan(index, direction, bounds, queryCollator, multikeyFieldsOut),
             std::move(multikeyFieldsOut)};
 }
 }  // namespace
 
 void IndexScanNode::computeProperties() {
     std::tie(sortSet, multikeyFields) =
-        computeSortsAndMultikeyPathsForScan(index, direction, bounds, queryCollator, &iets);
+        computeSortsAndMultikeyPathsForScan(index, direction, bounds, queryCollator);
 }
 
-std::unique_ptr<QuerySolutionNode> IndexScanNode::clone() const {
-    auto copy = std::make_unique<IndexScanNode>(this->index);
-    cloneBaseData(copy.get());
+QuerySolutionNode* IndexScanNode::clone() const {
+    IndexScanNode* copy = new IndexScanNode(this->index);
+    cloneBaseData(copy);
 
     copy->direction = this->direction;
     copy->addKeyMetadata = this->addKeyMetadata;
@@ -1165,32 +1083,30 @@ bool IndexScanNode::operator==(const IndexScanNode& other) const {
 // ColumnIndexScanNode
 //
 ColumnIndexScanNode::ColumnIndexScanNode(ColumnIndexEntry indexEntry,
-                                         OrderedPathSet outputFieldsIn,
-                                         OrderedPathSet matchFieldsIn,
-                                         OrderedPathSet allFieldsIn,
+                                         std::set<std::string> outputFieldsIn,
+                                         std::set<std::string> matchFieldsIn,
                                          StringMap<std::unique_ptr<MatchExpression>> filtersByPath,
-                                         std::unique_ptr<MatchExpression> postAssemblyFilter,
-                                         bool extraFieldsPermitted)
+                                         std::unique_ptr<MatchExpression> postAssemblyFilter)
     : indexEntry(std::move(indexEntry)),
       outputFields(std::move(outputFieldsIn)),
       matchFields(std::move(matchFieldsIn)),
-      allFields(std::move(allFieldsIn)),
       filtersByPath(std::move(filtersByPath)),
-      postAssemblyFilter(std::move(postAssemblyFilter)),
-      extraFieldsPermitted(extraFieldsPermitted) {}
+      postAssemblyFilter(std::move(postAssemblyFilter)) {
+    allFields = outputFields;
+    allFields.insert(matchFields.begin(), matchFields.end());
+}
 
 void ColumnIndexScanNode::appendToString(str::stream* ss, int indent) const {
     addIndent(ss, indent);
-    *ss << "COLUMN_SCAN\n";
+    *ss << "COLUMN_IX_SCAN\n";
     addIndent(ss, indent + 1);
     *ss << "outputFields = [" << boost::algorithm::join(outputFields, ", ") << "]\n";
     addIndent(ss, indent + 1);
     *ss << "matchFields = [" << boost::algorithm::join(matchFields, ", ") << "]\n";
     addIndent(ss, indent + 1);
-    *ss << "filtersByPath = " << expression::filterMapToString(filtersByPath) << "\n";
+    *ss << "filtersByPath = [" << expression::filterMapToString(filtersByPath) << "]\n";
     addIndent(ss, indent + 1);
-    *ss << "postAssemblyFilter = " << (postAssemblyFilter ? postAssemblyFilter->toString() : "{}")
-        << "\n";
+    *ss << "postAssemblyFilter = [" << postAssemblyFilter->toString() << "]\n";
     addCommon(ss, indent);
 }
 
@@ -1215,8 +1131,10 @@ void ReturnKeyNode::appendToString(str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-std::unique_ptr<QuerySolutionNode> ReturnKeyNode::clone() const {
-    return std::make_unique<ReturnKeyNode>(children[0]->clone(), std::vector(sortKeyMetaFields));
+QuerySolutionNode* ReturnKeyNode::clone() const {
+    auto copy = std::make_unique<ReturnKeyNode>(
+        std::unique_ptr<QuerySolutionNode>(children[0]->clone()), std::vector(sortKeyMetaFields));
+    return copy.release();
 }
 
 //
@@ -1261,23 +1179,28 @@ void ProjectionNode::cloneProjectionData(ProjectionNode* copy) const {
     copy->sortSet = this->sortSet;
 }
 
-std::unique_ptr<QuerySolutionNode> ProjectionNodeDefault::clone() const {
-    auto copy = std::make_unique<ProjectionNodeDefault>(children[0]->clone(), fullExpression, proj);
+ProjectionNode* ProjectionNodeDefault::clone() const {
+    auto copy = std::make_unique<ProjectionNodeDefault>(
+        std::unique_ptr<QuerySolutionNode>(children[0]->clone()), fullExpression, proj);
     ProjectionNode::cloneProjectionData(copy.get());
-    return copy;
+    return copy.release();
 }
 
-std::unique_ptr<QuerySolutionNode> ProjectionNodeCovered::clone() const {
+ProjectionNode* ProjectionNodeCovered::clone() const {
     auto copy = std::make_unique<ProjectionNodeCovered>(
-        children[0]->clone(), fullExpression, proj, coveredKeyObj);
+        std::unique_ptr<QuerySolutionNode>(children[0]->clone()),
+        fullExpression,
+        proj,
+        coveredKeyObj);
     ProjectionNode::cloneProjectionData(copy.get());
-    return copy;
+    return copy.release();
 }
 
-std::unique_ptr<QuerySolutionNode> ProjectionNodeSimple::clone() const {
-    auto copy = std::make_unique<ProjectionNodeSimple>(children[0]->clone(), fullExpression, proj);
+ProjectionNode* ProjectionNodeSimple::clone() const {
+    auto copy = std::make_unique<ProjectionNodeSimple>(
+        std::unique_ptr<QuerySolutionNode>(children[0]->clone()), fullExpression, proj);
     ProjectionNode::cloneProjectionData(copy.get());
-    return copy;
+    return copy.release();
 }
 
 
@@ -1296,9 +1219,9 @@ void SortKeyGeneratorNode::appendToString(str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-std::unique_ptr<QuerySolutionNode> SortKeyGeneratorNode::clone() const {
-    auto copy = std::make_unique<SortKeyGeneratorNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* SortKeyGeneratorNode::clone() const {
+    SortKeyGeneratorNode* copy = new SortKeyGeneratorNode();
+    cloneBaseData(copy);
     copy->sortSpec = this->sortSpec;
     return copy;
 }
@@ -1329,16 +1252,16 @@ void SortNode::cloneSortData(SortNode* copy) const {
     copy->addSortKeyMetadata = this->addSortKeyMetadata;
 }
 
-std::unique_ptr<QuerySolutionNode> SortNodeDefault::clone() const {
+QuerySolutionNode* SortNodeDefault::clone() const {
     auto copy = std::make_unique<SortNodeDefault>();
     cloneSortData(copy.get());
-    return copy;
+    return copy.release();
 }
 
-std::unique_ptr<QuerySolutionNode> SortNodeSimple::clone() const {
+QuerySolutionNode* SortNodeSimple::clone() const {
     auto copy = std::make_unique<SortNodeSimple>();
     cloneSortData(copy.get());
-    return copy;
+    return copy.release();
 }
 
 //
@@ -1358,9 +1281,9 @@ void LimitNode::appendToString(str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-std::unique_ptr<QuerySolutionNode> LimitNode::clone() const {
-    auto copy = std::make_unique<LimitNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* LimitNode::clone() const {
+    LimitNode* copy = new LimitNode();
+    cloneBaseData(copy);
 
     copy->limit = this->limit;
 
@@ -1382,9 +1305,9 @@ void SkipNode::appendToString(str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-std::unique_ptr<QuerySolutionNode> SkipNode::clone() const {
-    auto copy = std::make_unique<SkipNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* SkipNode::clone() const {
+    SkipNode* copy = new SkipNode();
+    cloneBaseData(copy);
 
     copy->skip = this->skip;
 
@@ -1410,9 +1333,9 @@ void GeoNear2DNode::appendToString(str::stream* ss, int indent) const {
     }
 }
 
-std::unique_ptr<QuerySolutionNode> GeoNear2DNode::clone() const {
-    auto copy = std::make_unique<GeoNear2DNode>(this->index);
-    cloneBaseData(copy.get());
+QuerySolutionNode* GeoNear2DNode::clone() const {
+    GeoNear2DNode* copy = new GeoNear2DNode(this->index);
+    cloneBaseData(copy);
 
     copy->nq = this->nq;
     copy->baseBounds = this->baseBounds;
@@ -1443,9 +1366,9 @@ void GeoNear2DSphereNode::appendToString(str::stream* ss, int indent) const {
     }
 }
 
-std::unique_ptr<QuerySolutionNode> GeoNear2DSphereNode::clone() const {
-    auto copy = std::make_unique<GeoNear2DSphereNode>(this->index);
-    cloneBaseData(copy.get());
+QuerySolutionNode* GeoNear2DSphereNode::clone() const {
+    GeoNear2DSphereNode* copy = new GeoNear2DSphereNode(this->index);
+    cloneBaseData(copy);
 
     copy->nq = this->nq;
     copy->baseBounds = this->baseBounds;
@@ -1475,9 +1398,9 @@ void ShardingFilterNode::appendToString(str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-std::unique_ptr<QuerySolutionNode> ShardingFilterNode::clone() const {
-    auto copy = std::make_unique<ShardingFilterNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* ShardingFilterNode::clone() const {
+    ShardingFilterNode* copy = new ShardingFilterNode();
+    cloneBaseData(copy);
     return copy;
 }
 
@@ -1498,9 +1421,9 @@ void DistinctNode::appendToString(str::stream* ss, int indent) const {
     *ss << "bounds = " << bounds.toString(index.collator != nullptr) << '\n';
 }
 
-std::unique_ptr<QuerySolutionNode> DistinctNode::clone() const {
-    auto copy = std::make_unique<DistinctNode>(this->index);
-    cloneBaseData(copy.get());
+QuerySolutionNode* DistinctNode::clone() const {
+    DistinctNode* copy = new DistinctNode(this->index);
+    cloneBaseData(copy);
 
     copy->direction = this->direction;
     copy->bounds = this->bounds;
@@ -1513,9 +1436,7 @@ std::unique_ptr<QuerySolutionNode> DistinctNode::clone() const {
 void DistinctNode::computeProperties() {
     // Note that we don't need to save the returned multikey fields for a DISTINCT_SCAN. They are
     // only needed for explodeForSort(), which works on IXSCAN but not DISTINCT_SCAN.
-    sortSet = computeSortsAndMultikeyPathsForScan(
-                  index, direction, bounds, queryCollator, nullptr /* iets */)
-                  .first;
+    sortSet = computeSortsAndMultikeyPathsForScan(index, direction, bounds, queryCollator).first;
 }
 
 //
@@ -1535,9 +1456,9 @@ void CountScanNode::appendToString(str::stream* ss, int indent) const {
     *ss << "endKey = " << endKey << '\n';
 }
 
-std::unique_ptr<QuerySolutionNode> CountScanNode::clone() const {
-    auto copy = std::make_unique<CountScanNode>(this->index);
-    cloneBaseData(copy.get());
+QuerySolutionNode* CountScanNode::clone() const {
+    CountScanNode* copy = new CountScanNode(this->index);
+    cloneBaseData(copy);
 
     copy->startKey = this->startKey;
     copy->startKeyInclusive = this->startKeyInclusive;
@@ -1556,9 +1477,9 @@ void EofNode::appendToString(str::stream* ss, int indent) const {
     *ss << "EOF\n";
 }
 
-std::unique_ptr<QuerySolutionNode> EofNode::clone() const {
-    auto copy = std::make_unique<EofNode>();
-    cloneBaseData(copy.get());
+QuerySolutionNode* EofNode::clone() const {
+    auto copy = new EofNode();
+    cloneBaseData(copy);
     return copy;
 }
 
@@ -1581,11 +1502,11 @@ void TextOrNode::appendToString(str::stream* ss, int indent) const {
     }
 }
 
-std::unique_ptr<QuerySolutionNode> TextOrNode::clone() const {
+QuerySolutionNode* TextOrNode::clone() const {
     auto copy = std::make_unique<TextOrNode>();
     cloneBaseData(copy.get());
     copy->dedup = this->dedup;
-    return copy;
+    return copy.release();
 }
 
 //
@@ -1617,11 +1538,11 @@ void TextMatchNode::appendToString(str::stream* ss, int indent) const {
     addCommon(ss, indent);
 }
 
-std::unique_ptr<QuerySolutionNode> TextMatchNode::clone() const {
+QuerySolutionNode* TextMatchNode::clone() const {
     auto copy = std::make_unique<TextMatchNode>(index, ftsQuery->clone(), wantTextScore);
     cloneBaseData(copy.get());
     copy->indexPrefix = indexPrefix;
-    return copy;
+    return copy.release();
 }
 
 /**
@@ -1662,10 +1583,14 @@ void GroupNode::appendToString(str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-std::unique_ptr<QuerySolutionNode> GroupNode::clone() const {
-    auto copy = std::make_unique<GroupNode>(
-        children[0]->clone(), groupByExpression, accumulators, doingMerge, shouldProduceBson);
-    return copy;
+QuerySolutionNode* GroupNode::clone() const {
+    auto copy =
+        std::make_unique<GroupNode>(std::unique_ptr<QuerySolutionNode>(children[0]->clone()),
+                                    groupByExpression,
+                                    accumulators,
+                                    doingMerge,
+                                    shouldProduceBson);
+    return copy.release();
 }
 
 /**
@@ -1684,34 +1609,29 @@ void EqLookupNode::appendToString(str::stream* ss, int indent) const {
     *ss << "foreignField = " << joinFieldForeign.fullPath() << "\n";
     addIndent(ss, indent + 1);
     *ss << "lookupStrategy = " << serializeLookupStrategy(lookupStrategy) << "\n";
-    if (idxEntry) {
-        addIndent(ss, indent + 1);
-        *ss << "indexName = " << idxEntry->identifier.catalogName << "\n";
-        addIndent(ss, indent + 1);
-        *ss << "indexKeyPattern = " << idxEntry->keyPattern << "\n";
-    }
     addCommon(ss, indent);
     addIndent(ss, indent + 1);
     *ss << "Child:" << '\n';
     children[0]->appendToString(ss, indent + 2);
 }
 
-std::unique_ptr<QuerySolutionNode> EqLookupNode::clone() const {
-    auto copy = std::make_unique<EqLookupNode>(children[0]->clone(),
-                                               foreignCollection,
-                                               joinFieldLocal,
-                                               joinFieldForeign,
-                                               joinField,
-                                               lookupStrategy,
-                                               idxEntry,
-                                               shouldProduceBson);
-    return copy;
+QuerySolutionNode* EqLookupNode::clone() const {
+    auto copy =
+        std::make_unique<EqLookupNode>(std::unique_ptr<QuerySolutionNode>(children[0]->clone()),
+                                       foreignCollection,
+                                       joinFieldLocal,
+                                       joinFieldForeign,
+                                       joinField,
+                                       lookupStrategy,
+                                       idxEntry,
+                                       shouldProduceBson);
+    return copy.release();
 }
 /**
  * SentinelNode.
  */
-std::unique_ptr<QuerySolutionNode> SentinelNode::clone() const {
-    return std::make_unique<SentinelNode>();
+QuerySolutionNode* SentinelNode::clone() const {
+    return std::make_unique<SentinelNode>().release();
 }
 
 void SentinelNode::appendToString(str::stream* ss, int indent) const {

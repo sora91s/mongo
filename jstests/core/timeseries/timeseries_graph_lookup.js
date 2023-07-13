@@ -2,8 +2,9 @@
  * Verifies that time-series collections work as expected with $graphLookup.
  *
  * @tags: [
- *   # We need a timeseries collection.
+ *   does_not_support_transactions,
  *   requires_timeseries,
+ *   requires_fcv_51,
  * ]
  */
 (function() {

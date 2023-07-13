@@ -18,6 +18,9 @@ selector:
   - jstests/concurrency/fsm_workloads/distinct_noindex.js
   - jstests/concurrency/fsm_workloads/distinct_projection.js
 
+  # SERVER-17397 Drops of sharded namespaces may not fully succeed
+  - jstests/concurrency/fsm_workloads/create_database.js
+
   # Disabled due to SERVER-33753, '.count() without a predicate can be wrong on sharded
   # collections'. This bug is problematic for these workloads because they assert on count()
   # values:
@@ -236,7 +239,7 @@ executor:
           runningWithSessions: true
           runningWithShardStepdowns: true
           traceExceptions: false
-          useActionPermittedFile: true
+          useStepdownPermittedFile: true
   hooks:
   # We use a stepdown interval of 15 seconds because we will retry all commands in a transaction
   # so we need to allow time for at most 10 operations to be re-run and then re-committed. If
@@ -246,11 +249,10 @@ executor:
     shard_stepdown: true
     stepdown_interval_ms: 15000
     terminate: true
-    use_action_permitted_file: true
+    use_stepdown_permitted_file: true
+    wait_for_mongos_retarget: true
   - class: CheckReplDBHash
   - class: CheckOrphansDeleted
-  - class: CheckRoutingTableConsistency
-  - class: CheckShardFilteringMetadata
   - class: ValidateCollections # Validation can interfere with other operations, so this goes last.
   - class: CleanupConcurrencyWorkloads
   fixture:

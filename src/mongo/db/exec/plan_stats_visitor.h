@@ -35,7 +35,6 @@ namespace mongo {
 namespace sbe {
 
 struct ScanStats;
-struct ColumnScanStats;
 struct IndexScanStats;
 struct FilterStats;
 struct LimitSkipStats;
@@ -80,9 +79,7 @@ struct DocumentSourceLookupStats;
 struct UnionWithStats;
 struct DocumentSourceFacetStats;
 struct UnpackTimeseriesBucketStats;
-struct TimeseriesModifyStats;
 struct SampleFromTimeseriesBucketStats;
-struct SpoolStats;
 
 /**
  * Visitor pattern for PlanStageStats.
@@ -99,7 +96,6 @@ class PlanStatsVisitor {
 public:
     virtual ~PlanStatsVisitor() = default;
     virtual void visit(tree_walker::MaybeConstPtr<IsConst, sbe::ScanStats> stats) = 0;
-    virtual void visit(tree_walker::MaybeConstPtr<IsConst, sbe::ColumnScanStats> stats) = 0;
     virtual void visit(tree_walker::MaybeConstPtr<IsConst, sbe::IndexScanStats> stats) = 0;
     virtual void visit(tree_walker::MaybeConstPtr<IsConst, sbe::FilterStats> stats) = 0;
     virtual void visit(tree_walker::MaybeConstPtr<IsConst, sbe::LimitSkipStats> stats) = 0;
@@ -143,10 +139,8 @@ public:
     virtual void visit(tree_walker::MaybeConstPtr<IsConst, UnionWithStats> stats) = 0;
     virtual void visit(tree_walker::MaybeConstPtr<IsConst, DocumentSourceFacetStats> stats) = 0;
     virtual void visit(tree_walker::MaybeConstPtr<IsConst, UnpackTimeseriesBucketStats> stats) = 0;
-    virtual void visit(tree_walker::MaybeConstPtr<IsConst, TimeseriesModifyStats> stats) = 0;
     virtual void visit(
         tree_walker::MaybeConstPtr<IsConst, SampleFromTimeseriesBucketStats> stats) = 0;
-    virtual void visit(tree_walker::MaybeConstPtr<IsConst, SpoolStats> stats) = 0;
 };
 
 /**
@@ -156,7 +150,6 @@ public:
 template <bool IsConst>
 struct PlanStatsVisitorBase : public PlanStatsVisitor<IsConst> {
     void visit(tree_walker::MaybeConstPtr<IsConst, sbe::ScanStats> stats) override {}
-    void visit(tree_walker::MaybeConstPtr<IsConst, sbe::ColumnScanStats> stats) override {}
     void visit(tree_walker::MaybeConstPtr<IsConst, sbe::IndexScanStats> stats) override {}
     void visit(tree_walker::MaybeConstPtr<IsConst, sbe::FilterStats> stats) override {}
     void visit(tree_walker::MaybeConstPtr<IsConst, sbe::LimitSkipStats> stats) override {}
@@ -200,10 +193,8 @@ struct PlanStatsVisitorBase : public PlanStatsVisitor<IsConst> {
     void visit(tree_walker::MaybeConstPtr<IsConst, UnionWithStats> stats) override {}
     void visit(tree_walker::MaybeConstPtr<IsConst, DocumentSourceFacetStats> stats) override {}
     void visit(tree_walker::MaybeConstPtr<IsConst, UnpackTimeseriesBucketStats> stats) override {}
-    void visit(tree_walker::MaybeConstPtr<IsConst, TimeseriesModifyStats> stats) override {}
     void visit(
         tree_walker::MaybeConstPtr<IsConst, SampleFromTimeseriesBucketStats> stats) override {}
-    void visit(tree_walker::MaybeConstPtr<IsConst, SpoolStats> stats) override {}
 };
 
 using PlanStatsMutableVisitor = PlanStatsVisitor<false>;

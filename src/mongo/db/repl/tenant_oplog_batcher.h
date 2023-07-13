@@ -50,11 +50,6 @@ struct TenantOplogEntry {
     // If this entry is a transaction commit or applyOps, the index within the
     // TenantOplogBatch::expansions array containing the oplog entries it expands to.
     int expansionsEntry = -1;
-    // When the fetched donor oplog entry represents modifications to internal collections
-    // (i.e, collections in admin/config DBs), shard merge protocol skips applying those oplog
-    // entries. In those cases, we set this field to 'true' to indicate that the tenant oplog
-    // applier can skip writing no-op entries for this oplog entry.
-    bool ignore = false;
 };
 
 struct TenantOplogBatch {
@@ -78,7 +73,7 @@ public:
         size_t ops = 0;
     };
 
-    TenantOplogBatcher(const UUID& migrationUuid,
+    TenantOplogBatcher(const std::string& tenantId,
                        RandomAccessOplogBuffer* oplogBuffer,
                        std::shared_ptr<executor::TaskExecutor> executor,
                        Timestamp resumeBatchingTs,
@@ -101,7 +96,7 @@ private:
 
     void _pushEntry(OperationContext* opCtx, TenantOplogBatch* batch, OplogEntry&& op);
 
-    void _doStartup_inlock() final;
+    Status _doStartup_inlock() noexcept final;
 
     void _doShutdown_inlock() noexcept final;
 

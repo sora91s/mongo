@@ -43,7 +43,7 @@ public:
         return false;
     }
 
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -51,16 +51,16 @@ public:
         return AllowedOnSecondary::kAlways;
     }
 
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();  // No auth required
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        // No auth required
     }
 
-    bool run(OperationContext* opCtx,
-             const DatabaseName&,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
+    virtual bool run(OperationContext* opCtx,
+                     const std::string& dbname,
+                     const BSONObj& cmdObj,
+                     BSONObjBuilder& result) {
         result.append("isdbgrid", 1);
         result.append("hostname", getHostNameCached());
         return true;

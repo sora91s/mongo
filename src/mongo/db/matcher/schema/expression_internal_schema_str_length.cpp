@@ -37,7 +37,7 @@ namespace mongo {
 
 InternalSchemaStrLengthMatchExpression::InternalSchemaStrLengthMatchExpression(
     MatchType type,
-    boost::optional<StringData> path,
+    StringData path,
     long long strLen,
     StringData name,
     clonable_ptr<ErrorAnnotation> annotation)
@@ -56,9 +56,7 @@ void InternalSchemaStrLengthMatchExpression::debugString(StringBuilder& debug,
     debug << "\n";
 }
 
-BSONObj InternalSchemaStrLengthMatchExpression::getSerializedRightHandSide(
-    SerializationOptions opts) const {
-    // TODO SERVER-73678 respect 'replacementForLiteralArgs'.
+BSONObj InternalSchemaStrLengthMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder objBuilder;
     objBuilder.append(_name, _strLen);
     return objBuilder.obj();

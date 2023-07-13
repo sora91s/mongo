@@ -2,11 +2,7 @@
 //
 // This test assumes that collections are not implicitly sharded, since $out is prohibited if the
 // output collection is sharded.
-// @tags: [
-//   assumes_unsharded_collection,
-//   # Asserts on the number of indexes.
-//   assumes_no_implicit_index_creation,
-// ]
+// @tags: [assumes_unsharded_collection]
 (function() {
 "use strict";
 

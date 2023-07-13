@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -42,13 +43,11 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/canonical_query_encoder.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
+#include "mongo/db/query/fle/server_rewrite.h"
 #include "mongo/db/query/indexability.h"
 #include "mongo/db/query/projection_parser.h"
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 namespace mongo {
 namespace {
 
@@ -70,8 +69,11 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
     const ExtensionsCallback& extensionsCallback,
     MatchExpressionParser::AllowedFeatureSet allowedFeatures,
     const ProjectionPolicies& projectionPolicies,
-    std::vector<std::unique_ptr<InnerPipelineStageInterface>> pipeline,
-    bool isCountLike) {
+    std::vector<std::unique_ptr<InnerPipelineStageInterface>> pipeline) {
+    tassert(5746107,
+            "ntoreturn should not be set on the findCommand",
+            findCommand->getNtoreturn() == boost::none);
+
     auto status = query_request_helper::validateFindCommandRequest(*findCommand);
     if (!status.isOK()) {
         return status;
@@ -140,8 +142,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
                  parsingCanProduceNoopMatchNodes(extensionsCallback, allowedFeatures),
                  std::move(me),
                  projectionPolicies,
-                 std::move(pipeline),
-                 isCountLike);
+                 std::move(pipeline));
 
     if (!initStatus.isOK()) {
         return initStatus;
@@ -153,7 +154,9 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
 StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
     OperationContext* opCtx, const CanonicalQuery& baseQuery, MatchExpression* root) {
     auto findCommand = std::make_unique<FindCommandRequest>(baseQuery.nss());
-    findCommand->setFilter(root->serialize());
+    BSONObjBuilder builder;
+    root->serialize(&builder, true);
+    findCommand->setFilter(builder.obj());
     findCommand->setProjection(baseQuery.getFindCommandRequest().getProjection().getOwned());
     findCommand->setSort(baseQuery.getFindCommandRequest().getSort().getOwned());
     findCommand->setCollation(baseQuery.getFindCommandRequest().getCollation().getOwned());
@@ -171,8 +174,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
                                  baseQuery.canHaveNoopMatchNodes(),
                                  root->shallowClone(),
                                  ProjectionPolicies::findProjectionPolicies(),
-                                 {} /* an empty pipeline */,
-                                 baseQuery.isCountLike());
+                                 {} /* an empty pipeline */);
 
     if (!initStatus.isOK()) {
         return initStatus;
@@ -186,17 +188,12 @@ Status CanonicalQuery::init(OperationContext* opCtx,
                             bool canHaveNoopMatchNodes,
                             std::unique_ptr<MatchExpression> root,
                             const ProjectionPolicies& projectionPolicies,
-                            std::vector<std::unique_ptr<InnerPipelineStageInterface>> pipeline,
-                            bool isCountLike) {
+                            std::vector<std::unique_ptr<InnerPipelineStageInterface>> pipeline) {
     _expCtx = expCtx;
     _findCommand = std::move(findCommand);
 
     _canHaveNoopMatchNodes = canHaveNoopMatchNodes;
-    _forceClassicEngine = ServerParameterSet::getNodeParameterSet()
-                              ->get<QueryFrameworkControl>("internalQueryFrameworkControl")
-                              ->_data.get() == QueryFrameworkControlEnum::kForceClassicEngine;
-
-    _isCountLike = isCountLike;
+    _forceClassicEngine = internalQueryForceClassicEngine.load();
 
     auto validStatus = isValid(root.get(), *_findCommand);
     if (!validStatus.isOK()) {
@@ -204,9 +201,7 @@ Status CanonicalQuery::init(OperationContext* opCtx,
     }
     auto unavailableMetadata = validStatus.getValue();
     _root = MatchExpression::normalize(std::move(root));
-
-    // If caching is disabled, do not perform any autoparameterization.
-    if (!internalQueryDisablePlanCache.load()) {
+    if (feature_flags::gFeatureFlagSbePlanCache.isEnabledAndIgnoreFCV()) {
         const bool hasNoTextNodes =
             !QueryPlannerCommon::hasNode(_root.get(), MatchExpression::TEXT);
         if (hasNoTextNodes) {
@@ -545,11 +540,15 @@ std::string CanonicalQuery::toStringShort() const {
 }
 
 CanonicalQuery::QueryShapeString CanonicalQuery::encodeKey() const {
-    return (!_forceClassicEngine && _sbeCompatible) ? canonical_query_encoder::encodeSBE(*this)
-                                                    : canonical_query_encoder::encode(*this);
+    // TODO SERVER-61507: remove '_pipeline.empty()' check. Canonical queries with pushed down
+    // $group/$lookup stages are not SBE-compatible until SERVER-61507 is complete.
+    return (feature_flags::gFeatureFlagSbePlanCache.isEnabledAndIgnoreFCV() &&
+            !_forceClassicEngine && _sbeCompatible && _pipeline.empty())
+        ? canonical_query_encoder::encodeSBE(*this)
+        : canonical_query_encoder::encode(*this);
 }
 
-CanonicalQuery::QueryShapeString CanonicalQuery::encodeKeyForPlanCacheCommand() const {
-    return canonical_query_encoder::encodeForPlanCacheCommand(*this);
+CanonicalQuery::QueryShapeString CanonicalQuery::encodeKeyForIndexFilters() const {
+    return canonical_query_encoder::encodeForIndexFilters(*this);
 }
 }  // namespace mongo

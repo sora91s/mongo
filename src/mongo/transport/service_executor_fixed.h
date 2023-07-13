@@ -47,11 +47,11 @@
 
 namespace mongo {
 namespace transport {
-
+void initMyServiceExecutorFixed();
 /**
  * A service executor that uses a fixed (configurable) number of threads to execute tasks.
  * This executor always yields before executing scheduled tasks, and never yields before scheduling
- * new tasks.
+ * new tasks (i.e., `ScheduleFlags::kMayYieldBeforeSchedule` is a no-op for this executor).
  */
 class ServiceExecutorFixed final : public ServiceExecutor,
                                    public std::enable_shared_from_this<ServiceExecutorFixed> {
@@ -68,6 +68,14 @@ public:
     Status start() override;
     Status shutdown(Milliseconds timeout) override;
 
+    Status scheduleTask(Task task, ScheduleFlags flags) override;
+    void schedule(OutOfLineExecutor::Task task) override {
+        _schedule(std::move(task));
+    }
+
+    void runOnDataAvailable(const SessionHandle& session,
+                            OutOfLineExecutor::Task onCompletionCallback) override;
+
     size_t getRunningThreads() const override;
 
     void appendStats(BSONObjBuilder* bob) const override;
@@ -78,8 +86,6 @@ public:
      */
     int getRecursionDepthForExecutorThread() const;
 
-    std::unique_ptr<TaskRunner> makeTaskRunner() override;
-
 private:
     enum class State { kNotStarted, kRunning, kStopping, kStopped };
 
@@ -89,13 +95,9 @@ private:
     struct Stats;
 
     struct Waiter {
-        std::shared_ptr<Session> session;
-        Task onCompletionCallback;
+        SessionHandle session;
+        OutOfLineExecutor::Task onCompletionCallback;
     };
-
-    void _schedule(Task task);
-
-    void _runOnDataAvailable(const std::shared_ptr<Session>& session, Task onCompletionCallback);
 
     const std::string& _name() const;
 
@@ -104,6 +106,8 @@ private:
 
     /** Requires `_mutex` locked. */
     void _beginShutdown();
+
+    void _schedule(OutOfLineExecutor::Task task) noexcept;
 
     void _finalize() noexcept;
 

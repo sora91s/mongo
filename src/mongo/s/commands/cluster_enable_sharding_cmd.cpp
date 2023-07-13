@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
@@ -36,9 +37,6 @@
 #include "mongo/s/commands/cluster_commands_gen.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -73,14 +71,15 @@ public:
             ScopeGuard purgeDatabaseOnExit([&] { catalogCache->purgeDatabase(dbName); });
 
             ConfigsvrCreateDatabase configsvrCreateDatabase{dbName.toString()};
-            configsvrCreateDatabase.setDbName(DatabaseName::kAdmin);
+            configsvrCreateDatabase.setDbName(NamespaceString::kAdminDb);
+            configsvrCreateDatabase.setEnableSharding(true);
             configsvrCreateDatabase.setPrimaryShardId(request().getPrimaryShard());
 
             auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
             auto response = uassertStatusOK(configShard->runCommandWithFixedRetryAttempts(
                 opCtx,
                 ReadPreferenceSetting(ReadPreference::PrimaryOnly),
-                DatabaseName::kAdmin.toString(),
+                NamespaceString::kAdminDb.toString(),
                 CommandHelpers::appendMajorityWriteConcern(configsvrCreateDatabase.toBSON({})),
                 Shard::RetryPolicy::kIdempotent));
 
@@ -90,13 +89,13 @@ public:
             uassertStatusOK(response.writeConcernStatus);
 
             auto createDbResponse = ConfigsvrCreateDatabaseResponse::parse(
-                IDLParserContext("configsvrCreateDatabaseResponse"), response.response);
+                IDLParserErrorContext("configsvrCreateDatabaseResponse"), response.response);
             catalogCache->onStaleDatabaseVersion(dbName, createDbResponse.getDatabaseVersion());
             purgeDatabaseOnExit.dismiss();
         }
 
     private:
-        StringData getDbName() const {
+        const StringData getDbName() const {
             return request().getCommandParameter();
         }
         NamespaceString ns() const override {

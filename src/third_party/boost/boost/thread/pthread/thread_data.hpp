@@ -58,6 +58,8 @@ namespace boost
           std::size_t page_size = ::sysconf( _SC_PAGESIZE);
 #endif
 #ifdef PTHREAD_STACK_MIN
+          // MongoDB Modification for SERVER-70475: Cherry-picked
+          // static_cast back from boost 1.79 on master
           if (size<static_cast<std::size_t>(PTHREAD_STACK_MIN)) size=PTHREAD_STACK_MIN;
 #endif
           size = ((size+page_size-1)/page_size)*page_size;

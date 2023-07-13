@@ -4,19 +4,18 @@
  * We have a restart in the test with some stored values that must be preserved so it cannot run in
  * inMemory variants
  *
- * TODO SERVER-74447: Verify cluster parameters added to dedicated config server work correctly
- * when config is added as a shard.
  * @tags: [
+ *   # Requires all nodes to be running the latest binary.
+ *   requires_fcv_60,
+ *   featureFlagClusterWideConfig,
  *   does_not_support_stepdowns,
  *   requires_persistence,
- *   temporary_catalog_shard_incompatible,
  *  ]
  */
 (function() {
 'use strict';
 
 load('jstests/libs/fail_point_util.js');
-load('jstests/sharding/libs/remove_shard_util.js');
 
 const clusterParameter1Value = {
     intData: 42
@@ -154,8 +153,14 @@ const checkClusterParameters =
         newShard.startSet({shardsvr: ''});
         newShard.initiate();
 
+        // Failing _shardsvrSetclusterParameter with a retriable error will make the configsvr
+        // coordinator retry until completion.
         let shardsvrSetClusterParameterFailPoint =
-            configureFailPoint(st.rs0.getPrimary(), 'hangInShardsvrSetClusterParameter');
+            configureFailPoint(st.rs0.getPrimary(), 'failCommand', {
+                failInternalCommands: true,
+                errorCode: ErrorCodes.PrimarySteppedDown,
+                failCommands: ["_shardsvrSetClusterParameter"]
+            });
 
         let setClusterParameterThread = new Thread((mongosConnString, clusterParameter) => {
             let mongos = new Mongo(mongosConnString);
@@ -189,7 +194,10 @@ const checkClusterParameters =
                                st.configRS.getPrimary(),
                                newShard.getPrimary());
 
-        removeShard(st, newShardName);
+        assert.soon(() => {
+            let res = st.s.adminCommand({removeShard: newShardName});
+            return res.state == 'completed';
+        });
 
         newShard.stopSet();
 
@@ -291,7 +299,11 @@ const checkClusterParameters =
                   }));
 
         // Well behaved test, remove shard and stop the set.
-        removeShard(st2, newShard3Name);
+        assert.soon(() => {
+            let res = assert.commandWorked(st2.s.adminCommand({removeShard: newShard3Name}));
+
+            return 'completed' === res.state;
+        });
 
         newShard3.stopSet();
     }

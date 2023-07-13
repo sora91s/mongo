@@ -35,7 +35,7 @@ namespace repl {
 
 ElectionReasonCounter parseElectionReasonCounter(const BSONElement& element) {
     ElectionReasonCounter counter;
-    IDLParserContext ctxt = IDLParserContext("ElectionReasonCounter");
+    IDLParserErrorContext ctxt = IDLParserErrorContext("ElectionReasonCounter");
 
     return counter.parse(ctxt, element.Obj());
 }

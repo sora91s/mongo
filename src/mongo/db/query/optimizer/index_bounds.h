@@ -32,347 +32,178 @@
 #include "mongo/db/query/optimizer/bool_expression.h"
 #include "mongo/db/query/optimizer/defs.h"
 #include "mongo/db/query/optimizer/syntax/syntax.h"
-#include "mongo/db/query/optimizer/utils/const_fold_interface.h"
 
 
 namespace mongo::optimizer {
 
-/**
- * Generic bound.
- */
-template <class T>
-class Bound {
+class BoundRequirement {
 public:
-    Bound(bool inclusive, T bound) : _inclusive(inclusive), _bound(std::move(bound)) {}
-
-    bool operator==(const Bound& other) const {
-        return _inclusive == other._inclusive && _bound == other._bound;
+    static BoundRequirement makeInfinite() {
+        return BoundRequirement(false, boost::none);
     }
 
-    bool isInclusive() const {
-        return _inclusive;
-    }
+    BoundRequirement();
+    BoundRequirement(bool inclusive, boost::optional<ABT> bound);
 
-    const T& getBound() const {
-        return _bound;
-    }
-    T& getBound() {
-        return _bound;
-    }
+    bool operator==(const BoundRequirement& other) const;
 
-protected:
+    bool isInclusive() const;
+    void setInclusive(bool value);
+
+    bool isInfinite() const;
+    const ABT& getBound() const;
+
+private:
     bool _inclusive;
-    T _bound;
+
+    // If we do not have a bound ABT, the bound is considered infinite.
+    boost::optional<ABT> _bound;
 };
 
-/**
- * Generic interval.
- */
-template <class T>
-class Interval {
+class IntervalRequirement {
 public:
-    Interval(T lowBound, T highBound)
-        : _lowBound(std::move(lowBound)), _highBound(std::move(highBound)) {}
-
-    bool operator==(const Interval& other) const {
-        return _lowBound == other._lowBound && _highBound == other._highBound;
-    }
-
-    bool isEquality() const {
-        return _lowBound.isInclusive() && _highBound.isInclusive() && _lowBound == _highBound;
-    }
-
-    void reverse() {
-        std::swap(_lowBound, _highBound);
-    }
-
-    const T& getLowBound() const {
-        return _lowBound;
-    }
-    T& getLowBound() {
-        return _lowBound;
-    }
-
-    const T& getHighBound() const {
-        return _highBound;
-    }
-    T& getHighBound() {
-        return _highBound;
-    }
-
-protected:
-    T _lowBound;
-    T _highBound;
-};
-
-/**
- * Represents a bound in an simple interval (interval over one projection). The bound can be a
- * constant or an expression (e.g. a formula). This is a logical abstraction.
- */
-class BoundRequirement : public Bound<ABT> {
-    using Base = Bound<ABT>;
-
-public:
-    static BoundRequirement makeMinusInf();
-    static BoundRequirement makePlusInf();
-
-    BoundRequirement(bool inclusive, ABT bound);
-
-    bool isMinusInf() const;
-    bool isPlusInf() const;
-};
-
-/**
- * Represents a simple interval (interval over one projection). This is a logical abstraction. It
- * counts low and high bounds which may be inclusive or exclusive.
- */
-class IntervalRequirement : public Interval<BoundRequirement> {
-    using Base = Interval<BoundRequirement>;
-
-public:
-    IntervalRequirement();
+    IntervalRequirement() = default;
     IntervalRequirement(BoundRequirement lowBound, BoundRequirement highBound);
 
-    bool isFullyOpen() const;
-    bool isConstant() const;
-};
-
-/**
- * Represents an expression (consisting of possibly nested unions and intersections) over an
- * interval.
- */
-using IntervalReqExpr = BoolExpr<IntervalRequirement>;
-bool isIntervalReqFullyOpenDNF(const IntervalReqExpr::Node& n);
-
-/**
- * Represents a bound in a compound interval, which encodes an equality prefix. It consists of a
- * vector of expressions, which represents an index bound. This is a physical abstraction.
- */
-class CompoundBoundRequirement : public Bound<ABTVector> {
-    using Base = Bound<ABTVector>;
-
-public:
-    CompoundBoundRequirement(bool inclusive, ABTVector bound);
-
-    bool isMinusInf() const;
-    bool isPlusInf() const;
-    bool isConstant() const;
-
-    size_t size() const;
-
-    // Extend the current compound bound with a simple bound. It is the caller's responsibility to
-    // ensure we confirm to an equality prefix.
-    void push_back(BoundRequirement bound);
-};
-
-/**
- * An interval of compound keys: each endpoint is a compound key, with one expression per index key.
- * This is a physical primitive tied to a specific index.
- */
-class CompoundIntervalRequirement : public Interval<CompoundBoundRequirement> {
-    using Base = Interval<CompoundBoundRequirement>;
-
-public:
-    CompoundIntervalRequirement();
-    CompoundIntervalRequirement(CompoundBoundRequirement lowBound,
-                                CompoundBoundRequirement highBound);
+    bool operator==(const IntervalRequirement& other) const;
 
     bool isFullyOpen() const;
+    bool isEquality() const;
 
-    size_t size() const;
-    void push_back(IntervalRequirement interval);
+    const BoundRequirement& getLowBound() const;
+    BoundRequirement& getLowBound();
+    const BoundRequirement& getHighBound() const;
+    BoundRequirement& getHighBound();
+
+private:
+    BoundRequirement _lowBound;
+    BoundRequirement _highBound;
 };
-
-// Unions and conjunctions of individual compound intervals.
-using CompoundIntervalReqExpr = BoolExpr<CompoundIntervalRequirement>;
 
 struct PartialSchemaKey {
-    // The default construct sets the path to PathIdentity and the projectionName to boost::none.
     PartialSchemaKey();
-
-    PartialSchemaKey(ABT path);
+    PartialSchemaKey(ProjectionName projectionName);
     PartialSchemaKey(ProjectionName projectionName, ABT path);
-    PartialSchemaKey(boost::optional<ProjectionName> projectionName, ABT path);
 
     bool operator==(const PartialSchemaKey& other) const;
-    bool operator!=(const PartialSchemaKey& other) const {
-        return !(*this == other);
-    }
+
+    bool emptyPath() const;
 
     // Referred, or input projection name.
-    boost::optional<ProjectionName> _projectionName;
+    ProjectionName _projectionName;
 
     // (Partially determined) path.
     ABT _path;
 };
 
+using IntervalReqExpr = BoolExpr<IntervalRequirement>;
+bool isIntervalReqFullyOpenDNF(const IntervalReqExpr::Node& n);
+
 class PartialSchemaRequirement {
 public:
-    PartialSchemaRequirement(boost::optional<ProjectionName> boundProjectionName,
-                             IntervalReqExpr::Node intervals,
-                             bool isPerfOnly);
+    PartialSchemaRequirement();
+    PartialSchemaRequirement(ProjectionName boundProjectionName, IntervalReqExpr::Node intervals);
 
     bool operator==(const PartialSchemaRequirement& other) const;
 
-    const boost::optional<ProjectionName>& getBoundProjectionName() const;
+    bool hasBoundProjectionName() const;
+    const ProjectionName& getBoundProjectionName() const;
+    void setBoundProjectionName(ProjectionName boundProjectionName);
 
     const IntervalReqExpr::Node& getIntervals() const;
-
-    bool getIsPerfOnly() const;
-
-    bool mayReturnNull(const ConstFoldFn& constFold) const;
+    IntervalReqExpr::Node& getIntervals();
 
 private:
     // Bound, or output projection name.
-    boost::optional<ProjectionName> _boundProjectionName;
+    ProjectionName _boundProjectionName;
 
     IntervalReqExpr::Node _intervals;
-
-    // If set, this requirement exists for performance reasons (as opposed to correctness). We will
-    // attempt to incorporate it into index bounds, otherwise will not add it to residual
-    // predicates.
-    bool _isPerfOnly;
 };
-
-/**
- * This comparator is used to compare paths with Get, Traverse, and Id.
- */
-struct IndexPath3WComparator {
-    bool operator()(const ABT& path1, const ABT& path2) const;
-};
-
-using IndexPathSet = std::set<ABT, IndexPath3WComparator>;
 
 struct PartialSchemaKeyLessComparator {
     bool operator()(const PartialSchemaKey& k1, const PartialSchemaKey& k2) const;
 };
 
-/**
- * Used to track cardinality estimates per predicate inside a PartialSchemaRequirement. The order of
- * estimates is the same as the order in the primary PartialSchemaRequirements map.
- */
-using PartialSchemaKeyCE = std::vector<std::pair<PartialSchemaKey, CEType>>;
+// Map from referred (or input) projection name to list of requirements for that projection.
+using PartialSchemaRequirements =
+    std::map<PartialSchemaKey, PartialSchemaRequirement, PartialSchemaKeyLessComparator>;
+
+using PartialSchemaKeyCE = std::map<PartialSchemaKey, CEType, PartialSchemaKeyLessComparator>;
+using ResidualKeyMap = std::map<PartialSchemaKey, PartialSchemaKey, PartialSchemaKeyLessComparator>;
 
 using PartialSchemaKeySet = std::set<PartialSchemaKey, PartialSchemaKeyLessComparator>;
 
 // Requirements which are not satisfied directly by an IndexScan, PhysicalScan or Seek (e.g. using
-// an index field, or scan field). The index refers to the underlying entry in the
-// PartialSchemaRequirement map.
+// an index field, or scan field). They are intended to be sorted in their containing vector from
+// most to least selective.
 struct ResidualRequirement {
-    ResidualRequirement(PartialSchemaKey key, PartialSchemaRequirement req, size_t entryIndex);
-
-    bool operator==(const ResidualRequirement& other) const;
-
-    PartialSchemaKey _key;
-    PartialSchemaRequirement _req;
-    size_t _entryIndex;
-};
-using ResidualRequirements = std::vector<ResidualRequirement>;
-
-struct ResidualRequirementWithCE {
-    ResidualRequirementWithCE(PartialSchemaKey key, PartialSchemaRequirement req, CEType ce);
+    ResidualRequirement(PartialSchemaKey key, PartialSchemaRequirement req, CEType ce);
 
     PartialSchemaKey _key;
     PartialSchemaRequirement _req;
     CEType _ce;
 };
-using ResidualRequirementsWithCE = std::vector<ResidualRequirementWithCE>;
+using ResidualRequirements = std::vector<ResidualRequirement>;
 
-struct EqualityPrefixEntry {
-    EqualityPrefixEntry(size_t startPos);
+// A sequence of intervals corresponding, one for each index key.
+using MultiKeyIntervalRequirement = std::vector<IntervalRequirement>;
 
-    bool operator==(const EqualityPrefixEntry& other) const;
+// Multi-key intervals represent unions and conjunctions of individual multi-key intervals.
+using MultiKeyIntervalReqExpr = BoolExpr<MultiKeyIntervalRequirement>;
 
-    // Which one is the first index field in the prefix.
-    size_t _startPos;
-    // Contains the intervals we compute for each "equality prefix" of query predicates.
-    CompoundIntervalReqExpr::Node _interval;
-    // Set of positions of predicates (in the requirements map) which we encode with this prefix.
-    opt::unordered_set<size_t> _predPosSet;
-};
-
-/**
- * Specifies type of query predicate which is being answered using a particular field on a candidate
- * index. This is used to determine if we can (or should) attempt to satisfy collation requirements
- * during the implementation phase. For example if we have a query (a = 1) and (b > 2) and (c = 3 or
- * c > 10) the entries will be SimpleEquality, SimpleInequality, and Compound.
- */
-#define INDEXFIELD_PREDTYPE_OPNAMES(F) \
-    F(SimpleEquality)                  \
-    F(SimpleInequality)                \
-    F(Compound)                        \
-    F(Unbound)
-
-MAKE_PRINTABLE_ENUM(IndexFieldPredType, INDEXFIELD_PREDTYPE_OPNAMES);
-MAKE_PRINTABLE_ENUM_STRING_ARRAY(IndexFieldPredTypeEnum,
-                                 IndexFieldPredType,
-                                 INDEXFIELD_PREDTYPE_OPNAMES);
-#undef INDEXFIELD_PREDTYPE_OPNAMES
-
-/**
- * Used to pre-compute candidate indexes for SargableNodes.
- * We keep track of the following:
- *  1. Name of index this entry applies to. There may be multiple entries for the same index if we
- * have more than one equality prefix (see below).
- *  2. A map from index field to projection we deliver the field under. We can select which index
- * fields we want to bind to which projections.
- *  3. A vector of equality prefixes. The equality prefix refers to the predicates applied to each
- * of the index fields. It consists of 0+ equalities followed by at most one inequality, and
- * followed by 0+ unconstrained fields. For example, suppose we have an index consisting of five
- * fields with the following intervals applied to each: _field1: [0, 0], _field2: [1, 1], _field3:
- * [2, MaxKey], _field4: (unconstrained), _field5: [MinKey, 10], _field6: [100, MaxKey]. In this
- * example we have 3 equality prefixes: {_field1, field_2, field3, _field4}, {_field5}, {_field6}.
- * If we have more than one prefixes, we may choose to perform recursive index navigation. If in the
- * simplest case with one equality prefix we perform an index scan with some residual predicates
- * applied.
- *  4. Residual predicates. We may not satisfy all intervals directly by converting into index
- * bounds, and instead may satisfy some as residual predicates. Consider the example: _field1: [0,
- * MaxKey], _field2: [1, MaxKey]. If we were to constrain the candidate indexes to just one equality
- * prefix, we would create compound index bound [{0, MinKey}, {MaxKey, MaxKey}] effectively encoding
- * the interval over the first field into the bound, the binding _field2 to a temporary variable,
- * and applying a filter encoding [1, MaxKey] over the index scan.
- *  5. List of the predicate types applied to each field in the candidate index. This is needed
- * during the physical rewrite phase where we need to match the collation requirements with the
- * collation of the index. One use is to ignore collation requirements for fields which are
- * equalities.
- */
+// Used to pre-compute candidate indexes for SargableNodes.
 struct CandidateIndexEntry {
-    CandidateIndexEntry(std::string indexDefName);
-
     bool operator==(const CandidateIndexEntry& other) const;
 
-    std::string _indexDefName;
-
-    // Indicates which fields we are retrieving and how we assign them to projections.
     FieldProjectionMap _fieldProjectionMap;
+    MultiKeyIntervalReqExpr::Node _intervals;
 
-    // Contains equality prefixes for this index.
-    std::vector<EqualityPrefixEntry> _eqPrefixes;
-    // If we have more than one equality prefix, contains the list of the correlated projections.
-    ProjectionNameOrderPreservingSet _correlatedProjNames;
+    PartialSchemaRequirements _residualRequirements;
+    // Projections needed to evaluate residual requirements.
+    ProjectionNameSet _residualRequirementsTempProjections;
 
-    // Requirements which are not satisfied directly by the IndexScan. They are intended to be
-    // sorted in their containing vector from most to least selective.
-    ResidualRequirements _residualRequirements;
+    // Used for CE. Mapping for residual requirement key to query key.
+    ResidualKeyMap _residualKeyMap;
 
-    // Types of the predicates which we will answer using a field at a given position in the
-    // candidate index.
-    std::vector<IndexFieldPredType> _predTypes;
+    // We have equalities on those index fields, and thus do not consider for collation
+    // requirements.
+    // TODO: consider a bitset.
+    opt::unordered_set<size_t> _fieldsToCollate;
 
     // Length of prefix of fields with applied intervals.
     size_t _intervalPrefixSize;
 };
 
-struct ScanParams {
-    bool operator==(const ScanParams& other) const;
+using CandidateIndexMap = std::map<std::string /*index name*/, CandidateIndexEntry>;
 
-    FieldProjectionMap _fieldProjectionMap;
+class IndexSpecification {
+public:
+    IndexSpecification(std::string scanDefName,
+                       std::string indexDefName,
+                       MultiKeyIntervalRequirement interval,
+                       bool reverseOrder);
 
-    // Requirements which are not satisfied directly by a PhysicalScan or Seek. They are intended to
-    // be sorted in their containing vector from most to least selective.
-    ResidualRequirements _residualRequirements;
+    bool operator==(const IndexSpecification& other) const;
+
+    const std::string& getScanDefName() const;
+    const std::string& getIndexDefName() const;
+
+    const MultiKeyIntervalRequirement& getInterval() const;
+
+    bool isReverseOrder() const;
+
+private:
+    // Name of the collection.
+    const std::string _scanDefName;
+
+    // The name of the index.
+    const std::string _indexDefName;
+
+    // The index interval.
+    MultiKeyIntervalRequirement _interval;
+
+    // Do we reverse the index order.
+    const bool _reverseOrder;
 };
-
-using CandidateIndexes = std::vector<CandidateIndexEntry>;
 
 }  // namespace mongo::optimizer

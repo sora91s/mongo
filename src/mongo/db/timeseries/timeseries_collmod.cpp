@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/db/timeseries/timeseries_collmod.h"
 
@@ -36,9 +37,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/logv2/redaction.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 namespace timeseries {
 
@@ -46,7 +44,10 @@ std::unique_ptr<CollMod> makeTimeseriesBucketsCollModCommand(OperationContext* o
                                                              const CollMod& origCmd) {
     const auto& origNs = origCmd.getNamespace();
 
-    auto timeseriesOptions = timeseries::getTimeseriesOptions(opCtx, origNs, true);
+    auto isCommandOnTimeseriesBucketNamespace =
+        origCmd.getIsTimeseriesNamespace() && *origCmd.getIsTimeseriesNamespace();
+    auto timeseriesOptions =
+        timeseries::getTimeseriesOptions(opCtx, origNs, !isCommandOnTimeseriesBucketNamespace);
 
     // Return early with null if we are not working with a time-series collection.
     if (!timeseriesOptions) {
@@ -66,7 +67,8 @@ std::unique_ptr<CollMod> makeTimeseriesBucketsCollModCommand(OperationContext* o
         index->setKeyPattern(std::move(bucketsIndexSpecWithStatus.getValue()));
     }
 
-    auto ns = origNs.makeTimeseriesBucketsNamespace();
+    auto ns =
+        isCommandOnTimeseriesBucketNamespace ? origNs : origNs.makeTimeseriesBucketsNamespace();
     CollModRequest request;
     request.setIndex(index);
     request.setValidator(origCmd.getValidator());
@@ -74,6 +76,7 @@ std::unique_ptr<CollMod> makeTimeseriesBucketsCollModCommand(OperationContext* o
     request.setValidationAction(origCmd.getValidationAction());
     request.setViewOn(origCmd.getViewOn());
     request.setPipeline(origCmd.getPipeline());
+    request.setRecordPreImages(origCmd.getRecordPreImages());
     request.setChangeStreamPreAndPostImages(origCmd.getChangeStreamPreAndPostImages());
     request.setExpireAfterSeconds(origCmd.getExpireAfterSeconds());
     request.setTimeseries(origCmd.getTimeseries());
@@ -87,7 +90,10 @@ std::unique_ptr<CollMod> makeTimeseriesViewCollModCommand(OperationContext* opCt
                                                           const CollMod& origCmd) {
     const auto& ns = origCmd.getNamespace();
 
-    auto timeseriesOptions = timeseries::getTimeseriesOptions(opCtx, ns, true);
+    auto isCommandOnTimeseriesBucketNamespace =
+        origCmd.getIsTimeseriesNamespace() && *origCmd.getIsTimeseriesNamespace();
+    auto timeseriesOptions =
+        timeseries::getTimeseriesOptions(opCtx, ns, !isCommandOnTimeseriesBucketNamespace);
 
     // Return early with null if we are not working with a time-series collection.
     if (!timeseriesOptions) {

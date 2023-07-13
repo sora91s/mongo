@@ -27,13 +27,14 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/pipeline/document_source.h"
 
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/exec/document_value/value.h"
-#include "mongo/db/feature_compatibility_version_documentation.h"
 #include "mongo/db/matcher/expression_algo.h"
 #include "mongo/db/pipeline/document_source_add_fields.h"
 #include "mongo/db/pipeline/document_source_group.h"
@@ -49,9 +50,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/string_map.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
-
 namespace mongo {
 
 using Parser = DocumentSource::Parser;
@@ -64,14 +62,14 @@ DocumentSource::DocumentSource(const StringData stageName,
                                const intrusive_ptr<ExpressionContext>& pCtx)
     : pSource(nullptr), pExpCtx(pCtx), _commonStats(stageName.rawData()) {
     if (pExpCtx->shouldCollectDocumentSourceExecStats()) {
-        _commonStats.executionTime.emplace(0);
+        _commonStats.executionTimeMillis.emplace(0);
     }
 }
 
 namespace {
 struct ParserRegistration {
     Parser parser;
-    boost::optional<FeatureFlag> featureFlag;
+    boost::optional<multiversion::FeatureCompatibilityVersion> requiredMinVersion;
 };
 // Used to keep track of which DocumentSources are registered under which name.
 static StringMap<ParserRegistration> parserMap;
@@ -87,18 +85,20 @@ void accumulatePipelinePlanSummaryStats(const Pipeline& pipeline,
     }
 }
 
-void DocumentSource::registerParser(string name,
-                                    Parser parser,
-                                    boost::optional<FeatureFlag> featureFlag) {
+void DocumentSource::registerParser(
+    string name,
+    Parser parser,
+    boost::optional<multiversion::FeatureCompatibilityVersion> requiredMinVersion) {
     auto it = parserMap.find(name);
     massert(28707,
             str::stream() << "Duplicate document source (" << name << ") registered.",
             it == parserMap.end());
-    parserMap[name] = {parser, featureFlag};
+    parserMap[name] = {parser, requiredMinVersion};
 }
-void DocumentSource::registerParser(string name,
-                                    SimpleParser simpleParser,
-                                    boost::optional<FeatureFlag> featureFlag) {
+void DocumentSource::registerParser(
+    string name,
+    SimpleParser simpleParser,
+    boost::optional<multiversion::FeatureCompatibilityVersion> requiredMinVersion) {
 
     Parser parser =
         [simpleParser = std::move(simpleParser)](
@@ -106,7 +106,7 @@ void DocumentSource::registerParser(string name,
             const intrusive_ptr<ExpressionContext>& expCtx) -> list<intrusive_ptr<DocumentSource>> {
         return {simpleParser(std::move(stageSpec), expCtx)};
     };
-    return registerParser(std::move(name), std::move(parser), std::move(featureFlag));
+    return registerParser(std::move(name), std::move(parser), std::move(requiredMinVersion));
 }
 bool DocumentSource::hasQuery() const {
     return false;
@@ -131,14 +131,13 @@ list<intrusive_ptr<DocumentSource>> DocumentSource::parse(
             str::stream() << "Unrecognized pipeline stage name: '" << stageName << "'",
             it != parserMap.end());
 
-    uassert(
-        ErrorCodes::QueryFeatureNotAllowed,
-        str::stream() << stageName
-                      << " is not allowed in the current feature compatibility version. See "
-                      << feature_compatibility_version_documentation::kCompatibilityLink
-                      << " for more information.",
-        !expCtx->maxFeatureCompatibilityVersion || !it->second.featureFlag ||
-            it->second.featureFlag->isEnabledOnVersion(*expCtx->maxFeatureCompatibilityVersion));
+    uassert(ErrorCodes::QueryFeatureNotAllowed,
+            str::stream() << stageName
+                          << " is not allowed in the current feature compatibility version. See "
+                          << feature_compatibility_version_documentation::kCompatibilityLink
+                          << " for more information.",
+            !expCtx->maxFeatureCompatibilityVersion || !it->second.requiredMinVersion ||
+                (*it->second.requiredMinVersion <= *expCtx->maxFeatureCompatibilityVersion));
 
     return it->second.parser(stageSpec, expCtx);
 }
@@ -282,40 +281,8 @@ void DocumentSource::serializeToArray(vector<Value>& array,
     }
 }
 
-namespace {
-std::list<boost::intrusive_ptr<DocumentSource>> throwOnParse(
-    BSONElement spec, const boost::intrusive_ptr<ExpressionContext>& expCtx) {
-    uasserted(6047400, "Search stages are only allowed on MongoDB Atlas");
-}
-std::unique_ptr<LiteParsedDocumentSource> throwOnParseLite(NamespaceString nss,
-                                                           const BSONElement& spec) {
-    uasserted(6047401, "Search stages are only allowed on MongoDB Atlas");
-}
-}  // namespace
 MONGO_INITIALIZER_GROUP(BeginDocumentSourceRegistration,
                         ("default"),
                         ("EndDocumentSourceRegistration"))
-// Any remaining work on the parserMap should be done before finishing DocumentSource Registration.
-MONGO_INITIALIZER_WITH_PREREQUISITES(EndDocumentSourceRegistration,
-                                     ("BeginDocumentSourceRegistration"))
-(InitializerContext*) {
-    auto stageName = "$search"_sd;
-    auto searchIt = parserMap.find(stageName);
-    // If the $search stage has not been registered at this point, register a parser that errors
-    // with a useful error message on parsing a search stage.
-    if (searchIt == parserMap.end()) {
-        LiteParsedDocumentSource::registerParser("$search",
-                                                 throwOnParseLite,
-                                                 AllowedWithApiStrict::kAlways,
-                                                 AllowedWithClientType::kAny);
-        DocumentSource::registerParser("$search", throwOnParse, boost::none);
-        LiteParsedDocumentSource::registerParser("$searchMeta",
-                                                 throwOnParseLite,
-                                                 AllowedWithApiStrict::kAlways,
-                                                 AllowedWithClientType::kAny);
-        DocumentSource::registerParser("$searchMeta", throwOnParse, boost::none);
-    }
-}
-
-
+MONGO_INITIALIZER_GROUP(EndDocumentSourceRegistration, ("BeginDocumentSourceRegistration"), ())
 }  // namespace mongo

@@ -27,19 +27,20 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/server_status.h"
+#include "mongo/db/commands/server_status_internal.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/net/http_client.h"
 #include "mongo/util/net/socket_utils.h"
 #include "mongo/util/version.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -62,28 +63,19 @@ public:
     }
 
     std::string help() const final {
-        return "returns lots of administrative server statistics. Optionally set {..., all: 1} to "
-               "retrieve all server status sections.";
+        return "returns lots of administrative server statistics";
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                  ActionType::serverStatus)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
-    }
-
-    bool allowedWithSecurityToken() const final {
-        return true;
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const final {
+        ActionSet actions;
+        actions.addAction(ActionType::serverStatus);
+        out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
         const auto service = opCtx->getServiceContext();
@@ -91,10 +83,12 @@ public:
         const auto runStart = clock->now();
         BSONObjBuilder timeBuilder(256);
 
+        const auto authSession = AuthorizationSession::get(Client::getCurrent());
+
         // This command is important to observability, and like FTDC, does not need to acquire the
         // PBWM lock to return correct results.
         ShouldNotConflictWithSecondaryBatchApplicationBlock noPBWMBlock(opCtx->lockState());
-        opCtx->lockState()->setAdmissionPriority(AdmissionContext::Priority::kImmediate);
+        opCtx->lockState()->skipAcquireTicket();
 
         // --- basic fields that are global
 
@@ -111,19 +105,15 @@ public:
         timeBuilder.appendNumber("after basic",
                                  durationCount<Milliseconds>(clock->now() - runStart));
 
-        // Individual section 'includeByDefault()' settings will be bypassed if the caller specified
-        // {all: 1}.
-        const auto& allElem = cmdObj["all"];
-        bool includeAllSections = allElem.type() ? allElem.trueValue() : false;
-
         // --- all sections
         auto registry = ServerStatusSectionRegistry::get();
         for (auto i = registry->begin(); i != registry->end(); ++i) {
             ServerStatusSection* section = i->second;
 
-            if (!section->checkAuthForOperation(opCtx).isOK()) {
+            std::vector<Privilege> requiredPrivileges;
+            section->addRequiredPrivileges(&requiredPrivileges);
+            if (!authSession->isAuthorizedForPrivileges(requiredPrivileges))
                 continue;
-            }
 
             bool include = section->includeByDefault();
             const auto& elem = cmdObj[section->getSectionName()];
@@ -131,7 +121,7 @@ public:
                 include = elem.trueValue();
             }
 
-            if (!include && !includeAllSections) {
+            if (!include) {
                 continue;
             }
 
@@ -142,13 +132,17 @@ public:
         }
 
         // --- counters
-        MetricTree* metricTree = globalMetricTree(/* create */ false);
+        bool includeMetricTree = MetricTree::theMetricTree != nullptr;
         auto metricsEl = cmdObj["metrics"_sd];
-        if (metricTree && (metricsEl.eoo() || metricsEl.trueValue())) {
+        if (metricsEl.type() && !metricsEl.trueValue())
+            includeMetricTree = false;
+
+        if (includeMetricTree) {
             if (metricsEl.type() == BSONType::Object) {
-                metricTree->appendTo(BSON("metrics" << metricsEl.embeddedObject()), result);
+                MetricTree::theMetricTree->appendTo(BSON("metrics" << metricsEl.embeddedObject()),
+                                                    result);
             } else {
-                metricTree->appendTo(result);
+                MetricTree::theMetricTree->appendTo(result);
             }
         }
 
@@ -181,13 +175,22 @@ private:
     const Date_t _started;
 };
 
-Command* serverStatusCommand;
+Command* serverStatusCommand = new CmdServerStatus();;
 
-MONGO_INITIALIZER(CreateCmdServerStatus)(InitializerContext* context) {
-    serverStatusCommand = new CmdServerStatus();
-}
+// MONGO_INITIALIZER(CreateCmdServerStatus)(InitializerContext* context) {
+//     serverStatusCommand = new CmdServerStatus();
+// }
 
 }  // namespace
+
+OpCounterServerStatusSection::OpCounterServerStatusSection(const std::string& sectionName,
+                                                           OpCounters* counters)
+    : ServerStatusSection(sectionName), _counters(counters) {}
+
+BSONObj OpCounterServerStatusSection::generateSection(OperationContext* opCtx,
+                                                      const BSONElement& configElement) const {
+    return _counters->getObj();
+}
 
 OpCounterServerStatusSection globalOpCounterServerStatusSection("opcounters", &globalOpCounters);
 
@@ -241,8 +244,7 @@ public:
 class MemBase : public ServerStatusMetric {
 public:
     MemBase() : ServerStatusMetric(".mem.bits") {}
-
-    void appendAtLeaf(BSONObjBuilder& b) const override {
+    virtual void appendAtLeaf(BSONObjBuilder& b) const {
         b.append("bits", sizeof(int*) == 4 ? 32 : 64);
 
         ProcessInfo p;
@@ -257,9 +259,7 @@ public:
             b.appendBool("supported", false);
         }
     }
-};
-
-MemBase& memBase = addMetricToTree(std::make_unique<MemBase>());
+} memBase;
 
 class HttpClientServerStatus : public ServerStatusSection {
 public:
@@ -268,6 +268,8 @@ public:
     bool includeByDefault() const final {
         return false;
     }
+
+    void addRequiredPrivileges(std::vector<Privilege>* out) final {}
 
     BSONObj generateSection(OperationContext*, const BSONElement& configElement) const final {
         return HttpClient::getServerStatus();

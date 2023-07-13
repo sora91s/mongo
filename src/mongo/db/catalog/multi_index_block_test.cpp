@@ -33,7 +33,7 @@
 
 #include "mongo/db/catalog/catalog_test_fixture.h"
 #include "mongo/db/catalog_raii.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/unittest/unittest.h"
 
@@ -69,7 +69,7 @@ void MultiIndexBlockTest::setUp() {
     repl::ReplicationCoordinator::set(service,
                                       std::make_unique<repl::ReplicationCoordinatorMock>(service));
 
-    _nss = NamespaceString::createNamespaceString_forTest("db.coll");
+    _nss = NamespaceString("db.coll");
 
     CollectionOptions options;
     options.uuid = UUID::gen();
@@ -90,11 +90,8 @@ TEST_F(MultiIndexBlockTest, CommitWithoutInsertingDocuments) {
     AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
     CollectionWriter coll(operationContext(), autoColl);
 
-    auto specs = unittest::assertGet(indexer->init(operationContext(),
-                                                   coll,
-                                                   std::vector<BSONObj>(),
-                                                   MultiIndexBlock::kNoopOnInitFn,
-                                                   /*forRecovery=*/false));
+    auto specs = unittest::assertGet(indexer->init(
+        operationContext(), coll, std::vector<BSONObj>(), MultiIndexBlock::kNoopOnInitFn));
     ASSERT_EQUALS(0U, specs.size());
 
     ASSERT_OK(indexer->dumpInsertsFromBulk(operationContext(), coll.get()));
@@ -103,7 +100,7 @@ TEST_F(MultiIndexBlockTest, CommitWithoutInsertingDocuments) {
     {
         WriteUnitOfWork wunit(operationContext());
         ASSERT_OK(indexer->commit(operationContext(),
-                                  coll.getWritableCollection(operationContext()),
+                                  coll.getWritableCollection(),
                                   MultiIndexBlock::kNoopOnCreateEachFn,
                                   MultiIndexBlock::kNoopOnCommitFn));
         wunit.commit();
@@ -116,27 +113,24 @@ TEST_F(MultiIndexBlockTest, CommitAfterInsertingSingleDocument) {
     AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
     CollectionWriter coll(operationContext(), autoColl);
 
-    auto specs = unittest::assertGet(indexer->init(operationContext(),
-                                                   coll,
-                                                   std::vector<BSONObj>(),
-                                                   MultiIndexBlock::kNoopOnInitFn,
-                                                   /*forRecovery=*/false));
+    auto specs = unittest::assertGet(indexer->init(
+        operationContext(), coll, std::vector<BSONObj>(), MultiIndexBlock::kNoopOnInitFn));
     ASSERT_EQUALS(0U, specs.size());
 
-    ASSERT_OK(indexer->insertSingleDocumentForInitialSyncOrRecovery(
-        operationContext(),
-        coll.get(),
-        {},
-        {},
-        /*saveCursorBeforeWrite*/ []() {},
-        /*restoreCursorAfterWrite*/ []() {}));
+    ASSERT_OK(
+        indexer->insertSingleDocumentForInitialSyncOrRecovery(operationContext(),
+                                                              coll.get(),
+                                                              {},
+                                                              {},
+                                                              /*saveCursorBeforeWrite*/ []() {},
+                                                              /*restoreCursorAfterWrite*/ []() {}));
     ASSERT_OK(indexer->dumpInsertsFromBulk(operationContext(), coll.get()));
     ASSERT_OK(indexer->checkConstraints(operationContext(), coll.get()));
 
     {
         WriteUnitOfWork wunit(operationContext());
         ASSERT_OK(indexer->commit(operationContext(),
-                                  coll.getWritableCollection(operationContext()),
+                                  coll.getWritableCollection(),
                                   MultiIndexBlock::kNoopOnCreateEachFn,
                                   MultiIndexBlock::kNoopOnCommitFn));
         wunit.commit();
@@ -152,19 +146,16 @@ TEST_F(MultiIndexBlockTest, AbortWithoutCleanupAfterInsertingSingleDocument) {
     AutoGetCollection autoColl(operationContext(), getNSS(), MODE_X);
     CollectionWriter coll(operationContext(), autoColl);
 
-    auto specs = unittest::assertGet(indexer->init(operationContext(),
-                                                   coll,
-                                                   std::vector<BSONObj>(),
-                                                   MultiIndexBlock::kNoopOnInitFn,
-                                                   /*forRecovery=*/false));
+    auto specs = unittest::assertGet(indexer->init(
+        operationContext(), coll, std::vector<BSONObj>(), MultiIndexBlock::kNoopOnInitFn));
     ASSERT_EQUALS(0U, specs.size());
-    ASSERT_OK(indexer->insertSingleDocumentForInitialSyncOrRecovery(
-        operationContext(),
-        coll.get(),
-        {},
-        {},
-        /*saveCursorBeforeWrite*/ []() {},
-        /*restoreCursorAfterWrite*/ []() {}));
+    ASSERT_OK(
+        indexer->insertSingleDocumentForInitialSyncOrRecovery(operationContext(),
+                                                              coll.get(),
+                                                              {},
+                                                              {},
+                                                              /*saveCursorBeforeWrite*/ []() {},
+                                                              /*restoreCursorAfterWrite*/ []() {}));
     auto isResumable = false;
     indexer->abortWithoutCleanup(operationContext(), coll.get(), isResumable);
 }
@@ -185,8 +176,7 @@ TEST_F(MultiIndexBlockTest, InitWriteConflictException) {
                                          coll,
                                          {spec},
                                          [](std::vector<BSONObj>& specs) -> Status {
-                                             throwWriteConflictException(
-                                                 "Throw WriteConflictException in 'OnInitFn'.");
+                                             throw WriteConflictException();
                                          }),
                            DBException,
                            ErrorCodes::WriteConflict);

@@ -29,13 +29,12 @@
 
 #pragma once
 
-#include <s2regionunion.h>
 #include <string>
 
 #include "mongo/base/clonable_ptr.h"
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/geo/shapes.h"
-
+#include "third_party/s2/s2regionunion.h"
 
 namespace mongo {
 
@@ -132,7 +131,7 @@ public:
     // TODO: Remove these hacks
     const CapWithCRS* getCapGeometryHack() const;
 
-    BSONElement getGeoElement() const {
+    const BSONElement getGeoElement() const {
         return _geoElm;
     }
 

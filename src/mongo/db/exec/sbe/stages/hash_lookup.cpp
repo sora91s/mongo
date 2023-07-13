@@ -29,11 +29,9 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/curop.h"
 #include "mongo/db/exec/sbe/stages/hash_lookup.h"
 #include "mongo/db/exec/sbe/stages/stage_visitors.h"
 
-#include "mongo/db/exec/sbe/expressions/compile_ctx.h"
 #include "mongo/db/exec/sbe/expressions/expression.h"
 #include "mongo/db/exec/sbe/size_estimator.h"
 #include "mongo/db/exec/sbe/util/spilling.h"
@@ -49,9 +47,8 @@ HashLookupStage::HashLookupStage(std::unique_ptr<PlanStage> outer,
                                  value::SlotVector innerProjects,
                                  value::SlotMap<std::unique_ptr<EExpression>> innerAggs,
                                  boost::optional<value::SlotId> collatorSlot,
-                                 PlanNodeId planNodeId,
-                                 bool participateInTrialRunTracking)
-    : PlanStage("hash_lookup"_sd, planNodeId, participateInTrialRunTracking),
+                                 PlanNodeId planNodeId)
+    : PlanStage("hash_lookup"_sd, planNodeId),
       _outerCond(outerCond),
       _innerCond(innerCond),
       _innerProjects(innerProjects),
@@ -75,8 +72,7 @@ std::unique_ptr<PlanStage> HashLookupStage::clone() const {
                                              _innerProjects,
                                              std::move(innerAggs),
                                              _collatorSlot,
-                                             _commonStats.nodeId,
-                                             _participateInTrialRunTracking);
+                                             _commonStats.nodeId);
 }
 
 void HashLookupStage::prepare(CompileCtx& ctx) {
@@ -314,8 +310,6 @@ void HashLookupStage::spillBufferedValueToDisk(OperationContext* opCtx,
                                                RecordStore* rs,
                                                size_t bufferIdx,
                                                const value::MaterializedRow& val) {
-    CurOp::get(_opCtx)->debug().hashLookupSpillToDisk += 1;
-
     auto rid = getValueRecordId(bufferIdx);
 
     BufBuilder buf;
@@ -500,8 +494,6 @@ void HashLookupStage::spillIndicesToRecordStore(RecordStore* rs,
                                                 value::TypeTags tagKey,
                                                 value::Value valKey,
                                                 const std::vector<size_t>& value) {
-    CurOp::get(_opCtx)->debug().hashLookupSpillToDisk += 1;
-
     auto [owned, tagKeyColl, valKeyColl] = normalizeStringIfCollator(tagKey, valKey);
     _probeKey.reset(0, owned, tagKeyColl, valKeyColl);
 
@@ -586,13 +578,6 @@ PlanState HashLookupStage::getNext() {
     return trackPlanState(state);
 }
 
-void HashLookupStage::saveChildrenState(bool relinquishCursor, bool disableSlotAccess) {
-    // HashLookupStage::getNext() only guarantees that outer child's getNext() was called. Thus,
-    // it is safe to propagate disableSlotAccess to the outer child, but not to the inner child.
-    innerChild()->saveState(relinquishCursor, false);
-    outerChild()->saveState(relinquishCursor, disableSlotAccess);
-}
-
 void HashLookupStage::close() {
     auto optTimer(getOptTimer(_opCtx));
 
@@ -606,12 +591,11 @@ void HashLookupStage::close() {
 
 std::unique_ptr<PlanStageStats> HashLookupStage::getStats(bool includeDebugInfo) const {
     auto ret = std::make_unique<PlanStageStats>(_commonStats);
-    invariant(ret);
     ret->children.emplace_back(outerChild()->getStats(includeDebugInfo));
     ret->children.emplace_back(innerChild()->getStats(includeDebugInfo));
     ret->specific = std::make_unique<HashLookupStats>(_specificStats);
     if (includeDebugInfo) {
-        BSONObjBuilder bob(StorageAccessStatsVisitor::collectStats(*this, *ret).toBSON());
+        BSONObjBuilder bob(StorageAccessStatsVisitor::collectStats(*this, ret.get()).toBSON());
         // Spilling stats.
         bob.appendBool("usedDisk", _specificStats.usedDisk)
             .appendNumber("spilledRecords", _specificStats.getSpilledRecords())

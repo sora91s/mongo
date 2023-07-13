@@ -1,10 +1,6 @@
 /**
  * Tests that when certain planning-related server parameters are changed at runtime, the SBE plan
  * cache is cleared.
- * @tags: [
- *   # TODO SERVER-67607: Test plan cache with CQF enabled.
- *   cqf_incompatible,
- * ]
  */
 (function() {
 "use strict";
@@ -44,10 +40,6 @@ const paramList = [
     {name: "allowDiskUseByDefault", value: false},
     {name: "internalQueryMaxNumberOfFieldsToChooseUnfilteredColumnScan", value: 100},
     {name: "internalQueryMaxNumberOfFieldsToChooseFilteredColumnScan", value: 100},
-    {name: "internalCostModelCoefficients", value: '{"filterIncrementalCost": 1.0}'},
-    {name: "internalQueryColumnScanMinAvgDocSizeBytes", value: 2048},
-    {name: "internalQueryColumnScanMinCollectionSizeBytes", value: 2048},
-    {name: "internalQueryColumnScanMinNumColumnFilters", value: 5},
 ];
 
 const conn = MongoRunner.runMongod();
@@ -56,9 +48,10 @@ assert.neq(conn, null, "mongod failed to start up");
 const dbName = jsTestName();
 const db = conn.getDB(dbName);
 
-// This test is specifically verifying the behavior of the SBE plan cache.
-if (!checkSBEEnabled(db)) {
-    jsTestLog("Skipping test because SBE is not enabled");
+// This test is specifically verifying the behavior of the SBE plan cache. So if either the SBE plan
+// cache or SBE itself are disabled, bail out.
+if (!checkSBEEnabled(db, ["featureFlagSbePlanCache", "featureFlagSbeFull"])) {
+    jsTestLog("Skipping test because either SBE engine or SBE plan cache are disabled");
     MongoRunner.stopMongod(conn);
     return;
 }

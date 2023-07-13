@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -141,6 +142,7 @@ REGISTER_DOCUMENT_SOURCE(sort,
                          LiteParsedDocumentSourceDefault::parse,
                          DocumentSourceSort::createFromBson,
                          AllowedWithApiStrict::kAlways);
+
 REGISTER_DOCUMENT_SOURCE_CONDITIONALLY(
     _internalBoundedSort,
     LiteParsedDocumentSourceDefault::parse,
@@ -149,7 +151,7 @@ REGISTER_DOCUMENT_SOURCE_CONDITIONALLY(
                                       : AllowedWithApiStrict::kInternal,
     ::mongo::getTestCommandsEnabled() ? AllowedWithClientType::kAny
                                       : AllowedWithClientType::kInternal,
-    feature_flags::gFeatureFlagBucketUnpackWithSort,
+    feature_flags::gFeatureFlagBucketUnpackWithSort.getVersion(),
     feature_flags::gFeatureFlagBucketUnpackWithSort.isEnabledAndIgnoreFCV());
 
 DocumentSource::GetNextResult::ReturnStatus DocumentSourceSort::timeSorterPeek() {
@@ -301,11 +303,9 @@ void DocumentSourceSort::serializeToArray(
 
         if (explain >= ExplainOptions::Verbosity::kExecStats) {
             mutDoc["totalDataSizeSortedBytesEstimate"] =
-                Value(static_cast<long long>(_timeSorter->stats().bytesSorted()));
-            mutDoc["usedDisk"] = Value(_timeSorter->stats().spilledRanges() > 0);
-            mutDoc["spills"] = Value(static_cast<long long>(_timeSorter->stats().spilledRanges()));
-            mutDoc["spilledDataStorageSize"] =
-                Value(static_cast<long long>(_sortExecutor->spilledDataStorageSize()));
+                Value(static_cast<long long>(_timeSorter->totalDataSizeBytes()));
+            mutDoc["usedDisk"] = Value(_timeSorter->numSpills() > 0);
+            mutDoc["spills"] = Value(static_cast<long long>(_timeSorter->numSpills()));
         }
 
         array.push_back(Value{mutDoc.freeze()});
@@ -341,8 +341,6 @@ void DocumentSourceSort::serializeToArray(
             Value(static_cast<long long>(stats.totalDataSizeBytes));
         mutDoc["usedDisk"] = Value(stats.spills > 0);
         mutDoc["spills"] = Value(static_cast<long long>(stats.spills));
-        mutDoc["spilledDataStorageSize"] =
-            Value(static_cast<long long>(_sortExecutor->spilledDataStorageSize()));
     }
 
     array.push_back(Value(mutDoc.freeze()));
@@ -406,10 +404,6 @@ DepsTracker::State DocumentSourceSort::getDependencies(DepsTracker* deps) const 
     return DepsTracker::State::SEE_NEXT;
 }
 
-void DocumentSourceSort::addVariableRefs(std::set<Variables::Id>* refs) const {
-    // It's impossible for $sort or the find command's sort to refer to a variable.
-}
-
 intrusive_ptr<DocumentSource> DocumentSourceSort::createFromBson(
     BSONElement elem, const intrusive_ptr<ExpressionContext>& pExpCtx) {
     uassert(15973, "the $sort key specification must be an object", elem.type() == Object);
@@ -443,11 +437,10 @@ intrusive_ptr<DocumentSourceSort> DocumentSourceSort::createBoundedSort(
     if (expCtx->allowDiskUse) {
         opts.extSortAllowed = true;
         opts.tempDir = expCtx->tempDir;
-        opts.sorterFileStats = ds->getSorterFileStats();
     }
 
     if (limit) {
-        opts.Limit(limit.value());
+        opts.Limit(limit.get());
     }
 
     if (boundBase == kMin) {
@@ -531,14 +524,11 @@ intrusive_ptr<DocumentSourceSort> DocumentSourceSort::parseBoundedSort(
                           << kMax << "'",
             boundBase == kMin || boundBase == kMax);
 
-    auto ds = DocumentSourceSort::create(expCtx, pat);
-
     SortOptions opts;
     opts.MaxMemoryUsageBytes(internalQueryMaxBlockingSortMemoryUsageBytes.load());
     if (expCtx->allowDiskUse) {
         opts.ExtSortAllowed(true);
         opts.TempDir(expCtx->tempDir);
-        opts.FileStats(ds->getSorterFileStats());
     }
     if (BSONElement limitElem = args["limit"]) {
         uassert(6588100,
@@ -547,6 +537,7 @@ intrusive_ptr<DocumentSourceSort> DocumentSourceSort::parseBoundedSort(
         opts.Limit(limitElem.numberLong());
     }
 
+    auto ds = DocumentSourceSort::create(expCtx, pat);
     if (boundBase == kMin) {
         if (pat.back().isAscending) {
             ds->_timeSorter.reset(
@@ -665,7 +656,7 @@ boost::optional<DocumentSource::DistributedPlanLogic> DocumentSourceSort::distri
 }
 
 bool DocumentSourceSort::canRunInParallelBeforeWriteStage(
-    const OrderedPathSet& nameOfShardKeyFieldsUponEntryToStage) const {
+    const std::set<std::string>& nameOfShardKeyFieldsUponEntryToStage) const {
     // This is an interesting special case. If there are no further stages which require merging the
     // streams into one, a $sort should not require it. This is only the case because the sort order
     // doesn't matter for a pipeline ending with a write stage. We may encounter it here as an
@@ -693,9 +684,6 @@ std::string nextFileName() {
 }  // namespace mongo
 
 #include "mongo/db/sorter/sorter.cpp"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 template class ::mongo::BoundedSorter<::mongo::DocumentSourceSort::SortableDate,
                                       ::mongo::Document,
                                       ::mongo::CompAsc,

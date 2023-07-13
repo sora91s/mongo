@@ -27,11 +27,11 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/bson/bsonobj_comparator.h"
-#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/query/parsed_distinct.h"
@@ -46,9 +46,6 @@
 #include "mongo/s/transaction_router.h"
 #include "mongo/util/decimal_counter.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 namespace {
 
@@ -60,8 +57,8 @@ public:
         return "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
     }
 
-    NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) const override {
-        return CommandHelpers::parseNsCollectionRequired(dbName, cmdObj);
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsCollectionRequired(dbname, cmdObj).ns();
     }
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
@@ -80,38 +77,27 @@ public:
         return false;
     }
 
-    ReadWriteType getReadWriteType() const override {
-        return ReadWriteType::kRead;
-    }
-
     ReadConcernSupportResult supportsReadConcern(const BSONObj& cmdObj,
                                                  repl::ReadConcernLevel level,
                                                  bool isImplicitDefault) const final {
         return ReadConcernSupportResult::allSupportedAndDefaultPermitted();
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(parseResourcePattern(dbName.db(), cmdObj),
-                                                  ActionType::find)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
-    }
-
-    bool allowedInTransactions() const final {
-        return true;
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const override {
+        ActionSet actions;
+        actions.addAction(ActionType::find);
+        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
     Status explain(OperationContext* opCtx,
                    const OpMsgRequest& opMsgRequest,
                    ExplainOptions::Verbosity verbosity,
                    rpc::ReplyBuilderInterface* result) const override {
+        std::string dbname = opMsgRequest.getDatabase().toString();
         const BSONObj& cmdObj = opMsgRequest.body;
-        const NamespaceString nss(parseNs(opMsgRequest.getDatabase(), cmdObj));
+        const NamespaceString nss(parseNs(dbname, cmdObj));
 
         auto parsedDistinctCmd =
             ParsedDistinct::parse(opCtx, nss, cmdObj, ExtensionsCallbackNoop(), true);
@@ -135,13 +121,13 @@ public:
 
         std::vector<AsyncRequestsSender::Response> shardResponses;
         try {
-            const auto cri = uassertStatusOK(
+            const auto routingInfo = uassertStatusOK(
                 Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
             shardResponses =
                 scatterGatherVersionedTargetByRoutingTable(opCtx,
                                                            nss.db(),
                                                            nss,
-                                                           cri,
+                                                           routingInfo,
                                                            explainCmd,
                                                            ReadPreferenceSetting::get(opCtx),
                                                            Shard::RetryPolicy::kIdempotent,
@@ -161,7 +147,6 @@ public:
 
             auto viewAggCmd = OpMsgRequest::fromDBAndBody(nss.db(), aggCmdOnView.getValue()).body;
             auto aggRequestOnView = aggregation_request_helper::parseFromBSON(
-                opCtx,
                 nss,
                 viewAggCmd,
                 verbosity,
@@ -190,7 +175,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         CommandHelpers::handleMarkKillOnClientDisconnect(opCtx);
@@ -211,30 +196,28 @@ public:
                 CollatorFactoryInterface::get(opCtx->getServiceContext())->makeFromBSON(collation));
         }
 
-        auto swCri = getCollectionRoutingInfoForTxnCmd(opCtx, nss);
-        if (swCri == ErrorCodes::NamespaceNotFound) {
+        auto swCM = getCollectionRoutingInfoForTxnCmd(opCtx, nss);
+        if (swCM == ErrorCodes::NamespaceNotFound) {
             // If the database doesn't exist, we successfully return an empty result set without
             // creating a cursor.
             result.appendArray("values", BSONObj());
             return true;
         }
 
-        const auto cri = uassertStatusOK(std::move(swCri));
-        const auto& cm = cri.cm;
+        const auto cm = uassertStatusOK(std::move(swCM));
         std::vector<AsyncRequestsSender::Response> shardResponses;
         try {
             shardResponses = scatterGatherVersionedTargetByRoutingTable(
                 opCtx,
                 nss.db(),
                 nss,
-                cri,
+                cm,
                 applyReadWriteConcern(
                     opCtx, this, CommandHelpers::filterCommandRequestForPassthrough(cmdObj)),
                 ReadPreferenceSetting::get(opCtx),
                 Shard::RetryPolicy::kIdempotent,
                 query,
-                collation,
-                true /* eligibleForSampling */);
+                collation);
         } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
             auto parsedDistinct = ParsedDistinct::parse(
                 opCtx, ex->getNamespace(), cmdObj, ExtensionsCallbackNoop(), true);
@@ -245,7 +228,6 @@ public:
 
             auto viewAggCmd = OpMsgRequest::fromDBAndBody(nss.db(), aggCmdOnView.getValue()).body;
             auto aggRequestOnView = aggregation_request_helper::parseFromBSON(
-                opCtx,
                 nss,
                 viewAggCmd,
                 boost::none,
@@ -260,10 +242,10 @@ public:
             }
 
             BSONObj aggResult = CommandHelpers::runCommandDirectly(
-                opCtx, OpMsgRequest::fromDBAndBody(dbName.db(), std::move(resolvedAggCmd)));
+                opCtx, OpMsgRequest::fromDBAndBody(dbName, std::move(resolvedAggCmd)));
 
             ViewResponseFormatter formatter(aggResult);
-            auto formatStatus = formatter.appendAsDistinctResponse(&result, boost::none);
+            auto formatStatus = formatter.appendAsDistinctResponse(&result);
             uassertStatusOK(formatStatus);
 
             return true;

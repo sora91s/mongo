@@ -35,10 +35,11 @@
 #include "mongo/db/concurrency/lock_manager_defs.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/storage/ticketholder_manager.h"
+#include "mongo/db/storage/ticketholders.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/util/concurrency/admission_context.h"
 #include "mongo/util/concurrency/spin_lock.h"
-#include "mongo/util/concurrency/ticketholder.h"
+#include "mongo/util/concurrency/ticket.h"
 
 namespace mongo {
 
@@ -141,10 +142,7 @@ public:
     virtual bool unlockGlobal();
 
     virtual LockResult lockRSTLBegin(OperationContext* opCtx, LockMode mode);
-    virtual void lockRSTLComplete(OperationContext* opCtx,
-                                  LockMode mode,
-                                  Date_t deadline,
-                                  const LockTimeoutCallback& onTimeout);
+    virtual void lockRSTLComplete(OperationContext* opCtx, LockMode mode, Date_t deadline);
 
     virtual bool unlockRSTLforPrepare();
 
@@ -184,7 +182,7 @@ public:
 
     virtual LockMode getLockMode(ResourceId resId) const;
     virtual bool isLockHeldForMode(ResourceId resId, LockMode mode) const;
-    virtual bool isDbLockedForMode(const DatabaseName& dbName, LockMode mode) const;
+    virtual bool isDbLockedForMode(StringData dbName, LockMode mode) const;
     virtual bool isCollectionLockedForMode(const NamespaceString& nss, LockMode mode) const;
 
     virtual ResourceId getWaitingResource() const;
@@ -197,6 +195,9 @@ public:
     virtual bool saveLockStateAndUnlock(LockSnapshot* stateOut);
 
     virtual void restoreLockState(OperationContext* opCtx, const LockSnapshot& stateToRestore);
+    virtual void restoreLockState(const LockSnapshot& stateToRestore) {
+        restoreLockState(nullptr, stateToRestore);
+    }
 
     bool releaseWriteUnitOfWorkAndUnlock(LockSnapshot* stateOut) override;
     void restoreWriteUnitOfWorkAndLock(OperationContext* opCtx,
@@ -237,7 +238,7 @@ public:
                              ResourceId resId,
                              LockMode mode,
                              Date_t deadline) {
-        _lockComplete(opCtx, resId, mode, deadline, nullptr);
+        _lockComplete(opCtx, resId, mode, deadline);
     }
 
 private:
@@ -280,15 +281,14 @@ private:
      * @param mode Mode which was passed to an earlier _lockBegin call. Must match.
      * @param deadline The absolute time point when this lock acquisition will time out, if not yet
      * granted.
-     * @param onTimeout Callback which will run if the lock acquisition is about to time out.
      *
      * Throws an exception if it is interrupted.
      */
-    void _lockComplete(OperationContext* opCtx,
-                       ResourceId resId,
-                       LockMode mode,
-                       Date_t deadline,
-                       const LockTimeoutCallback& onTimeout);
+    void _lockComplete(OperationContext* opCtx, ResourceId resId, LockMode mode, Date_t deadline);
+
+    void _lockComplete(ResourceId resId, LockMode mode, Date_t deadline) {
+        _lockComplete(nullptr, resId, mode, deadline);
+    }
 
     /**
      * The main functionality of the unlock method, except accepts iterator in order to avoid
@@ -378,8 +378,11 @@ private:
     // A structure for accumulating time spent getting flow control tickets.
     FlowControlTicketholder::CurOp _flowControlStats;
 
+    // Keeps state and statistics related to admission control.
+    AdmissionContext _admCtx;
+
     // The global ticketholders of the service context.
-    TicketHolderManager* _ticketHolderManager;
+    TicketHolders* _ticketHolders;
 
     // This will only be valid when holding a ticket.
     boost::optional<Ticket> _ticket;
@@ -422,31 +425,32 @@ public:
 };
 
 /**
- * RAII-style class to set the priority for the ticket admission mechanism when acquiring a global
- * lock.
+ * RAII-style class to opt out of the ticket acquisition mechanism when acquiring a global lock.
+ *
+ * Operations that acquire the global lock but do not use any storage engine resources are eligible
+ * to skip ticket acquisition. Otherwise, a ticket acquisition is required to prevent throughput
+ * from suffering under high load.
  */
-class SetAdmissionPriorityForLock {
+class SkipTicketAcquisitionForLock {
 public:
-    SetAdmissionPriorityForLock(const SetAdmissionPriorityForLock&) = delete;
-    SetAdmissionPriorityForLock& operator=(const SetAdmissionPriorityForLock&) = delete;
-    explicit SetAdmissionPriorityForLock(OperationContext* opCtx,
-                                         AdmissionContext::Priority priority)
-        : _opCtx(opCtx), _originalPriority(opCtx->lockState()->getAdmissionPriority()) {
-        uassert(ErrorCodes::IllegalOperation,
-                "It is illegal for an operation to demote a high priority to a lower priority "
-                "operation",
-                _originalPriority != AdmissionContext::Priority::kImmediate ||
-                    priority == AdmissionContext::Priority::kImmediate);
-        _opCtx->lockState()->setAdmissionPriority(priority);
+    SkipTicketAcquisitionForLock(const SkipTicketAcquisitionForLock&) = delete;
+    SkipTicketAcquisitionForLock& operator=(const SkipTicketAcquisitionForLock&) = delete;
+    explicit SkipTicketAcquisitionForLock(OperationContext* opCtx)
+        : _opCtx(opCtx), _shouldAcquireTicket(_opCtx->lockState()->shouldAcquireTicket()) {
+        if (_shouldAcquireTicket) {
+            _opCtx->lockState()->skipAcquireTicket();
+        }
     }
 
-    ~SetAdmissionPriorityForLock() {
-        _opCtx->lockState()->setAdmissionPriority(_originalPriority);
+    ~SkipTicketAcquisitionForLock() {
+        if (_shouldAcquireTicket) {
+            _opCtx->lockState()->setAcquireTicket();
+        }
     }
 
 private:
     OperationContext* _opCtx;
-    AdmissionContext::Priority _originalPriority;
+    const bool _shouldAcquireTicket;
 };
 
 /**

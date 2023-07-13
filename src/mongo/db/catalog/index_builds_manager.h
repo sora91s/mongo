@@ -73,7 +73,6 @@ public:
         IndexConstraints indexConstraints = IndexConstraints::kEnforce;
         IndexBuildProtocol protocol = IndexBuildProtocol::kSinglePhase;
         IndexBuildMethod method = IndexBuildMethod::kHybrid;
-        bool forRecovery = false;
     };
 
     IndexBuildsManager() = default;
@@ -92,10 +91,9 @@ public:
                            const boost::optional<ResumeIndexInfo>& resumeInfo = boost::none);
 
     /**
-     * Unregisters the builder associated with the given buildUUID from the _builders map, causing
-     * the index build in-memory state to be destroyed.
+     * Unregisters the builder associated with the given buildUUID from the _builders map.
      */
-    void tearDownAndUnregisterIndexBuild(const UUID& buildUUID);
+    void unregisterIndexBuild(const UUID& buildUUID);
 
     /**
      * Runs the scanning/insertion phase of the index build..
@@ -103,7 +101,7 @@ public:
     Status startBuildingIndex(OperationContext* opCtx,
                               const CollectionPtr& collection,
                               const UUID& buildUUID,
-                              const boost::optional<RecordId>& resumeAfterRecordId = boost::none);
+                              boost::optional<RecordId> resumeAfterRecordId = boost::none);
 
     Status resumeBuildingIndexFromBulkLoadPhase(OperationContext* opCtx,
                                                 const CollectionPtr& collection,
@@ -187,12 +185,6 @@ public:
      * true for the kHybrid method.
      */
     bool isBackgroundBuilding(const UUID& buildUUID);
-
-    /**
-     * Provides passthrough access to MultiIndexBlock for index build info.
-     * Does nothing if build UUID does not refer to an active index build.
-     */
-    void appendBuildInfo(const UUID& buildUUID, BSONObjBuilder* builder) const;
 
     /**
      * Checks via invariant that the manager has no index builds presently.

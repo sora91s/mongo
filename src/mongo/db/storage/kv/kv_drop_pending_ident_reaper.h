@@ -84,15 +84,6 @@ public:
                              StorageEngine::DropIdentCallback&& onDrop = nullptr);
 
     /**
-     * Marks the ident as in use and prevents the reaper from dropping the ident.
-     *
-     * Returns nullptr if the ident is not found, or if the ident state is `kBeingDropped` or
-     * `kDropped`. Returns a shared_ptr to the `dropToken` if it isn't expired, otherwise a new
-     * shared_ptr is generated, stored in `dropToken`, and returned.
-     */
-    std::shared_ptr<Ident> markIdentInUse(StringData ident);
-
-    /**
      * Returns earliest drop timestamp in '_dropPendingIdents'.
      * Returns boost::none if '_dropPendingIdents' is empty.
      */
@@ -124,13 +115,9 @@ private:
         // Identifier for the storage to drop the associated collection or index data.
         std::string identName;
 
-        // Ident drop state.
-        enum class State { kNotDropped, kBeingDropped, kDropped };
-        State identState;
-
         // The collection or index data can be safely dropped when no references to this token
         // remain.
-        std::weak_ptr<Ident> dropToken;
+        std::weak_ptr<void> dropToken;
 
         // Callback to run once the ident has been dropped.
         StorageEngine::DropIdentCallback onDrop;
@@ -140,7 +127,7 @@ private:
     // namespaces by drop optime. Additionally, it is possible for certain user operations (such
     // as renameCollection across databases) to generate more than one drop-pending namespace for
     // the same drop optime.
-    using DropPendingIdents = std::multimap<Timestamp, std::shared_ptr<IdentInfo>>;
+    using DropPendingIdents = std::multimap<Timestamp, IdentInfo>;
 
     // Used to access the KV engine for the purposes of dropping the ident.
     KVEngine* const _engine;
@@ -150,9 +137,6 @@ private:
 
     // Drop-pending idents. Ordered by drop timestamp.
     DropPendingIdents _dropPendingIdents;
-
-    // Ident to drop timestamp map. Used for efficient lookups into _dropPendingIdents.
-    StringMap<Timestamp> _identToTimestamp;
 };
 
 }  // namespace mongo

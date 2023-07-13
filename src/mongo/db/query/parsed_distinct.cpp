@@ -73,6 +73,25 @@ void addReplaceRootForDistinct(BSONArrayBuilder* pipelineBuilder, const FieldPat
 }
 
 /**
+ * Helper for when converting a distinct() to an aggregation pipeline. This function will add
+ * $unwind stages for each subpath of 'path'.
+ *
+ * See comments in ParsedDistinct::asAggregationCommand() for more detailed explanation.
+ */
+void addNestedUnwind(BSONArrayBuilder* pipelineBuilder, const FieldPath& unwindPath) {
+    for (size_t i = 0; i < unwindPath.getPathLength(); ++i) {
+        StringData pathPrefix = unwindPath.getSubpath(i);
+        BSONObjBuilder unwindStageBuilder(pipelineBuilder->subobjStart());
+        {
+            BSONObjBuilder unwindBuilder(unwindStageBuilder.subobjStart("$unwind"));
+            unwindBuilder.append("path", str::stream() << "$" << pathPrefix);
+            unwindBuilder.append("preserveNullAndEmptyArrays", true);
+        }
+        unwindStageBuilder.doneFast();
+    }
+}
+
+/**
  * Helper for when converting a distinct() to an aggregation pipeline. This function may add a
  * $match stage enforcing that intermediate subpaths are objects so that no implicit array
  * traversal happens later on. The $match stage is only added when the path is dotted (e.g. "a.b"
@@ -200,7 +219,20 @@ StatusWith<BSONObj> ParsedDistinct::asAggregationCommand() const {
     }
 
     FieldPath path(_key);
-    addReplaceRootForDistinct(&pipelineBuilder, path);
+    // If we are not fully upgraded to 6.0, fall back to the old path of using multiple $unwind
+    // stages instead of the new expression '$_internalFindAllValuesAtPath'.
+    auto&& fcv = serverGlobalParams.featureCompatibility;
+    std::string groupKey = std::string(kUnwoundArrayFieldForViewUnwind);
+    if (fcv.isVersionInitialized() &&
+        fcv.isGreaterThanOrEqualTo(multiversion::FeatureCompatibilityVersion::kVersion_6_0)) {
+        addReplaceRootForDistinct(&pipelineBuilder, path);
+    } else {
+        addNestedUnwind(&pipelineBuilder, path);
+        // Any arrays remaining after the $unwinds must have been nested arrays, so in order to
+        // match the behavior of the distinct() command, we filter them out before the $group.
+        addMatchRemovingNestedArrays(&pipelineBuilder, path);
+        groupKey = _key;
+    }
 
     BSONObjBuilder groupStageBuilder(pipelineBuilder.subobjStart());
     {
@@ -208,8 +240,7 @@ StatusWith<BSONObj> ParsedDistinct::asAggregationCommand() const {
         groupBuilder.appendNull("_id");
         {
             BSONObjBuilder distinctBuilder(groupBuilder.subobjStart("distinct"));
-            distinctBuilder.append("$addToSet",
-                                   str::stream() << "$" << kUnwoundArrayFieldForViewUnwind);
+            distinctBuilder.append("$addToSet", str::stream() << "$" << groupKey);
             distinctBuilder.doneFast();
         }
         groupBuilder.doneFast();
@@ -246,7 +277,7 @@ StatusWith<ParsedDistinct> ParsedDistinct::parse(OperationContext* opCtx,
                                                  const ExtensionsCallback& extensionsCallback,
                                                  bool isExplain,
                                                  const CollatorInterface* defaultCollator) {
-    IDLParserContext ctx("distinct", false /* apiStrict */, nss.tenantId());
+    IDLParserErrorContext ctx("distinct");
 
     DistinctCommandRequest parsedDistinct(nss);
     try {
@@ -266,11 +297,11 @@ StatusWith<ParsedDistinct> ParsedDistinct::parse(OperationContext* opCtx,
     findCommand->setProjection(getDistinctProjection(std::string(parsedDistinct.getKey())));
 
     if (auto query = parsedDistinct.getQuery()) {
-        findCommand->setFilter(query.value().getOwned());
+        findCommand->setFilter(query.get().getOwned());
     }
 
     if (auto collation = parsedDistinct.getCollation()) {
-        findCommand->setCollation(collation.value().getOwned());
+        findCommand->setCollation(collation.get().getOwned());
     }
 
     // The IDL parser above does not handle generic command arguments. Since the underlying query
@@ -320,10 +351,7 @@ StatusWith<ParsedDistinct> ParsedDistinct::parse(OperationContext* opCtx,
         cq.getValue()->setCollator(defaultCollator->clone());
     }
 
-    return ParsedDistinct(std::move(cq.getValue()),
-                          parsedDistinct.getKey().toString(),
-                          parsedDistinct.getMirrored().value_or(false),
-                          parsedDistinct.getSampleId());
+    return ParsedDistinct(std::move(cq.getValue()), parsedDistinct.getKey().toString());
 }
 
 }  // namespace mongo

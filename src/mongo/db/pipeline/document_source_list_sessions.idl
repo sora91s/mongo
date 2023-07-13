@@ -32,14 +32,13 @@ global:
    cpp_namespace: "mongo"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 structs:
 
   ListSessionsUser:
     description: "A struct representing a $listSessions/$listLocalSessions User"
     strict: true
-    generate_comparison_operators: true
     fields:
       user: string
       db: string

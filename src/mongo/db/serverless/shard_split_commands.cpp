@@ -29,7 +29,6 @@
 
 #include "mongo/client/replica_set_monitor_server_parameters.h"
 #include "mongo/db/auth/authorization_session.h"
-#include "mongo/db/global_settings.h"
 #include "mongo/db/repl/primary_only_service.h"
 #include "mongo/db/repl/repl_server_parameters_gen.h"
 #include "mongo/db/serverless/shard_split_commands_gen.h"
@@ -50,17 +49,14 @@ public:
         using InvocationBase::InvocationBase;
 
         Response typedRun(OperationContext* opCtx) {
-            uassert(ErrorCodes::IllegalOperation,
-                    "Feature 'shard split' not supported",
+            uassert(6057900,
+                    "feature \"shard split\" not supported",
                     repl::feature_flags::gShardSplit.isEnabled(
                         serverGlobalParams.featureCompatibility));
             uassert(ErrorCodes::IllegalOperation,
-                    "Shard split is not available on config servers",
+                    "shard split is not available on config servers",
                     serverGlobalParams.clusterRole == ClusterRole::None ||
                         serverGlobalParams.clusterRole == ClusterRole::ShardServer);
-            uassert(ErrorCodes::CommandNotSupported,
-                    "Shard split is only supported in serverless mode",
-                    getGlobalReplSettings().isServerless());
 
             const auto& cmd = request();
             auto stateDoc = ShardSplitDonorDocument(cmd.getMigrationId());
@@ -68,7 +64,7 @@ public:
             stateDoc.setRecipientTagName(cmd.getRecipientTagName());
             stateDoc.setRecipientSetName(cmd.getRecipientSetName());
 
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
 
             auto donorService = repl::PrimaryOnlyServiceRegistry::get(opCtx->getServiceContext())
                                     ->lookupServiceByName(ShardSplitDonorService::kServiceName);
@@ -77,6 +73,8 @@ public:
                 opCtx, donorService, stateDoc.toBSON());
             invariant(donorPtr);
 
+            uassertStatusOK(donorPtr->checkIfOptionsConflict(stateDoc));
+
             auto state = donorPtr->decisionFuture().get(opCtx);
 
             uassert(ErrorCodes::TenantMigrationAborted,
@@ -84,9 +82,13 @@ public:
                         (state.abortReason ? state.abortReason->toString() : ""),
                     state.state != ShardSplitDonorStateEnum::kAborted);
 
-            Response response;
-            invariant(state.blockOpTime.has_value());
-            response.setBlockOpTime(*state.blockOpTime);
+            Response response(state.state);
+            if (state.abortReason) {
+                BSONObjBuilder bob;
+
+                state.abortReason->serializeErrorToBSON(&bob);
+                response.setAbortReason(bob.obj());
+            }
 
             return response;
         }
@@ -110,7 +112,7 @@ public:
     };
 
     std::string help() const {
-        return "Start an operation to split a shard into its own slice.";
+        return "Start an opereation to split a shard into its own slice.";
     }
 
     bool adminOnly() const override {
@@ -132,17 +134,14 @@ public:
         using InvocationBase::InvocationBase;
 
         void typedRun(OperationContext* opCtx) {
-            uassert(ErrorCodes::IllegalOperation,
-                    "Feature 'shard split' not supported",
+            uassert(6057902,
+                    "feature \"shard split\" not supported",
                     repl::feature_flags::gShardSplit.isEnabled(
                         serverGlobalParams.featureCompatibility));
-            uassert(ErrorCodes::CommandNotSupported,
-                    "Shard split is only supported in serverless mode",
-                    getGlobalReplSettings().isServerless());
 
             const RequestType& cmd = request();
 
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
 
             auto splitService = repl::PrimaryOnlyServiceRegistry::get(opCtx->getServiceContext())
                                     ->lookupServiceByName(ShardSplitDonorService::kServiceName);
@@ -150,8 +149,7 @@ public:
                 opCtx,
                 splitService,
                 BSON("_id" << cmd.getMigrationId() << ShardSplitDonorDocument::kStateFieldName
-                           << ShardSplitDonorState_serializer(ShardSplitDonorStateEnum::kAborted)),
-                false);
+                           << ShardSplitDonorState_serializer(ShardSplitDonorStateEnum::kAborted)));
 
             invariant(instance);
 
@@ -162,7 +160,7 @@ public:
             uassert(ErrorCodes::CommandFailed,
                     "Failed to abort shard split",
                     state.abortReason &&
-                        state.abortReason.value() == ErrorCodes::TenantMigrationAborted);
+                        state.abortReason.get() == ErrorCodes::TenantMigrationAborted);
 
             uassert(ErrorCodes::TenantMigrationCommitted,
                     "Failed to abort : shard split already committed",
@@ -210,17 +208,14 @@ public:
         using InvocationBase::InvocationBase;
 
         void typedRun(OperationContext* opCtx) {
-            uassert(ErrorCodes::IllegalOperation,
-                    "Feature 'shard split' not supported",
+            uassert(6236600,
+                    "feature \"shard split\" not supported",
                     repl::feature_flags::gShardSplit.isEnabled(
                         serverGlobalParams.featureCompatibility));
-            uassert(ErrorCodes::CommandNotSupported,
-                    "Shard split is only supported in serverless mode",
-                    getGlobalReplSettings().isServerless());
 
             const RequestType& cmd = request();
 
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
 
             auto splitService = repl::PrimaryOnlyServiceRegistry::get(opCtx->getServiceContext())
                                     ->lookupServiceByName(ShardSplitDonorService::kServiceName);
@@ -231,7 +226,7 @@ public:
                     str::stream() << "Could not find shard split with id " << cmd.getMigrationId(),
                     optionalDonor);
 
-            auto donorPtr = optionalDonor.value();
+            auto donorPtr = optionalDonor.get();
 
             auto decision = donorPtr->decisionFuture().get(opCtx);
 
@@ -243,7 +238,7 @@ public:
                     decision.state == ShardSplitDonorStateEnum::kAborted);
 
             donorPtr->tryForget();
-            donorPtr->garbageCollectableFuture().get(opCtx);
+            donorPtr->completionFuture().get(opCtx);
         }
 
     private:

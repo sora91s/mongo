@@ -5,8 +5,6 @@
  *   # We need persistence as we temporarily restart nodes as standalones.
  *   requires_persistence,
  *   assumes_against_mongod_not_mongos,
- *   # snapshotRead:false behavior has been removed in 6.2
- *   requires_fcv_62,
  * ]
  */
 
@@ -42,15 +40,42 @@ function clearLog() {
     forEachNode(conn => conn.getDB("local").system.healthlog.drop());
 }
 
+function addEnoughForMultipleBatches(collection) {
+    collection.insertMany([...Array(10000).keys()].map(x => ({_id: x})));
+}
+
 // Name for a collection which takes multiple batches to check and which shouldn't be modified
 // by any of the tests.
 const multiBatchSimpleCollName = "dbcheck-simple-collection";
 const multiBatchSimpleCollSize = 10000;
 replSet.getPrimary().getDB(dbName)[multiBatchSimpleCollName].insertMany(
-    [...Array(10000).keys()].map(x => ({_id: x})), {ordered: false});
+    [...Array(10000).keys()].map(x => ({_id: x})));
 
 function dbCheckCompleted(db) {
     return db.currentOp().inprog.filter(x => x["desc"] == "dbCheck")[0] === undefined;
+}
+
+// Wait for DeferredWriter writes to local.system.healthlog to eventually complete.
+// Requires clearLog() before the test case is run.
+// TODO SERVER-61765 remove this function altoghether when healthlogging becomes
+// synchronous.
+function dbCheckHealthLogCompleted(db, coll, maxKey, maxSize, maxCount) {
+    let query = {"namespace": coll.getFullName(), "operation": "dbCheckBatch"};
+    if (maxSize === undefined && maxCount === undefined && maxKey === undefined) {
+        query['data.maxKey'] = {"$type": "maxKey"};
+    }
+    if (maxCount !== undefined) {
+        query['data.count'] = maxCount;
+    } else {
+        if (maxSize !== undefined) {
+            query['data.bytes'] = maxSize;
+        } else {
+            if (maxKey !== undefined) {
+                query['data.maxKey'] = maxKey;
+            }
+        }
+    }
+    return db.getSiblingDB("local").system.healthlog.find(query).itcount() === 1;
 }
 
 // Wait for dbCheck to complete (on both primaries and secondaries).  Fails an assertion if
@@ -207,11 +232,17 @@ function simpleTestNonSnapshot() {
 
     assert.neq(primary, undefined);
     let db = primary.getDB(dbName);
-    // "dbCheck no longer supports snapshotRead:false"
-    assert.commandFailedWithCode(
-        db.runCommand({"dbCheck": multiBatchSimpleCollName, snapshotRead: false}), 6769500);
-    // "dbCheck no longer supports snapshotRead:false"
-    assert.commandFailedWithCode(db.runCommand({"dbCheck": 1, snapshotRead: false}), 6769501);
+    assert.commandWorked(db.runCommand({"dbCheck": multiBatchSimpleCollName, snapshotRead: false}));
+
+    awaitDbCheckCompletion(db, multiBatchSimpleCollName);
+
+    checkLogAllConsistent(primary);
+    checkTotalCounts(primary, db[multiBatchSimpleCollName]);
+
+    forEachSecondary(function(secondary) {
+        checkLogAllConsistent(secondary);
+        checkTotalCounts(secondary, secondary.getDB(dbName)[multiBatchSimpleCollName]);
+    });
 }
 
 // Same thing, but now with concurrent updates.
@@ -222,7 +253,7 @@ function concurrentTestConsistent() {
     let db = primary.getDB(dbName);
 
     // Add enough documents that dbCheck will take a few seconds.
-    db[collName].insertMany([...Array(10000).keys()].map(x => ({i: x})), {ordered: false});
+    db[collName].insertMany([...Array(10000).keys()].map(x => ({i: x})));
 
     assert.commandWorked(db.runCommand({"dbCheck": collName}));
 
@@ -357,8 +388,7 @@ function testDbCheckParameters() {
         // Insert nDocs, each of which being slightly larger than 1MB, and then run dbCheck with
         // maxBytesPerBatch := 1MB
         const nDocs = 5;
-        coll.insertMany([...Array(nDocs).keys()].map(x => ({a: 'a'.repeat(1024 * 1024)})),
-                        {ordered: false});
+        coll.insertMany([...Array(nDocs).keys()].map(x => ({a: 'a'.repeat(1024 * 1024)})));
         const maxBytesPerBatch = 1024 * 1024;
         assert.commandWorked(db.getSiblingDB("maxBytesPerBatch").runCommand({
             dbCheck: coll.getName(),

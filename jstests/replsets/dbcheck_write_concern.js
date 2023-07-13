@@ -54,8 +54,7 @@ const healthlog = db.getSiblingDB('local').system.healthlog;
     // each one.
     const nDocs = 1000;
     const maxDocsPerBatch = 100;
-    assert.commandWorked(
-        coll.insertMany([...Array(nDocs).keys()].map(x => ({a: x})), {ordered: false}));
+    assert.commandWorked(coll.insertMany([...Array(nDocs).keys()].map(x => ({a: x}))));
     assert.commandWorked(db.runCommand({
         dbCheck: coll.getName(),
         maxDocsPerBatch: maxDocsPerBatch,
@@ -82,8 +81,7 @@ const healthlog = db.getSiblingDB('local').system.healthlog;
     // each one.
     const nDocs = 1000;
     const maxDocsPerBatch = 100;
-    assert.commandWorked(
-        coll.insertMany([...Array(nDocs).keys()].map(x => ({a: x})), {ordered: false}));
+    assert.commandWorked(coll.insertMany([...Array(nDocs).keys()].map(x => ({a: x}))));
     assert.commandWorked(db.runCommand({
         dbCheck: coll.getName(),
         maxDocsPerBatch: maxDocsPerBatch,
@@ -111,8 +109,7 @@ const healthlog = db.getSiblingDB('local').system.healthlog;
     // each one.
     const nDocs = 1000;
     const maxDocsPerBatch = 100;
-    assert.commandWorked(
-        coll.insertMany([...Array(nDocs).keys()].map(x => ({a: x})), {ordered: false}));
+    assert.commandWorked(coll.insertMany([...Array(nDocs).keys()].map(x => ({a: x}))));
     replSet.awaitReplication();
 
     // Stop the secondary and expect that the dbCheck batches still complete on the primary.
@@ -155,8 +152,7 @@ const healthlog = db.getSiblingDB('local').system.healthlog;
     // each one.
     const nDocs = 1000;
     const maxDocsPerBatch = 100;
-    assert.commandWorked(
-        coll.insertMany([...Array(nDocs).keys()].map(x => ({a: x})), {ordered: false}));
+    assert.commandWorked(coll.insertMany([...Array(nDocs).keys()].map(x => ({a: x}))));
     replSet.awaitReplication();
 
     // Stop the secondary and expect that the dbCheck batches still complete on the primary.

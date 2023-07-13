@@ -92,7 +92,7 @@ inline bool operator!=(const IndexKeyEntry& lhs, const IndexKeyEntry& rhs) {
  * Represents KeyString struct containing a KeyString::Value and its RecordId
  */
 struct KeyStringEntry {
-    KeyStringEntry(KeyString::Value ks, RecordId id) : keyString(ks), loc(std::move(id)) {
+    KeyStringEntry(KeyString::Value ks, RecordId loc) : keyString(ks), loc(loc) {
         if (!kDebugBuild) {
             return;
         }
@@ -280,8 +280,7 @@ Status buildDupKeyErrorStatus(const BSONObj& key,
                               const std::string& indexName,
                               const BSONObj& keyPattern,
                               const BSONObj& indexCollation,
-                              DuplicateKeyErrorInfo::FoundValue&& foundValue = stdx::monostate{},
-                              boost::optional<RecordId> duplicateRid = boost::none);
+                              DuplicateKeyErrorInfo::FoundValue&& foundValue = stdx::monostate{});
 
 Status buildDupKeyErrorStatus(const KeyString::Value& keyString,
                               const NamespaceString& collectionNamespace,

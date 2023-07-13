@@ -4,14 +4,13 @@
  * @tags: [
  *     change_stream_does_not_expect_txns,
  *     assumes_unsharded_collection,
- *     requires_fcv_61,
+ *     requires_fcv_60,
  * ]
  */
 (function() {
 "use strict";
 
 load("jstests/libs/change_stream_util.js");  // For ChangeStreamTest.
-load("jstests/libs/feature_flag_util.js");
 
 let testDB = db.getSiblingDB(jsTestName());
 testDB.dropDatabase();
@@ -83,10 +82,8 @@ let expectedChanges = [
                                     "required": ["ts"],
                                     "properties": {"ts": {"bsonType": "date"}}
                                 },
-                                "closed": {"bsonType": "bool"},
-                                "count": {"bsonType": "number", "minimum": 1}
-                            },
-                            "additionalProperties": false
+                                "closed": {"bsonType": "bool"}
+                            }
                         },
                         "data": {"bsonType": "object"},
                         "meta": {
@@ -103,18 +100,6 @@ let expectedChanges = [
                 "granularity": "seconds",
                 "bucketMaxSpanSeconds": 3600
             }
-        }
-    },
-    {
-        // Only seen if time series scalability improvements enabled
-        "operationType": "createIndexes",
-        "ns": {"db": dbName, "coll": bucketsCollName},
-        "operationDescription": {
-            "indexes": [{
-                "v": 2,
-                "name": "meta_1_ts_1",
-                "key": {"meta": 1, "control.min.ts": 1, "control.max.ts": 1}
-            }]
         }
     },
     {
@@ -158,9 +143,7 @@ let expectedChanges = [
         "updateDescription": {
             "updatedFields": {"data._id.1": 1, "data.ts.1": ISODate("1970-01-01T00:00:01Z")},
             "removedFields": [],
-            "truncatedArrays": [],
-            "disambiguatedPaths":
-                {"data._id.1": ["data", "_id", "1"], "data.ts.1": ["data", "ts", "1"]}
+            "truncatedArrays": []
         }
     },
     {"operationType": "delete", "ns": {"db": dbName, "coll": bucketsCollName}},
@@ -202,10 +185,8 @@ let expectedChanges = [
                                         "required": ["ts"],
                                         "properties": {"ts": {"bsonType": "date"}}
                                     },
-                                    "closed": {"bsonType": "bool"},
-                                    "count": {"bsonType": "number", "minimum": 1}
-                                },
-                                "additionalProperties": false
+                                    "closed": {"bsonType": "bool"}
+                                }
                             },
                             "data": {"bsonType": "object"},
                             "meta": {
@@ -252,10 +233,8 @@ let expectedChanges = [
                                         "required": ["ts"],
                                         "properties": {"ts": {"bsonType": "date"}}
                                     },
-                                    "closed": {"bsonType": "bool"},
-                                    "count": {"bsonType": "number", "minimum": 1}
-                                },
-                                "additionalProperties": false
+                                    "closed": {"bsonType": "bool"}
+                                }
                             },
                             "data": {"bsonType": "object"},
                             "meta": {
@@ -289,11 +268,6 @@ let expectedChanges = [
     {"operationType": "drop", "ns": {"db": dbName, "coll": collName}},
     {"operationType": "drop", "ns": {"db": dbName, "coll": bucketsCollName}}
 ];
-
-if (!FeatureFlagUtil.isEnabled(db, "TimeseriesScalabilityImprovements")) {
-    // Remove implicitly create index
-    expectedChanges = [expectedChanges[0], ...expectedChanges.slice(2)];
-}
 
 cst.assertNextChangesEqual({cursor: curWithEvents, expectedChanges});
 

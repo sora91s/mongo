@@ -35,7 +35,7 @@ global:
         - "mongo/s/catalog/type_collection.h"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/db/s/sharding_ddl_coordinator.idl"
 
 enums:
@@ -45,9 +45,7 @@ enums:
         values:
             kUnset: "unset"
             kFreezeCollection: "freezeCollection"
-            kEnterCriticalSection: "enterCriticalSection"
             kDropCollection: "dropCollection"
-            kReleaseCriticalSection: "releaseCriticalSection"
 
 types:
     CollectionInfo:
@@ -74,6 +72,6 @@ structs:
                 optional: true
             collectionUUID:
                 type: uuid
-                description: "The expected UUID of the collection, only set and used in C2C replication."
+                description: "The expected UUID of the collection."
                 optional: true
 

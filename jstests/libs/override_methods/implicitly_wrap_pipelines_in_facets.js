@@ -67,7 +67,7 @@ Mongo.prototype.runCommand = function(dbName, cmdObj, options) {
     }
 
     cmdObj.pipeline = [
-        {$facet: {originalPipeline: originalPipeline, extraPipeline: [{$count: "count"}]}},
+        {$facet: {originalPipeline: originalPipeline}},
         {$unwind: '$originalPipeline'},
         {$replaceRoot: {newRoot: '$originalPipeline'}},
     ];

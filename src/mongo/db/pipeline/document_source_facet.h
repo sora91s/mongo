@@ -107,7 +107,6 @@ public:
      * Takes a union of all sub-pipelines, and adds them to 'deps'.
      */
     DepsTracker::State getDependencies(DepsTracker* deps) const final;
-    void addVariableRefs(std::set<Variables::Id>* refs) const final;
 
     const char* getSourceName() const final {
         return DocumentSourceFacet::kStageName.rawData();
@@ -141,7 +140,6 @@ public:
     void addInvolvedCollections(stdx::unordered_set<NamespaceString>* involvedNssSet) const final;
     void detachFromOperationContext() final;
     void reattachToOperationContext(OperationContext* opCtx) final;
-    bool validateOperationContext(const OperationContext* opCtx) const final;
     StageConstraints constraints(Pipeline::SplitState pipeState) const final;
     bool usedDisk() final;
     const SpecificStats* getSpecificStats() const final {

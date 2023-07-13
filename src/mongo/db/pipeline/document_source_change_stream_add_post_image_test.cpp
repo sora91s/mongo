@@ -70,19 +70,12 @@ public:
     Document makeResumeToken(ImplicitValue id = Value()) {
         const Timestamp ts(100, 1);
         if (id.missing()) {
-            ResumeTokenData tokenData(ts,
-                                      ResumeTokenData::kDefaultTokenVersion,
-                                      /* txnOpIndex */ 0,
-                                      /* uuid */ boost::none,
-                                      /* eventIdentifier */ Value());
+            ResumeTokenData tokenData;
+            tokenData.clusterTime = ts;
             return ResumeToken(tokenData).toDocument();
         }
-        ResumeTokenData tokenData(ts,
-                                  /* version */ 0,
-                                  /* txnOpIndex */ 0,
-                                  testUuid(),
-                                  /* eventIdentifier */ Value(Document{{"_id", id}}));
-        return ResumeToken(tokenData).toDocument();
+        return ResumeToken(ResumeTokenData(ts, 0, 0, testUuid(), Value(Document{{"_id", id}})))
+            .toDocument();
     }
 
     DocumentSourceChangeStreamSpec getSpec(
@@ -246,7 +239,7 @@ TEST_F(DocumentSourceChangeStreamAddPostImageTest,
        ShouldErrorIfDatabaseMismatchOnCollectionlessNss) {
     auto expCtx = getExpCtx();
 
-    expCtx->ns = NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "test"));
+    expCtx->ns = NamespaceString::makeCollectionlessAggregateNSS("test");
 
     // Set up the lookup change post image stage.
     auto lookupChangeStage = DocumentSourceChangeStreamAddPostImage::create(expCtx, getSpec());
@@ -271,7 +264,7 @@ TEST_F(DocumentSourceChangeStreamAddPostImageTest,
 TEST_F(DocumentSourceChangeStreamAddPostImageTest, ShouldPassIfDatabaseMatchesOnCollectionlessNss) {
     auto expCtx = getExpCtx();
 
-    expCtx->ns = NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "test"));
+    expCtx->ns = NamespaceString::makeCollectionlessAggregateNSS("test");
 
     // Set up the lookup change post image stage.
     auto lookupChangeStage = DocumentSourceChangeStreamAddPostImage::create(expCtx, getSpec());
@@ -382,6 +375,5 @@ TEST_F(DocumentSourceChangeStreamAddPostImageTest, ShouldPropagatePauses) {
     ASSERT_TRUE(lookupChangeStage->getNext().isEOF());
     ASSERT_TRUE(lookupChangeStage->getNext().isEOF());
 }
-
 }  // namespace
 }  // namespace mongo

@@ -103,9 +103,6 @@ StatusWith<Shard::QueryResponse> RSLocalClient::queryOnce(
     boost::optional<ScopeGuard<std::function<void()>>> readSourceGuard;
 
     if (readConcernLevel == repl::ReadConcernLevel::kMajorityReadConcern) {
-        invariant(!opCtx->lockState()->isLocked());
-        invariant(!opCtx->lockState()->inAWriteUnitOfWork());
-
         // Resets to the original read source at the end of this operation.
         auto originalReadSource = opCtx->recoveryUnit()->getTimestampReadSource();
         boost::optional<Timestamp> originalReadTimestamp;
@@ -123,9 +120,6 @@ StatusWith<Shard::QueryResponse> RSLocalClient::queryOnce(
         // Sets up operation context with majority read snapshot so correct optime can be retrieved.
         opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kMajorityCommitted);
         Status status = opCtx->recoveryUnit()->majorityCommittedSnapshotAvailable();
-        if (!status.isOK()) {
-            return status;
-        }
 
         // Waits for any writes performed by this ShardLocal instance to be committed and visible.
         Status readConcernStatus = replCoord->waitUntilOpTimeForRead(
@@ -198,6 +192,7 @@ Status RSLocalClient::runAggregation(
         }
 
         try {
+            // TODO SERVER-58938 pass DBClientCursor::_postBatchResumeToken to callback
             if (!callback(batchDocs, boost::none)) {
                 break;
             }

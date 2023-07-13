@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -67,7 +68,6 @@
 #include "mongo/s/initialize_tenant_to_shard_cache.h"
 #include "mongo/s/mongod_and_mongos_server_parameters_gen.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
-#include "mongo/s/query_analysis_sampler.h"
 #include "mongo/s/sharding_task_executor.h"
 #include "mongo/s/sharding_task_executor_pool_controller.h"
 #include "mongo/s/sharding_task_executor_pool_gen.h"
@@ -76,9 +76,6 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/net/socket_utils.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -164,14 +161,11 @@ std::unique_ptr<executor::TaskExecutor> makeShardingTaskExecutor(
     return std::make_unique<executor::ShardingTaskExecutor>(std::move(executor));
 }
 
-Status initializeGlobalShardingState(
-    OperationContext* opCtx,
-    std::unique_ptr<CatalogCache> catalogCache,
-    std::unique_ptr<ShardRegistry> shardRegistry,
-    rpc::ShardingEgressMetadataHookBuilder hookBuilder,
-    boost::optional<size_t> taskExecutorPoolSize,
-    std::function<std::unique_ptr<KeysCollectionClient>(ShardingCatalogClient*)> initKeysClient) {
-
+Status initializeGlobalShardingState(OperationContext* opCtx,
+                                     std::unique_ptr<CatalogCache> catalogCache,
+                                     std::unique_ptr<ShardRegistry> shardRegistry,
+                                     rpc::ShardingEgressMetadataHookBuilder hookBuilder,
+                                     boost::optional<size_t> taskExecutorPoolSize) {
     ConnectionPool::Options connPoolOptions;
     std::shared_ptr<ShardRegistry> srsp(std::move(shardRegistry));
     connPoolOptions.controllerFactory = [srwp = std::weak_ptr(srsp)] {
@@ -191,7 +185,7 @@ Status initializeGlobalShardingState(
     const auto service = opCtx->getServiceContext();
     auto const grid = Grid::get(service);
 
-    grid->init(std::make_unique<ShardingCatalogClientImpl>(nullptr /* overrideConfigShard */),
+    grid->init(std::make_unique<ShardingCatalogClientImpl>(),
                std::move(catalogCache),
                std::move(srsp),
                std::make_unique<ClusterCursorManager>(service->getPreciseClockSource()),
@@ -202,7 +196,8 @@ Status initializeGlobalShardingState(
     // The shard registry must be started once the grid is initialized
     grid->shardRegistry()->startupPeriodicReloader(opCtx);
 
-    auto keysCollectionClient = initKeysClient(grid->catalogClient());
+    auto keysCollectionClient =
+        std::make_unique<KeysCollectionClientSharded>(grid->catalogClient());
     auto keyManager =
         std::make_shared<KeysCollectionManager>(KeysCollectionManager::kKeyManagerPurposeString,
                                                 std::move(keysCollectionClient),
@@ -212,28 +207,22 @@ Status initializeGlobalShardingState(
     LogicalTimeValidator::set(service, std::make_unique<LogicalTimeValidator>(keyManager));
     initializeTenantToShardCache(service);
 
-    if (analyze_shard_key::supportsSamplingQueriesIgnoreFCV()) {
-        analyze_shard_key::QueryAnalysisSampler::get(service).onStartup();
-    }
-
     return Status::OK();
 }
 
 void loadCWWCFromConfigServerForReplication(OperationContext* opCtx) {
-    if (!serverGlobalParams.clusterRole.isExclusivelyShardRole()) {
-        // Cluster wide read/write concern in a sharded cluster lives on the config server, so a
-        // config server node's local cache will be correct and explicitly checking for a default
-        // write concern via remote command is unnecessary.
-        //
-        // TODO SERVER-72696: Verify this when updating CWWC logic for a catalog shard.
+    if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
         return;
     }
 
     repl::ReplicationCoordinator::get(opCtx)->recordIfCWWCIsSetOnConfigServerOnStartup(opCtx);
 }
 
-Status loadGlobalSettingsFromConfigServer(OperationContext* opCtx,
-                                          ShardingCatalogClient* catalogClient) {
+Status waitForShardRegistryReload(OperationContext* opCtx) {
+    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        return Status::OK();
+    }
+
     while (!globalInShutdownDeprecated()) {
         auto stopStatus = opCtx->checkForInterruptNoAssert();
         if (!stopStatus.isOK()) {
@@ -241,34 +230,28 @@ Status loadGlobalSettingsFromConfigServer(OperationContext* opCtx,
         }
 
         try {
-            // It's safe to use local read concern on a config server because we'll read from the
-            // local node, and we only enter here if we found a shardIdentity document, which could
-            // only exist locally if we already inserted the cluster identity document. Between
-            // inserting a cluster id and adding a shard, there is at least one majority write on
-            // the added shard (dropping the sessions collection), so we should be guaranteed the
-            // cluster id cannot roll back.
-            auto readConcern = serverGlobalParams.clusterRole == ClusterRole::ConfigServer
-                ? repl::ReadConcernLevel::kLocalReadConcern
-                : repl::ReadConcernLevel::kMajorityReadConcern;
             uassertStatusOK(ClusterIdentityLoader::get(opCtx)->loadClusterId(
-                opCtx, catalogClient, readConcern));
-
+                opCtx, repl::ReadConcernLevel::kMajorityReadConcern));
             // Assert will be raised on failure to talk to config server.
             loadCWWCFromConfigServerForReplication(opCtx);
-
-            return Status::OK();
+            if (Grid::get(opCtx)->shardRegistry()->isUp()) {
+                return Status::OK();
+            }
+            sleepFor(kRetryInterval);
+            continue;
         } catch (const DBException& ex) {
             Status status = ex.toStatus();
-            LOGV2_WARNING(23834,
-                          "Error loading global settings from config server. Sleeping for 2 "
-                          "seconds and retrying",
-                          "error"_attr = status);
+            LOGV2_WARNING(
+                23834,
+                "Error {error} initializing sharding state, sleeping for 2 seconds and retrying",
+                "Error initializing sharding state, sleeping for 2 seconds and retrying",
+                "error"_attr = status);
             sleepFor(kRetryInterval);
             continue;
         }
     }
 
-    return {ErrorCodes::ShutdownInProgress, "aborted loading global settings from config server"};
+    return {ErrorCodes::ShutdownInProgress, "aborting shard loading attempt"};
 }
 
 void preCacheMongosRoutingInfo(OperationContext* opCtx) {
@@ -276,11 +259,9 @@ void preCacheMongosRoutingInfo(OperationContext* opCtx) {
         return;
     }
 
-    // There's no reason this can't run on a shard or config server, but it currently only runs on a
-    // mongos, and we'd need to consider the implications of it running on either kind of mongod.
-    tassert(71960,
-            "Unexpectedly pre caching mongos routing info on shard or config server node",
-            serverGlobalParams.clusterRole == ClusterRole::None);
+    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        return;
+    }
 
     auto grid = Grid::get(opCtx);
     auto catalogClient = grid->catalogClient();
@@ -306,11 +287,9 @@ Status preWarmConnectionPool(OperationContext* opCtx) {
         return Status::OK();
     }
 
-    // There's no reason this can't run on a shard or config server, but it currently only runs on a
-    // mongos, and we'd need to consider the implications of it running on either kind of mongod.
-    tassert(71961,
-            "Unexpectedly pre warming connection pool on shard or config server node",
-            serverGlobalParams.clusterRole == ClusterRole::None);
+    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        return Status::OK();
+    }
 
     std::vector<HostAndPort> allHosts;
     auto const grid = Grid::get(opCtx);

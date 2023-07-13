@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationInitialSync
 
 #include "mongo/platform/basic.h"
 
@@ -34,9 +35,6 @@
 #include "mongo/db/repl/replication_consistency_markers_gen.h"
 #include "mongo/db/repl/replication_consistency_markers_impl.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationInitialSync
-
 
 namespace mongo {
 namespace {
@@ -133,7 +131,7 @@ Status InitialSyncBaseCloner::checkInitialSyncIdIsUnchanged() {
             "Cannot retrieve sync source initial sync ID",
             !initialSyncId.isEmpty());
     InitialSyncIdDocument initialSyncIdDoc =
-        InitialSyncIdDocument::parse(IDLParserContext("initialSyncId"), initialSyncId);
+        InitialSyncIdDocument::parse(IDLParserErrorContext("initialSyncId"), initialSyncId);
 
     stdx::lock_guard<ReplSyncSharedData> lk(*getSharedData());
     uassert(ErrorCodes::InitialSyncFailure,
@@ -145,8 +143,7 @@ Status InitialSyncBaseCloner::checkInitialSyncIdIsUnchanged() {
 Status InitialSyncBaseCloner::checkRollBackIdIsUnchanged() {
     BSONObj info;
     try {
-        getClient()->runCommand(
-            DatabaseName(boost::none, "admin"), BSON("replSetGetRBID" << 1), info);
+        getClient()->runCommand("admin", BSON("replSetGetRBID" << 1), info);
     } catch (DBException& e) {
         if (ErrorCodes::isRetriableError(e)) {
             static constexpr char errorMsg[] =

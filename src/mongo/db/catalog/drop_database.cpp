@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -37,10 +38,10 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/index_builds_coordinator.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
@@ -50,9 +51,6 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/scopeguard.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 
 MONGO_FAIL_POINT_DEFINE(dropDatabaseHangAfterAllCollectionsDrop);
@@ -61,7 +59,7 @@ MONGO_FAIL_POINT_DEFINE(dropDatabaseHangAfterWaitingForIndexBuilds);
 
 namespace {
 
-Status _checkNssAndReplState(OperationContext* opCtx, Database* db, const DatabaseName& dbName) {
+Status _checkNssAndReplState(OperationContext* opCtx, Database* db, const std::string& dbName) {
     if (!db) {
         return Status(ErrorCodes::NamespaceNotFound,
                       str::stream()
@@ -69,8 +67,8 @@ Status _checkNssAndReplState(OperationContext* opCtx, Database* db, const Databa
     }
 
     auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-    bool userInitiatedWritesAndNotPrimary = opCtx->writesAreReplicated() &&
-        !replCoord->canAcceptWritesForDatabase(opCtx, dbName.toStringWithTenantId());
+    bool userInitiatedWritesAndNotPrimary =
+        opCtx->writesAreReplicated() && !replCoord->canAcceptWritesForDatabase(opCtx, dbName);
 
     if (userInitiatedWritesAndNotPrimary) {
         return Status(ErrorCodes::NotWritablePrimary,
@@ -88,7 +86,7 @@ Status _checkNssAndReplState(OperationContext* opCtx, Database* db, const Databa
  * Throws on errors.
  */
 void _finishDropDatabase(OperationContext* opCtx,
-                         const DatabaseName& dbName,
+                         const std::string& dbName,
                          Database* db,
                          std::size_t numCollections,
                          bool abortIndexBuilds) {
@@ -101,7 +99,7 @@ void _finishDropDatabase(OperationContext* opCtx,
         IndexBuildsCoordinator::get(opCtx)->assertNoBgOpInProgForDb(dbName);
     }
 
-    writeConflictRetry(opCtx, "dropDatabase_database", dbName.toString(), [&] {
+    writeConflictRetry(opCtx, "dropDatabase_database", dbName, [&] {
         WriteUnitOfWork wunit(opCtx);
         opCtx->getServiceContext()->getOpObserver()->onDropDatabase(opCtx, dbName);
         wunit.commit();
@@ -123,7 +121,7 @@ void _finishDropDatabase(OperationContext* opCtx,
           "numCollectionsDropped"_attr = numCollections);
 }
 
-Status _dropDatabase(OperationContext* opCtx, const DatabaseName& dbName, bool abortIndexBuilds) {
+Status _dropDatabase(OperationContext* opCtx, const std::string& dbName, bool abortIndexBuilds) {
     // As this code can potentially require replication we disallow holding locks entirely. Holding
     // of any locks is disallowed while awaiting replication because this can potentially block for
     // long time while doing network activity.
@@ -131,13 +129,14 @@ Status _dropDatabase(OperationContext* opCtx, const DatabaseName& dbName, bool a
 
     uassert(ErrorCodes::IllegalOperation,
             "Cannot drop a database in read-only mode",
-            !opCtx->readOnly());
+            !storageGlobalParams.readOnly);
 
     // As of SERVER-32205, dropping the admin database is prohibited.
     uassert(ErrorCodes::IllegalOperation,
             str::stream() << "Dropping the '" << dbName << "' database is prohibited.",
-            dbName.db() != DatabaseName::kAdmin.db());
+            dbName != NamespaceString::kAdminDb);
 
+    // TODO (Kal): OldClientContext legacy, needs to be removed
     {
         CurOp::get(opCtx)->ensureStarted();
         stdx::lock_guard<Client> lk(*opCtx->getClient());
@@ -187,8 +186,7 @@ Status _dropDatabase(OperationContext* opCtx, const DatabaseName& dbName, bool a
                 // there is a replica state change that kills this operation while the locks were
                 // yielded.
                 ScopeGuard dropPendingGuardWhileUnlocked([dbName, opCtx, &dropPendingGuard] {
-                    // TODO (SERVER-71610): Fix to be interruptible or document exception.
-                    UninterruptibleLockGuard noInterrupt(opCtx->lockState());  // NOLINT.
+                    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
                     AutoGetDb autoDB(opCtx, dbName, MODE_IX);
                     if (auto db = autoDB.getDb()) {
                         db->setDropPending(opCtx, false);
@@ -227,34 +225,8 @@ Status _dropDatabase(OperationContext* opCtx, const DatabaseName& dbName, bool a
             }
         }
 
-        auto catalog = CollectionCatalog::get(opCtx);
-
-        // Drop the database views collection first, to ensure that time-series view namespaces are
-        // removed before their underlying buckets collections. This ensures oplog order, such that
-        // a time-series view may be missing while the buckets collection exists, but a time-series
-        // view is never present without its corresponding buckets collection.
-        auto viewCollPtr = catalog->lookupCollectionByNamespace(
-            opCtx, NamespaceString::makeSystemDotViewsNamespace(dbName));
-        if (viewCollPtr) {
-            ++numCollections;
-            const auto& nss = viewCollPtr->ns();
-            LOGV2(7193700,
-                  "dropDatabase {dbName} - dropping collection: {nss}",
-                  "dropDatabase - dropping collection",
-                  "db"_attr = dbName,
-                  "namespace"_attr = nss);
-
-            writeConflictRetry(opCtx, "dropDatabase_views_collection", nss.ns(), [&] {
-                WriteUnitOfWork wunit(opCtx);
-                fassert(7193701, db->dropCollectionEvenIfSystem(opCtx, nss));
-                wunit.commit();
-            });
-        }
-
-        // Refresh the catalog so the views collection isn't present.
-        catalog = CollectionCatalog::get(opCtx);
-
         std::vector<NamespaceString> collectionsToDrop;
+        auto catalog = CollectionCatalog::get(opCtx);
         for (auto collIt = catalog->begin(opCtx, db->name()); collIt != catalog->end(opCtx);
              ++collIt) {
             auto collection = *collIt;
@@ -289,7 +261,7 @@ Status _dropDatabase(OperationContext* opCtx, const DatabaseName& dbName, bool a
         }
         numCollectionsToDrop = collectionsToDrop.size();
 
-        for (const auto& nss : collectionsToDrop) {
+        for (auto nss : collectionsToDrop) {
             if (!opCtx->writesAreReplicated()) {
                 // Dropping a database on a primary replicates individual collection drops followed
                 // by a database drop oplog entry. When a secondary observes the database drop oplog
@@ -330,9 +302,7 @@ Status _dropDatabase(OperationContext* opCtx, const DatabaseName& dbName, bool a
     // any errors while we await the replication of any collection drops and then reacquire the
     // locks (which can throw) needed to finish the drop database.
     ScopeGuard dropPendingGuardWhileUnlocked([dbName, opCtx] {
-        // TODO (SERVER-71610): Fix to be interruptible or document exception.
-        UninterruptibleLockGuard noInterrupt(opCtx->lockState());  // NOLINT.
-
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetDb autoDB(opCtx, dbName, MODE_IX);
         if (auto db = autoDB.getDb()) {
             db->setDropPending(opCtx, false);
@@ -423,8 +393,8 @@ Status _dropDatabase(OperationContext* opCtx, const DatabaseName& dbName, bool a
                                     << numCollectionsToDrop << " collection(s).");
     }
 
-    bool userInitiatedWritesAndNotPrimary = opCtx->writesAreReplicated() &&
-        !replCoord->canAcceptWritesForDatabase(opCtx, dbName.toStringWithTenantId());
+    bool userInitiatedWritesAndNotPrimary =
+        opCtx->writesAreReplicated() && !replCoord->canAcceptWritesForDatabase(opCtx, dbName);
 
     if (userInitiatedWritesAndNotPrimary) {
         return Status(ErrorCodes::PrimarySteppedDown,
@@ -445,12 +415,12 @@ Status _dropDatabase(OperationContext* opCtx, const DatabaseName& dbName, bool a
 
 }  // namespace
 
-Status dropDatabase(OperationContext* opCtx, const DatabaseName& dbName) {
+Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
     const bool abortIndexBuilds = true;
     return _dropDatabase(opCtx, dbName, abortIndexBuilds);
 }
 
-Status dropDatabaseForApplyOps(OperationContext* opCtx, const DatabaseName& dbName) {
+Status dropDatabaseForApplyOps(OperationContext* opCtx, const std::string& dbName) {
     const bool abortIndexBuilds = false;
     return _dropDatabase(opCtx, dbName, abortIndexBuilds);
 }

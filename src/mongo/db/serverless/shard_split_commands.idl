@@ -33,18 +33,20 @@ global:
 
 imports:
   - "mongo/db/serverless/shard_split_state_machine.idl"
-  - "mongo/db/basic_types.idl"
+  - "mongo/idl/basic_types.idl"
 
 structs:
     CommitShardSplitResponse:
         description: "Response for the `commitShardSplit` command."
         strict: false
         fields:
-            blockOpTime:
-                type: optime
-                description: >-
-                    The opTime at which writes and causal reads against the data being migrated
-                    started blocking.
+            state:
+                type: ShardSplitDonorState
+                description: "The state of the shard split operation."
+            abortReason:
+                type: object
+                description: "The error that caused the shard split operation to abort."
+                optional: true
 
 commands:
   commitShardSplit:
@@ -65,7 +67,7 @@ commands:
         type: string
       tenantIds:
         description: "The identifier for the list of tenants being migrated."
-        type: array<tenant_id>
+        type: array<string>
         validator:
           callback: "tenant_migration_util::validateDatabasePrefix"
 
@@ -79,7 +81,7 @@ commands:
       migrationId:
         description: "Unique identifier for the shard split operation."
         type: uuid
-
+  
   forgetShardSplit:
     description: "Parser for the `forgetShardSplit` command."
     command_name: forgetShardSplit

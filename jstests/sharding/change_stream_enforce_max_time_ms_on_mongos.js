@@ -157,7 +157,7 @@ startTime = (new Date()).getTime();
 const csResult = assert.commandWorked(mongosDB.runCommand(
     {getMore: csCursorId, collection: mongosColl.getName(), maxTimeMS: thirtyMins}));
 assert.lte((new Date()).getTime() - startTime, fiveMins);
-assert.docEq({_id: -1}, csResult.cursor.nextBatch[0].fullDocument);
+assert.docEq(csResult.cursor.nextBatch[0].fullDocument, {_id: -1});
 
 // Open a change stream with the default maxTimeMS. Then verify that if the client starts
 // issuing getMores with a subsecond maxTimeMS, that mongos eventually schedules getMores on the

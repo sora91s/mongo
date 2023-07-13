@@ -34,7 +34,6 @@
 #include "mongo/base/init.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/client/sasl_client_conversation.h"
-#include "mongo/client/sasl_oidc_client_conversation.h"
 #include "mongo/client/sasl_plain_client_conversation.h"
 #include "mongo/client/sasl_scram_client_conversation.h"
 #include "mongo/client/scram_client_cache.h"
@@ -49,6 +48,9 @@
 #endif
 
 namespace mongo {
+void initMyNativeSaslClientSession() {
+    
+}
 namespace {
 
 SaslClientSession* createNativeSaslClientSession(const std::string mech) {
@@ -107,28 +109,19 @@ Status NativeSaslClientSession::initialize() {
                       "Cannot reinitialize NativeSaslClientSession.");
 
     std::string mechanism = getParameter(parameterMechanism).toString();
-    if (mechanism == auth::kMechanismSaslPlain) {
+    if (mechanism == "PLAIN") {
         _saslConversation.reset(new SaslPLAINClientConversation(this));
-    } else if (mechanism == auth::kMechanismScramSha1) {
+    } else if (mechanism == "SCRAM-SHA-1") {
         _saslConversation.reset(
             new SaslSCRAMClientConversationImpl<SHA1Block>(this, scramsha1ClientCache));
-    } else if (mechanism == auth::kMechanismScramSha256) {
+    } else if (mechanism == "SCRAM-SHA-256") {
         _saslConversation.reset(
             new SaslSCRAMClientConversationImpl<SHA256Block>(this, scramsha256ClientCache));
 #ifdef MONGO_CONFIG_SSL
         // AWS depends on kms-message which depends on ssl libraries
-    } else if (mechanism == auth::kMechanismMongoAWS) {
+    } else if (mechanism == "MONGODB-AWS") {
         _saslConversation.reset(new SaslAWSClientConversation(this));
 #endif
-    } else if (mechanism == auth::kMechanismMongoOIDC) {
-        auto userName = hasParameter(SaslClientSession::parameterUser)
-            ? getParameter(SaslClientSession::parameterUser)
-            : ""_sd;
-        auto accessToken = hasParameter(SaslClientSession::parameterOIDCAccessToken)
-            ? getParameter(SaslClientSession::parameterOIDCAccessToken)
-            : ""_sd;
-
-        _saslConversation.reset(new SaslOIDCClientConversation(this, userName, accessToken));
     } else {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "SASL mechanism " << mechanism << " is not supported");

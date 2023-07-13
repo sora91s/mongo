@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection_catalog.h"
@@ -37,12 +38,8 @@
 #include "mongo/db/commands/fle2_compact_gen.h"
 #include "mongo/db/s/compact_structured_encryption_data_coordinator.h"
 #include "mongo/db/s/compact_structured_encryption_data_coordinator_gen.h"
-#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/cluster_commands_helpers.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -78,27 +75,23 @@ public:
         using InvocationBase::InvocationBase;
 
         Reply typedRun(OperationContext* opCtx) {
+            // TODO (SERVER-65077): Remove FCV check once 6.0 is released
+            uassert(6350499,
+                    "Queryable Encryption is only supported when FCV supports 6.0",
+                    gFeatureFlagFLE2.isEnabled(serverGlobalParams.featureCompatibility));
+            FixedFCVRegion fixedFcvRegion(opCtx);
 
-            auto compactCoordinator =
-                [&]() -> std::shared_ptr<CompactStructuredEncryptionDataCoordinator> {
-                FixedFCVRegion fixedFcvRegion(opCtx);
-
-                auto compact = makeRequest(opCtx);
-                if (!compact) {
-                    return nullptr;
-                }
-                return checked_pointer_cast<CompactStructuredEncryptionDataCoordinator>(
-                    ShardingDDLCoordinatorService::getService(opCtx)->getOrCreateInstance(
-                        opCtx, compact->toBSON()));
-            }();
-
-            if (!compactCoordinator) {
+            auto compact = makeRequest(opCtx);
+            if (!compact) {
                 // Nothing to do.
                 LOGV2(6548305, "Skipping compaction as there is no ECOC collection to compact");
                 return CompactStats({}, {}, {});
             }
 
-            return compactCoordinator->getResponse(opCtx);
+            return checked_pointer_cast<CompactStructuredEncryptionDataCoordinator>(
+                       ShardingDDLCoordinatorService::getService(opCtx)->getOrCreateInstance(
+                           opCtx, compact->toBSON()))
+                ->getResponse(opCtx);
         }
 
     private:
@@ -125,14 +118,6 @@ public:
             }
 
             CompactStructuredEncryptionDataState compact;
-            auto coordinatorType = DDLCoordinatorTypeEnum::kCompactStructuredEncryptionData;
-
-            if (!gFeatureFlagUseNewCompactStructuredEncryptionDataCoordinator.isEnabled(
-                    serverGlobalParams.featureCompatibility)) {
-                // TODO SERVER-68373 remove once 7.0 becomes last LTS
-                coordinatorType =
-                    DDLCoordinatorTypeEnum::kCompactStructuredEncryptionDataPre61Compatible;
-            }
 
             if (ecocColl.getCollection()) {
                 compact.setEcocUuid(ecocColl->uuid());
@@ -141,7 +126,8 @@ public:
                 compact.setEcocRenameUuid(ecocTempColl->uuid());
             }
 
-            compact.setShardingDDLCoordinatorMetadata({{nss, coordinatorType}});
+            compact.setShardingDDLCoordinatorMetadata(
+                {{nss, DDLCoordinatorTypeEnum::kCompactStructuredEncryptionData}});
             compact.setEscNss(namespaces.escNss);
             compact.setEccNss(namespaces.eccNss);
             compact.setEcocNss(namespaces.ecocNss);

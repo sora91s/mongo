@@ -20,6 +20,7 @@
 #include <boost/math/special_functions/detail/bessel_jy_series.hpp>
 #include <boost/math/constants/constants.hpp>
 #include <boost/math/policies/error_handling.hpp>
+#include <boost/type_traits/is_floating_point.hpp>
 #include <complex>
 
 // Bessel functions of the first and second kind of fractional order
@@ -80,7 +81,7 @@ namespace boost { namespace math {
             using namespace boost::math::tools;
          using namespace boost::math::constants;
 
-         BOOST_MATH_ASSERT(fabs(v) <= 0.5f);  // precondition for using this routine
+         BOOST_ASSERT(fabs(v) <= 0.5f);  // precondition for using this routine
 
          T gp = boost::math::tgamma1pm1(v, pol);
          T gm = boost::math::tgamma1pm1(-v, pol);
@@ -195,7 +196,7 @@ namespace boost { namespace math {
 
          // |x| >= |v|, CF2_jy converges rapidly
          // |x| -> 0, CF2_jy fails to converge
-         BOOST_MATH_ASSERT(fabs(x) > 1);
+         BOOST_ASSERT(fabs(x) > 1);
 
          // modified Lentz's method, complex numbers involved, see
          // Lentz, Applied Optics, vol 15, 668 (1976)
@@ -262,7 +263,7 @@ namespace boost { namespace math {
       template <typename T, typename Policy>
       int bessel_jy(T v, T x, T* J, T* Y, int kind, const Policy& pol)
       {
-         BOOST_MATH_ASSERT(x >= 0);
+         BOOST_ASSERT(x >= 0);
 
          T u, Jv, Ju, Yv, Yv1, Yu, Yu1(0), fv, fu;
          T W, p, q, gamma, current, prev, next;

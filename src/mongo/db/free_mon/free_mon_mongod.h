@@ -29,12 +29,10 @@
 
 #pragma once
 
-#include <boost/optional.hpp>
 #include <string>
 
-#include "mongo/db/op_observer/op_observer_registry.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/tenant_id.h"
 
 namespace mongo {
 
@@ -61,7 +59,7 @@ void notifyFreeMonitoringOnTransitionToPrimary();
  */
 void setupFreeMonitoringOpObserver(OpObserverRegistry* registry);
 
-Status onValidateFreeMonEndpointURL(StringData str, const boost::optional<TenantId>&);
+Status onValidateFreeMonEndpointURL(StringData str);
 
 
 }  // namespace mongo

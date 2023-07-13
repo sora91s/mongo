@@ -54,6 +54,7 @@ void BM_KeyGenBasic(benchmark::State& state, bool skipMultikey) {
     BtreeKeyGenerator generator({kFieldName},
                                 {BSONElement{}},
                                 false,
+                                nullptr,
                                 KeyString::Version::kLatestVersion,
                                 makeOrdering(kFieldName));
 
@@ -84,6 +85,7 @@ void BM_KeyGenArray(benchmark::State& state, int32_t elements) {
     BtreeKeyGenerator generator({kFieldName},
                                 {BSONElement{}},
                                 false,
+                                nullptr,
                                 KeyString::Version::kLatestVersion,
                                 makeOrdering(kFieldName));
 
@@ -112,6 +114,7 @@ void BM_KeyGenArrayZero(benchmark::State& state, int32_t elements) {
     BtreeKeyGenerator generator({kFieldName},
                                 {BSONElement{}},
                                 false,
+                                nullptr,
                                 KeyString::Version::kLatestVersion,
                                 makeOrdering(kFieldName));
 
@@ -145,6 +148,7 @@ void BM_KeyGenArrayOfArray(benchmark::State& state, int32_t elements) {
     BtreeKeyGenerator generator({kFieldName},
                                 {BSONElement{}},
                                 false,
+                                nullptr,
                                 KeyString::Version::kLatestVersion,
                                 makeOrdering(kFieldName));
 

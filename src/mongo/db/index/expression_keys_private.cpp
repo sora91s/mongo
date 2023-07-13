@@ -27,11 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
 
 #include "mongo/db/index/expression_keys_private.h"
 
-#include <s2cell.h>
-#include <s2regioncoverer.h>
 #include <utility>
 
 #include "mongo/bson/bsonelement_comparator_interface.h"
@@ -55,8 +54,8 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
-
+#include "third_party/s2/s2cell.h"
+#include "third_party/s2/s2regioncoverer.h"
 
 namespace {
 
@@ -432,9 +431,8 @@ void ExpressionKeysPrivate::validateDocumentCommon(const CollectionPtr& collecti
                                                    const BSONObj& keyPattern) {
     // If we have a timeseries collection, check that indexed metric fields do not have expanded
     // array values
-    if (auto tsOptions = collection->getTimeseriesOptions(); tsOptions &&
-        feature_flags::gTimeseriesMetricIndexes.isEnabled(
-            serverGlobalParams.featureCompatibility)) {
+    if (auto tsOptions = collection->getTimeseriesOptions();
+        tsOptions && feature_flags::gTimeseriesMetricIndexes.isEnabledAndIgnoreFCV()) {
         // Each user metric field will be included twice, as both control.min.<field> and
         // control.max.<field>, so we'll want to keep track that we've checked data.<field> to avoid
         // scanning it twice. The time field can be excluded as it is guaranteed to be a date at
@@ -488,7 +486,7 @@ void ExpressionKeysPrivate::get2DKeys(SharedBufferFragmentBuilder& pooledBufferB
                                       KeyStringSet* keys,
                                       KeyString::Version keyStringVersion,
                                       Ordering ordering,
-                                      const boost::optional<RecordId>& id) {
+                                      boost::optional<RecordId> id) {
     BSONElementMultiSet bSet;
 
     // Get all the nested location fields, but don't return individual elements from
@@ -580,7 +578,7 @@ void ExpressionKeysPrivate::getFTSKeys(SharedBufferFragmentBuilder& pooledBuffer
                                        KeyStringSet* keys,
                                        KeyString::Version keyStringVersion,
                                        Ordering ordering,
-                                       const boost::optional<RecordId>& id) {
+                                       boost::optional<RecordId> id) {
     fts::FTSIndexFormat::getKeys(
         pooledBufferBuilder, ftsSpec, obj, keys, keyStringVersion, ordering, id);
 }
@@ -597,7 +595,7 @@ void ExpressionKeysPrivate::getHashKeys(SharedBufferFragmentBuilder& pooledBuffe
                                         KeyString::Version keyStringVersion,
                                         Ordering ordering,
                                         bool ignoreArraysAlongPath,
-                                        const boost::optional<RecordId>& id) {
+                                        boost::optional<RecordId> id) {
     static const BSONObj nullObj = BSON("" << BSONNULL);
     auto hasFieldValue = false;
     KeyString::PooledBuilder keyString(pooledBufferBuilder, keyStringVersion, ordering);
@@ -671,7 +669,7 @@ void ExpressionKeysPrivate::getS2Keys(SharedBufferFragmentBuilder& pooledBufferB
                                       KeyString::Version keyStringVersion,
                                       SortedDataIndexAccessMethod::GetKeysContext context,
                                       Ordering ordering,
-                                      const boost::optional<RecordId>& id) {
+                                      boost::optional<RecordId> id) {
     std::vector<KeyString::HeapBuilder> keysToAdd;
 
     // Does one of our documents have a geo field?

@@ -27,18 +27,24 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include <type_traits>
 
 #include "mongo/db/write_concern_options.h"
+#include "mongo/db/write_concern_options_gen.h"
 
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/db/field_parser.h"
 #include "mongo/db/repl/repl_set_config.h"
-#include "mongo/db/write_concern_options_gen.h"
 #include "mongo/util/str.h"
 
 namespace mongo {
+
+using std::string;
+
 namespace {
 
 /**
@@ -101,7 +107,7 @@ StatusWith<WriteConcernOptions> WriteConcernOptions::parse(const BSONObj& obj) t
         return Status(ErrorCodes::FailedToParse, "write concern object cannot be empty");
     }
 
-    auto writeConcernIdl = WriteConcernIdl::parse(IDLParserContext{"WriteConcernOptions"}, obj);
+    auto writeConcernIdl = WriteConcernIdl::parse({"WriteConcernOptions"}, obj);
     auto parsedW = writeConcernIdl.getWriteConcernW();
 
     WriteConcernOptions writeConcern;
@@ -147,11 +153,9 @@ WriteConcernOptions WriteConcernOptions::deserializerForIDL(const BSONObj& obj) 
 }
 
 StatusWith<WriteConcernOptions> WriteConcernOptions::extractWCFromCommand(const BSONObj& cmdObj) {
-    // If no write concern is provided from the command, return the default write concern
-    // ({w: 1, wtimeout: 0}). If the default write concern is returned, it will be overriden in
-    // extractWriteConcern by the cluster-wide write concern or the implicit default write concern.
-    // We check for the existence of the write concern field up front in order to avoid the expense
-    // of constructing an error status in bsonExtractTypedField() below.
+    // Return the default write concern if no write concern is provided. We check for the existence
+    // of the write concern field up front in order to avoid the expense of constructing an error
+    // status in bsonExtractTypedField() below.
     if (!cmdObj.hasField(kWriteConcernField)) {
         return WriteConcernOptions();
     }
@@ -173,8 +177,17 @@ StatusWith<WriteConcernOptions> WriteConcernOptions::extractWCFromCommand(const 
 }
 
 WriteConcernW deserializeWriteConcernW(BSONElement wEl) {
+    // Preserve pre-5.3 behavior to avoid issues with mixed-version clusters. This will eventually
+    // be removed when we release 7.0.
+    if (serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+        serverGlobalParams.featureCompatibility.isLessThan(
+            multiversion::FeatureCompatibilityVersion::kVersion_5_3)) {
+        uassert(ErrorCodes::FailedToParse,
+                "w has to be a number or string; found: {}"_format(typeName(wEl.type())),
+                wEl.type() != BSONType::Object);
+    }
+
     if (wEl.isNumber()) {
-        uassert(ErrorCodes::FailedToParse, "w cannot be NaN", !wEl.isNaN());
         auto wNum = wEl.safeNumberLong();
         if (wNum < 0 || wNum > static_cast<long long>(repl::ReplSetConfig::kMaxMembers)) {
             uasserted(ErrorCodes::FailedToParse,
@@ -190,7 +203,7 @@ WriteConcernW deserializeWriteConcernW(BSONElement wEl) {
         uassert(ErrorCodes::FailedToParse, "tagged write concern requires tags", !wTags.isEmpty());
 
         WTags tags;
-        for (auto&& e : wTags) {
+        for (auto e : wTags) {
             uassert(
                 ErrorCodes::FailedToParse,
                 "tags must be a single level document with only number values; found: {}"_format(
@@ -209,30 +222,22 @@ WriteConcernW deserializeWriteConcernW(BSONElement wEl) {
 }
 
 void serializeWriteConcernW(const WriteConcernW& w, StringData fieldName, BSONObjBuilder* builder) {
-    stdx::visit(OverloadedVisitor{[&](int64_t wNumNodes) {
-                                      builder->appendNumber(fieldName,
-                                                            static_cast<long long>(wNumNodes));
-                                  },
-                                  [&](std::string wMode) { builder->append(fieldName, wMode); },
-                                  [&](WTags wTags) {
-                                      builder->append(fieldName, wTags);
-                                  }},
-                w);
+    stdx::visit(
+        visit_helper::Overloaded{[&](int64_t wNumNodes) {
+                                     builder->appendNumber(fieldName,
+                                                           static_cast<long long>(wNumNodes));
+                                 },
+                                 [&](std::string wMode) { builder->append(fieldName, wMode); },
+                                 [&](WTags wTags) { builder->append(fieldName, wTags); }},
+        w);
 }
 
 std::int64_t parseWTimeoutFromBSON(BSONElement element) {
-    // Store wTimeout as a 64-bit value but functionally limit it to int32 as values larger than
-    // than that do not make much sense to use and were not previously supported.
     constexpr std::array<mongo::BSONType, 4> validTypes{
         NumberLong, NumberInt, NumberDecimal, NumberDouble};
     bool isValidType = std::any_of(
         validTypes.begin(), validTypes.end(), [&](auto type) { return element.type() == type; });
-
-    auto value = isValidType ? element.safeNumberLong() : 0;
-    uassert(ErrorCodes::FailedToParse,
-            "wtimeout must be a 32-bit integer",
-            value <= std::numeric_limits<int32_t>::max());
-    return value;
+    return isValidType ? element.safeNumberLong() : 0;
 }
 
 BSONObj WriteConcernOptions::toBSON() const {

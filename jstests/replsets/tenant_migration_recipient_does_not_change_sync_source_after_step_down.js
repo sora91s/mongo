@@ -6,6 +6,7 @@
  * logical cloning behavior.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -15,11 +16,13 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {makeX509OptionsForTest} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 // Verify the recipient's current sync source is the expected one.
 const verifySyncSource = function(conn, migrationId, expectedSyncSource) {
@@ -34,7 +37,7 @@ const batchSize = 2;
 const recipientRst = new ReplSetTest({
     nodes: 2,
     name: jsTestName() + "_recipient",
-    nodeOptions: Object.assign(makeX509OptionsForTest().recipient, {
+    nodeOptions: Object.assign(TenantMigrationUtil.makeX509OptionsForTest().recipient, {
         setParameter: {
             // Use a batch size of 2 so that collection cloner requires more than a single
             // batch to complete.
@@ -53,7 +56,7 @@ const tenantMigrationTest =
 const donorRst = tenantMigrationTest.getDonorRst();
 const donorPrimary = donorRst.getPrimary();
 
-const tenantId = ObjectId().str;
+const tenantId = "testTenantId";
 const dbName = tenantMigrationTest.tenantDB(tenantId, "testDB");
 const collName = "testColl";
 
@@ -68,7 +71,7 @@ const migrationIdString = extractUUIDFromObject(migrationId);
 const migrationOpts = {
     migrationIdString: migrationIdString,
     recipientConnString: tenantMigrationTest.getRecipientConnString(),
-    tenantId,
+    tenantId: tenantId,
     readPreference: {mode: "primary"},  // only sync from donor's primary
 };
 
@@ -112,8 +115,9 @@ hangDuringCollectionClone.off();
 // verify the sync source is still the donor's old primary.
 TenantMigrationTest.assertCommitted(tenantMigrationTest.waitForMigrationToComplete(migrationOpts));
 assert.eq(recipientColl.find().itcount(), docs1.length + docs2.length);
-assert.docEq(docs1.concat(docs2), recipientColl.find().sort({_id: 1}).toArray());
+assert.docEq(recipientColl.find().sort({_id: 1}).toArray(), docs1.concat(docs2));
 verifySyncSource(recipientPrimary, migrationId, donorPrimary.host);
 
 tenantMigrationTest.stop();
 recipientRst.stopSet();
+})();

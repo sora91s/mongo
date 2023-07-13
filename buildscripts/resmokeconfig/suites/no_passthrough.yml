@@ -12,7 +12,6 @@ selector:
   exclude_files:
   # Disable inmem_full as per SERVER-27014
   - jstests/noPassthrough/inmem_full.js
-  exclude_with_any_tags:
 
 # noPassthrough tests start their own mongod's.
 executor:

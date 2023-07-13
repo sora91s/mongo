@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -44,9 +45,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -75,7 +73,6 @@ public:
                     serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
             CommandHelpers::uassertCommandRunWithMajority(Request::kCommandName,
                                                           opCtx->getWriteConcern());
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
 
             // Set the operation context read concern level to local for reads into the config
             // database.
@@ -84,10 +81,19 @@ public:
 
             auto dbname = request().getCommandParameter();
 
-            audit::logEnableSharding(opCtx->getClient(), dbname);
+            if (request().getEnableSharding()) {
+                uassert(ErrorCodes::BadValue,
+                        str::stream() << "Enable sharding can only be set to `true`",
+                        *request().getEnableSharding());
+
+                audit::logEnableSharding(opCtx->getClient(), dbname);
+            }
 
             auto dbt = ShardingCatalogManager::get(opCtx)->createDatabase(
-                opCtx, dbname, request().getPrimaryShardId());
+                opCtx,
+                dbname,
+                request().getPrimaryShardId(),
+                request().getEnableSharding().value_or(false));
 
             return {dbt.getVersion()};
         }

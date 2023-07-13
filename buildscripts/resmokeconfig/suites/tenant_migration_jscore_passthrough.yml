@@ -15,7 +15,7 @@ selector:
   exclude_files:
   - jstests/core/txns/**/*.js
   # Skip any tests that run with auth explicitly.
-  - jstests/core/administrative/*[aA]uth*.js
+  - jstests/core/*[aA]uth*.js
 
   exclude_with_any_tags:
   - assumes_standalone_mongod
@@ -39,7 +39,6 @@ selector:
   # process.
   - uses_full_validation
   - tenant_migration_incompatible
-  - requires_timeseries # Tenant migration not supported
 
 executor:
   archive:
@@ -56,7 +55,7 @@ executor:
         jsTest.authenticate(db.getMongo());
       global_vars:
         TestData: &TestData
-          tenantId: "636d957b2646ddfaf9b5e13f"
+          tenantId: "tenantMigrationTenantId"
           auth: true
           authMechanism: SCRAM-SHA-256
           keyFile: *keyFile

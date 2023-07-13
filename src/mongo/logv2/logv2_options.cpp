@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -36,20 +37,15 @@
 #include "mongo/util/options_parser/startup_option_init.h"
 #include "mongo/util/options_parser/startup_options.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
-
 namespace mongo {
 
 void RedactEncryptedFields::append(OperationContext* opCtx,
-                                   BSONObjBuilder* b,
-                                   StringData name,
-                                   const boost::optional<TenantId>&) {
-    *b << name << logv2::shouldRedactBinDataEncrypt();
+                                   BSONObjBuilder& b,
+                                   const std::string& name) {
+    b << name << logv2::shouldRedactBinDataEncrypt();
 }
 
-Status RedactEncryptedFields::set(const BSONElement& newValueElement,
-                                  const boost::optional<TenantId>&) {
+Status RedactEncryptedFields::set(const BSONElement& newValueElement) {
     bool newVal;
     if (!newValueElement.coerce(&newVal)) {
         return {ErrorCodes::BadValue,
@@ -60,7 +56,7 @@ Status RedactEncryptedFields::set(const BSONElement& newValueElement,
     return Status::OK();
 }
 
-Status RedactEncryptedFields::setFromString(StringData str, const boost::optional<TenantId>&) {
+Status RedactEncryptedFields::setFromString(const std::string& str) {
     if (str == "true" || str == "1") {
         logv2::setShouldRedactBinDataEncrypt(true);
     } else if (str == "false" || str == "0") {

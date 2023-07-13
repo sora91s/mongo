@@ -6,6 +6,7 @@
 // We verify this requirement by running a map-reduce, examining the logs to find the names of
 // all collections created, and checking the oplog for entries logging the creation of each of those
 // collections.
+load("jstests/libs/logv2_helpers.js");
 
 (function() {
 "use strict";
@@ -45,7 +46,13 @@ assert.commandWorked(result);
 const logLines = checkLog.getGlobalLog(primaryDB);
 let createdCollections = [];
 logLines.forEach(function(line) {
-    if (line.match(/createCollection: (.+) with/)) {
+    let matchResult;
+    if (isJsonLogNoConn()) {
+        line.match(/createCollection: (.+) with/);
+    } else {
+        matchResult = line.match(/createCollection: .+ with.*"nss":"(.*)"/);
+    }
+    if (matchResult) {
         createdCollections.push(matchResult[1]);
     }
 });

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -46,7 +47,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/fsync_locked.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/backup_cursor_hooks.h"
 #include "mongo/db/storage/storage_engine.h"
@@ -55,9 +56,6 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/background.h"
 #include "mongo/util/exit.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -88,13 +86,13 @@ private:
     static bool _shutdownTaskRegistered;
 };
 
-class FSyncCommand : public BasicCommand {
+class FSyncCommand : public ErrmsgCommandDeprecated {
 public:
     static const char* url() {
         return "http://dochub.mongodb.org/core/fsynccommand";
     }
 
-    FSyncCommand() : BasicCommand("fsync") {}
+    FSyncCommand() : ErrmsgCommandDeprecated("fsync") {}
 
     virtual ~FSyncCommand() {
         // The FSyncLockThread is owned by the FSyncCommand and accesses FsyncCommand state. It must
@@ -108,41 +106,34 @@ public:
         }
     }
 
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
-
-    bool adminOnly() const override {
+    virtual bool adminOnly() const {
         return true;
     }
-
     std::string help() const override {
         return url();
     }
-
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                  ActionType::fsync)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        ActionSet actions;
+        actions.addAction(ActionType::fsync);
+        out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
-
-    bool run(OperationContext* opCtx,
-             const DatabaseName&,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        uassert(ErrorCodes::IllegalOperation,
-                "fsync: Cannot execute fsync command from contexts that hold a data lock",
-                !opCtx->lockState()->isLocked());
+    virtual bool errmsgRun(OperationContext* opCtx,
+                           const std::string& dbname,
+                           const BSONObj& cmdObj,
+                           std::string& errmsg,
+                           BSONObjBuilder& result) {
+        if (opCtx->lockState()->isLocked()) {
+            errmsg = "fsync: Cannot execute fsync command from contexts that hold a data lock";
+            return false;
+        }
 
         const bool lock = cmdObj["lock"].trueValue();
         LOGV2(20461, "CMD fsync: lock:{lock}", "CMD fsync", "lock"_attr = lock);
@@ -164,7 +155,7 @@ public:
             return true;
         }
 
-        Lock::ExclusiveLock lk(opCtx, commandMutex);
+        Lock::ExclusiveLock lk(opCtx->lockState(), commandMutex);
 
         const auto lockCountAtStart = getLockCount();
         invariant(lockCountAtStart > 0 || !_lockThread);
@@ -282,9 +273,9 @@ private:
 
 } fsyncCmd;
 
-class FSyncUnlockCommand : public BasicCommand {
+class FSyncUnlockCommand : public ErrmsgCommandDeprecated {
 public:
-    FSyncUnlockCommand() : BasicCommand("fsyncUnlock") {}
+    FSyncUnlockCommand() : ErrmsgCommandDeprecated("fsyncUnlock") {}
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -298,29 +289,31 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        bool isAuthorized = AuthorizationSession::get(opCtx->getClient())
-                                ->isAuthorizedForActionsOnResource(
-                                    ResourcePattern::forClusterResource(), ActionType::unlock);
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        bool isAuthorized = AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+            ResourcePattern::forClusterResource(), ActionType::unlock);
 
         return isAuthorized ? Status::OK() : Status(ErrorCodes::Unauthorized, "Unauthorized");
     }
 
-    bool run(OperationContext* opCtx,
-             const DatabaseName&,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
+    bool errmsgRun(OperationContext* opCtx,
+                   const std::string& db,
+                   const BSONObj& cmdObj,
+                   std::string& errmsg,
+                   BSONObjBuilder& result) override {
         LOGV2(20465, "command: unlock requested");
 
-        Lock::ExclusiveLock lk(opCtx, commandMutex);
+        Lock::ExclusiveLock lk(opCtx->lockState(), commandMutex);
 
         stdx::unique_lock<Latch> stateLock(fsyncCmd.lockStateMutex);
 
         auto lockCount = fsyncCmd.getLockCount_inLock();
-
-        uassert(ErrorCodes::IllegalOperation, "fsyncUnlock called when not locked", lockCount != 0);
+        if (lockCount == 0) {
+            errmsg = "fsyncUnlock called when not locked";
+            return false;
+        }
 
         fsyncCmd.releaseLock_inLock(stateLock);
 

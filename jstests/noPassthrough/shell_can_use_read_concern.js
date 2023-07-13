@@ -55,6 +55,14 @@ function runTests({withSession}) {
 
         let cmdName = Object.keys(cmdObjSeen)[0];
 
+        // If the command is in a wrapped form, then we look for the actual command object
+        // inside
+        // the query/$query object.
+        if (cmdName === "query" || cmdName === "$query") {
+            cmdObjSeen = cmdObjSeen[cmdName];
+            cmdName = Object.keys(cmdObjSeen)[0];
+        }
+
         if (expectedSession) {
             assert(cmdObjSeen.hasOwnProperty("lsid"),
                    "Expected operation " + tojson(cmdObjSeen) +
@@ -126,6 +134,14 @@ function runTests({withSession}) {
 
     testCommandCanBeCausallyConsistent(function() {
         assert.commandWorked(db.runCommand({count: coll.getName()}));
+    });
+
+    testCommandCanBeCausallyConsistent(function() {
+        assert.commandWorked(db.runCommand({query: {count: coll.getName()}}));
+    });
+
+    testCommandCanBeCausallyConsistent(function() {
+        assert.commandWorked(db.runCommand({$query: {count: coll.getName()}}));
     });
 
     testCommandCanBeCausallyConsistent(function() {

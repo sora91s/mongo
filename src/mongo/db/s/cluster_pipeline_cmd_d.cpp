@@ -61,25 +61,17 @@ struct ClusterPipelineCommandD {
         uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
     }
 
-    static void checkCanExplainHere(OperationContext* opCtx) {
-        uasserted(ErrorCodes::CommandNotSupported,
-                  "Cannot explain a cluster aggregate command on a mongod");
-    }
-
     static AggregateCommandRequest parseAggregationRequest(
-        OperationContext* opCtx,
         const OpMsgRequest& opMsgRequest,
         boost::optional<ExplainOptions::Verbosity> explainVerbosity,
         bool apiStrict) {
         // Replace clusterAggregate in the request body because the parser doesn't recognize it.
         auto modifiedRequestBody =
             opMsgRequest.body.replaceFieldNames(BSON(AggregateCommandRequest::kCommandName << 1));
-        return aggregation_request_helper::parseFromBSON(
-            opCtx,
-            DatabaseName(opMsgRequest.getValidatedTenantId(), opMsgRequest.getDatabase()),
-            modifiedRequestBody,
-            explainVerbosity,
-            apiStrict);
+        return aggregation_request_helper::parseFromBSON(opMsgRequest.getDatabase().toString(),
+                                                         modifiedRequestBody,
+                                                         explainVerbosity,
+                                                         apiStrict);
     }
 };
 ClusterPipelineCommandBase<ClusterPipelineCommandD> clusterPipelineCmdD;

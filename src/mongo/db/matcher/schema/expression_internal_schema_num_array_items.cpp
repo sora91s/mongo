@@ -35,7 +35,7 @@ namespace mongo {
 
 InternalSchemaNumArrayItemsMatchExpression::InternalSchemaNumArrayItemsMatchExpression(
     MatchType type,
-    boost::optional<StringData> path,
+    StringData path,
     long long numItems,
     StringData name,
     clonable_ptr<ErrorAnnotation> annotation)
@@ -56,9 +56,7 @@ void InternalSchemaNumArrayItemsMatchExpression::debugString(StringBuilder& debu
     debug << "\n";
 }
 
-BSONObj InternalSchemaNumArrayItemsMatchExpression::getSerializedRightHandSide(
-    SerializationOptions opts) const {
-    // TODO SERVER-73678 respect 'replacementForLiteralArgs'.
+BSONObj InternalSchemaNumArrayItemsMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder objBuilder;
     objBuilder.append(_name, _numItems);
     return objBuilder.obj();

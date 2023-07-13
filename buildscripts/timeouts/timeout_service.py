@@ -1,11 +1,13 @@
 """Service for determining task timeouts."""
+from datetime import datetime
 from typing import Any, Dict, NamedTuple, Optional
 
 import inject
 import structlog
-from buildscripts.resmoke_proxy.resmoke_proxy import ResmokeProxyService
+from buildscripts.task_generation.resmoke_proxy import ResmokeProxyService
 from buildscripts.timeouts.timeout import TimeoutEstimate
-from buildscripts.util.teststats import HistoricTaskData, normalize_test_name
+from buildscripts.util.teststats import HistoricTaskData
+from evergreen import EvergreenApi
 
 LOGGER = structlog.get_logger(__name__)
 CLEAN_EVERY_N_HOOK = "CleanEveryN"
@@ -29,17 +31,29 @@ class TimeoutParams(NamedTuple):
     is_asan: bool
 
 
+class TimeoutSettings(NamedTuple):
+    """Settings for determining timeouts."""
+
+    start_date: datetime
+    end_date: datetime
+
+
 class TimeoutService:
     """A service for determining task timeouts."""
 
     @inject.autoparams()
-    def __init__(self, resmoke_proxy: ResmokeProxyService) -> None:
+    def __init__(self, evg_api: EvergreenApi, resmoke_proxy: ResmokeProxyService,
+                 timeout_settings: TimeoutSettings) -> None:
         """
         Initialize the service.
 
+        :param evg_api: Evergreen API client.
         :param resmoke_proxy: Proxy to query resmoke.
+        :param timeout_settings: Settings for how timeouts are calculated.
         """
+        self.evg_api = evg_api
         self.resmoke_proxy = resmoke_proxy
+        self.timeout_settings = timeout_settings
 
     def get_timeout_estimate(self, timeout_params: TimeoutParams) -> TimeoutEstimate:
         """
@@ -52,10 +66,7 @@ class TimeoutService:
         if not historic_stats:
             return TimeoutEstimate.no_timeouts()
 
-        test_set = {
-            normalize_test_name(test)
-            for test in self.resmoke_proxy.list_tests(timeout_params.suite_name)
-        }
+        test_set = set(self.resmoke_proxy.list_tests(timeout_params.suite_name))
         test_runtimes = [
             stat for stat in historic_stats.get_tests_runtimes() if stat.test_name in test_set
         ]
@@ -126,16 +137,13 @@ class TimeoutService:
         :return: Historic test results if they exist.
         """
         try:
-            LOGGER.info(
-                "Getting historic runtime information", evg_project=timeout_params.evg_project,
-                build_variant=timeout_params.build_variant, task_name=timeout_params.task_name)
-            evg_stats = HistoricTaskData.from_s3(
-                timeout_params.evg_project, timeout_params.task_name, timeout_params.build_variant)
+            evg_stats = HistoricTaskData.from_evg(
+                self.evg_api, timeout_params.evg_project, self.timeout_settings.start_date,
+                self.timeout_settings.end_date, timeout_params.task_name,
+                timeout_params.build_variant)
             if not evg_stats:
                 LOGGER.warning("No historic runtime information available")
                 return None
-            LOGGER.info("Found historic runtime information",
-                        evg_stats=evg_stats.historic_test_results)
             return evg_stats
         except Exception:  # pylint: disable=broad-except
             # If we have any trouble getting the historic runtime information, log the issue, but

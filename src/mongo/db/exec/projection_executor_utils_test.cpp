@@ -219,14 +219,14 @@ TEST(ElemMatchProjection, RertursEmptyValuefItContainsNumericSubfield) {
 namespace slice_projection_tests {
 DEATH_TEST_REGEX(SliceProjection,
                  ShouldFailIfNegativeLimitSpecifiedWithPositiveSkip,
-                 "Tripwire assertion.*7241701") {
+                 "Invariant failure.*limit >= 0") {
     auto doc = Document{fromjson("{a: [1,2,3,4]}")};
     projection_executor_utils::applyFindSliceProjection(doc, "a", 1, -1);
 }
 
 DEATH_TEST_REGEX(SliceProjection,
                  ShouldFailIfNegativeLimitSpecifiedWithNegativeSkip,
-                 "Tripwire assertion.*7241701") {
+                 "Invariant failure.*limit >= 0") {
     auto doc = Document{fromjson("{a: [1,2,3,4]}")};
     projection_executor_utils::applyFindSliceProjection(doc, "a", -1, -1);
 }

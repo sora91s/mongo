@@ -29,7 +29,6 @@
 
 #pragma once
 
-#include <boost/optional.hpp>
 #include <set>
 #include <sstream>
 #include <string>
@@ -37,61 +36,36 @@
 
 #include "mongo/db/query/optimizer/containers.h"
 #include "mongo/db/query/optimizer/utils/printable_enum.h"
-#include "mongo/db/query/optimizer/utils/strong_alias.h"
 
 
 namespace mongo::optimizer {
 
-/**
- * Representation of a field name. Can be empty.
- */
-struct FieldNameAliasTag {
-    static constexpr bool kAllowEmpty = true;
-};
-using FieldNameType = StrongStringAlias<FieldNameAliasTag>;
-
+using FieldNameType = std::string;
 using FieldPathType = std::vector<FieldNameType>;
-using FieldNameOrderedSet = std::set<FieldNameType>;
-using FieldNameSet = opt::unordered_set<FieldNameType, FieldNameType::Hasher>;
 
-/**
- * Representation of a variable name. Cannot be empty.
- */
-struct ProjectionNameAliasTag {
-    static constexpr bool kAllowEmpty = false;
-};
-using ProjectionName = StrongStringAlias<ProjectionNameAliasTag>;
+using CollectionNameType = std::string;
 
-using ProjectionNameSet = opt::unordered_set<ProjectionName, ProjectionName::Hasher>;
+using ProjectionName = std::string;
+using ProjectionNameSet = opt::unordered_set<ProjectionName>;
 using ProjectionNameOrderedSet = std::set<ProjectionName>;
 using ProjectionNameVector = std::vector<ProjectionName>;
-
-template <typename T>
-using ProjectionNameMap = opt::unordered_map<ProjectionName, T, ProjectionName::Hasher>;
-
-// Key: new/target projection, value: existing/source projection.
-using ProjectionRenames = ProjectionNameMap<ProjectionName>;
+using ProjectionRenames = opt::unordered_map<ProjectionName, ProjectionName>;
 
 // Map from scanDefName to rid projection name.
 using RIDProjectionsMap = opt::unordered_map<std::string, ProjectionName>;
 
-/**
- * A set of projection names which remembers the order in which elements were inserted.
- */
 class ProjectionNameOrderPreservingSet {
 public:
     ProjectionNameOrderPreservingSet() = default;
     ProjectionNameOrderPreservingSet(ProjectionNameVector v);
 
-    ProjectionNameOrderPreservingSet(const ProjectionNameOrderPreservingSet& other) = default;
-    ProjectionNameOrderPreservingSet(ProjectionNameOrderPreservingSet&& other) = default;
+    ProjectionNameOrderPreservingSet(const ProjectionNameOrderPreservingSet& other);
+    ProjectionNameOrderPreservingSet(ProjectionNameOrderPreservingSet&& other) noexcept;
 
     bool operator==(const ProjectionNameOrderPreservingSet& other) const;
-    ProjectionNameOrderPreservingSet& operator=(const ProjectionNameOrderPreservingSet& other) =
-        default;
 
     std::pair<size_t, bool> emplace_back(ProjectionName projectionName);
-    boost::optional<size_t> find(const ProjectionName& projectionName) const;
+    std::pair<size_t, bool> find(const ProjectionName& projectionName) const;
     bool erase(const ProjectionName& projectionName);
 
     bool isEqualIgnoreOrder(const ProjectionNameOrderPreservingSet& other) const;
@@ -99,7 +73,7 @@ public:
     const ProjectionNameVector& getVector() const;
 
 private:
-    ProjectionNameMap<size_t> _map;
+    opt::unordered_map<ProjectionName, size_t> _map;
     ProjectionNameVector _vector;
 };
 
@@ -127,9 +101,9 @@ MAKE_PRINTABLE_ENUM_STRING_ARRAY(DistributionTypeEnum, DistributionType, DISTRIB
 // In case of covering scan, index, or fetch, specify names of bound projections for each field.
 // Also optionally specify if applicable the rid and record (root) projections.
 struct FieldProjectionMap {
-    boost::optional<ProjectionName> _ridProjection;
-    boost::optional<ProjectionName> _rootProjection;
-    opt::unordered_map<FieldNameType, ProjectionName, FieldNameType::Hasher> _fieldProjections;
+    ProjectionName _ridProjection;
+    ProjectionName _rootProjection;
+    opt::unordered_map<FieldNameType, ProjectionName> _fieldProjections;
 
     bool operator==(const FieldProjectionMap& other) const;
 };
@@ -189,40 +163,10 @@ private:
     const int _iterationLimit;
 };
 
-
-struct SelectivityTag {
-    // Selectivity does not have units, it is a simple ratio.
-    static constexpr bool kUnitless = true;
-};
-using SelectivityType = StrongDoubleAlias<SelectivityTag>;
-
-struct CETag {
-    // Cardinality has units: it is measured in documents.
-    static constexpr bool kUnitless = false;
-};
-using CEType = StrongDoubleAlias<CETag>;
-
-// We can multiply a cardinality and a selectivity to obtain a cardinality.
-constexpr CEType operator*(const CEType v1, const SelectivityType v2) {
-    return {v1._value * v2._value};
-}
-constexpr CEType operator*(const SelectivityType v1, const CEType v2) {
-    return {v1._value * v2._value};
-}
-constexpr CEType& operator*=(CEType& v1, const SelectivityType v2) {
-    v1._value *= v2._value;
-    return v1;
-}
-
-// We can divide two cardinalities to obtain a selectivity.
-constexpr SelectivityType operator/(const CEType v1, const CEType v2) {
-    return {v1._value / v2._value};
-}
-
+using CEType = double;
+using SelectivityType = double;
 
 class CostType {
-    static constexpr double kPrecision = 0.00000001;
-
 public:
     static CostType kInfinity;
     static CostType kZero;
@@ -233,8 +177,8 @@ public:
     CostType(CostType&& other) = default;
     CostType& operator=(const CostType& other) = default;
 
-    bool operator==(const CostType& other) = delete;
-    bool operator!=(const CostType& other) = delete;
+    bool operator==(const CostType& other) const;
+    bool operator!=(const CostType& other) const;
     bool operator<(const CostType& other) const;
 
     CostType operator+(const CostType& other) const;
@@ -262,12 +206,6 @@ struct CostAndCE {
     CEType _ce;
 };
 
-/**
- * Note: Ascending and Descending sorts are performed according to the semantics of BinaryOp
- * comparisons: gt, lt, etc where for examples arrays sort after all numbers, as opposed to sort
- * semantics where arrays sort relative to numbers and one another based on their smallest/largest
- * element as defined by the sort path.
- */
 #define COLLATIONOP_OPNAMES(F) \
     F(Ascending)               \
     F(Descending)              \
@@ -275,7 +213,7 @@ struct CostAndCE {
 
 MAKE_PRINTABLE_ENUM(CollationOp, COLLATIONOP_OPNAMES);
 MAKE_PRINTABLE_ENUM_STRING_ARRAY(CollationOpEnum, CollationOp, COLLATIONOP_OPNAMES);
-#undef COLLATIONOP_OPNAMES
+#undef PATHSYNTAX_OPNAMES
 
 using ProjectionCollationEntry = std::pair<ProjectionName, CollationOp>;
 using ProjectionCollationSpec = std::vector<ProjectionCollationEntry>;
@@ -308,28 +246,12 @@ struct QueryHints {
     // Disable placing a group-by and union based RIDIntersect implementation.
     bool _disableGroupByAndUnionRIDIntersect = false;
 
-    // Force an index scan for eligible sargable predicate. Prevent their execution as residual.
-    bool _forceIndexScanForPredicates = false;
-
     // If set keep track of rejected plans in the memo.
     bool _keepRejectedPlans = false;
 
     // Disable Cascades branch-and-bound strategy, and fully evaluate all plans. Used in conjunction
     // with keeping rejected plans.
     bool _disableBranchAndBound = false;
-
-    // Controls if we prefer to cover queries which may return nulls with indexes, even though we
-    // may not distinguish between null and missing. Alternatively we always fetch (slower).
-    bool _fastIndexNullHandling = false;
-
-    // Controls if we prefer to insert redundant index predicates on the Seek side in order to
-    // prevent issues arising from yielding.
-    bool _disableYieldingTolerantPlans = true;
-
-    // Controls the minimum and maximum number of equalityPrefixes we generate for a candidate
-    // index. The minimum bound is only used for testing and in production should remain set to 1.
-    size_t _minIndexEqPrefixes = 1;
-    size_t _maxIndexEqPrefixes = 1;
 };
 
 }  // namespace mongo::optimizer

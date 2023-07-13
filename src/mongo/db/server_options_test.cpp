@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/config.h"
 
 #if defined(MONGO_CONFIG_HAVE_HEADER_UNISTD_H)
@@ -51,7 +55,7 @@
 #include "mongo/db/server_options_helpers.h"
 #include "mongo/db/server_options_nongeneral_gen.h"
 #include "mongo/db/server_options_server_helpers.h"
-#include "mongo/idl/server_parameter_test_util.h"
+#include "mongo/idl/server_parameter.h"
 #include "mongo/unittest/log_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/errno_util.h"
@@ -60,12 +64,10 @@
 #include "mongo/util/options_parser/options_parser.h"
 #include "mongo/util/scopeguard.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 namespace mongo {
 namespace {
 
-using mongo::ClusterRole;
 using mongo::ErrorCodes;
 using mongo::Status;
 
@@ -81,7 +83,7 @@ MONGO_INITIALIZER(ServerLogRedirection)(mongo::InitializerContext*) {
 
 class OptionsParserTester : public moe::OptionsParser {
 public:
-    Status readConfigFile(const std::string& filename, std::string* config, moe::ConfigExpand) {
+    Status readConfigFile(const std::string& filename, std::string* config, ConfigExpand) {
         if (filename != _filename) {
             ::mongo::StringBuilder sb;
             sb << "Parser using filename: " << filename
@@ -509,7 +511,7 @@ TEST(SetupOptions, SlowMsCommandLineParamParsesSuccessfully) {
     ASSERT_OK(::mongo::setupServerOptions(argv));
     ASSERT_OK(::mongo::storeServerOptions(environment));
 
-    ASSERT_EQ(::mongo::serverGlobalParams.slowMS.load(), 300);
+    ASSERT_EQ(::mongo::serverGlobalParams.slowMS, 300);
 }
 
 TEST(SetupOptions, SlowMsParamInitializedSuccessfullyFromINIConfigFile) {
@@ -534,7 +536,7 @@ TEST(SetupOptions, SlowMsParamInitializedSuccessfullyFromINIConfigFile) {
     ASSERT_OK(::mongo::setupServerOptions(argv));
     ASSERT_OK(::mongo::storeServerOptions(environment));
 
-    ASSERT_EQ(::mongo::serverGlobalParams.slowMS.load(), 300);
+    ASSERT_EQ(::mongo::serverGlobalParams.slowMS, 300);
 }
 
 TEST(SetupOptions, SlowMsParamInitializedSuccessfullyFromYAMLConfigFile) {
@@ -561,7 +563,7 @@ TEST(SetupOptions, SlowMsParamInitializedSuccessfullyFromYAMLConfigFile) {
     ASSERT_OK(::mongo::setupServerOptions(argv));
     ASSERT_OK(::mongo::storeServerOptions(environment));
 
-    ASSERT_EQ(::mongo::serverGlobalParams.slowMS.load(), 300);
+    ASSERT_EQ(::mongo::serverGlobalParams.slowMS, 300);
 }
 
 TEST(SetupOptions, NonNumericSlowMsCommandLineOptionFailsToParse) {
@@ -617,7 +619,7 @@ TEST(SetupOptions, SampleRateCommandLineParamParsesSuccessfully) {
     ASSERT_OK(::mongo::setupServerOptions(argv));
     ASSERT_OK(::mongo::storeServerOptions(environment));
 
-    ASSERT_EQ(::mongo::serverGlobalParams.sampleRate.load(), 0.5);
+    ASSERT_EQ(::mongo::serverGlobalParams.sampleRate, 0.5);
 }
 
 TEST(SetupOptions, SampleRateParamInitializedSuccessfullyFromINIConfigFile) {
@@ -642,7 +644,7 @@ TEST(SetupOptions, SampleRateParamInitializedSuccessfullyFromINIConfigFile) {
     ASSERT_OK(::mongo::setupServerOptions(argv));
     ASSERT_OK(::mongo::storeServerOptions(environment));
 
-    ASSERT_EQ(::mongo::serverGlobalParams.sampleRate.load(), 0.5);
+    ASSERT_EQ(::mongo::serverGlobalParams.sampleRate, 0.5);
 }
 
 TEST(SetupOptions, SampleRateParamInitializedSuccessfullyFromYAMLConfigFile) {
@@ -669,7 +671,7 @@ TEST(SetupOptions, SampleRateParamInitializedSuccessfullyFromYAMLConfigFile) {
     ASSERT_OK(::mongo::setupServerOptions(argv));
     ASSERT_OK(::mongo::storeServerOptions(environment));
 
-    ASSERT_EQ(::mongo::serverGlobalParams.sampleRate.load(), 0.5);
+    ASSERT_EQ(::mongo::serverGlobalParams.sampleRate, 0.5);
 }
 
 TEST(SetupOptions, NonNumericSampleRateCommandLineOptionFailsToParse) {
@@ -705,50 +707,6 @@ TEST(SetupOptions, NonNumericSampleRateYAMLConfigOptionFailsToParse) {
                      "    slowOpSampleRate: invalid\n");
 
     ASSERT_NOT_OK(parser.run(options, argv, &environment));
-}
-
-TEST(ClusterRole, Equality) {
-    ASSERT_TRUE(ClusterRole(ClusterRole::None) == ClusterRole::None);
-    ASSERT_TRUE(ClusterRole(ClusterRole::None) != ClusterRole::ConfigServer);
-    ASSERT_TRUE(ClusterRole(ClusterRole::None) != ClusterRole::ShardServer);
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ConfigServer) != ClusterRole::None);
-    ASSERT_TRUE(ClusterRole(ClusterRole::ConfigServer) == ClusterRole::ConfigServer);
-    ASSERT_TRUE(ClusterRole(ClusterRole::ConfigServer) != ClusterRole::ShardServer);
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer) != ClusterRole::None);
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer) != ClusterRole::ConfigServer);
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer) == ClusterRole::ShardServer);
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer).isShardRole());
-    ASSERT_FALSE(ClusterRole(ClusterRole::ConfigServer).isShardRole());
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer).isExclusivelyShardRole());
-    ASSERT_FALSE(ClusterRole(ClusterRole::ConfigServer).isExclusivelyShardRole());
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ConfigServer).isExclusivelyConfigSvrRole());
-
-    RAIIServerParameterControllerForTest controller("featureFlagCatalogShard", true);
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::None) == ClusterRole::None);
-    ASSERT_TRUE(ClusterRole(ClusterRole::None) != ClusterRole::ConfigServer);
-    ASSERT_TRUE(ClusterRole(ClusterRole::None) != ClusterRole::ShardServer);
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ConfigServer) != ClusterRole::None);
-    ASSERT_TRUE(ClusterRole(ClusterRole::ConfigServer) == ClusterRole::ConfigServer);
-    ASSERT_TRUE(ClusterRole(ClusterRole::ConfigServer) == ClusterRole::ShardServer);
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer) != ClusterRole::None);
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer) != ClusterRole::ConfigServer);
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer) == ClusterRole::ShardServer);
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer).isShardRole());
-    ASSERT_TRUE(ClusterRole(ClusterRole::ConfigServer).isShardRole());
-
-    ASSERT_TRUE(ClusterRole(ClusterRole::ShardServer).isExclusivelyShardRole());
-    ASSERT_FALSE(ClusterRole(ClusterRole::ConfigServer).isExclusivelyShardRole());
-
-    ASSERT_FALSE(ClusterRole(ClusterRole::ConfigServer).isExclusivelyConfigSvrRole());
 }
 
 #if !defined(_WIN32) && !(defined(__APPLE__) && TARGET_OS_TV)
@@ -857,10 +815,7 @@ TEST(SetupOptions, UnlinkedCwd) {
     // Naive rmdir of cwd doesn't work on Solaris doesn't work (no matter how it's specified).
     // So we use a subprocess to unlink the dir.
     pid_t pid = fork();
-    if (pid == -1) {
-        auto ec = lastSystemError();
-        FAIL("unable to fork") << errorMessage(ec);
-    }
+    ASSERT_NOT_EQUALS(pid, -1) << "unable to fork: " << ::mongo::errnoWithDescription();
     if (pid == 0) {
         // Subprocess
         // No exceptions, ASSERT(), FAIL() or logging.
@@ -913,14 +868,11 @@ public:
         TestServerParameter(StringData name, ServerParameterType spt, int x)
             : ServerParameter(name, spt), val{x} {}
 
-        void append(OperationContext*,
-                    BSONObjBuilder* bob,
-                    StringData name,
-                    const boost::optional<TenantId>&) final {
-            bob->append(name, val);
+        void append(OperationContext*, BSONObjBuilder& bob, const std::string& name) final {
+            bob.append(name, val);
         }
 
-        Status setFromString(StringData str, const boost::optional<TenantId>&) final {
+        Status setFromString(const std::string& str) final {
             int value;
             Status status = NumberParser{}(str, &value);
             if (!status.isOK())

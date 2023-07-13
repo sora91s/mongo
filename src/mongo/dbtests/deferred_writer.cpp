@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include <chrono>
 
 #include "mongo/bson/simple_bsonobj_comparator.h"
@@ -38,7 +40,6 @@
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/stdx/chrono.h"
 
-namespace mongo {
 namespace deferred_writer_tests {
 
 namespace {
@@ -95,12 +96,12 @@ public:
     virtual ~DeferredWriterTestBase() {}
 
     void createCollection(void) {
-        _client.createCollection(kTestNamespace);
+        _client.createCollection(kTestNamespace.toString());
     }
 
     void dropCollection(void) {
         if (AutoGetCollection(_opCtx.get(), kTestNamespace, MODE_IS).getCollection()) {
-            _client.dropCollection(kTestNamespace);
+            _client.dropCollection(kTestNamespace.toString());
         }
     }
 
@@ -386,4 +387,3 @@ public:
 OldStyleSuiteInitializer<DeferredWriterTests> deferredWriterTests;
 
 }  // namespace deferred_writer_tests
-}  // namespace mongo

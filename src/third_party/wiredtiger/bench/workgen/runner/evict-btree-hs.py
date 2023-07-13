@@ -110,8 +110,7 @@ pop_ops = op_multi_table(pop_ops, tables)
 nops_per_thread = icount // (populate_threads * table_count)
 pop_thread = Thread(pop_ops * nops_per_thread)
 pop_workload = Workload(context, populate_threads * pop_thread)
-ret = pop_workload.run(conn)
-assert ret == 0, ret
+pop_workload.run(conn)
 
 # Log like file, requires that logging be enabled in the connection config.
 log_name = "table:log"
@@ -159,9 +158,8 @@ workload = Workload(context, 400 * thread0 + 100 * thread1 +\
 workload.options.report_interval=5
 workload.options.run_time=500
 workload.options.max_latency=50000
-ret = workload.run(conn)
-assert ret == 0, ret
+workload.run(conn)
 
-latency_filename = os.path.join(context.args.home, "latency.out")
+latency_filename = homedir + "/latency.out"
 latency.workload_latency(workload, latency_filename)
 conn.close()

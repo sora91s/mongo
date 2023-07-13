@@ -117,11 +117,11 @@ public:
     }
 
     NamespaceString shardedNS() const {
-        return NamespaceString::createNamespaceString_forTest("test.foo");
+        return NamespaceString("test.foo");
     }
 
     NamespaceString unshardedNS() const {
-        return NamespaceString::createNamespaceString_forTest("unsharded.coll");
+        return NamespaceString("unsharded.coll");
     }
 
     std::string zoneName() const {
@@ -258,7 +258,7 @@ TEST_F(AssignKeyRangeToZoneTestFixture, RemoveZoneWithDollarPrefixedShardKeysSho
 }
 
 TEST_F(AssignKeyRangeToZoneTestFixture, MinThatIsAShardKeyPrefixShouldConvertToFullShardKey) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("compound.shard");
+    NamespaceString ns("compound.shard");
     CollectionType shardedCollection(
         ns, OID::gen(), Timestamp(1, 1), Date_t::now(), UUID::gen(), BSON("x" << 1 << "y" << 1));
 
@@ -275,7 +275,7 @@ TEST_F(AssignKeyRangeToZoneTestFixture, MinThatIsAShardKeyPrefixShouldConvertToF
 }
 
 TEST_F(AssignKeyRangeToZoneTestFixture, MaxThatIsAShardKeyPrefixShouldConvertToFullShardKey) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("compound.shard");
+    NamespaceString ns("compound.shard");
     CollectionType shardedCollection(
         ns, OID::gen(), Timestamp(1, 1), Date_t::now(), UUID::gen(), BSON("x" << 1 << "y" << 1));
 
@@ -327,7 +327,7 @@ TEST_F(AssignKeyRangeToZoneTestFixture, MinMaxThatIsNotAShardKeyPrefixShouldFail
 }
 
 TEST_F(AssignKeyRangeToZoneTestFixture, MinMaxThatIsAShardKeyPrefixShouldSucceed) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("compound.shard");
+    NamespaceString ns("compound.shard");
     CollectionType shardedCollection(
         ns, OID::gen(), Timestamp(1, 1), Date_t::now(), UUID::gen(), BSON("x" << 1 << "y" << 1));
 
@@ -365,8 +365,7 @@ TEST_F(AssignKeyRangeToZoneTestFixture, PrefixIsNotAllowedOnUnshardedColl) {
 }
 
 TEST_F(AssignKeyRangeToZoneTestFixture, TimeseriesCollMustHaveTimeKeyRangeMinKey) {
-    const NamespaceString ns =
-        NamespaceString::createNamespaceString_forTest("test.system.buckets.timeseries");
+    const NamespaceString ns("test.system.buckets.timeseries");
     const StringData metaField = "meta"_sd;
     const StringData timeField = "time"_sd;
     const std::string controlTimeField =
@@ -526,7 +525,7 @@ TEST_F(AssignKeyRangeWithOneRangeFixture, NewRangeOverlappingInsideExistingShoul
  *           0123456789
  */
 TEST_F(AssignKeyRangeWithOneRangeFixture, NewRangeOverlappingWithDifferentNSShouldSucceed) {
-    CollectionType shardedCollection(NamespaceString::createNamespaceString_forTest("other.coll"),
+    CollectionType shardedCollection(NamespaceString("other.coll"),
                                      OID::gen(),
                                      Timestamp(1, 1),
                                      Date_t::now(),
@@ -597,8 +596,7 @@ TEST_F(AssignKeyRangeWithOneRangeFixture,
     shard.setHost("b:1234");
     shard.setTags({"y"});
 
-    ASSERT_OK(insertToConfigCollection(
-        operationContext(), NamespaceString::kConfigsvrShardsNamespace, shard.toBSON()));
+    ASSERT_OK(insertToConfigCollection(operationContext(), ShardType::ConfigNS, shard.toBSON()));
 
     ASSERT_THROWS_CODE(
         ShardingCatalogManager::get(operationContext())
@@ -750,7 +748,7 @@ TEST_F(AssignKeyRangeWithOneRangeFixture, RemoveWithInvalidMaxShardKeyShouldFail
 }
 
 TEST_F(AssignKeyRangeWithOneRangeFixture, RemoveWithPartialMinPrefixShouldRemoveRange) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("compound.shard");
+    NamespaceString ns("compound.shard");
     CollectionType shardedCollection(
         ns, OID::gen(), Timestamp(1, 1), Date_t::now(), UUID::gen(), BSON("x" << 1 << "y" << 1));
 
@@ -773,7 +771,7 @@ TEST_F(AssignKeyRangeWithOneRangeFixture, RemoveWithPartialMinPrefixShouldRemove
 }
 
 TEST_F(AssignKeyRangeWithOneRangeFixture, RemoveWithPartialMaxPrefixShouldRemoveRange) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("compound.shard");
+    NamespaceString ns("compound.shard");
     CollectionType shardedCollection(
         ns, OID::gen(), Timestamp(1, 1), Date_t::now(), UUID::gen(), BSON("x" << 1 << "y" << 1));
 

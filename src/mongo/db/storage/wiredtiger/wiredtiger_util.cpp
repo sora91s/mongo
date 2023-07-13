@@ -27,35 +27,42 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kWiredTiger
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
 
+#include <limits>
+
 #include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
+#include <boost/filesystem/path.hpp>
 
 #include "mongo/base/simple_string_data_comparator.h"
-#include "mongo/bson/json.h"
-#include "mongo/db/concurrency/exception_util.h"
-#include "mongo/db/concurrency/exception_util_gen.h"
+#include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/concurrency/temporarily_unavailable_exception.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/concurrency/write_conflict_exception_gen.h"
 #include "mongo/db/global_settings.h"
 #include "mongo/db/server_options_general_gen.h"
 #include "mongo/db/snapshot_window_options_gen.h"
+#include "mongo/db/storage/storage_file_util.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_global_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_parameters_gen.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_recovery_unit.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/logv2/log.h"
-#include "mongo/util/pcre.h"
+#include "mongo/util/assert_util.h"
 #include "mongo/util/processinfo.h"
+#include "mongo/util/scopeguard.h"
+#include "mongo/util/static_immortal.h"
+#include "mongo/util/str.h"
 #include "mongo/util/testing_proctor.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kWiredTiger
-
-
 // From src/third_party/wiredtiger/src/include/txn.h
-#define WT_TXN_ROLLBACK_REASON_OLDEST_FOR_EVICTION \
-    "oldest pinned transaction ID rolled back for eviction"
+#define WT_TXN_ROLLBACK_REASON_CACHE "oldest pinned transaction ID rolled back for eviction"
 
-#define WT_TXN_ROLLBACK_REASON_TOO_LARGE_FOR_CACHE \
-    "transaction is too large and will not fit in the storage engine cache"
 namespace mongo {
 
 namespace {
@@ -86,8 +93,7 @@ void removeTableChecksFile() {
     }
 }
 
-void setTableWriteTimestampAssertion(OperationContext* opCtx,
-                                     WiredTigerSessionCache* sessionCache,
+void setTableWriteTimestampAssertion(WiredTigerSessionCache* sessionCache,
                                      const std::string& uri,
                                      bool on) {
     const std::string setting = on ? "assert=(write_timestamp=on)" : "assert=(write_timestamp=off)";
@@ -96,11 +102,8 @@ void setTableWriteTimestampAssertion(OperationContext* opCtx,
                 "Changing table write timestamp assertion settings",
                 "uri"_attr = uri,
                 "writeTimestampAssertionOn"_attr = on);
-    auto status = sessionCache->getKVEngine()->alterMetadata(opCtx, uri, setting);
+    auto status = sessionCache->getKVEngine()->alterMetadata(uri, setting);
     if (!status.isOK()) {
-        // Dump the storage engine's internal state to assist in diagnosis.
-        sessionCache->getKVEngine()->dump();
-
         auto sessionPtr = sessionCache->getSession();
         LOGV2_FATAL(
             6003701,
@@ -122,92 +125,38 @@ bool wasRollbackReasonCachePressure(WT_SESSION* session) {
     if (session) {
         const auto reason = session->get_rollback_reason(session);
         if (reason) {
-            return strncmp(WT_TXN_ROLLBACK_REASON_OLDEST_FOR_EVICTION,
+            return strncmp(WT_TXN_ROLLBACK_REASON_CACHE,
                            reason,
-                           sizeof(WT_TXN_ROLLBACK_REASON_OLDEST_FOR_EVICTION)) == 0;
+                           sizeof(WT_TXN_ROLLBACK_REASON_CACHE)) == 0;
         }
     }
     return false;
-}
-
-/**
- * Configured WT cache is deemed insufficient for a transaction when its dirty bytes in cache
- * exceed a certain threshold on the proportion of total cache which is used by transaction.
- *
- * For instance, if the transaction uses 80% of WT cache and the threshold is set to 75%, the
- * transaction is considered too large.
- */
-bool isCacheInsufficientForTransaction(WT_SESSION* session, double threshold) {
-    StatusWith<int64_t> txnDirtyBytes = WiredTigerUtil::getStatisticsValue(
-        session, "statistics:session", "", WT_STAT_SESSION_TXN_BYTES_DIRTY);
-    if (!txnDirtyBytes.isOK()) {
-        tasserted(6190900,
-                  str::stream() << "unable to gather the WT session's txn dirty bytes: "
-                                << txnDirtyBytes.getStatus());
-    }
-
-    StatusWith<int64_t> cacheDirtyBytes = WiredTigerUtil::getStatisticsValue(
-        session, "statistics:", "", WT_STAT_CONN_CACHE_BYTES_DIRTY);
-    if (!cacheDirtyBytes.isOK()) {
-        tasserted(6190901,
-                  str::stream() << "unable to gather the WT connection's cache dirty bytes: "
-                                << txnDirtyBytes.getStatus());
-    }
-
-
-    double txnBytesDirtyOverCacheBytesDirty =
-        static_cast<double>(txnDirtyBytes.getValue()) / cacheDirtyBytes.getValue();
-
-    LOGV2_DEBUG(6190902,
-                2,
-                "Checking if transaction can eventually succeed",
-                "txnDirtyBytes"_attr = txnDirtyBytes.getValue(),
-                "cacheDirtyBytes"_attr = cacheDirtyBytes.getValue(),
-                "txnBytesDirtyOverCacheBytesDirty"_attr = txnBytesDirtyOverCacheBytesDirty,
-                "threshold"_attr = threshold);
-
-    return txnBytesDirtyOverCacheBytesDirty > threshold;
 }
 
 Status wtRCToStatus_slow(int retCode, WT_SESSION* session, StringData prefix) {
     if (retCode == 0)
         return Status::OK();
 
-    const auto generateContextStrStream = [&](StringData reason) {
-        str::stream contextStrStream;
-        if (!prefix.empty())
-            contextStrStream << prefix << " ";
-        contextStrStream << retCode << ": " << reason;
-
-        return contextStrStream;
-    };
-
     if (retCode == WT_ROLLBACK) {
-        double cacheThreshold = gTransactionTooLargeForCacheThreshold.load();
-        bool txnTooLargeEnabled = cacheThreshold < 1.0;
-        bool temporarilyUnavailableEnabled = gEnableTemporarilyUnavailableExceptions.load();
-        bool reasonWasCachePressure = (txnTooLargeEnabled || temporarilyUnavailableEnabled) &&
-            wasRollbackReasonCachePressure(session);
-
-        if (reasonWasCachePressure) {
-            if (txnTooLargeEnabled && isCacheInsufficientForTransaction(session, cacheThreshold)) {
-                auto s = generateContextStrStream(WT_TXN_ROLLBACK_REASON_TOO_LARGE_FOR_CACHE);
-                throwTransactionTooLargeForCache(s);
-            }
-
-            if (temporarilyUnavailableEnabled) {
-                auto s = generateContextStrStream(WT_TXN_ROLLBACK_REASON_OLDEST_FOR_EVICTION);
-                throwTemporarilyUnavailableException(s);
-            }
+        if (gEnableTemporarilyUnavailableExceptions.load() &&
+            wasRollbackReasonCachePressure(session)) {
+            str::stream s;
+            if (!prefix.empty())
+                s << prefix << " ";
+            s << retCode << ": " << WT_TXN_ROLLBACK_REASON_CACHE;
+            throw TemporarilyUnavailableException(s);
         }
 
-        throwWriteConflictException(prefix);
+        throw WriteConflictException(prefix);
     }
 
     // Don't abort on WT_PANIC when repairing, as the error will be handled at a higher layer.
     fassert(28559, retCode != WT_PANIC || storageGlobalParams.repair);
 
-    auto s = generateContextStrStream(wiredtiger_strerror(retCode));
+    str::stream s;
+    if (!prefix.empty())
+        s << prefix << " ";
+    s << retCode << ": " << wiredtiger_strerror(retCode);
 
     if (retCode == EINVAL) {
         return Status(ErrorCodes::BadValue, s);
@@ -456,7 +405,7 @@ StatusWith<int64_t> WiredTigerUtil::checkApplicationMetadataFormatVersion(Operat
 
 // static
 Status WiredTigerUtil::checkTableCreationOptions(const BSONElement& configElem) {
-    invariant(configElem.fieldNameStringData() == WiredTigerUtil::kConfigStringField);
+    invariant(configElem.fieldNameStringData() == "configString");
 
     if (configElem.type() != String) {
         return {ErrorCodes::TypeMismatch, "'configString' must be a string."};
@@ -471,17 +420,13 @@ Status WiredTigerUtil::checkTableCreationOptions(const BSONElement& configElem) 
         return {ErrorCodes::FailedToParse, "malformed 'configString' value."};
     }
 
-    if (config.find("type=lsm") != std::string::npos) {
-        return {ErrorCodes::Error(6627201), "Configuration 'type=lsm' is not supported."};
-    }
-
     Status status = wtRCToStatus(
         wiredtiger_config_validate(nullptr, &eventHandler, "WT_SESSION.create", config.rawData()),
         nullptr);
     if (!status.isOK()) {
         StringBuilder errorMsg;
         errorMsg << status.reason();
-        for (const std::string& error : errors) {
+        for (std::string error : errors) {
             errorMsg << ". " << error;
         }
         errorMsg << ".";
@@ -545,37 +490,6 @@ int64_t WiredTigerUtil::getIdentSize(WT_SESSION* s, const std::string& uri) {
     return result.getValue();
 }
 
-int64_t WiredTigerUtil::getEphemeralIdentSize(WT_SESSION* s, const std::string& uri) {
-    // For ephemeral case, use cursor statistics
-    const auto statsUri = "statistics:" + uri;
-
-    // Helper function to retrieve stats and check for errors
-    auto getStats = [&](int key) -> int64_t {
-        auto result = getStatisticsValue(s, statsUri, "statistics=(fast)", key);
-        if (!result.isOK()) {
-            if (result.getStatus().code() == ErrorCodes::CursorNotFound)
-                return 0;  // ident gone, so return 0
-
-            uassertStatusOK(result.getStatus());
-        }
-        return result.getValue();
-    };
-
-    auto inserts = getStats(WT_STAT_DSRC_CURSOR_INSERT);
-    auto removes = getStats(WT_STAT_DSRC_CURSOR_REMOVE);
-    auto insertBytes = getStats(WT_STAT_DSRC_CURSOR_INSERT_BYTES);
-
-    if (inserts == 0 || removes >= inserts)
-        return 0;
-
-    // Rough approximation of index size as average entry size times number of entries.
-    // May be off if key sizes change significantly over the life time of the collection,
-    // but is the best we can do currrently with the statistics available.
-    auto bytesPerEntry = (insertBytes + inserts - 1) / inserts;  // round up
-    auto numEntries = inserts - removes;
-    return numEntries * bytesPerEntry;
-}
-
 int64_t WiredTigerUtil::getIdentReuseSize(WT_SESSION* s, const std::string& uri) {
     auto result = WiredTigerUtil::getStatisticsValue(
         s, "statistics:" + uri, "statistics=(fast)", WT_STAT_DSRC_BLOCK_REUSE_BYTES);
@@ -628,16 +542,8 @@ logv2::LogSeverity getWTLOGV2SeverityLevel(const BSONObj& obj) {
             return logv2::LogSeverity::Info();
         case WT_VERBOSE_INFO:
             return logv2::LogSeverity::Log();
-        case WT_VERBOSE_DEBUG_1:
+        case WT_VERBOSE_DEBUG:
             return logv2::LogSeverity::Debug(1);
-        case WT_VERBOSE_DEBUG_2:
-            return logv2::LogSeverity::Debug(2);
-        case WT_VERBOSE_DEBUG_3:
-            return logv2::LogSeverity::Debug(3);
-        case WT_VERBOSE_DEBUG_4:
-            return logv2::LogSeverity::Debug(4);
-        case WT_VERBOSE_DEBUG_5:
-            return logv2::LogSeverity::Debug(5);
         default:
             return logv2::LogSeverity::Log();
     }
@@ -771,7 +677,7 @@ int mdb_handle_error(WT_EVENT_HANDLER* handler,
 int mdb_handle_message(WT_EVENT_HANDLER* handler, WT_SESSION* session, const char* message) {
     logv2::DynamicAttributes attr;
     logv2::LogSeverity severity = ::mongo::logv2::LogSeverity::Log();
-    logv2::LogOptions options = ::mongo::logv2::LogOptions{MONGO_LOGV2_DEFAULT_COMPONENT};
+    logv2::LogOptions options = ::mongo::logv2::LogOptions{MongoLogV2DefaultComponent_component};
 
     try {
         try {
@@ -825,7 +731,6 @@ WiredTigerEventHandler::WiredTigerEventHandler() {
     handler->handle_message = mdb_handle_message;
     handler->handle_progress = mdb_handle_progress;
     handler->handle_close = nullptr;
-    handler->handle_general = nullptr;
 }
 
 WT_EVENT_HANDLER* WiredTigerEventHandler::getWtEventHandler() {
@@ -878,54 +783,11 @@ int WiredTigerUtil::verifyTable(OperationContext* opCtx,
     return (session->verify)(session, uri.c_str(), nullptr);
 }
 
-void WiredTigerUtil::validateTableLogging(OperationContext* opCtx,
-                                          StringData uri,
-                                          bool isLogged,
-                                          boost::optional<StringData> indexName,
-                                          bool& valid,
-                                          std::vector<std::string>& errors,
-                                          std::vector<std::string>& warnings) {
-    logv2::DynamicAttributes attrs;
-    if (indexName) {
-        attrs.add("index", indexName);
-    }
-    attrs.add("uri", uri);
-
-    auto metadata = WiredTigerUtil::getMetadataCreate(opCtx, uri);
-    if (!metadata.isOK()) {
-        attrs.add("error", metadata.getStatus());
-        LOGV2_WARNING(6898100, "Failed to check WT table logging setting", attrs);
-
-        warnings.push_back(fmt::format("Failed to check WT table logging setting for {}",
-                                       indexName ? fmt::format("index '{}'", indexName->toString())
-                                                 : "collection"));
-
-        return;
-    }
-
-    if (metadata.getValue().find(fmt::format("log=(enabled={})", isLogged ? "true" : "false")) ==
-        std::string::npos) {
-        attrs.add("expected", isLogged);
-        LOGV2_ERROR(6898101, "Detected incorrect WT table logging setting", attrs);
-
-        errors.push_back(fmt::format("Detected incorrect table logging setting for {}",
-                                     indexName ? fmt::format("index '{}'", indexName->toString())
-                                               : "collection"));
-        valid = false;
-    }
-}
-
 void WiredTigerUtil::notifyStartupComplete() {
     removeTableChecksFile();
 }
 
 bool WiredTigerUtil::useTableLogging(const NamespaceString& nss) {
-    if (storageGlobalParams.forceDisableTableLogging) {
-        invariant(TestingProctor::instance().isEnabled());
-        LOGV2(6825405, "Table logging disabled", logAttrs(nss));
-        return false;
-    }
-
     // We only turn off logging in the case of:
     // 1) Replication is enabled (the typical deployment), or
     // 2) We're running as a standalone with recoverFromOplogAsStandalone=true
@@ -997,11 +859,8 @@ Status WiredTigerUtil::setTableLogging(OperationContext* opCtx, const std::strin
         22432, 1, "Changing table logging settings", "uri"_attr = uri, "loggingEnabled"_attr = on);
     // Only alter the metadata once we're sure that we need to change the table settings, since
     // WT_SESSION::alter may return EBUSY and require taking a checkpoint to make progress.
-    auto status = sessionCache->getKVEngine()->alterMetadata(opCtx, uri, setting);
+    auto status = sessionCache->getKVEngine()->alterMetadata(uri, setting);
     if (!status.isOK()) {
-        // Dump the storage engine's internal state to assist in diagnosis.
-        sessionCache->getKVEngine()->dump();
-
         LOGV2_FATAL(50756,
                     "Failed to update log setting",
                     "uri"_attr = uri,
@@ -1014,10 +873,10 @@ Status WiredTigerUtil::setTableLogging(OperationContext* opCtx, const std::strin
     // The write timestamp assertion setting only needs to be changed at startup. It will be turned
     // on when logging is disabled, and off when logging is enabled.
     if (TestingProctor::instance().isEnabled()) {
-        setTableWriteTimestampAssertion(opCtx, sessionCache, uri, !on);
+        setTableWriteTimestampAssertion(sessionCache, uri, !on);
     } else {
         // Disables the assertion when the testing proctor is off.
-        setTableWriteTimestampAssertion(opCtx, sessionCache, uri, false /* on */);
+        setTableWriteTimestampAssertion(sessionCache, uri, false /* on */);
     }
 
     return Status::OK();
@@ -1219,7 +1078,7 @@ void WiredTigerUtil::appendSnapshotWindowSettings(WiredTigerKVEngine* engine,
     settings.append("pinned timestamp requests", static_cast<int>(pinnedTimestamps.size()));
 
     Timestamp minPinned = Timestamp::max();
-    for (const auto& it : pinnedTimestamps) {
+    for (auto it : pinnedTimestamps) {
         minPinned = std::min(minPinned, it.second);
     }
     settings.append("min pinned timestamp", minPinned);
@@ -1259,24 +1118,10 @@ std::string WiredTigerUtil::generateWTVerboseConfiguration() {
         cfg << ",";
 
         int level;
-        // Deliberately skip WT_VERBOSE_DEBUG_1, as it's a bit too noisy.
-        switch (severity.toInt()) {
-            case logv2::LogSeverity::Debug(2).toInt():
-                level = WT_VERBOSE_DEBUG_2;
-                break;
-            case logv2::LogSeverity::Debug(3).toInt():
-                level = WT_VERBOSE_DEBUG_3;
-                break;
-            case logv2::LogSeverity::Debug(4).toInt():
-                level = WT_VERBOSE_DEBUG_4;
-                break;
-            case logv2::LogSeverity::Debug(5).toInt():
-                level = WT_VERBOSE_DEBUG_5;
-                break;
-            default:
-                level = WT_VERBOSE_INFO;
-                break;
-        }
+        if (severity.toInt() >= logv2::LogSeverity::Debug(1).toInt())
+            level = WT_VERBOSE_DEBUG;
+        else
+            level = WT_VERBOSE_INFO;
 
         cfg << componentStr << ":" << level;
     }
@@ -1286,9 +1131,5 @@ std::string WiredTigerUtil::generateWTVerboseConfiguration() {
     return cfg;
 }
 
-void WiredTigerUtil::removeEncryptionFromConfigString(std::string* configString) {
-    static StaticImmortal<pcre::Regex> encryptionOptsRegex(R"re(encryption=\([^\)]*\),?)re");
-    encryptionOptsRegex->substitute("", configString, pcre::SUBSTITUTE_GLOBAL);
-}
 
 }  // namespace mongo

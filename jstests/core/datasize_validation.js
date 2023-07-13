@@ -1,8 +1,6 @@
 // Cannot implicitly shard accessed collections because the "dataSize" command returns an
 // "keyPattern must equal shard key" error response.
-// The test runs commands that are not allowed with security token: dataSize.
-// @tags: [
-//   not_allowed_with_security_token,assumes_unsharded_collection, requires_fcv_53]
+// @tags: [assumes_unsharded_collection, requires_fcv_53]
 
 //
 // Test argument validation for dataSize command

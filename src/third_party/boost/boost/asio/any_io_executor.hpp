@@ -2,7 +2,7 @@
 // any_io_executor.hpp
 // ~~~~~~~~~~~~~~~~~~~
 //
-// Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2021 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -88,17 +88,29 @@ public:
 #endif // !defined(GENERATING_DOCUMENTATION)
 
   /// Default constructor.
-  BOOST_ASIO_DECL any_io_executor() BOOST_ASIO_NOEXCEPT;
+  any_io_executor() BOOST_ASIO_NOEXCEPT
+    : base_type()
+  {
+  }
 
   /// Construct in an empty state. Equivalent effects to default constructor.
-  BOOST_ASIO_DECL any_io_executor(nullptr_t) BOOST_ASIO_NOEXCEPT;
+  any_io_executor(nullptr_t) BOOST_ASIO_NOEXCEPT
+    : base_type(nullptr_t())
+  {
+  }
 
   /// Copy constructor.
-  BOOST_ASIO_DECL any_io_executor(const any_io_executor& e) BOOST_ASIO_NOEXCEPT;
+  any_io_executor(const any_io_executor& e) BOOST_ASIO_NOEXCEPT
+    : base_type(static_cast<const base_type&>(e))
+  {
+  }
 
 #if defined(BOOST_ASIO_HAS_MOVE) || defined(GENERATING_DOCUMENTATION)
   /// Move constructor.
-  BOOST_ASIO_DECL any_io_executor(any_io_executor&& e) BOOST_ASIO_NOEXCEPT;
+  any_io_executor(any_io_executor&& e) BOOST_ASIO_NOEXCEPT
+    : base_type(static_cast<base_type&&>(e))
+  {
+  }
 #endif // defined(BOOST_ASIO_HAS_MOVE) || defined(GENERATING_DOCUMENTATION)
 
   /// Construct to point to the same target as another any_executor.
@@ -147,23 +159,38 @@ public:
 #endif // defined(GENERATING_DOCUMENTATION)
 
   /// Assignment operator.
-  BOOST_ASIO_DECL any_io_executor& operator=(
-      const any_io_executor& e) BOOST_ASIO_NOEXCEPT;
+  any_io_executor& operator=(const any_io_executor& e) BOOST_ASIO_NOEXCEPT
+  {
+    base_type::operator=(static_cast<const base_type&>(e));
+    return *this;
+  }
 
 #if defined(BOOST_ASIO_HAS_MOVE) || defined(GENERATING_DOCUMENTATION)
   /// Move assignment operator.
-  BOOST_ASIO_DECL any_io_executor& operator=(
-      any_io_executor&& e) BOOST_ASIO_NOEXCEPT;
+  any_io_executor& operator=(any_io_executor&& e) BOOST_ASIO_NOEXCEPT
+  {
+    base_type::operator=(static_cast<base_type&&>(e));
+    return *this;
+  }
 #endif // defined(BOOST_ASIO_HAS_MOVE) || defined(GENERATING_DOCUMENTATION)
 
   /// Assignment operator that sets the polymorphic wrapper to the empty state.
-  BOOST_ASIO_DECL any_io_executor& operator=(nullptr_t);
+  any_io_executor& operator=(nullptr_t)
+  {
+    base_type::operator=(nullptr_t());
+    return *this;
+  }
 
   /// Destructor.
-  BOOST_ASIO_DECL ~any_io_executor();
+  ~any_io_executor()
+  {
+  }
 
   /// Swap targets with another polymorphic wrapper.
-  BOOST_ASIO_DECL void swap(any_io_executor& other) BOOST_ASIO_NOEXCEPT;
+  void swap(any_io_executor& other) BOOST_ASIO_NOEXCEPT
+  {
+    static_cast<base_type&>(*this).swap(static_cast<base_type&>(other));
+  }
 
   /// Obtain a polymorphic wrapper with the specified property.
   /**
@@ -203,30 +230,6 @@ public:
 };
 
 #if !defined(GENERATING_DOCUMENTATION)
-
-template <>
-BOOST_ASIO_DECL any_io_executor any_io_executor::require(
-    const execution::blocking_t::never_t&, int) const;
-
-template <>
-BOOST_ASIO_DECL any_io_executor any_io_executor::prefer(
-    const execution::blocking_t::possibly_t&, int) const;
-
-template <>
-BOOST_ASIO_DECL any_io_executor any_io_executor::prefer(
-    const execution::outstanding_work_t::tracked_t&, int) const;
-
-template <>
-BOOST_ASIO_DECL any_io_executor any_io_executor::prefer(
-    const execution::outstanding_work_t::untracked_t&, int) const;
-
-template <>
-BOOST_ASIO_DECL any_io_executor any_io_executor::prefer(
-    const execution::relationship_t::fork_t&, int) const;
-
-template <>
-BOOST_ASIO_DECL any_io_executor any_io_executor::prefer(
-    const execution::relationship_t::continuation_t&, int) const;
 
 namespace traits {
 
@@ -295,11 +298,5 @@ struct prefer_member<any_io_executor, Prop> :
 } // namespace boost
 
 #include <boost/asio/detail/pop_options.hpp>
-
-#if defined(BOOST_ASIO_HEADER_ONLY) \
-  && !defined(BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT)
-# include <boost/asio/impl/any_io_executor.ipp>
-#endif // defined(BOOST_ASIO_HEADER_ONLY)
-       //   && !defined(BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT)
 
 #endif // BOOST_ASIO_ANY_IO_EXECUTOR_HPP

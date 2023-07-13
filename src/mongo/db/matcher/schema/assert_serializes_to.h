@@ -34,9 +34,11 @@ namespace mongo {
 /**
  * Asserts that the given MatchExpression 'match' serializes to the BSONObj 'expected'.
  */
-#define ASSERT_SERIALIZES_TO(match, expected)            \
-    do {                                                 \
-        ASSERT_BSONOBJ_EQ(match->serialize(), expected); \
+#define ASSERT_SERIALIZES_TO(match, expected)   \
+    do {                                        \
+        BSONObjBuilder bob;                     \
+        match->serialize(&bob, true);           \
+        ASSERT_BSONOBJ_EQ(bob.obj(), expected); \
     } while (false)
 
 }  // namespace mongo

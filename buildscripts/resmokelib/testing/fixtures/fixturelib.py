@@ -15,6 +15,8 @@ from buildscripts.resmokelib.testing.fixtures import _builder
 class FixtureLib:
     """Class that exposes the resmokelib API that fixtures can use."""
 
+    # pylint: disable=no-self-use
+
     #################
     # Logger tools #
     #################
@@ -43,7 +45,7 @@ class FixtureLib:
         """Build fixtures by calling builder API."""
         return _builder.make_fixture(class_name, logger, job_num, *args, **kwargs)
 
-    def mongod_program(self, logger, job_num, executable, process_kwargs, mongod_options):
+    def mongod_program(self, logger, job_num, executable, process_kwargs, mongod_options):  # pylint: disable=too-many-arguments
         """
         Return a Process instance that starts mongod arguments constructed from 'mongod_options'.
 
@@ -56,12 +58,12 @@ class FixtureLib:
                                             mongod_options)
 
     def mongos_program(self, logger, job_num, executable=None, process_kwargs=None,
-                       mongos_options=None):
+                       mongos_options=None):  # pylint: disable=too-many-arguments
         """Return a Process instance that starts a mongos with arguments constructed from 'kwargs'."""
         return core.programs.mongos_program(logger, job_num, executable, process_kwargs,
                                             mongos_options)
 
-    def generic_program(self, logger, args, process_kwargs=None, **kwargs):
+    def generic_program(self, logger, args, process_kwargs=None, **kwargs):  # pylint: disable=too-many-arguments
         """Return a Process instance that starts an arbitrary executable.
 
         The executable arguments are constructed from 'kwargs'.
@@ -110,7 +112,7 @@ class FixtureLib:
         return original
 
 
-class _FixtureConfig(object):
+class _FixtureConfig(object):  # pylint: disable=too-many-instance-attributes
     """Class that stores fixture configuration info."""
 
     def __init__(self):
@@ -122,7 +124,6 @@ class _FixtureConfig(object):
         self.DEFAULT_MONGOD_EXECUTABLE = config.DEFAULT_MONGOD_EXECUTABLE
         self.MONGOD_SET_PARAMETERS = config.MONGOD_SET_PARAMETERS
         self.FIXTURE_SUBDIR = config.FIXTURE_SUBDIR
-        self.AUTO_KILL = config.AUTO_KILL
         self.ALWAYS_USE_LOG_FILES = config.ALWAYS_USE_LOG_FILES
         self.LAST_LTS_MONGOD_BINARY = LAST_LTS_MONGOD_BINARY
         self.LAST_LTS_MONGOS_BINARY = LAST_LTS_MONGOS_BINARY

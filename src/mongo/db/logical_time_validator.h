@@ -38,6 +38,8 @@
 
 namespace mongo {
 
+void initMyLogicalTimeV();
+
 class OperationContext;
 class ServiceContext;
 class KeysCollectionDocument;

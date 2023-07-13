@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -45,15 +46,12 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 
 class KillOpCommand : public KillOpCmdBase {
 public:
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& db,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
         long long opId = KillOpCmdBase::parseOpId(cmdObj);
@@ -62,13 +60,9 @@ public:
         result.append("info", "attempting to kill op");
         LOGV2(20482, "Going to kill op: {opId}", "Going to kill op", "opId"_attr = opId);
         KillOpCmdBase::killLocalOperation(opCtx, opId);
-        reportSuccessfulCompletion(opCtx, dbName, cmdObj);
+        reportSuccessfulCompletion(opCtx, db, cmdObj);
 
         // killOp always reports success once past the auth check.
-        return true;
-    }
-
-    bool allowedWithSecurityToken() const final {
         return true;
     }
 } killOpCmd;

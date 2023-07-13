@@ -30,30 +30,28 @@
 #pragma once
 
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/shard_id.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/database_version.h"
-#include "mongo/s/shard_version.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/util/concurrency/notification.h"
 
 namespace mongo {
+void initMyStaleException();
 
 class StaleConfigInfo final : public ErrorExtraInfo {
 public:
     static constexpr auto code = ErrorCodes::StaleConfig;
-    enum class OperationType { kRead, kWrite };
 
     StaleConfigInfo(NamespaceString nss,
-                    ShardVersion received,
-                    boost::optional<ShardVersion> wanted,
+                    ChunkVersion received,
+                    boost::optional<ChunkVersion> wanted,
                     ShardId shardId,
-                    boost::optional<SharedSemiFuture<void>> criticalSectionSignal = boost::none,
-                    boost::optional<OperationType> duringOperationType = boost::none)
+                    boost::optional<SharedSemiFuture<void>> criticalSectionSignal = boost::none)
         : _nss(std::move(nss)),
           _received(received),
           _wanted(wanted),
           _shardId(shardId),
-          _criticalSectionSignal(std::move(criticalSectionSignal)),
-          _duringOperationType{duringOperationType} {}
+          _criticalSectionSignal(std::move(criticalSectionSignal)) {}
 
     const auto& getNss() const {
         return _nss;
@@ -75,22 +73,17 @@ public:
         return _criticalSectionSignal;
     }
 
-    const auto& getDuringOperationType() const {
-        return _duringOperationType;
-    }
-
     void serialize(BSONObjBuilder* bob) const;
     static std::shared_ptr<const ErrorExtraInfo> parse(const BSONObj& obj);
 
 protected:
     NamespaceString _nss;
-    ShardVersion _received;
-    boost::optional<ShardVersion> _wanted;
+    ChunkVersion _received;
+    boost::optional<ChunkVersion> _wanted;
     ShardId _shardId;
 
-    // The following fields are not serialized and therefore do not get propagated to the router.
+    // This signal does not get serialized and therefore does not get propagated to the router
     boost::optional<SharedSemiFuture<void>> _criticalSectionSignal;
-    boost::optional<OperationType> _duringOperationType;
 };
 
 class StaleEpochInfo final : public ErrorExtraInfo {

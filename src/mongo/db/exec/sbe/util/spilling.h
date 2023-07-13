@@ -55,12 +55,9 @@ boost::optional<value::MaterializedRow> readFromRecordStore(OperationContext* op
                                                             RecordStore* rs,
                                                             const RecordId& rid);
 
-/**
- * Inserts or updates a key/value into 'rs'. The 'update' flag controls whether or not an update
+/** Inserts or updates a key/value into 'rs'. The 'update' flag controls whether or not an update
  * will be performed. If a key/value pair is inserted into the 'rs' that already exists and
  * 'update' is false, this function will tassert.
- *
- * Returns the size of the new record in bytes, including the record id and value portions.
  */
 int upsertToRecordStore(OperationContext* opCtx,
                         RecordStore* rs,
@@ -68,6 +65,7 @@ int upsertToRecordStore(OperationContext* opCtx,
                         const value::MaterializedRow& val,
                         const KeyString::TypeBits& typeBits,
                         bool update);
+
 int upsertToRecordStore(OperationContext* opCtx,
                         RecordStore* rs,
                         const RecordId& key,

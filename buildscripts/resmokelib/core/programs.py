@@ -76,7 +76,7 @@ def mongod_program(logger, job_num, executable, process_kwargs, mongod_options):
     return make_process(logger, args, **process_kwargs), mongod_options["port"]
 
 
-def mongos_program(logger, job_num, executable=None, process_kwargs=None, mongos_options=None):
+def mongos_program(logger, job_num, executable=None, process_kwargs=None, mongos_options=None):  # pylint: disable=too-many-arguments
     """Return a Process instance that starts a mongos with arguments constructed from 'kwargs'."""
     args = [executable]
 
@@ -97,8 +97,9 @@ def mongos_program(logger, job_num, executable=None, process_kwargs=None, mongos
     return make_process(logger, args, **process_kwargs), mongos_options["port"]
 
 
-def mongo_shell_program(logger, executable=None, connection_string=None, filename=None,
-                        test_filename=None, process_kwargs=None, **kwargs):
+def mongo_shell_program(  # pylint: disable=too-many-arguments,too-many-branches,too-many-locals,too-many-statements
+        logger, executable=None, connection_string=None, filename=None, test_filename=None,
+        process_kwargs=None, **kwargs):
     """Return a Process instance that starts a mongo shell.
 
     The shell is started with the given connection string and arguments constructed from 'kwargs'.
@@ -134,6 +135,7 @@ def mongo_shell_program(logger, executable=None, connection_string=None, filenam
         "enableMajorityReadConcern": (config.MAJORITY_READ_CONCERN, True),
         "mixedBinVersions": (config.MIXED_BIN_VERSIONS, ""),
         "multiversionBinVersion": (shell_mixed_version, ""),
+        "noJournal": (config.NO_JOURNAL, False),
         "storageEngine": (config.STORAGE_ENGINE, ""),
         "storageEngineCacheSizeGB": (config.STORAGE_ENGINE_CACHE_SIZE, ""),
         "testName": (test_name, ""),
@@ -212,9 +214,6 @@ def mongo_shell_program(logger, executable=None, connection_string=None, filenam
 
     test_data["undoRecorderPath"] = config.UNDO_RECORDER_PATH
 
-    if "catalogShard" not in test_data and config.CATALOG_SHARD is not None:
-        test_data["catalogShard"] = config.CATALOG_SHARD
-
     # There's a periodic background thread that checks for and aborts expired transactions.
     # "transactionLifetimeLimitSeconds" specifies for how long a transaction can run before expiring
     # and being aborted by the background thread. It defaults to 60 seconds, which is too short to
@@ -252,19 +251,6 @@ def mongo_shell_program(logger, executable=None, connection_string=None, filenam
     # Load a callback to check that all orphans are deleted before shutting down a ShardingTest.
     eval_sb.append("load('jstests/libs/override_methods/check_orphans_are_deleted.js');")
 
-    # Load a callback to check that the info stored in config.collections and config.chunks is
-    # semantically correct before shutting down a ShardingTest.
-    eval_sb.append("load('jstests/libs/override_methods/check_routing_table_consistency.js');")
-
-    # Load a callback to check that all shards have correct filtering information before shutting
-    # down a ShardingTest.
-    eval_sb.append("load('jstests/libs/override_methods/check_shard_filtering_metadata.js');")
-
-    if config.FUZZ_MONGOD_CONFIGS is not None and config.FUZZ_MONGOD_CONFIGS is not False:
-        # Prevent commands from running with the config fuzzer.
-        eval_sb.append(
-            "load('jstests/libs/override_methods/config_fuzzer_incompatible_commands.js');")
-
     # Load this file to retry operations that fail due to in-progress background operations.
     eval_sb.append(
         "load('jstests/libs/override_methods/implicitly_retry_on_background_op_in_progress.js');")
@@ -286,11 +272,6 @@ def mongo_shell_program(logger, executable=None, connection_string=None, filenam
 
         if "host" in kwargs:
             kwargs.pop("host")
-
-    # if featureFlagFLE2ProtocolVersion2 is enabled in setParameter, enable it in the shell also
-    # TODO: SERVER-73303 remove once v2 is enabled by default
-    if mongod_set_parameters.get("featureFlagFLE2ProtocolVersion2"):
-        args.append("--setShellParameter=featureFlagFLE2ProtocolVersion2=true")
 
     # Apply the rest of the command line arguments.
     _apply_kwargs(args, kwargs)

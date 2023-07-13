@@ -73,14 +73,17 @@ public:
 
     virtual RecoveryUnit* newRecoveryUnit() override;
 
-    virtual std::vector<DatabaseName> listDatabases(
-        boost::optional<TenantId> tenantId = boost::none) const override;
+    virtual std::vector<TenantDatabaseName> listDatabases() const override;
 
     virtual bool supportsCappedCollections() const override {
         return _supportsCappedCollections;
     }
 
-    virtual Status dropDatabase(OperationContext* opCtx, const DatabaseName& dbName) override;
+    virtual Status closeDatabase(OperationContext* opCtx,
+                                 const TenantDatabaseName& tenantDbName) override;
+
+    virtual Status dropDatabase(OperationContext* opCtx,
+                                const TenantDatabaseName& tenantDbName) override;
 
     virtual void flushAllFiles(OperationContext* opCtx, bool callerHoldsReadLock) override;
 
@@ -100,7 +103,7 @@ public:
     virtual StatusWith<std::deque<std::string>> extendBackupCursor(
         OperationContext* opCtx) override;
 
-    virtual bool supportsCheckpoints() const override;
+    virtual bool isDurable() const override;
 
     virtual bool isEphemeral() const override;
 
@@ -117,7 +120,7 @@ public:
     virtual std::unique_ptr<TemporaryRecordStore> makeTemporaryRecordStoreFromExistingIdent(
         OperationContext* opCtx, StringData ident) override;
 
-    virtual void cleanShutdown(ServiceContext* svcCtx) override;
+    virtual void cleanShutdown() override;
 
     virtual void setStableTimestamp(Timestamp stableTimestamp, bool force = false) override;
 
@@ -154,7 +157,7 @@ public:
 
     bool supportsReadConcernMajority() const final;
 
-    bool supportsOplogTruncateMarkers() const final;
+    bool supportsOplogStones() const final;
 
     bool supportsResumableIndexBuilds() const final;
 
@@ -284,8 +287,7 @@ public:
         void _startup();
 
         KVEngine* _engine;
-        bool _running = false;
-        bool _shuttingDown = false;
+        bool _running;
 
         // Periodic runner that the timestamp monitor schedules its job on.
         PeriodicRunner* _periodicRunner;
@@ -317,18 +319,14 @@ public:
                              std::shared_ptr<Ident> ident,
                              DropIdentCallback&& onDrop) override;
 
-    void dropIdentsOlderThan(OperationContext* opCtx, const Timestamp& ts) override;
-
-    std::shared_ptr<Ident> markIdentInUse(StringData ident) override;
-
     void startTimestampMonitor() override;
 
-    void checkpoint(OperationContext* opCtx) override;
+    void checkpoint() override;
 
     StatusWith<ReconcileResult> reconcileCatalogAndIdents(
-        OperationContext* opCtx, Timestamp stableTs, LastShutdownState lastShutdownState) override;
+        OperationContext* opCtx, LastShutdownState lastShutdownState) override;
 
-    std::string getFilesystemPathForDb(const DatabaseName& dbName) const override;
+    std::string getFilesystemPathForDb(const TenantDatabaseName& tenantDbName) const override;
 
     DurableCatalog* getCatalog() override;
 
@@ -337,9 +335,7 @@ public:
     /**
      * When loading after an unclean shutdown, this performs cleanup on the DurableCatalogImpl.
      */
-    void loadCatalog(OperationContext* opCtx,
-                     boost::optional<Timestamp> stableTs,
-                     LastShutdownState lastShutdownState) final;
+    void loadCatalog(OperationContext* opCtx, LastShutdownState lastShutdownState) final;
 
     void closeCatalog(OperationContext* opCtx) final;
 
@@ -351,7 +347,8 @@ public:
         return _dropPendingIdentReaper.getAllIdentNames();
     }
 
-    int64_t sizeOnDiskForDb(OperationContext* opCtx, const DatabaseName& dbName) override;
+    int64_t sizeOnDiskForDb(OperationContext* opCtx,
+                            const TenantDatabaseName& tenantDbName) override;
 
     bool isUsingDirectoryPerDb() const override {
         return _options.directoryPerDB;
@@ -370,9 +367,6 @@ public:
 
     void setPinnedOplogTimestamp(const Timestamp& pinnedTimestamp) override;
 
-    StatusWith<BSONObj> getSanitizedStorageOptionsForSecondaryReplication(
-        const BSONObj& options) const override;
-
     void dump() const override;
 
 private:
@@ -382,8 +376,7 @@ private:
                          RecordId catalogId,
                          const NamespaceString& nss,
                          bool forRepair,
-                         Timestamp minVisibleTs,
-                         Timestamp minValidTs);
+                         Timestamp minVisibleTs);
 
     Status _dropCollectionsNoTimestamp(OperationContext* opCtx, const std::vector<UUID>& toDrop);
 
@@ -407,7 +400,7 @@ private:
      * the given catalog entry.
      */
     void _checkForIndexFiles(OperationContext* opCtx,
-                             const DurableCatalog::EntryIdentifier& entry,
+                             const DurableCatalog::Entry& entry,
                              std::vector<std::string>& identsKnownToStorageEngine) const;
 
     void _dumpCatalog(OperationContext* opCtx);
@@ -445,9 +438,6 @@ private:
     // Listener for checkpoint timestamp changes to remove historical ident entries older than the
     // checkpoint timestamp.
     TimestampMonitor::TimestampListener _historicalIdentTimestampListener;
-
-    // Listener for cleanup of CollectionCatalog when oldest timestamp advances.
-    TimestampMonitor::TimestampListener _collectionCatalogCleanupTimestampListener;
 
     const bool _supportsCappedCollections;
 

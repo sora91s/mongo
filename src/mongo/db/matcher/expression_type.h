@@ -48,7 +48,7 @@ template <class T>
 class TypeMatchExpressionBase : public LeafMatchExpression {
 public:
     explicit TypeMatchExpressionBase(MatchType matchType,
-                                     boost::optional<StringData> path,
+                                     StringData path,
                                      ElementPath::LeafArrayBehavior leafArrBehavior,
                                      MatcherTypeSet typeSet,
                                      clonable_ptr<ErrorAnnotation> annotation = nullptr)
@@ -82,8 +82,7 @@ public:
         debug << "\n";
     }
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final {
-        // TODO SERVER-73678 respect 'replacementForLiteralArgs'.
+    BSONObj getSerializedRightHandSide() const final {
         BSONObjBuilder subBuilder;
         BSONArrayBuilder arrBuilder(subBuilder.subarrayStart(name()));
         _typeSet.toBSONArray(&arrBuilder);
@@ -113,9 +112,7 @@ public:
 
 private:
     ExpressionOptimizerFunc getOptimizer() const final {
-        return [](std::unique_ptr<MatchExpression> expression) {
-            return expression;
-        };
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
     }
 
     // The set of matching types.
@@ -126,7 +123,7 @@ class TypeMatchExpression final : public TypeMatchExpressionBase<TypeMatchExpres
 public:
     static constexpr StringData kName = "$type"_sd;
 
-    TypeMatchExpression(boost::optional<StringData> path,
+    TypeMatchExpression(StringData path,
                         MatcherTypeSet typeSet,
                         clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : TypeMatchExpressionBase(MatchExpression::TYPE_OPERATOR,
@@ -180,7 +177,7 @@ class InternalSchemaTypeExpression final
 public:
     static constexpr StringData kName = "$_internalSchemaType"_sd;
 
-    InternalSchemaTypeExpression(boost::optional<StringData> path,
+    InternalSchemaTypeExpression(StringData path,
                                  MatcherTypeSet typeSet,
                                  clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : TypeMatchExpressionBase(MatchExpression::INTERNAL_SCHEMA_TYPE,
@@ -202,6 +199,10 @@ public:
         return expr;
     }
 
+    MatchCategory getCategory() const final {
+        return MatchCategory::kOther;
+    }
+
     void acceptVisitor(MatchExpressionMutableVisitor* visitor) final {
         visitor->visit(this);
     }
@@ -215,7 +216,7 @@ class InternalSchemaBinDataSubTypeExpression final : public LeafMatchExpression 
 public:
     static constexpr StringData kName = "$_internalSchemaBinDataSubType"_sd;
 
-    InternalSchemaBinDataSubTypeExpression(boost::optional<StringData> path,
+    InternalSchemaBinDataSubTypeExpression(StringData path,
                                            BinDataType binDataSubType,
                                            clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : LeafMatchExpression(MatchExpression::INTERNAL_SCHEMA_BIN_DATA_SUBTYPE,
@@ -255,8 +256,7 @@ public:
         debug << "\n";
     }
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final {
-        // TODO SERVER-73678 respect 'replacementForLiteralArgs'.
+    BSONObj getSerializedRightHandSide() const final {
         BSONObjBuilder bob;
         bob.append(name(), _binDataSubType);
         return bob.obj();
@@ -285,9 +285,7 @@ public:
 
 private:
     ExpressionOptimizerFunc getOptimizer() const final {
-        return [](std::unique_ptr<MatchExpression> expression) {
-            return expression;
-        };
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
     }
 
     BinDataType _binDataSubType;
@@ -303,7 +301,7 @@ class InternalSchemaBinDataEncryptedTypeExpression final
 public:
     static constexpr StringData kName = "$_internalSchemaBinDataEncryptedType"_sd;
 
-    InternalSchemaBinDataEncryptedTypeExpression(boost::optional<StringData> path,
+    InternalSchemaBinDataEncryptedTypeExpression(StringData path,
                                                  MatcherTypeSet typeSet,
                                                  clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : TypeMatchExpressionBase(MatchExpression::INTERNAL_SCHEMA_BIN_DATA_ENCRYPTED_TYPE,
@@ -341,7 +339,8 @@ public:
         if (static_cast<size_t>(binDataLen) < sizeof(FleBlobHeader))
             return false;
 
-        auto fleBlobSubType = EncryptedBinDataType_parse(IDLParserContext("subtype"), binData[0]);
+        auto fleBlobSubType =
+            EncryptedBinDataType_parse(IDLParserErrorContext("subtype"), binData[0]);
         switch (fleBlobSubType) {
             case EncryptedBinDataType::kDeterministic:
             case EncryptedBinDataType::kRandom: {
@@ -374,9 +373,7 @@ public:
     static constexpr StringData kName = "$_internalSchemaBinDataFLE2EncryptedType"_sd;
 
     InternalSchemaBinDataFLE2EncryptedTypeExpression(
-        boost::optional<StringData> path,
-        MatcherTypeSet typeSet,
-        clonable_ptr<ErrorAnnotation> annotation = nullptr)
+        StringData path, MatcherTypeSet typeSet, clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : TypeMatchExpressionBase(MatchExpression::INTERNAL_SCHEMA_BIN_DATA_FLE2_ENCRYPTED_TYPE,
                                   path,
                                   ElementPath::LeafArrayBehavior::kNoTraversal,
@@ -415,11 +412,7 @@ public:
         EncryptedBinDataType subTypeByte = static_cast<EncryptedBinDataType>(binData[0]);
         switch (subTypeByte) {
             case EncryptedBinDataType::kFLE2EqualityIndexedValue:
-            case EncryptedBinDataType::kFLE2RangeIndexedValue:
-            case EncryptedBinDataType::kFLE2EqualityIndexedValueV2:
-            case EncryptedBinDataType::kFLE2RangeIndexedValueV2:
-            case EncryptedBinDataType::kFLE2UnindexedEncryptedValue:
-            case EncryptedBinDataType::kFLE2UnindexedEncryptedValueV2: {
+            case EncryptedBinDataType::kFLE2UnindexedEncryptedValue: {
                 // Verify the type of the encrypted data.
                 if (typeSet().isEmpty()) {
                     return true;

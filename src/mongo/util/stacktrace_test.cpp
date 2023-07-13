@@ -27,11 +27,11 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
 #include <array>
-#include <csignal>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -39,12 +39,13 @@
 #include <fmt/printf.h>
 #include <functional>
 #include <map>
+#include <pcrecpp.h>
 #include <random>
+#include <signal.h>
 #include <sstream>
 #include <utility>
 #include <vector>
 
-#include "mongo/base/parse_number.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/json.h"
 #include "mongo/config.h"
@@ -55,7 +56,6 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/debug_util.h"
 #include "mongo/util/hex.h"
-#include "mongo/util/pcre.h"
 #include "mongo/util/stacktrace.h"
 
 /** `sigaltstack` was introduced in glibc-2.12 in 2010. */
@@ -64,13 +64,10 @@
 #endif
 
 #ifdef __linux__
-#include <ctime>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 #endif  //  __linux__
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 // Needs to have linkage so we can test metadata. Needs to be extern
 // "C" so it doesn't get mangled so we can name it with EXPORT_SYMBOLS
@@ -154,15 +151,6 @@ uintptr_t fromHex(const std::string& s) {
     return static_cast<uintptr_t>(std::stoull(s, nullptr, 16));
 }
 
-bool consume(const pcre::Regex& re, StringData* in, std::string* out) {
-    auto m = re.matchView(*in);
-    if (!m)
-        return false;
-    *in = in->substr(m[0].size());
-    *out = std::string{m[1]};
-    return true;
-}
-
 // Break down a printStackTrace output for a contrived call tree and sanity-check it.
 TEST(StackTrace, PosixFormat) {
     if (kIsWindows) {
@@ -184,18 +172,18 @@ TEST(StackTrace, PosixFormat) {
     // Each "Frame:" line holds a full json object, but we only examine its "a" field here.
     std::string jsonLine;
     std::vector<uintptr_t> humanAddrs;
-    StringData in{trace};
-    static const pcre::Regex jsonLineRE(R"re(^BACKTRACE: (\{.*\})\n?)re");
-    ASSERT_TRUE(consume(jsonLineRE, &in, &jsonLine)) << "\"" << in << "\"";
+    pcrecpp::StringPiece in{trace};
+    static const pcrecpp::RE jsonLineRE(R"re(BACKTRACE: (\{.*\})\n?)re");
+    ASSERT_TRUE(jsonLineRE.Consume(&in, &jsonLine)) << "\"" << in.as_string() << "\"";
     while (true) {
         std::string frameLine;
-        static const pcre::Regex frameRE(R"re(^  Frame: (\{.*\})\n?)re");
-        if (!consume(frameRE, &in, &frameLine))
+        static const pcrecpp::RE frameRE(R"re(  Frame: (\{.*\})\n?)re");
+        if (!frameRE.Consume(&in, &frameLine))
             break;
         BSONObj frameObj = fromjson(frameLine);  // throwy
         humanAddrs.push_back(fromHex(frameObj["a"].String()));
     }
-    ASSERT_TRUE(in.empty()) << "must be consumed fully: \"" << in << "\"";
+    ASSERT_TRUE(in.empty()) << "must be consumed fully: \"" << in.as_string() << "\"";
 
     BSONObj jsonObj = fromjson(jsonLine);  // throwy
     ASSERT_TRUE(jsonObj.hasField("backtrace"));
@@ -234,7 +222,7 @@ TEST(StackTrace, PosixFormat) {
 std::vector<std::string> splitLines(std::string in) {
     std::vector<std::string> lines;
     while (true) {
-        auto pos = in.find('\n');
+        auto pos = in.find("\n");
         if (pos == std::string::npos) {
             break;
         } else {
@@ -265,18 +253,14 @@ TEST(StackTrace, WindowsFormat) {
 
     std::vector<std::string> lines = splitLines(trace);
 
-    auto re = pcre::Regex(R"re(^BACKTRACE: (\{.*\})$)re");
-    auto m = re.matchView(lines[0]);
-    ASSERT_TRUE(!!m);
-    std::string jsonLine{m[1]};
+    std::string jsonLine;
+    ASSERT_TRUE(pcrecpp::RE(R"re(BACKTRACE: (\{.*\}))re").FullMatch(lines[0], &jsonLine));
 
     std::vector<uintptr_t> humanAddrs;
     for (size_t i = 1; i < lines.size(); ++i) {
-        static const pcre::Regex re(R"re(^  Frame: (?:\{"a":"(.*?)",.*\})$)re");
+        static const pcrecpp::RE re(R"re(  Frame: (?:\{"a":"(.*?)",.*\}))re");
         uintptr_t addr;
-        auto m = re.matchView(lines[i]);
-        ASSERT_TRUE(!!m) << lines[i];
-        ASSERT_OK(NumberParser{}.base(16)(m[1], &addr));
+        ASSERT_TRUE(re.FullMatch(lines[i], pcrecpp::Hex(&addr))) << lines[i];
         humanAddrs.push_back(addr);
     }
 

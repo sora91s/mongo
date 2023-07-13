@@ -28,6 +28,7 @@
  */
 
 #include "mongo/shell/shell_options.h"
+#include "mongo/shell/shell_options_init.h"
 
 #include <iostream>
 
@@ -38,9 +39,14 @@
 #include "mongo/util/quick_exit.h"
 
 namespace mongo {
+
+void initMyShellOptions() {
+    
+}
+
 MONGO_STARTUP_OPTIONS_VALIDATE(MongoShellOptions)(InitializerContext* context) {
     if (!handlePreValidationMongoShellOptions(moe::startupOptionsParsed, context->args())) {
-        quickExit(ExitCode::clean);
+        quickExit(EXIT_SUCCESS);
     }
     uassertStatusOK(moe::startupOptionsParsed.validate());
 }
@@ -50,7 +56,7 @@ MONGO_STARTUP_OPTIONS_STORE(MongoShellOptions)(InitializerContext* context) {
     if (!ret.isOK()) {
         std::cerr << ret.toString() << std::endl;
         std::cerr << "try '" << context->args()[0] << " --help' for more information" << std::endl;
-        quickExit(ExitCode::badOptions);
+        quickExit(EXIT_BADOPTIONS);
     }
 }
 }  // namespace mongo

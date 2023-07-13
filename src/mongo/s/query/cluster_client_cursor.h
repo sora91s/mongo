@@ -35,7 +35,7 @@
 #include "mongo/db/api_parameters.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/session/logical_session_id.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/s/query/cluster_client_cursor_params.h"
 #include "mongo/s/query/cluster_query_result.h"
 #include "mongo/s/query/router_exec_stage.h"
@@ -221,14 +221,6 @@ public:
      */
     virtual void incNBatches() = 0;
 
-    void incrementCursorMetrics(OpDebug::AdditiveMetrics newMetrics,
-                                uint64_t newExecutionTime,
-                                uint64_t newDocsReturned) {
-        _metrics.add(newMetrics);
-        _queryExecMicros += newExecutionTime;
-        _docsReturned += newDocsReturned;
-    }
-
     //
     // maxTimeMS support.
     //
@@ -252,12 +244,6 @@ public:
     void setLeftoverMaxTimeMicros(Microseconds leftoverMaxTimeMicros) {
         _leftoverMaxTimeMicros = leftoverMaxTimeMicros;
     }
-
-protected:
-    // Metrics used for telemetry. TODO SERVER-73933 consider merging more into '_metrics'
-    uint64_t _queryExecMicros = 0;
-    uint64_t _docsReturned = 0;
-    OpDebug::AdditiveMetrics _metrics;
 
 private:
     // Unused maxTime budget for this cursor.

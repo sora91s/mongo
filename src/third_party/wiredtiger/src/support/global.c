@@ -123,13 +123,6 @@ __global_once(void)
     __wt_process.checksum = wiredtiger_crc32c_func();
 
     __global_calibrate_ticks();
-
-    /* Run-time configuration. */
-#ifdef WT_STANDALONE_BUILD
-    __wt_process.fast_truncate_2022 = true;
-    __wt_process.page_stats_2022 = false;
-    __wt_process.tiered_shared_2023 = true;
-#endif
 }
 
 /*

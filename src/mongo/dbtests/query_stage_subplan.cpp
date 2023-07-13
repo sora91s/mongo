@@ -60,7 +60,7 @@ public:
 
     virtual ~QueryStageSubplanTest() {
         dbtests::WriteContextForTests ctx(opCtx(), nss.ns());
-        _client.dropCollection(nss);
+        _client.dropCollection(nss.ns());
     }
 
     void addIndex(const BSONObj& obj) {
@@ -68,11 +68,11 @@ public:
     }
 
     void dropIndex(BSONObj keyPattern) {
-        _client.dropIndex(nss, std::move(keyPattern));
+        _client.dropIndex(nss.ns(), std::move(keyPattern));
     }
 
     void insert(const BSONObj& doc) {
-        _client.insert(nss, doc);
+        _client.insert(nss.ns(), doc);
     }
 
     OperationContext* opCtx() {
@@ -575,7 +575,7 @@ TEST_F(QueryStageSubplanTest, ShouldReportErrorIfKilledDuringPlanning) {
 }
 
 TEST_F(QueryStageSubplanTest, ShouldThrowOnRestoreIfIndexDroppedBeforePlanSelection) {
-    CollectionPtr collection;
+    CollectionPtr collection = nullptr;
     {
         dbtests::WriteContextForTests ctx{opCtx(), nss.ns()};
         addIndex(BSON("p1" << 1 << "opt1" << 1));

@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
+
+#include "mongo/platform/basic.h"
+
 #include <memory>
 
 #include "mongo/client/remote_command_targeter_mock.h"
@@ -88,15 +92,15 @@ protected:
                          const ChunkVersion& version);
 
     /**
-     * Inserts a document into the config.tags collection so that the zone defined by the
+     * Inserts a document into the config.tags collection so that the tag defined by the
      * parameters exists.
      */
-    void setUpZones(const NamespaceString& collName, const StringMap<ChunkRange>& zoneChunkRanges);
+    void setUpTags(const NamespaceString& collName, const StringMap<ChunkRange>& tagChunkRanges);
 
     /**
      * Removes all document in the config.tags for the collection.
      */
-    void removeAllZones(const NamespaceString& collName);
+    void removeAllTags(const NamespaceString& collName);
 
     /**
      * Removes all document in the config.chunks for the collection.
@@ -109,10 +113,11 @@ protected:
     void setUpMigration(const NamespaceString& ns, const ChunkType& chunk, const ShardId& toShard);
 
     /**
-     * Asserts that config.migrations is empty, that should be true if the MigrationManager is
-     * inactive and behaving properly.
+     * Asserts that config.migrations is empty and config.locks contains no locked documents other
+     * than the balancer's, both of which should be true if the MigrationManager is inactive and
+     * behaving properly.
      */
-    void checkMigrationsCollectionIsEmpty();
+    void checkMigrationsCollectionIsEmptyAndLocksAreUnlocked();
 
     // Random static initialization order can result in X constructor running before Y constructor
     // if X and Y are defined in different source files. Defining variables here to enforce order.
@@ -129,13 +134,17 @@ protected:
     const long long kMaxSizeMB = 100;
 
     const BSONObj kShard0 =
-        BSON(ShardType::name(kShardId0.toString()) << ShardType::host(kShardHost0.toString()));
+        BSON(ShardType::name(kShardId0.toString())
+             << ShardType::host(kShardHost0.toString()) << ShardType::maxSizeMB(kMaxSizeMB));
     const BSONObj kShard1 =
-        BSON(ShardType::name(kShardId1.toString()) << ShardType::host(kShardHost1.toString()));
+        BSON(ShardType::name(kShardId1.toString())
+             << ShardType::host(kShardHost1.toString()) << ShardType::maxSizeMB(kMaxSizeMB));
     const BSONObj kShard2 =
-        BSON(ShardType::name(kShardId2.toString()) << ShardType::host(kShardHost2.toString()));
+        BSON(ShardType::name(kShardId2.toString())
+             << ShardType::host(kShardHost2.toString()) << ShardType::maxSizeMB(kMaxSizeMB));
     const BSONObj kShard3 =
-        BSON(ShardType::name(kShardId3.toString()) << ShardType::host(kShardHost3.toString()));
+        BSON(ShardType::name(kShardId3.toString())
+             << ShardType::host(kShardHost3.toString()) << ShardType::maxSizeMB(kMaxSizeMB));
 
     const std::string kPattern = "_id";
     const KeyPattern kKeyPattern = KeyPattern(BSON(kPattern << 1));

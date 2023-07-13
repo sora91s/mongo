@@ -65,8 +65,7 @@ nops_per_thread = icount // (populate_threads * table_count)
 pop_thread = Thread(pop_ops * nops_per_thread)
 pop_workload = Workload(context, populate_threads * pop_thread)
 print('populate:')
-ret = pop_workload.run(conn)
-assert ret == 0, ret
+pop_workload.run(conn)
 
 # Run phase.
 ops = Operation(Operation.OP_INSERT, tables[0])
@@ -77,8 +76,7 @@ workload = Workload(context, 20 * thread0)
 workload.options.report_interval=5
 workload.options.run_time=300
 print('Split stress workload running...')
-ret = workload.run(conn)
-assert ret == 0, ret
+workload.run(conn)
 
 latency_filename = context.args.home + "/latency.out"
 latency.workload_latency(workload, latency_filename)

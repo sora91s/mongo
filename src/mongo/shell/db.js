@@ -66,23 +66,26 @@ DB.prototype.commandHelp = function(name) {
     return res.help;
 };
 
-// Utility to attach readPreference if needed.
+// utility to attach readPreference if needed.
 DB.prototype._attachReadPreferenceToCommand = function(cmdObj, readPref) {
     "use strict";
-    // If the user has not set a read pref, return the original 'cmdObj'.
+    // if the user has not set a readpref, return the original cmdObj
     if ((readPref === null) || typeof (readPref) !== "object") {
         return cmdObj;
     }
 
-    // If user specifies $readPreference manually, then don't change it.
+    // if user specifies $readPreference manually, then don't change it
     if (cmdObj.hasOwnProperty("$readPreference")) {
         return cmdObj;
     }
 
-    // Copy object so we don't mutate the original.
+    // copy object so we don't mutate the original
     var clonedCmdObj = Object.extend({}, cmdObj);
-    clonedCmdObj["$readPreference"] = readPref;
-    return clonedCmdObj;
+    // The server selection spec mandates that the key is '$query', but
+    // the shell has historically used 'query'. The server accepts both,
+    // so we maintain the existing behavior
+    var cmdObjWithReadPref = {query: clonedCmdObj, $readPreference: readPref};
+    return cmdObjWithReadPref;
 };
 
 /**
@@ -164,9 +167,27 @@ DB.prototype._runCommandImpl = function(name, obj, options) {
     return session._getSessionAwareClient().runCommand(session, name, obj, options);
 };
 
+DB.prototype.cloneDatabase = function() {
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+}
+
+DB.prototype.cloneCollection = function() {
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+}
+
 DB.prototype.runCommand = function(obj, extra, queryOptions) {
     "use strict";
 
+    var blackCommands = new Set(["shutdownServer","applyOps","replSetAbortPrimaryCatchUp","replSetAbortPrimaryCatchUp","replSetFreeze","replSetGetConfig","replSetInitiate","replSetMaintenance","replSetReconfig","replSetStepDown","replSetSyncFrom","replSetAbortPrimaryCatchUp","addShard","balancerStart","balancerStop","checkShardingIndex","moveChunk","movePrimary","mergeChunks","removeShard","setShardVersion","split","splitVector","unsetSharding"]);
+    var blackAdminCommands = new Set(["clone", "cloneDatabase", "cloneCollection","cloneCollectionAsCapped","compact","logRotate","reIndex","shutdown"]);
+    for(var key in obj) {
+        if (blackCommands.has(key)) {
+            return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+        }
+        if (this._name == "admin" && blackAdminCommands.has(key)) {
+            return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+        }
+    }
     // Support users who call this function with a string commandName, e.g.
     // db.runCommand("commandName", {arg1: "value", arg2: "value"}).
     var mergedObj = this._mergeCommandOptions(obj, extra);
@@ -193,6 +214,12 @@ DB.prototype._dbCommand = DB.prototype.runCommand;
 DB.prototype._dbReadCommand = DB.prototype.runReadCommand;
 
 DB.prototype.adminCommand = function(obj, extra) {
+    var blackAdminCommands = new Set(["clone", "cloneDatabase","cloneCollection","cloneCollectionAsCapped","compact","logRotate","reIndex","shutdown"]);
+    for(var key in obj) {
+        if (blackAdminCommands.has(key)) {
+            return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+        }
+    }
     if (this._name == "admin")
         return this.runCommand(obj, extra);
     return this.getSiblingDB("admin").runCommand(obj, extra);
@@ -427,93 +454,85 @@ DB.prototype.dropDatabase = function(writeConcern) {
  *     if any other servers have caught up enough for it to shut down.
  */
 DB.prototype.shutdownServer = function(opts) {
-    if ("admin" != this._name) {
-        return "shutdown command only works with the admin database; try 'use admin'";
-    }
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+    // if ("admin" != this._name) {
+    //     return "shutdown command only works with the admin database; try 'use admin'";
+    // }
 
-    var cmd = {'shutdown': 1};
-    opts = opts || {};
-    for (var o in opts) {
-        cmd[o] = opts[o];
-    }
+    // var cmd = {'shutdown': 1};
+    // opts = opts || {};
+    // for (var o in opts) {
+    //     cmd[o] = opts[o];
+    // }
 
-    try {
-        var res = this.runCommand(cmd);
-        if (!res.ok) {
-            throw _getErrorWithCode(res, 'shutdownServer failed: ' + tojson(res));
-        }
-        throw Error('shutdownServer failed: server is still up.');
-    } catch (e) {
-        // we expect the command to not return a response, as the server will shut down
-        // immediately.
-        if (isNetworkError(e)) {
-            print('server should be down...');
-            return;
-        }
-        throw e;
-    }
+    // try {
+    //     var res = this.runCommand(cmd);
+    //     if (!res.ok) {
+    //         throw _getErrorWithCode(res, 'shutdownServer failed: ' + tojson(res));
+    //     }
+    //     throw Error('shutdownServer failed: server is still up.');
+    // } catch (e) {
+    //     // we expect the command to not return a response, as the server will shut down
+    //     // immediately.
+    //     if (isNetworkError(e)) {
+    //         print('server should be down...');
+    //         return;
+    //     }
+    //     throw e;
+    // }
 };
 
 DB.prototype.help = function() {
-    print("DB methods:");
-    print(
-        "\tdb.adminCommand(nameOrDocument) - switches to 'admin' db, and runs command [just calls db.runCommand(...)]");
-    print(
-        "\tdb.aggregate([pipeline], {options}) - performs a collectionless aggregation on this database; returns a cursor");
-    print("\tdb.auth(username, password)");
-    print("\tdb.commandHelp(name) returns the help for the command");
-    print("\tdb.createUser(userDocument)");
-    print("\tdb.createView(name, viewOn, [{$operator: {...}}, ...], {viewOptions})");
-    print("\tdb.currentOp() displays currently executing operations in the db");
-    print("\tdb.dropDatabase(writeConcern)");
-    print("\tdb.dropUser(username)");
-    print("\tdb.eval() - deprecated");
-    print("\tdb.fsyncLock() flush data to disk and lock server for backups");
-    print("\tdb.fsyncUnlock() unlocks server following a db.fsyncLock()");
-    print("\tdb.checkMetadataConsistency() checks the consistency of the metadata in the db");
-    print("\tdb.getCollection(cname) same as db['cname'] or db.cname");
-    print("\tdb.getCollectionInfos([filter]) - returns a list that contains the names and options" +
-          " of the db's collections");
-    print("\tdb.getCollectionNames()");
-    print("\tdb.getLogComponents()");
-    print("\tdb.getMongo() get the server connection object");
-    print("\tdb.getMongo().setSecondaryOk() allow queries on a replication secondary server");
-    print("\tdb.getName()");
-    print("\tdb.getProfilingLevel() - deprecated");
-    print("\tdb.getProfilingStatus() - returns if profiling is on and slow threshold");
-    print("\tdb.getReplicationInfo()");
-    print("\tdb.getSiblingDB(name) get the db at the same server as this one");
-    print(
-        "\tdb.getWriteConcern() - returns the write concern used for any operations on this db, inherited from server object if set");
-    print("\tdb.hostInfo() get details about the server's host");
-    print("\tdb.isMaster() check replica primary status");
-    print("\tdb.hello() check replica primary status");
-    print("\tdb.killOp(opid) kills the current operation in the db");
-    print("\tdb.listCommands() lists all the db commands");
-    print("\tdb.loadServerScripts() loads all the scripts in db.system.js");
-    print("\tdb.logout()");
-    print("\tdb.printCollectionStats()");
-    print("\tdb.printReplicationInfo()");
-    print("\tdb.printShardingStatus()");
-    print("\tdb.printSecondaryReplicationInfo()");
-    print(
-        "\tdb.rotateCertificates(message) - rotates certificates, CRLs, and CA files and logs an optional message");
-    print(
-        "\tdb.runCommand(cmdObj) run a database command.  if cmdObj is a string, turns it into {cmdObj: 1}");
-    print("\tdb.serverStatus()");
-    print("\tdb.setLogLevel(level,<component>)");
-    print("\tdb.setProfilingLevel(level,slowms) 0=off 1=slow 2=all");
-    print("\tdb.setVerboseShell(flag) display extra information in shell output");
-    print(
-        "\tdb.setWriteConcern(<write concern doc>) - sets the write concern for writes to the db");
-    print("\tdb.shutdownServer()");
-    print("\tdb.stats()");
-    print(
-        "\tdb.unsetWriteConcern(<write concern doc>) - unsets the write concern for writes to the db");
-    print("\tdb.version() current version of the server");
-    print("\tdb.watch() - opens a change stream cursor for a database to report on all " +
-          " changes to its non-system collections.");
-    return __magicNoPrint;
+    var res = "";
+    res += "DB methods: \n";
+    res += "\tdb.adminCommand(nameOrDocument) - switches to 'admin' db, and runs command [just calls db.runCommand(...)] \n";
+    res += "\tdb.aggregate([pipeline], {options}) - performs a collectionless aggregation on this database; returns a cursor \n";
+    res += "\tdb.auth(username, password) \n";
+    res += "\tdb.commandHelp(name) returns the help for the command \n";
+    res += "\tdb.createUser(userDocument) \n";
+    res += "\tdb.createView(name, viewOn, [{$operator: {...}}, ...], {viewOptions}) \n";
+    res += "\tdb.currentOp() displays currently executing operations in the db \n";
+    res += "\tdb.dropDatabase(writeConcern) \n";
+    res += "\tdb.dropUser(username) \n";
+    res += "\tdb.eval() - deprecated \n";
+    res += "\tdb.fsyncLock() flush data to disk and lock server for backups \n";
+    res += "\tdb.fsyncUnlock() unlocks server following a db.fsyncLock() \n";
+    res += "\tdb.getCollection(cname) same as db['cname'] or db.cname \n";
+    res += "\tdb.getCollectionInfos([filter]) - returns a list that contains the names and options" + " of the db's collections \n";
+    res += "\tdb.getCollectionNames() \n";
+    res += "\tdb.getLogComponents() \n";
+    res += "\tdb.getMongo() get the server connection object \n";
+    res += "\tdb.getMongo().setSecondaryOk() allow queries on a replication secondary server \n";
+    res += "\tdb.getName() \n";
+    res += "\tdb.getProfilingLevel() - deprecated \n";
+    res += "\tdb.getProfilingStatus() - returns if profiling is on and slow threshold \n";
+    res += "\tdb.getReplicationInfo() \n";
+    res += "\tdb.getSiblingDB(name) get the db at the same server as this one \n";
+    res += "\tdb.getWriteConcern() - returns the write concern used for any operations on this db, inherited from server object if set \n";
+    res += "\tdb.hostInfo() get details about the server's host \n";
+    res += "\tdb.isMaster() check replica primary status \n";
+    res += "\tdb.hello() check replica primary status \n";
+    res += "\tdb.killOp(opid) kills the current operation in the db \n";
+    res += "\tdb.listCommands() lists all the db commands \n";
+    res += "\tdb.loadServerScripts() loads all the scripts in db.system.js \n";
+    res += "\tdb.logout() \n";
+    res += "\tdb.printCollectionStats() \n";
+    res += "\tdb.printReplicationInfo() \n";
+    res += "\tdb.printShardingStatus() \n";
+    res += "\tdb.printSecondaryReplicationInfo() \n";
+    res += "\tdb.rotateCertificates(message) - rotates certificates, CRLs, and CA files and logs an optional message \n";
+    res += "\tdb.runCommand(cmdObj) run a database command.  if cmdObj is a string, turns it into {cmdObj: 1} \n";
+    res += "\tdb.serverStatus() \n";
+    res += "\tdb.setLogLevel(level,<component>) \n";
+    res += "\tdb.setProfilingLevel(level,slowms) 0=off 1=slow 2=all \n";
+    res += "\tdb.setVerboseShell(flag) display extra information in shell output \n";
+    res += "\tdb.setWriteConcern(<write concern doc>) - sets the write concern for writes to the db \n";
+    res += "\tdb.shutdownServer() \n";
+    res += "\tdb.stats() \n";
+    res += "\tdb.unsetWriteConcern(<write concern doc>) - unsets the write concern for writes to the db \n";
+    res += "\tdb.version() current version of the server \n";
+    res += "\tdb.watch() - opens a change stream cursor for a database to report on all " + " changes to its non-system collections. \n";
+    return res;
 };
 
 DB.prototype.printCollectionStats = function(scale) {
@@ -634,7 +653,7 @@ DB.prototype.dbEval = DB.prototype.eval;
 DB.prototype.groupeval = function(parmsObj) {
     var groupFunction = function() {
         var parms = args[0];
-        var c = globalThis.db[parms.ns].find(parms.cond || {});
+        var c = db[parms.ns].find(parms.cond || {});
         var map = new Map();
         var pks = parms.key ? Object.keySet(parms.key) : null;
         var pkl = pks ? pks.length : 0;
@@ -798,7 +817,20 @@ DB.prototype.hello = function() {
     return this.runCommand("hello");
 };
 
+var commandUnsupported = function(res) {
+    return (!res.ok &&
+            (res.errmsg.startsWith("no such cmd") || res.errmsg.startsWith("no such command") ||
+             res.code === 59 /* CommandNotFound */));
+};
+
 DB.prototype.currentOp = function(arg) {
+    // TODO CLOUDP-89361: The shell is connected to the Atlas Proxy, which currently does not
+    // support the $currentOp aggregation stage. Remove the legacy server command path once the
+    // proxy can support $currentOp.
+    if (this.serverStatus().hasOwnProperty("atlasVersion")) {
+        return this.currentOpLegacy(arg);
+    }
+
     try {
         const results = this.currentOpCursor(arg).toArray();
         let res = {"inprog": results.length > 0 ? results : [], "ok": 1};
@@ -812,6 +844,33 @@ DB.prototype.currentOp = function(arg) {
     } catch (e) {
         return {"ok": 0, "code": e.code, "errmsg": "Error executing $currentOp: " + e.message};
     }
+};
+DB.prototype.currentOP = DB.prototype.currentOp;
+
+DB.prototype.currentOpLegacy = function(arg) {
+    let q = {};
+    if (arg) {
+        if (typeof (arg) == "object")
+            Object.extend(q, arg);
+        else if (arg)
+            q["$all"] = true;
+    }
+
+    var commandObj = {"currentOp": 1};
+    Object.extend(commandObj, q);
+    var res = this.adminCommand(commandObj);
+    if (commandUnsupported(res)) {
+        // always send legacy currentOp with default (null) read preference (SERVER-17951)
+        const session = this.getSession();
+        const readPreference = session.getOptions().getReadPreference();
+        try {
+            session.getOptions().setReadPreference(null);
+            res = this.getSiblingDB("admin").$cmd.sys.inprog.findOne(q);
+        } finally {
+            session.getOptions().setReadPreference(readPreference);
+        }
+    }
+    return res;
 };
 
 DB.prototype.currentOpCursor = function(arg) {
@@ -856,7 +915,19 @@ DB.prototype.currentOpCursor = function(arg) {
 DB.prototype.killOp = function(op) {
     if (!op)
         throw Error("no opNum to kill specified");
-    return this.adminCommand({'killOp': 1, 'op': op});
+    var res = this.adminCommand({'killOp': 1, 'op': op});
+    if (commandUnsupported(res)) {
+        // fall back for old servers
+        const session = this.getSession();
+        const readPreference = session.getOptions().getReadPreference();
+        try {
+            session.getOptions().setReadPreference(null);
+            res = this.getSiblingDB("admin").$cmd.sys.killop.findOne({'op': op});
+        } finally {
+            session.getOptions().setReadPreference(readPreference);
+        }
+    }
+    return res;
 };
 DB.prototype.killOP = DB.prototype.killOp;
 
@@ -1146,7 +1217,18 @@ DB.prototype.fsyncLock = function() {
 };
 
 DB.prototype.fsyncUnlock = function() {
-    return this.adminCommand({fsyncUnlock: 1});
+    var res = this.adminCommand({fsyncUnlock: 1});
+    if (commandUnsupported(res)) {
+        const session = this.getSession();
+        const readPreference = session.getOptions().getReadPreference();
+        try {
+            session.getOptions().setReadPreference(null);
+            res = this.getSiblingDB("admin").$cmd.sys.unlock.findOne();
+        } finally {
+            session.getOptions().setReadPreference(readPreference);
+        }
+    }
+    return res;
 };
 
 DB.autocomplete = function(obj) {
@@ -1259,8 +1341,8 @@ DB.prototype.createUser = function(userObj, writeConcern) {
     var res = this.runCommand(cmdObj);
 
     if (res.ok) {
-        print("Successfully added user: " + getUserObjString(userObj));
-        return;
+        // print("Successfully added user: " + getUserObjString(userObj));
+        return "Successfully added user: " + getUserObjString(userObj);
     }
 
     if (res.errmsg == "no such cmd: createUser") {
@@ -1775,7 +1857,7 @@ DB.prototype.createEncryptedCollection = function(name, opts) {
 };
 
 DB.prototype.dropEncryptedCollection = function(name) {
-    const ci = globalThis.db.getCollectionInfos({name: name})[0];
+    const ci = db.getCollectionInfos({name: name})[0];
     if (ci == undefined) {
         throw `Encrypted Collection '${name}' not found`;
     }
@@ -1789,10 +1871,5 @@ DB.prototype.dropEncryptedCollection = function(name) {
     this.getCollection(ef.eccCollection).drop();
     this.getCollection(ef.ecocCollection).drop();
     return this.getCollection(name).drop();
-};
-
-DB.prototype.checkMetadataConsistency = function() {
-    const res = assert.commandWorked(this.runCommand({checkMetadataConsistency: 1}));
-    return new DBCommandCursor(this, res);
 };
 }());

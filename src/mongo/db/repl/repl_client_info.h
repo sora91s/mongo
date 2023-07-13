@@ -101,17 +101,13 @@ public:
      *
      * Setting the lastOp to the latest OpTime is necessary when doing no-op writes, as we need to
      * set the client's lastOp to a proper value for write concern wait to work.
-     *
-     * An exception to this are multi-document transactions, which do a noop write at commit time
-     * and advance the client's lastOp in case the transaction resulted in a no-op.
      */
     void setLastOpToSystemLastOpTime(OperationContext* opCtx);
 
     /**
-     * Same as setLastOpToSystemLastOpTime but ignores errors if the OperationContext is
-     * interrupted.
+     * Same as setLastOpToSystemLastOpTime but ignores interruption errors.
      */
-    void setLastOpToSystemLastOpTimeIgnoringCtxInterrupted(OperationContext* opCtx);
+    void setLastOpToSystemLastOpTimeIgnoringInterrupt(OperationContext* opCtx);
 
 private:
     static const long long kUninitializedTerm = -1;

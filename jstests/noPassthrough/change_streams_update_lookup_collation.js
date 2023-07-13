@@ -8,6 +8,14 @@
 (function() {
 "use strict";
 
+// Skip this test if running with --nojournal and WiredTiger.
+if (jsTest.options().noJournal &&
+    (!jsTest.options().storageEngine || jsTest.options().storageEngine === "wiredTiger")) {
+    print("Skipping test because running WiredTiger without journaling isn't a valid" +
+          " replica set configuration");
+    return;
+}
+
 const rst = new ReplSetTest({nodes: 1});
 rst.startSet();
 rst.initiate();
@@ -52,10 +60,10 @@ const idIndexUsagesBeforeIteration = numIdIndexUsages();
 // Both cursors should produce a document describing this update, since the "x" value of the
 // first document will match both filters.
 assert.soon(() => changeStreamDefaultCollation.hasNext());
-assert.docEq({_id: "abc", x: "abc", updated: true},
-             changeStreamDefaultCollation.next().fullDocument);
+assert.docEq(changeStreamDefaultCollation.next().fullDocument,
+             {_id: "abc", x: "abc", updated: true});
 assert.eq(numIdIndexUsages(), idIndexUsagesBeforeIteration + 1);
-assert.docEq({_id: "abc", x: "abc", updated: true}, strengthOneChangeStream.next().fullDocument);
+assert.docEq(strengthOneChangeStream.next().fullDocument, {_id: "abc", x: "abc", updated: true});
 assert.eq(numIdIndexUsages(), idIndexUsagesBeforeIteration + 2);
 
 assert.commandWorked(coll.update({_id: "abç"}, {$set: {updated: true}}));
@@ -63,10 +71,10 @@ assert.eq(numIdIndexUsages(), idIndexUsagesBeforeIteration + 3);
 
 // Again, both cursors should produce a document describing this update.
 assert.soon(() => changeStreamDefaultCollation.hasNext());
-assert.docEq({_id: "abç", x: "ABC", updated: true},
-             changeStreamDefaultCollation.next().fullDocument);
+assert.docEq(changeStreamDefaultCollation.next().fullDocument,
+             {_id: "abç", x: "ABC", updated: true});
 assert.eq(numIdIndexUsages(), idIndexUsagesBeforeIteration + 4);
-assert.docEq({_id: "abç", x: "ABC", updated: true}, strengthOneChangeStream.next().fullDocument);
+assert.docEq(strengthOneChangeStream.next().fullDocument, {_id: "abç", x: "ABC", updated: true});
 assert.eq(numIdIndexUsages(), idIndexUsagesBeforeIteration + 5);
 
 assert.commandWorked(coll.update({_id: "åbC"}, {$set: {updated: true}}));
@@ -77,7 +85,7 @@ assert.eq(numIdIndexUsages(), idIndexUsagesBeforeIteration + 6);
 // subsequent $match stage will reject the document because it does not consider "AbÇ" equal to
 // "abc". Only the strengthOneChangeStream will output the final document.
 assert.soon(() => strengthOneChangeStream.hasNext());
-assert.docEq({_id: "åbC", x: "AbÇ", updated: true}, strengthOneChangeStream.next().fullDocument);
+assert.docEq(strengthOneChangeStream.next().fullDocument, {_id: "åbC", x: "AbÇ", updated: true});
 assert.eq(numIdIndexUsages(), idIndexUsagesBeforeIteration + 7);
 assert(!changeStreamDefaultCollation.hasNext());
 assert.eq(numIdIndexUsages(), idIndexUsagesBeforeIteration + 8);

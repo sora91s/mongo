@@ -27,14 +27,15 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer/op_observer_noop.h"
-#include "mongo/db/op_observer/op_observer_registry.h"
+#include "mongo/db/op_observer_noop.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/oplog_applier_impl_test_fixture.h"
@@ -45,22 +46,17 @@
 #include "mongo/db/repl/replication_recovery.h"
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/session/session_txn_record_gen.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/session_txn_record_gen.h"
 #include "mongo/db/storage/durable_history_pin.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/storage_parameters_gen.h"
-#include "mongo/db/transaction/session_catalog_mongod_transaction_interface_impl.h"
-#include "mongo/db/transaction/transaction_participant.h"
-#include "mongo/db/update/update_oplog_entry_serialization.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/log_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 namespace repl {
@@ -136,23 +132,13 @@ public:
         return {};
     }
 
-    /**
-     * Called when we prepare a multi-doc transaction using the TransactionParticipant.
-     */
-    std::unique_ptr<ApplyOpsOplogSlotAndOperationAssignment> preTransactionPrepare(
-        OperationContext* opCtx,
-        const std::vector<OplogSlot>& reservedSlots,
-        const TransactionOperations& transactionOperations,
-        Date_t wallClockTime) override {
-        return std::make_unique<ApplyOpsOplogSlotAndOperationAssignment>(/*prepare=*/false);
-    }
-
     const repl::OpTime dropOpTime = {Timestamp(Seconds(100), 1U), 1LL};
 };
 
 class ReplicationRecoveryTest : public ServiceContextMongoDTest {
 protected:
-    ReplicationRecoveryTest() : ServiceContextMongoDTest(Options{}.useReplSettings(true)) {}
+    // TODO (SERVER-65304): Use wiredTiger.
+    ReplicationRecoveryTest() : ServiceContextMongoDTest(Options{}.engine("ephemeralForTest")) {}
 
     OperationContext* getOperationContext() {
         return _opCtx.get();
@@ -190,6 +176,17 @@ private:
     void setUp() override {
         ServiceContextMongoDTest::setUp();
 
+        // Replaying prepared transactions requires 'enableMajorityReadConcern' to be set to true.
+        // This test uses ephemeralForTest under the hood and is ran in standalone mode. Given that,
+        // to satisfy the tests requirements, we forcefully set 'enableMajorityReadConcern' to true
+        // for these tests.
+        //
+        // Switching the storage engine to use WiredTiger comes with its own complications.
+        // 1. Transaction prepare is not supported with logged tables in debug builds.
+        // 2. Transactions cannot be assigned a log record if WT_CONN_LOG_DEBUG mode is not enabled.
+        _stashedEnableMajorityReadConcern =
+            std::exchange(serverGlobalParams.enableMajorityReadConcern, true);
+
         auto service = getServiceContext();
         StorageInterface::set(service, std::make_unique<StorageInterfaceRecovery>());
         _storageInterface = static_cast<StorageInterfaceRecovery*>(StorageInterface::get(service));
@@ -207,23 +204,10 @@ private:
 
         repl::createOplog(_opCtx.get());
 
-        {
-            // This fixture sets up some replication, but notably omits installing an
-            // OpObserverImpl. This state causes collection creation to timestamp catalog writes,
-            // but secondary index creation does not. We use an UnreplicatedWritesBlock to avoid
-            // timestamping any of the catalog setup.
-            repl::UnreplicatedWritesBlock noRep(_opCtx.get());
-            ASSERT_OK(_storageInterface->createCollection(
-                getOperationContext(), testNs, generateOptionsWithUuid()));
+        ASSERT_OK(_storageInterface->createCollection(
+            getOperationContext(), testNs, generateOptionsWithUuid()));
 
-            MongoDSessionCatalog::set(
-                _opCtx->getServiceContext(),
-                std::make_unique<MongoDSessionCatalog>(
-                    std::make_unique<MongoDSessionCatalogTransactionInterfaceImpl>()));
-
-            auto mongoDSessionCatalog = MongoDSessionCatalog::get(_opCtx.get());
-            mongoDSessionCatalog->onStepUp(_opCtx.get());
-        }
+        MongoDSessionCatalog::onStepUp(_opCtx.get());
 
         auto observerRegistry = checked_cast<OpObserverRegistry*>(service->getOpObserver());
         observerRegistry->addObserver(std::make_unique<ReplicationRecoveryTestObObserver>());
@@ -236,7 +220,10 @@ private:
         _opCtx.reset(nullptr);
         _consistencyMarkers.reset();
 
+        serverGlobalParams.enableMajorityReadConcern = _stashedEnableMajorityReadConcern;
+
         ServiceContextMongoDTest::tearDown();
+        storageGlobalParams.readOnly = false;
         gTakeUnstableCheckpointOnShutdown = false;
     }
 
@@ -247,6 +234,7 @@ private:
     ServiceContext::UniqueOperationContext _opCtx;
     StorageInterfaceRecovery* _storageInterface = nullptr;
     std::unique_ptr<ReplicationConsistencyMarkersMock> _consistencyMarkers;
+    bool _stashedEnableMajorityReadConcern = false;
 };
 
 /**
@@ -267,7 +255,9 @@ repl::OplogEntry _makeOplogEntry(repl::OpTime opTime,
                                  Date_t wallTime = Date_t()) {
     return {
         repl::DurableOplogEntry(opTime,                           // optime
+                                boost::none,                      // hash
                                 opType,                           // opType
+                                boost::none,                      // tenant id
                                 testNs,                           // namespace
                                 boost::none,                      // uuid
                                 boost::none,                      // fromMigrate
@@ -357,17 +347,12 @@ CollectionOptions _createOplogCollectionOptions() {
 }
 
 /**
- * Creates an oplog with insert entries at the given timestamps, which must be in increasing order.
+ * Creates an oplog with insert entries at the given timestamps.
  */
 void _setUpOplog(OperationContext* opCtx, StorageInterface* storage, std::vector<int> timestamps) {
     for (int ts : timestamps) {
         ASSERT_OK(storage->insertDocument(
             opCtx, oplogNs, _makeInsertOplogEntry(ts), OpTime::kUninitializedTerm));
-    }
-    if (!timestamps.empty()) {
-        // Use the highest inserted timestamp to update oplog visibilty so that all of the inserted
-        // oplog entries are visible.
-        storage->oplogDiskLocRegister(opCtx, Timestamp(timestamps.back(), timestamps.back()), true);
     }
 }
 
@@ -390,7 +375,7 @@ void _assertDocumentsInCollectionEqualsUnordered(OperationContext* opCtx,
     SimpleBSONObjSet actualDocs;
     CollectionReader reader(opCtx, nss);
     for (std::size_t i = 0; i < docs.size(); ++i) {
-        actualDocs.insert(unittest::assertGet(reader.next()).getOwned());
+        actualDocs.insert(unittest::assertGet(reader.next()));
     }
     auto docIt = docs.begin();
     auto docEnd = docs.end();
@@ -431,9 +416,7 @@ TEST_F(ReplicationRecoveryTest, RecoveryWithNoOplogSucceeds) {
 
     // Create the database.
     ASSERT_OK(getStorageInterface()->createCollection(
-        opCtx,
-        NamespaceString::createNamespaceString_forTest("local.other"),
-        generateOptionsWithUuid()));
+        opCtx, NamespaceString("local.other"), generateOptionsWithUuid()));
 
     recovery.recoverFromOplog(opCtx, boost::none);
 
@@ -447,9 +430,7 @@ TEST_F(ReplicationRecoveryTest, RecoveryWithNoOplogSucceedsWithStableTimestamp) 
 
     // Create the database.
     ASSERT_OK(getStorageInterface()->createCollection(
-        opCtx,
-        NamespaceString::createNamespaceString_forTest("local.other"),
-        generateOptionsWithUuid()));
+        opCtx, NamespaceString("local.other"), generateOptionsWithUuid()));
 
     Timestamp stableTimestamp(3, 3);
     recovery.recoverFromOplog(opCtx, stableTimestamp);
@@ -858,10 +839,7 @@ TEST_F(ReplicationRecoveryTest, RecoveryAppliesUpdatesIdempotently) {
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx,
         oplogNs,
-        {_makeUpdateOplogEntry(ts,
-                               BSON("_id" << 1),
-                               update_oplog_entry::makeDeltaOplogEntry(
-                                   BSON(doc_diff::kUpdateSectionFieldName << fromjson("{a: 7}"))))
+        {_makeUpdateOplogEntry(ts, BSON("_id" << 1), BSON("$set" << BSON("a" << 7)))
              .getEntry()
              .toBSON(),
          Timestamp(ts, ts)},
@@ -877,10 +855,7 @@ TEST_F(ReplicationRecoveryTest, RecoveryAppliesUpdatesIdempotently) {
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx,
         oplogNs,
-        {_makeUpdateOplogEntry(ts,
-                               BSON("_id" << 2),
-                               update_oplog_entry::makeDeltaOplogEntry(
-                                   BSON(doc_diff::kUpdateSectionFieldName << fromjson("{a: 7}"))))
+        {_makeUpdateOplogEntry(ts, BSON("_id" << 2), BSON("$set" << BSON("a" << 7)))
              .getEntry()
              .toBSON(),
          Timestamp(ts, ts)},
@@ -896,15 +871,11 @@ TEST_F(ReplicationRecoveryTest, RecoveryAppliesUpdatesIdempotently) {
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx,
         oplogNs,
-        {_makeUpdateOplogEntry(ts,
-                               BSON("_id" << 3),
-                               update_oplog_entry::makeDeltaOplogEntry(
-                                   BSON(doc_diff::kUpdateSectionFieldName << fromjson("{a: 7}"))))
+        {_makeUpdateOplogEntry(ts, BSON("_id" << 3), BSON("$set" << BSON("a" << 7)))
              .getEntry()
              .toBSON(),
          Timestamp(ts, ts)},
         OpTime::kUninitializedTerm));
-    getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(ts, ts), true);
 
     recovery.recoverFromOplog(opCtx, boost::none);
 
@@ -924,15 +895,11 @@ DEATH_TEST_F(ReplicationRecoveryTest, RecoveryFailsWithBadOp, "terminate() calle
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx,
         oplogNs,
-        {_makeUpdateOplogEntry(2,
-                               BSON("bad_op" << 1),
-                               update_oplog_entry::makeDeltaOplogEntry(
-                                   BSON(doc_diff::kUpdateSectionFieldName << fromjson("{a: 7}"))))
+        {_makeUpdateOplogEntry(2, BSON("bad_op" << 1), BSON("$set" << BSON("a" << 7)))
              .getEntry()
              .toBSON(),
          Timestamp(2, 2)},
         OpTime::kUninitializedTerm));
-    getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(2, 2), true);
 
     recovery.recoverFromOplog(opCtx, boost::none);
 }
@@ -969,7 +936,6 @@ TEST_F(ReplicationRecoveryTest, CorrectlyUpdatesConfigTransactions) {
 
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx, oplogNs, {insertOp2.getEntry().toBSON(), Timestamp(3, 0)}, 1));
-    getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(3, 0), true);
 
     recovery.recoverFromOplog(opCtx, boost::none);
 
@@ -1017,7 +983,6 @@ TEST_F(ReplicationRecoveryTest, PrepareTransactionOplogEntryCorrectlyUpdatesConf
 
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx, oplogNs, {prepareOp.getEntry().toBSON(), Timestamp(2, 0)}, 1));
-    getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(2, 0), true);
 
     recovery.recoverFromOplog(opCtx, boost::none);
 
@@ -1077,7 +1042,6 @@ TEST_F(ReplicationRecoveryTest, AbortTransactionOplogEntryCorrectlyUpdatesConfig
 
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx, oplogNs, {abortOp.getEntry().toBSON(), Timestamp(3, 0)}, 1));
-    getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(3, 0), true);
 
     recovery.recoverFromOplog(opCtx, boost::none);
 
@@ -1143,7 +1107,6 @@ TEST_F(ReplicationRecoveryTest, CommitTransactionOplogEntryCorrectlyUpdatesConfi
 
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx, oplogNs, {commitOp.getEntry().toBSON(), Timestamp(3, 0)}, 1));
-    getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(3, 0), true);
 
     recovery.recoverFromOplog(opCtx, boost::none);
 
@@ -1230,7 +1193,6 @@ TEST_F(ReplicationRecoveryTest,
 
     ASSERT_OK(getStorageInterface()->insertDocument(
         opCtx, oplogNs, {commitOp.getEntry().toBSON(), Timestamp(3, 0)}, 1));
-    getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(3, 0), true);
 
     recovery.recoverFromOplog(opCtx, boost::none);
 
@@ -1358,9 +1320,8 @@ TEST_F(ReplicationRecoveryTest, RecoverFromOplogUpToReconstructsPreparedTransact
     const auto sessionId = makeLogicalSessionIdForTest();
     opCtx->setLogicalSessionId(sessionId);
 
-    auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
     {
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
 
         OperationSessionInfo sessionInfo;
         sessionInfo.setSessionId(sessionId);
@@ -1377,18 +1338,16 @@ TEST_F(ReplicationRecoveryTest, RecoverFromOplogUpToReconstructsPreparedTransact
                                        lastDate);
         ASSERT_OK(getStorageInterface()->insertDocument(
             opCtx, oplogNs, {prepareOp.getEntry().toBSON(), Timestamp(3, 3)}, 1));
-        getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(3, 3), true);
     }
 
     recovery.recoverFromOplogUpTo(opCtx, Timestamp(3, 3));
 
     {
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
 
         auto txnParticipant = TransactionParticipant::get(opCtx);
         ASSERT_EQ(txnParticipant.getPrepareOpTime().getTimestamp(), Timestamp(3, 3));
         ASSERT_TRUE(txnParticipant.transactionIsPrepared());
-        txnParticipant.abortTransaction(opCtx);
     }
 }
 
@@ -1403,9 +1362,8 @@ TEST_F(ReplicationRecoveryTest,
     const auto sessionId = makeLogicalSessionIdForTest();
     opCtx->setLogicalSessionId(sessionId);
 
-    auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
     {
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
 
         OperationSessionInfo sessionInfo;
         sessionInfo.setSessionId(sessionId);
@@ -1422,7 +1380,6 @@ TEST_F(ReplicationRecoveryTest,
                                        lastDate);
         ASSERT_OK(getStorageInterface()->insertDocument(
             opCtx, oplogNs, {prepareOp.getEntry().toBSON(), Timestamp(1, 1)}, 1));
-        getStorageInterface()->oplogDiskLocRegister(opCtx, Timestamp(1, 1), true);
 
         const BSONObj doc =
             BSON("_id" << sessionId.toBSON() << "txnNum" << static_cast<long long>(1)
@@ -1442,12 +1399,11 @@ TEST_F(ReplicationRecoveryTest,
         countTextFormatLogLinesContaining("No stored oplog entries to apply for recovery between"));
 
     {
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
 
         auto txnParticipant = TransactionParticipant::get(opCtx);
         ASSERT_EQ(txnParticipant.getPrepareOpTime().getTimestamp(), Timestamp(1, 1));
         ASSERT_TRUE(txnParticipant.transactionIsPrepared());
-        txnParticipant.abortTransaction(opCtx);
     }
 }
 
@@ -1507,6 +1463,10 @@ TEST_F(ReplicationRecoveryTest, RecoverFromOplogAsStandaloneRecoversOplog) {
 
     recovery.recoverFromOplogAsStandalone(opCtx);
     _assertDocsInTestCollection(opCtx, {5});
+
+    // Test the node is readOnly.
+    ASSERT_THROWS(getStorageInterface()->insertDocument(opCtx, testNs, {_makeInsertDocument(2)}, 1),
+                  AssertionException);
 }
 
 TEST_F(ReplicationRecoveryTest,

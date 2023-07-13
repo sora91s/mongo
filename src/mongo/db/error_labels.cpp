@@ -55,8 +55,7 @@ bool ErrorLabelBuilder::isTransientTransactionError() const {
     // we have already tried to abort it. An error code for which isTransientTransactionError()
     // is true indicates a transaction failure with no persistent side effects.
     return _code && _sessionOptions.getTxnNumber() && _sessionOptions.getAutocommit() &&
-        mongo::isTransientTransactionError(
-               _code.value(), _wcCode != boost::none, _isCommitOrAbort());
+        mongo::isTransientTransactionError(_code.get(), _wcCode != boost::none, _isCommitOrAbort());
 }
 
 bool ErrorLabelBuilder::isRetryableWriteError() const {
@@ -78,8 +77,8 @@ bool ErrorLabelBuilder::isRetryableWriteError() const {
     // transactions commit/abort.
     if (isRetryableWrite() || isTransactionCommitOrAbort()) {
         bool isShutDownCode = _code &&
-            (ErrorCodes::isShutdownError(_code.value()) ||
-             _code.value() == ErrorCodes::CallbackCanceled);
+            (ErrorCodes::isShutdownError(_code.get()) ||
+             _code.get() == ErrorCodes::CallbackCanceled);
         if (isShutDownCode &&
             (globalInShutdownDeprecated() ||
              MONGO_unlikely(errorLabelBuilderMockShutdown.shouldFail()))) {
@@ -89,14 +88,14 @@ bool ErrorLabelBuilder::isRetryableWriteError() const {
         // mongos should not attach RetryableWriteError label to retryable errors thrown by the
         // config server or targeted shards.
         return !_isMongos &&
-            ((_code && ErrorCodes::isRetriableError(_code.value())) ||
-             (_wcCode && ErrorCodes::isRetriableError(_wcCode.value())));
+            ((_code && ErrorCodes::isRetriableError(_code.get())) ||
+             (_wcCode && ErrorCodes::isRetriableError(_wcCode.get())));
     }
     return false;
 }
 
 bool ErrorLabelBuilder::isNonResumableChangeStreamError() const {
-    return _code && ErrorCodes::isNonResumableChangeStreamError(_code.value());
+    return _code && ErrorCodes::isNonResumableChangeStreamError(_code.get());
 }
 
 bool ErrorLabelBuilder::isResumableChangeStreamError() const {
@@ -124,10 +123,10 @@ bool ErrorLabelBuilder::isResumableChangeStreamError() const {
 
     bool apiStrict = APIParameters::get(_opCtx).getAPIStrict().value_or(false);
     // Do enough parsing to confirm that this is a well-formed pipeline with a $changeStream.
-    const auto swLitePipe = [this, &nss, &cmdObj, apiStrict]() -> StatusWith<LiteParsedPipeline> {
+    const auto swLitePipe = [&nss, &cmdObj, apiStrict]() -> StatusWith<LiteParsedPipeline> {
         try {
-            auto aggRequest = aggregation_request_helper::parseFromBSON(
-                _opCtx, nss, cmdObj, boost::none, apiStrict);
+            auto aggRequest =
+                aggregation_request_helper::parseFromBSON(nss, cmdObj, boost::none, apiStrict);
             return LiteParsedPipeline(aggRequest);
         } catch (const DBException& ex) {
             return ex.toStatus();
@@ -138,38 +137,18 @@ bool ErrorLabelBuilder::isResumableChangeStreamError() const {
     return swLitePipe.isOK() && swLitePipe.getValue().hasChangeStream();
 }
 
-bool ErrorLabelBuilder::isErrorWithNoWritesPerformed() const {
-    if (!_code && !_wcCode) {
-        return false;
-    }
-    if (_lastOpBeforeRun.isNull() || _lastOpAfterRun.isNull()) {
-        // Last OpTimes are unknown or not usable for determining whether or not a write was
-        // attempted.
-        return false;
-    }
-    return _lastOpBeforeRun == _lastOpAfterRun;
-}
-
 void ErrorLabelBuilder::build(BSONArrayBuilder& labels) const {
     // PLEASE CONSULT DRIVERS BEFORE ADDING NEW ERROR LABELS.
     bool hasTransientTransactionOrRetryableWriteError = false;
     if (isTransientTransactionError()) {
         labels << ErrorLabel::kTransientTransaction;
         hasTransientTransactionOrRetryableWriteError = true;
-    } else {
-        if (isRetryableWriteError()) {
-            // In the rare case where RetryableWriteError and TransientTransactionError are not
-            // mutually exclusive, only append the TransientTransactionError label so users know to
-            // retry the entire transaction.
-            labels << ErrorLabel::kRetryableWrite;
-            hasTransientTransactionOrRetryableWriteError = true;
-            if (isErrorWithNoWritesPerformed()) {
-                // The NoWritesPerformed error label is only relevant for retryable writes so that
-                // drivers can determine what error to return when faced with multiple errors (see
-                // SERVER-66479 and DRIVERS-2327).
-                labels << ErrorLabel::kNoWritesPerformed;
-            }
-        }
+    } else if (isRetryableWriteError()) {
+        // In the rare case where RetryableWriteError and TransientTransactionError are not mutually
+        // exclusive, only append the TransientTransactionError label so users know to retry the
+        // entire transaction.
+        labels << ErrorLabel::kRetryableWrite;
+        hasTransientTransactionOrRetryableWriteError = true;
     }
 
     // Change streams cannot run in a transaction, and cannot be a retryable write. Since these
@@ -192,30 +171,21 @@ BSONObj getErrorLabels(OperationContext* opCtx,
                        boost::optional<ErrorCodes::Error> code,
                        boost::optional<ErrorCodes::Error> wcCode,
                        bool isInternalClient,
-                       bool isMongos,
-                       const repl::OpTime& lastOpBeforeRun,
-                       const repl::OpTime& lastOpAfterRun) {
+                       bool isMongos) {
     if (MONGO_unlikely(errorLabelsOverride(opCtx))) {
         // This command was failed by a failCommand failpoint. Thus, we return the errorLabels
         // specified in the failpoint to supress any other error labels that would otherwise be
         // returned by the ErrorLabelBuilder.
-        if (errorLabelsOverride(opCtx).value().isEmpty()) {
+        if (errorLabelsOverride(opCtx).get().isEmpty()) {
             return BSONObj();
         } else {
-            return BSON(kErrorLabelsFieldName << errorLabelsOverride(opCtx).value());
+            return BSON(kErrorLabelsFieldName << errorLabelsOverride(opCtx).get());
         }
     }
 
     BSONArrayBuilder labelArray;
-    ErrorLabelBuilder labelBuilder(opCtx,
-                                   sessionOptions,
-                                   commandName,
-                                   code,
-                                   wcCode,
-                                   isInternalClient,
-                                   isMongos,
-                                   lastOpBeforeRun,
-                                   lastOpAfterRun);
+    ErrorLabelBuilder labelBuilder(
+        opCtx, sessionOptions, commandName, code, wcCode, isInternalClient, isMongos);
     labelBuilder.build(labelArray);
 
     return (labelArray.arrSize() > 0) ? BSON(kErrorLabelsFieldName << labelArray.arr()) : BSONObj();
@@ -246,6 +216,8 @@ bool isTransientTransactionError(ErrorCodes::Error code,
         case ErrorCodes::StaleDbVersion:
         case ErrorCodes::TenantMigrationAborted:
         case ErrorCodes::TenantMigrationCommitted:
+        // TODO: (SERVER-62375): Remove upgrade/downgrade code for internal transactions
+        case ErrorCodes::TxnRetryCounterNotSupported:
             return true;
         default:
             isTransient = false;

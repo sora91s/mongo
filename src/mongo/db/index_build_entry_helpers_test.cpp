@@ -52,7 +52,7 @@ namespace mongo {
 namespace {
 using namespace indexbuildentryhelpers;
 
-std::vector<std::string> generateIndexes(size_t numIndexes) {
+const std::vector<std::string> generateIndexes(size_t numIndexes) {
     std::vector<std::string> indexes;
     for (size_t i = 0; i < numIndexes; i++) {
         indexes.push_back("index_" + std::to_string(i));
@@ -60,7 +60,7 @@ std::vector<std::string> generateIndexes(size_t numIndexes) {
     return indexes;
 }
 
-std::vector<HostAndPort> generateCommitReadyMembers(size_t numMembers) {
+const std::vector<HostAndPort> generateCommitReadyMembers(size_t numMembers) {
     std::vector<HostAndPort> members;
     for (size_t i = 0; i < numMembers; i++) {
         members.push_back(HostAndPort("localhost:27017"));
@@ -81,8 +81,8 @@ void checkIfEqual(IndexBuildEntry lhs, IndexBuildEntry rhs) {
     ASSERT_TRUE(std::equal(lhsIndexNames.begin(), lhsIndexNames.end(), rhsIndexNames.begin()));
 
     if (lhs.getCommitReadyMembers() && rhs.getCommitReadyMembers()) {
-        auto lhsMembers = lhs.getCommitReadyMembers().value();
-        auto rhsMembers = rhs.getCommitReadyMembers().value();
+        auto lhsMembers = lhs.getCommitReadyMembers().get();
+        auto rhsMembers = rhs.getCommitReadyMembers().get();
         ASSERT_TRUE(std::equal(lhsMembers.begin(), lhsMembers.end(), rhsMembers.begin()));
     } else {
         ASSERT_FALSE(lhs.getCommitReadyMembers());

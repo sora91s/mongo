@@ -16,6 +16,7 @@
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/WrappingOperations.h"
+#include <iostream>
 
 #include <string.h>
 
@@ -78,6 +79,7 @@
 #include "vm/Stack-inl.h"
 
 using namespace js;
+using namespace std;
 
 using mozilla::DebugOnly;
 using mozilla::NumberEqualsInt32;
@@ -540,6 +542,7 @@ bool js::InternalCallOrConstruct(JSContext* cx, const CallArgs& args,
     return false;
   }
 
+  // pos-x execute and print
   bool ok = RunScript(cx, state);
 
   MOZ_ASSERT_IF(ok && construct, args.rval().isObject());

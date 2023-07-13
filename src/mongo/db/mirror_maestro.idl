@@ -31,7 +31,7 @@ global:
   - "mongo/db/mirror_maestro.h"
 
 imports:
-  - "mongo/db/basic_types.idl"
+  - "mongo/idl/basic_types.idl"
 
 structs:
   MirroredReadsParameters:

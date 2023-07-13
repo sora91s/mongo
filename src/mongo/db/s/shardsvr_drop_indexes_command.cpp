@@ -27,13 +27,14 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/s/database_sharding_state.h"
-#include "mongo/db/s/ddl_lock_manager.h"
+#include "mongo/db/s/dist_lock_manager.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/timeseries/catalog_helper.h"
 #include "mongo/db/timeseries/timeseries_commands_conversion_helper.h"
@@ -42,9 +43,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
 #include "mongo/s/stale_shard_version_helpers.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -138,7 +136,7 @@ ShardsvrDropIndexesCommand::Invocation::Response ShardsvrDropIndexesCommand::Inv
     // Since this operation is not directly writing locally we need to force its db profile level
     // increase in order to be logged in "<db>.system.profile".
     CurOp::get(opCtx)->raiseDbProfileLevel(
-        CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(ns().dbName()));
+        CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(ns().db()));
 
     DropIndexes dropIdxCmd(ns());
     dropIdxCmd.setDropIndexesRequest(request().getDropIndexesRequest());
@@ -152,16 +150,14 @@ ShardsvrDropIndexesCommand::Invocation::Response ShardsvrDropIndexesCommand::Inv
                 return timeoutMillisecs;
             }
         }
-        return DDLLockManager::kDefaultLockTimeout;
+        return DistLockManager::kDefaultLockTimeout;
     }();
 
-    static constexpr StringData lockReason{"dropIndexes"_sd};
-
-    auto ddlLockManager = DDLLockManager::get(opCtx);
-    auto dbDDLLock = ddlLockManager->lock(opCtx, ns().db(), lockReason, lockTimeout);
+    auto distLockManager = DistLockManager::get(opCtx);
+    auto dbLocalLock = distLockManager->lockDirectLocally(opCtx, ns().db(), lockTimeout);
 
     // Check under the dbLock if this is still the primary shard for the database
-    DatabaseShardingState::assertIsPrimaryShardForDb(opCtx, ns().db());
+    DatabaseShardingState::checkIsPrimaryShardForDb(opCtx, ns().db());
 
     auto resolvedNs = ns();
     auto dropIdxBSON = dropIdxCmd.toBSON({});
@@ -176,14 +172,14 @@ ShardsvrDropIndexesCommand::Invocation::Response ShardsvrDropIndexesCommand::Inv
         resolvedNs = ns().makeTimeseriesBucketsNamespace();
     }
 
-    auto collDDLLock = ddlLockManager->lock(opCtx, resolvedNs.ns(), lockReason, lockTimeout);
+    auto nsLocalLock = distLockManager->lockDirectLocally(opCtx, resolvedNs.ns(), lockTimeout);
 
     StaleConfigRetryState retryState;
     return shardVersionRetry(
         opCtx, Grid::get(opCtx)->catalogCache(), resolvedNs, "dropIndexes", [&] {
             // If the collection is sharded, we target only the primary shard and the shards that
             // own chunks for the collection.
-            const auto cri = uassertStatusOK(
+            const auto routingInfo = uassertStatusOK(
                 Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, resolvedNs));
 
             auto cmdToBeSent = CommandHelpers::filterCommandRequestForPassthrough(
@@ -194,7 +190,7 @@ ShardsvrDropIndexesCommand::Invocation::Response ShardsvrDropIndexesCommand::Inv
                     opCtx,
                     resolvedNs.db(),
                     resolvedNs,
-                    cri,
+                    routingInfo,
                     retryState.shardsWithSuccessResponses,
                     applyReadWriteConcern(
                         opCtx,

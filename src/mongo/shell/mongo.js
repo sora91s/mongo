@@ -143,6 +143,7 @@ Mongo.prototype.getDBs = function(driverSession = this._getDefaultSession(),
                 }
             }
             throw _getErrorWithCode(res, "listDatabases failed:" + tojson(res));
+            // return "listDatabases failed:" + tojson(res);
         }
 
         if (nameOnly) {

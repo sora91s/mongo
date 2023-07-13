@@ -62,7 +62,7 @@ bool bucketsHaveDateOutsideStandardRange(const TimeseriesOptions& options,
 }
 
 bool collectionMayRequireExtendedRangeSupport(OperationContext* opCtx,
-                                              const Collection& collection) {
+                                              const CollectionPtr& collection) {
     bool requiresExtendedRangeSupport = false;
 
     // We use a heuristic here to perform a check as quickly as possible and get the correct answer
@@ -73,7 +73,7 @@ bool collectionMayRequireExtendedRangeSupport(OperationContext* opCtx,
     // document exists, then the maximum OID will have this bit set. So we can just check the last
     // document in the record store and test this high bit of it's _id.
 
-    auto* rs = collection.getRecordStore();
+    auto* rs = collection->getRecordStore();
     auto cursor = rs->getCursor(opCtx, /* forward */ false);
     if (auto record = cursor->next()) {
         const auto& obj = record->data.toBson();
@@ -99,8 +99,7 @@ bool collectionHasTimeIndex(OperationContext* opCtx, const Collection& collectio
     auto indexCatalog = collection.getIndexCatalog();
     // The IndexIterator is initialized lazily, so the first call to 'next' positions it to the
     // first entry.
-    for (auto it = indexCatalog->getIndexIterator(opCtx, IndexCatalog::InclusionPolicy::kReady);
-         it->more();) {
+    for (auto it = indexCatalog->getIndexIterator(opCtx, false); it->more();) {
         auto index = it->next();
         auto desc = index->descriptor();
         auto pattern = desc->keyPattern();

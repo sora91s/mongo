@@ -11,7 +11,7 @@
 var dbpath = MongoRunner.dataPath + 'sync_write';
 resetDbpath(dbpath);
 
-var mongodArgs = {dbpath: dbpath, noCleanData: true};
+var mongodArgs = {dbpath: dbpath, noCleanData: true, journal: ''};
 
 // Start a mongod.
 var conn = MongoRunner.runMongod(mongodArgs);

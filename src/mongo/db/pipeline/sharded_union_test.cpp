@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/exec/document_value/document_value_test_util.h"
 #include "mongo/db/pipeline/document_source_group.h"
 #include "mongo/db/pipeline/document_source_match.h"
@@ -36,7 +38,6 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/s/query/sharded_agg_test_fixture.h"
-#include "mongo/s/shard_version_factory.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/unittest/unittest.h"
 
@@ -162,14 +163,10 @@ TEST_F(ShardedUnionTest, RetriesSubPipelineOnStaleConfigError) {
     onCommand([&](const executor::RemoteCommandRequest& request) {
         OID epoch{OID::gen()};
         Timestamp timestamp{1, 0};
-        return createErrorCursorResponse(
-            Status{StaleConfigInfo(
-                       kTestAggregateNss,
-                       ShardVersionFactory::make(ChunkVersion({epoch, timestamp}, {1, 0}),
-                                                 boost::optional<CollectionIndexes>(boost::none)),
-                       boost::none,
-                       ShardId{"0"}),
-                   "Mock error: shard version mismatch"});
+        return createErrorCursorResponse(Status{
+            StaleConfigInfo(
+                kTestAggregateNss, ChunkVersion(1, 0, epoch, timestamp), boost::none, ShardId{"0"}),
+            "Mock error: shard version mismatch"});
     });
 
     // Mock the expected config server queries.
@@ -178,7 +175,7 @@ TEST_F(ShardedUnionTest, RetriesSubPipelineOnStaleConfigError) {
     const Timestamp timestamp(1, 1);
     const ShardKeyPattern shardKeyPattern(BSON("_id" << 1));
 
-    ChunkVersion version({epoch, timestamp}, {1, 0});
+    ChunkVersion version(1, 0, epoch, timestamp);
 
     ChunkType chunk1(cm.getUUID(),
                      {shardKeyPattern.getKeyPattern().globalMin(), BSON("_id" << 0)},
@@ -196,9 +193,6 @@ TEST_F(ShardedUnionTest, RetriesSubPipelineOnStaleConfigError) {
 
     expectCollectionAndChunksAggregation(
         kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, {chunk1, chunk2});
-
-    expectCollectionAndIndexesAggregation(
-        kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, boost::none, {});
 
     // That error should be retried, but only the one on that shard.
     onCommand([&](const executor::RemoteCommandRequest& request) {
@@ -252,14 +246,10 @@ TEST_F(ShardedUnionTest, CorrectlySplitsSubPipelineIfRefreshedDistributionRequir
 
         OID epoch{OID::gen()};
         Timestamp timestamp{1, 0};
-        return createErrorCursorResponse(
-            Status{StaleConfigInfo(
-                       kTestAggregateNss,
-                       ShardVersionFactory::make(ChunkVersion({epoch, timestamp}, {1, 0}),
-                                                 boost::optional<CollectionIndexes>(boost::none)),
-                       boost::none,
-                       ShardId{"0"}),
-                   "Mock error: shard version mismatch"});
+        return createErrorCursorResponse(Status{
+            StaleConfigInfo(
+                kTestAggregateNss, ChunkVersion(1, 0, epoch, timestamp), boost::none, ShardId{"0"}),
+            "Mock error: shard version mismatch"});
     });
 
     // Mock the expected config server queries. Update the distribution as if a chunk [0, 10] was
@@ -269,7 +259,7 @@ TEST_F(ShardedUnionTest, CorrectlySplitsSubPipelineIfRefreshedDistributionRequir
     const Timestamp timestamp(1, 1);
     const ShardKeyPattern shardKeyPattern(BSON("_id" << 1));
 
-    ChunkVersion version({epoch, timestamp}, {1, 0});
+    ChunkVersion version(1, 0, epoch, timestamp);
 
     ChunkType chunk1(cm.getUUID(),
                      {shardKeyPattern.getKeyPattern().globalMin(), BSON("_id" << 0)},
@@ -291,9 +281,6 @@ TEST_F(ShardedUnionTest, CorrectlySplitsSubPipelineIfRefreshedDistributionRequir
 
     expectCollectionAndChunksAggregation(
         kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, {chunk1, chunk2, chunk3});
-
-    expectCollectionAndIndexesAggregation(
-        kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, boost::none, {});
 
     // That error should be retried, this time two shards.
     onCommand([&](const executor::RemoteCommandRequest& request) {
@@ -350,31 +337,23 @@ TEST_F(ShardedUnionTest, AvoidsSplittingSubPipelineIfRefreshedDistributionDoesNo
     Timestamp timestamp{1, 1};
 
     onCommand([&](const executor::RemoteCommandRequest& request) {
-        return createErrorCursorResponse(
-            Status{StaleConfigInfo(
-                       kTestAggregateNss,
-                       ShardVersionFactory::make(ChunkVersion({epoch, timestamp}, {1, 0}),
-                                                 boost::optional<CollectionIndexes>(boost::none)),
-                       boost::none,
-                       ShardId{"0"}),
-                   "Mock error: shard version mismatch"});
+        return createErrorCursorResponse(Status{
+            StaleConfigInfo(
+                kTestAggregateNss, ChunkVersion(1, 0, epoch, timestamp), boost::none, ShardId{"0"}),
+            "Mock error: shard version mismatch"});
     });
     onCommand([&](const executor::RemoteCommandRequest& request) {
-        return createErrorCursorResponse(
-            Status{StaleConfigInfo(
-                       kTestAggregateNss,
-                       ShardVersionFactory::make(ChunkVersion({epoch, timestamp}, {1, 0}),
-                                                 boost::optional<CollectionIndexes>(boost::none)),
-                       boost::none,
-                       ShardId{"0"}),
-                   "Mock error: shard version mismatch"});
+        return createErrorCursorResponse(Status{
+            StaleConfigInfo(
+                kTestAggregateNss, ChunkVersion(1, 0, epoch, timestamp), boost::none, ShardId{"0"}),
+            "Mock error: shard version mismatch"});
     });
 
     // Mock the expected config server queries. Update the distribution so that all chunks are on
     // the same shard.
     const UUID uuid = UUID::gen();
     const ShardKeyPattern shardKeyPattern(BSON("_id" << 1));
-    ChunkVersion version({epoch, timestamp}, {1, 0});
+    ChunkVersion version(1, 0, epoch, timestamp);
     ChunkType chunk1(
         cm.getUUID(),
         {shardKeyPattern.getKeyPattern().globalMin(), shardKeyPattern.getKeyPattern().globalMax()},
@@ -384,9 +363,6 @@ TEST_F(ShardedUnionTest, AvoidsSplittingSubPipelineIfRefreshedDistributionDoesNo
 
     expectCollectionAndChunksAggregation(
         kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, {chunk1});
-
-    expectCollectionAndIndexesAggregation(
-        kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, boost::none, {});
 
     // That error should be retried, this time targetting only one shard.
     onCommand([&](const executor::RemoteCommandRequest& request) {
@@ -405,8 +381,7 @@ TEST_F(ShardedUnionTest, IncorporatesViewDefinitionAndRetriesWhenViewErrorReceiv
     auto shards = setupNShards(2);
     auto cm = loadRoutingTableWithTwoChunksAndTwoShards(kTestAggregateNss);
 
-    NamespaceString nsToUnionWith =
-        NamespaceString::createNamespaceString_forTest(expCtx()->ns.db(), "view");
+    NamespaceString nsToUnionWith(expCtx()->ns.db(), "view");
     // Mock out the view namespace as emtpy for now - this is what it would be when parsing in a
     // sharded cluster - only later would we learn the actual view definition.
     expCtx()->setResolvedNamespaces(StringMap<ExpressionContext::ResolvedNamespace>{
@@ -437,7 +412,7 @@ TEST_F(ShardedUnionTest, IncorporatesViewDefinitionAndRetriesWhenViewErrorReceiv
     const ShardKeyPattern shardKeyPattern(BSON("_id" << 1));
 
     const Timestamp timestamp(1, 1);
-    ChunkVersion version({epoch, timestamp}, {1, 0});
+    ChunkVersion version(1, 0, epoch, timestamp);
 
     ChunkType chunk1(cm.getUUID(),
                      {shardKeyPattern.getKeyPattern().globalMin(), BSON("_id" << 0)},
@@ -455,9 +430,6 @@ TEST_F(ShardedUnionTest, IncorporatesViewDefinitionAndRetriesWhenViewErrorReceiv
 
     expectCollectionAndChunksAggregation(
         kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, {chunk1, chunk2});
-
-    expectCollectionAndIndexesAggregation(
-        kTestAggregateNss, epoch, timestamp, uuid, shardKeyPattern, boost::none, {});
 
     // Mock out the sharded view error responses from both shards.
     std::vector<BSONObj> viewPipeline = {fromjson("{$group: {_id: '$groupKey'}}"),

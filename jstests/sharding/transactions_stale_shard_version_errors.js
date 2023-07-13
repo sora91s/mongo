@@ -41,11 +41,25 @@ enableStaleVersionAndSnapshotRetriesWithinTransactions(st);
 // Disable the best-effort recipient metadata refresh after migrations to simplify simulating
 // stale shard version errors.
 assert.commandWorked(st.rs0.getPrimary().adminCommand(
-    {configureFailPoint: "migrationRecipientFailPostCommitRefresh", mode: "alwaysOn"}));
+    {configureFailPoint: "doNotRefreshRecipientAfterCommit", mode: "alwaysOn"}));
 assert.commandWorked(st.rs1.getPrimary().adminCommand(
-    {configureFailPoint: "migrationRecipientFailPostCommitRefresh", mode: "alwaysOn"}));
+    {configureFailPoint: "doNotRefreshRecipientAfterCommit", mode: "alwaysOn"}));
 assert.commandWorked(st.rs2.getPrimary().adminCommand(
-    {configureFailPoint: "migrationRecipientFailPostCommitRefresh", mode: "alwaysOn"}));
+    {configureFailPoint: "doNotRefreshRecipientAfterCommit", mode: "alwaysOn"}));
+
+// TODO SERVER-60415: After 6.0 is released, no longer accept FailPointSetFailed errors
+assert.commandWorkedOrFailedWithCode(
+    st.rs0.getPrimary().adminCommand(
+        {configureFailPoint: "migrationRecipientFailPostCommitRefresh", mode: "alwaysOn"}),
+    ErrorCodes.FailPointSetFailed);
+assert.commandWorkedOrFailedWithCode(
+    st.rs1.getPrimary().adminCommand(
+        {configureFailPoint: "migrationRecipientFailPostCommitRefresh", mode: "alwaysOn"}),
+    ErrorCodes.FailPointSetFailed);
+assert.commandWorkedOrFailedWithCode(
+    st.rs2.getPrimary().adminCommand(
+        {configureFailPoint: "migrationRecipientFailPostCommitRefresh", mode: "alwaysOn"}),
+    ErrorCodes.FailPointSetFailed);
 
 // Shard two collections in the same database, each with 2 chunks, [minKey, 0), [0, maxKey),
 // with one document each, all on Shard0.

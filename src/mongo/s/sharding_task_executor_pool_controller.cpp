@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kConnectionPool
 
 #include "mongo/platform/basic.h"
 
@@ -36,9 +37,6 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/is_mongos.h"
 #include "mongo/s/sharding_task_executor_pool_controller.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kConnectionPool
-
 
 namespace mongo {
 
@@ -59,13 +57,17 @@ void emplaceOrInvariant(Map&& map, Args&&... args) noexcept {
 }
 
 bool isConfigServer(const ShardRegistry* sr, const HostAndPort& peer) {
-    return sr && sr->isConfigServer(peer);
+    if (!sr)
+        return false;
+    auto shard = sr->getShardForHostNoReload(peer);
+    if (!shard)
+        return false;
+    return shard->isConfig();
 }
 
 }  // namespace
 
-Status ShardingTaskExecutorPoolController::validateHostTimeout(const int& hostTimeoutMS,
-                                                               const boost::optional<TenantId>&) {
+Status ShardingTaskExecutorPoolController::validateHostTimeout(const int& hostTimeoutMS) {
     auto toRefreshTimeoutMS = gParameters.toRefreshTimeoutMS.load();
     auto pendingTimeoutMS = gParameters.pendingTimeoutMS.load();
     if (hostTimeoutMS >= (toRefreshTimeoutMS + pendingTimeoutMS)) {
@@ -79,8 +81,7 @@ Status ShardingTaskExecutorPoolController::validateHostTimeout(const int& hostTi
     return Status(ErrorCodes::BadValue, msg);
 }
 
-Status ShardingTaskExecutorPoolController::validatePendingTimeout(
-    const int& pendingTimeoutMS, const boost::optional<TenantId>&) {
+Status ShardingTaskExecutorPoolController::validatePendingTimeout(const int& pendingTimeoutMS) {
     auto toRefreshTimeoutMS = gParameters.toRefreshTimeoutMS.load();
     if (pendingTimeoutMS < toRefreshTimeoutMS) {
         return Status::OK();

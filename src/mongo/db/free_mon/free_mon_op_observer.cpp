@@ -72,11 +72,12 @@ repl::OpTime FreeMonOpObserver::onDropCollection(OperationContext* opCtx,
 }
 
 void FreeMonOpObserver::onInserts(OperationContext* opCtx,
-                                  const CollectionPtr& coll,
+                                  const NamespaceString& nss,
+                                  const UUID& uuid,
                                   std::vector<InsertStatement>::const_iterator begin,
                                   std::vector<InsertStatement>::const_iterator end,
                                   bool fromMigrate) {
-    if (coll->ns() != NamespaceString::kServerConfigurationNamespace) {
+    if (nss != NamespaceString::kServerConfigurationNamespace) {
         return;
     }
 
@@ -100,7 +101,7 @@ void FreeMonOpObserver::onInserts(OperationContext* opCtx,
 }
 
 void FreeMonOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArgs& args) {
-    if (args.coll->ns() != NamespaceString::kServerConfigurationNamespace) {
+    if (args.nss != NamespaceString::kServerConfigurationNamespace) {
         return;
     }
 
@@ -118,10 +119,11 @@ void FreeMonOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateEntry
 }
 
 void FreeMonOpObserver::aboutToDelete(OperationContext* opCtx,
-                                      const CollectionPtr& coll,
+                                      const NamespaceString& nss,
+                                      const UUID& uuid,
                                       const BSONObj& doc) {
 
-    bool isFreeMonDoc = (coll->ns() == NamespaceString::kServerConfigurationNamespace) &&
+    bool isFreeMonDoc = (nss == NamespaceString::kServerConfigurationNamespace) &&
         (doc["_id"].str() == FreeMonStorage::kFreeMonDocIdKey);
 
     // Set a flag that indicates whether the document to be delete is the free monitoring state
@@ -130,10 +132,11 @@ void FreeMonOpObserver::aboutToDelete(OperationContext* opCtx,
 }
 
 void FreeMonOpObserver::onDelete(OperationContext* opCtx,
-                                 const CollectionPtr& coll,
+                                 const NamespaceString& nss,
+                                 const UUID& uuid,
                                  StmtId stmtId,
                                  const OplogDeleteEntryArgs& args) {
-    if (coll->ns() != NamespaceString::kServerConfigurationNamespace) {
+    if (nss != NamespaceString::kServerConfigurationNamespace) {
         return;
     }
 

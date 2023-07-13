@@ -39,7 +39,7 @@
 #include "mongo/db/auth/privilege_format.h"
 #include "mongo/db/auth/resource_pattern.h"
 #include "mongo/db/auth/user.h"
-#include "mongo/db/database_name.h"
+#include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/tenant_id.h"
 
@@ -105,6 +105,14 @@ public:
     static constexpr StringData PASSWORD_FIELD_NAME = "pwd"_sd;
     static constexpr StringData V1_USER_NAME_FIELD_NAME = "user"_sd;
     static constexpr StringData V1_USER_SOURCE_FIELD_NAME = "userSource"_sd;
+
+    static const NamespaceString adminCommandNamespace;
+    static const NamespaceString rolesCollectionNamespace;
+    static const NamespaceString usersBackupCollectionNamespace;
+    static const NamespaceString usersCollectionNamespace;
+    static const NamespaceString versionCollectionNamespace;
+    static const NamespaceString defaultTempUsersCollectionNamespace;  // for mongorestore
+    static const NamespaceString defaultTempRolesCollectionNamespace;  // for mongorestore
 
     /**
      * Status to be returned when authentication fails. Being consistent about our returned Status
@@ -179,11 +187,6 @@ public:
     virtual bool isAuthEnabled() const = 0;
 
     /**
-     * Returns whether a schema version document exists.
-     */
-    virtual Status hasValidAuthSchemaVersionDocumentForInitialSync(OperationContext* opCtx) = 0;
-
-    /**
      * Returns via the output parameter "version" the version number of the authorization
      * system.  Returns Status::OK() if it was able to successfully fetch the current
      * authorization version.  If it has problems fetching the most up to date version it
@@ -218,12 +221,6 @@ public:
     virtual Status getUserDescription(OperationContext* opCtx,
                                       const UserName& userName,
                                       BSONObj* result) = 0;
-
-    /**
-     * Returns true if there exists at least one user document in the system. If `tenantId` is set,
-     * only looks for users associated with `tenantId`.
-     */
-    virtual bool hasUser(OperationContext* opCtx, const boost::optional<TenantId>& tenantId) = 0;
 
     /**
      * Delegates method call to the underlying AuthzManagerExternalState.
@@ -301,21 +298,21 @@ public:
      * Delegates method call to the underlying AuthzManagerExternalState.
      */
     virtual Status getRoleDescriptionsForDB(OperationContext* opCtx,
-                                            const DatabaseName& dbname,
+                                            StringData dbname,
                                             PrivilegeFormat privilegeFormat,
                                             AuthenticationRestrictionsFormat,
                                             bool showBuiltinRoles,
                                             std::vector<BSONObj>* result) = 0;
 
     /**
-     * Returns a Status or UserHandle for the given userRequest. If the user cache already has a
+     * Returns a Status or UserHandle for the given userName. If the user cache already has a
      * user object for this user, it returns a handle from the cache, otherwise it reads the
-     * user document from the AuthzManagerExternalState - this may block for a long time.
+     * user document from disk or LDAP - this may block for a long time.
      *
      * The returned user may be invalid by the time the caller gets access to it.
      */
     virtual StatusWith<UserHandle> acquireUser(OperationContext* opCtx,
-                                               const UserRequest& userRequest) = 0;
+                                               const UserName& userName) = 0;
 
     /**
      * Validate the ID associated with a known user while refreshing session cache.
@@ -329,16 +326,14 @@ public:
     virtual void invalidateUserByName(OperationContext* opCtx, const UserName& user) = 0;
 
     /**
-     * Invalidates all users whose source is "dbname" and removes them from the user cache.
+     * Invalidates all users who's source is "dbname" and removes them from the user cache.
      */
-    virtual void invalidateUsersFromDB(OperationContext* opCtx, const DatabaseName& dbname) = 0;
+    virtual void invalidateUsersFromDB(OperationContext* opCtx, StringData dbname) = 0;
 
     /**
-     * Invalidate all users associated with a given tenant,
-     * or entire cache if tenant == boost::none.
+     * Invalidate all users associated with a given tenant.
      */
-    virtual void invalidateUsersByTenant(OperationContext* opCtx,
-                                         const boost::optional<TenantId>& tenant) = 0;
+    virtual void invalidateUsersByTenant(OperationContext* opCtx, const TenantId& tenant) = 0;
 
     /**
      * Retrieves all users whose source is "$external" and checks if the corresponding user in the
@@ -358,6 +353,13 @@ public:
      * Invalidates all of the contents of the user cache.
      */
     virtual void invalidateUserCache(OperationContext* opCtx) = 0;
+
+    /**
+     * Sets the list of users that should be pinned in memory.
+     *
+     * This will start the PinnedUserTracker thread if it hasn't been started already.
+     */
+    virtual void updatePinnedUsersList(std::vector<UserName> names) = 0;
 
     /**
      * Hook called by replication code to let the AuthorizationManager observe changes

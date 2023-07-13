@@ -40,6 +40,8 @@
 #include "mongo/util/static_immortal.h"
 
 namespace mongo {
+    
+void initMyProcessinfo();
 
 class ProcessInfo {
 public:
@@ -113,13 +115,6 @@ public:
     }
 
     /**
-     * Get the number of CPU sockets
-     */
-    static unsigned getNumCpuSockets() {
-        return sysInfo().numCpuSockets;
-    }
-
-    /**
      * Get the number of cores available. Make a best effort to get the cores for this process.
      * If that information is not available, get the total number of CPUs.
      */
@@ -149,16 +144,6 @@ public:
     }
 
     /**
-     * Get the number of NUMA nodes if NUMA is enabled, or 1 otherwise.
-     */
-    static unsigned long getNumNumaNodes() {
-        if (sysInfo().hasNuma) {
-            return sysInfo().numNumaNodes;
-        }
-        return 1;
-    }
-
-    /**
      * Determine if we need to workaround slow msync performance on Illumos/Solaris
      */
     static bool preferMsyncOverFSync() {
@@ -169,7 +154,7 @@ public:
      * Get extra system stats
      */
     void appendSystemDetails(BSONObjBuilder& details) const {
-        details.appendElements(sysInfo()._extraStats);
+        details.append(StringData("extra"), sysInfo()._extraStats.copy());
     }
 
     /**
@@ -197,11 +182,9 @@ private:
         unsigned long long memLimit;
         unsigned numCores;
         unsigned numPhysicalCores;
-        unsigned numCpuSockets;
         unsigned long long pageSize;
         std::string cpuArch;
         bool hasNuma;
-        unsigned numNumaNodes;
         BSONObj _extraStats;
 
         // On non-Solaris (ie, Linux, Darwin, *BSD) kernels, prefer msync.
@@ -217,10 +200,8 @@ private:
               memLimit(0),
               numCores(0),
               numPhysicalCores(0),
-              numCpuSockets(0),
               pageSize(0),
               hasNuma(false),
-              numNumaNodes(0),
               preferMsyncOverFSync(true) {
             // populate SystemInfo during construction
             collectSystemInfo();
@@ -250,6 +231,8 @@ private:
     };
 
     ProcessId _pid;
+
+    static bool checkNumaEnabled();
 
     static const SystemInfo& sysInfo() {
         static ProcessInfo::SystemInfo systemInfo;

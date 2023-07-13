@@ -65,7 +65,7 @@ public:
                        StringData identName,
                        const CollectionOptions& options,
                        KeyFormat keyFormat)
-        : RecordStore(ns, identName, options.capped), _options(options), _keyFormat(keyFormat) {
+        : RecordStore(ns, identName), _options(options), _keyFormat(keyFormat) {
         _numInserts = 0;
         _dummy = BSON("_id" << 1);
     }
@@ -73,6 +73,8 @@ public:
     virtual const char* name() const {
         return "devnull";
     }
+
+    virtual void setCappedCallback(CappedCallback*) {}
 
     virtual long long dataSize(OperationContext* opCtx) const {
         return 0;
@@ -131,9 +133,7 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    virtual void printRecordMetadata(OperationContext* opCtx,
-                                     const RecordId& recordId,
-                                     std::set<Timestamp>* recordTimestamps) const {
+    virtual void printRecordMetadata(OperationContext* opCtx, const RecordId& recordId) const {
         MONGO_UNREACHABLE;
     }
 
@@ -146,18 +146,7 @@ public:
         return Status::OK();
     }
 
-    Status doRangeTruncate(OperationContext* opCtx,
-                           const RecordId& minRecordId,
-                           const RecordId& maxRecordId,
-                           int64_t hintDataSizeDiff,
-                           int64_t hintNumRecordsDiff) override {
-        return Status::OK();
-    }
-
-    void doCappedTruncateAfter(OperationContext* opCtx,
-                               const RecordId& end,
-                               bool inclusive,
-                               const AboutToDeleteRecordCallback& aboutToDelete) override {}
+    void doCappedTruncateAfter(OperationContext* opCtx, RecordId end, bool inclusive) override {}
 
     virtual void appendNumericCustomStats(OperationContext* opCtx,
                                           BSONObjBuilder* result,
@@ -168,14 +157,6 @@ public:
     virtual void updateStatsAfterRepair(OperationContext* opCtx,
                                         long long numRecords,
                                         long long dataSize) {}
-
-    virtual void reserveRecordIds(OperationContext* opCtx,
-                                  std::vector<RecordId>* out,
-                                  size_t nRecords) final {
-        for (size_t i = 0; i < nRecords; i++) {
-            out->push_back(RecordId(i));
-        }
-    };
 
 protected:
     void waitForAllEarlierOplogWritesToBeVisibleImpl(OperationContext* opCtx) const override {}
@@ -216,8 +197,7 @@ public:
 
     virtual Status insert(OperationContext* opCtx,
                           const KeyString::Value& keyString,
-                          bool dupsAllowed,
-                          IncludeDuplicateRecordId includeDuplicateRecordId) {
+                          bool dupsAllowed) {
         return Status::OK();
     }
 
@@ -234,9 +214,9 @@ public:
         return boost::none;
     }
 
-    virtual IndexValidateResults validate(OperationContext* opCtx, bool full) const {
-        return IndexValidateResults{};
-    }
+    virtual void fullValidate(OperationContext* opCtx,
+                              long long* numKeysOut,
+                              IndexValidateResults* fullResults) const {}
 
     virtual bool appendCustomStats(OperationContext* opCtx,
                                    BSONObjBuilder* output,
@@ -255,13 +235,6 @@ public:
     virtual bool isEmpty(OperationContext* opCtx) {
         return true;
     }
-
-    virtual int64_t numEntries(OperationContext* opCtx) const {
-        return 0;
-    }
-
-    virtual void printIndexEntryMetadata(OperationContext* opCtx,
-                                         const KeyString::Value& keyString) const {}
 
     virtual std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* opCtx,
                                                                    bool isForward) const {

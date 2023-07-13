@@ -44,18 +44,15 @@ namespace mongo {
 class PathMatchExpression : public MatchExpression {
 public:
     PathMatchExpression(MatchType matchType,
-                        boost::optional<StringData> path,
+                        StringData path,
                         ElementPath::LeafArrayBehavior leafArrBehavior,
                         ElementPath::NonLeafArrayBehavior nonLeafArrayBehavior,
                         clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : MatchExpression(matchType, std::move(annotation)),
-          _elementPath(path ? boost::optional<ElementPath>(
-                                  ElementPath(*path, leafArrBehavior, nonLeafArrayBehavior))
-                            : boost::none) {}
+          _elementPath(path, leafArrBehavior, nonLeafArrayBehavior) {}
 
     bool matches(const MatchableDocument* doc, MatchDetails* details = nullptr) const final {
-        invariant(_elementPath);
-        MatchableDocument::IteratorHolder cursor(doc, &*_elementPath);
+        MatchableDocument::IteratorHolder cursor(doc, &_elementPath);
         while (cursor->more()) {
             ElementIterator::Context e = cursor->next();
             if (!matchesSingleElement(e.element(), details)) {
@@ -69,25 +66,12 @@ public:
         return false;
     }
 
-    /**
-     * Gets the path that the expression applies to. Note that this returns an empty string for
-     * empty path as well as no path cases. optPath() should be preferred in order to
-     * distinguish between the two.
-     */
-    StringData path() const override final {
-        return _elementPath ? _elementPath->fieldRef().dottedField() : "";
+    const StringData path() const override final {
+        return _elementPath.fieldRef().dottedField();
     }
 
     const FieldRef* fieldRef() const override final {
-        return _elementPath ? &(_elementPath->fieldRef()) : nullptr;
-    }
-
-    /**
-     * Gets the path that the expression applies to. If the expression does not apply to a specific
-     * path, returns boost::none.
-     */
-    boost::optional<StringData> optPath() const {
-        return _elementPath ? boost::optional<StringData>(path()) : boost::none;
+        return &(_elementPath.fieldRef());
     }
 
     /**
@@ -95,8 +79,7 @@ public:
      * that there's no lifetime requirements for the string which 'path' points into.
      */
     void setPath(StringData path) {
-        invariant(_elementPath);
-        _elementPath->reset(path);
+        _elementPath.reset(path);
     }
 
     /**
@@ -104,24 +87,11 @@ public:
      * path. Each pair in 'renameList' specifies a path prefix that should be renamed (as the first
      * element) and the path components that should replace the renamed prefix (as the second
      * element).
-     *
-     * Returns whether there is any attempted but failed to rename. This case can happen when any
-     * renamed path component is part of sub-fields. For example, expr = {x: {$eq: {y: 3}}} and
-     * renames = {{"x.y", "a.b"}}. We should be able to rename 'x' and 'y' to 'a' and 'b'
-     * respectively but due to the current limitation of the algorithm, we cannot rename such match
-     * expressions.
-     *
-     * TODO SERVER-74298 As soon as we implement SERVER-74298, the return value might not be
-     * necessary any more.
      */
-    bool applyRename(const StringMap<std::string>& renameList) {
-        if (!_elementPath) {
-            return false;
-        }
-
+    void applyRename(const StringMap<std::string>& renameList) {
         size_t renamesFound = 0u;
         std::string rewrittenPath;
-        for (const auto& rename : renameList) {
+        for (auto rename : renameList) {
             if (rename.first == path()) {
                 rewrittenPath = rename.second;
 
@@ -129,7 +99,7 @@ public:
             }
 
             FieldRef prefixToRename(rename.first);
-            const auto& pathFieldRef = _elementPath->fieldRef();
+            const auto& pathFieldRef = _elementPath.fieldRef();
             if (prefixToRename.isPrefixOf(pathFieldRef)) {
                 // Get the 'pathTail' by chopping off the 'prefixToRename' path components from the
                 // beginning of the 'pathFieldRef' path.
@@ -140,10 +110,6 @@ public:
                 rewrittenPath = str::stream() << rename.second << "." << pathTail.toString();
 
                 ++renamesFound;
-            } else if (pathFieldRef.isPrefixOf(prefixToRename)) {
-                // TODO SERVER-74298 Implement renaming by each path component instead of
-                // incrementing 'attemptedButFailedRenames'.
-                return true;
             }
         }
 
@@ -154,27 +120,13 @@ public:
             // name.
             setPath(rewrittenPath);
         }
-
-        return false;
     }
 
-    void serialize(BSONObjBuilder* out, SerializationOptions opts) const override {
-        // TODO SERVER-73678 do we need to pass 'includePath' or other options to
-        // `getSerializedRightHandSide()` here? I don't think we need 'includePath' for
-        // LeafMatchExpression subclasses, but the class comment on PathMatchExpression leaves me a
-        // bit confused over 'includePath' semantics here. Before we changed anything for query
-        // shape, it looks like 'includePath' was not forwarded through, so it's either not needed
-        // or there was a pre-existing bug.
-        auto&& rhs = getSerializedRightHandSide(opts);
-        if (opts.includePath) {
-            if (opts.redactFieldNames) {
-                auto redactedFieldName = opts.redactFieldNamesStrategy(path());
-                out->append(redactedFieldName, rhs);
-            } else {
-                out->append(path(), rhs);
-            }
+    void serialize(BSONObjBuilder* out, bool includePath) const override {
+        if (includePath) {
+            out->append(path(), getSerializedRightHandSide());
         } else {
-            out->appendElements(rhs);
+            out->appendElements(getSerializedRightHandSide());
         }
     }
 
@@ -183,17 +135,32 @@ public:
      * serialization of PathMatchExpression in cases where we do not want to serialize the path in
      * line with the expression. For example {x: {$not: {$eq: 1}}}, where $eq is the
      * PathMatchExpression.
-     *
-     * Serialization options should be respected for any descendent expressions. Eg, if the
-     * 'replacementForLiteralArgs' option is set, then any literal argument (like the number 1 in
-     * the example above), should be replaced with this string. 'literal' here is in contrast to
-     * another expression, if that is possible syntactically.
      */
-    virtual BSONObj getSerializedRightHandSide(SerializationOptions opts = {}) const = 0;
+    virtual BSONObj getSerializedRightHandSide() const = 0;
+
+protected:
+    void _doAddDependencies(DepsTracker* deps) const final {
+        if (!path().empty()) {
+            // If a path contains a numeric component then it should not be naively added to the
+            // projection, since we do not support projecting specific array indices. Instead we add
+            // the prefix of the path up to the numeric path component. Note that we start at path
+            // component 1 rather than 0, because a numeric path component at the root of the
+            // document can only ever be a field name, never an array index.
+            FieldRef fieldRef(path());
+            for (size_t i = 1; i < fieldRef.numParts(); ++i) {
+                if (fieldRef.isNumericPathComponentStrict(i)) {
+                    auto prefix = fieldRef.dottedSubstring(0, i);
+                    deps->fields.insert(prefix.toString());
+                    return;
+                }
+            }
+
+            deps->fields.insert(path().toString());
+        }
+    }
 
 private:
     // ElementPath holds a FieldRef, which owns the underlying path string.
-    // May be boost::none if this MatchExpression does not apply to a specific path.
-    boost::optional<ElementPath> _elementPath;
+    ElementPath _elementPath;
 };
 }  // namespace mongo

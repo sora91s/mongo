@@ -40,57 +40,47 @@
 #include "mongo/util/hierarchical_acquisition.h"
 
 namespace mongo {
+
+void initMyServiceExecutorSynchronous();
+
 namespace transport {
 
-/** Transitional for differential benchmarking of ServiceExecutorSynchronous refactor */
-#define TRANSITIONAL_SERVICE_EXECUTOR_SYNCHRONOUS_HAS_RESERVE 0
-
 /**
- * Creates a fresh worker thread for each top-level scheduled task. Any tasks
- * scheduled during the execution of that top-level task as it runs on such a
- * worker thread are pushed to the queue of that worker thread.
- *
- * Thus, the top-level task is expected to represent a chain of operations, each
- * of which schedules its successor before returning. The entire chain of
- * operations, and nothing else, executes on the same worker thread.
+ * The passthrough service executor emulates a thread per connection.
+ * Each connection has its own worker thread where jobs get scheduled.
  */
 class ServiceExecutorSynchronous final : public ServiceExecutor {
 public:
-    /** Returns the ServiceExecutorSynchronous decoration on `ctx`. */
+    explicit ServiceExecutorSynchronous(ServiceContext* ctx);
+
     static ServiceExecutorSynchronous* get(ServiceContext* ctx);
-
-    explicit ServiceExecutorSynchronous(ServiceContext*);
-
-    ~ServiceExecutorSynchronous();
 
     Status start() override;
     Status shutdown(Milliseconds timeout) override;
+    Status scheduleTask(Task task, ScheduleFlags flags) override;
 
-    std::unique_ptr<TaskRunner> makeTaskRunner() override;
+    size_t getRunningThreads() const override {
+        return _numRunningWorkerThreads.loadRelaxed();
+    }
 
-    size_t getRunningThreads() const override;
+    void runOnDataAvailable(const SessionHandle& session,
+                            OutOfLineExecutor::Task onCompletionCallback) override;
 
     void appendStats(BSONObjBuilder* bob) const override;
 
 private:
-    class SharedState;
+    static thread_local std::deque<Task> _localWorkQueue;
+    static thread_local int _localRecursionDepth;
+    static thread_local int64_t _localThreadIdleCounter;
 
-    /**
-     * The behavior of `schedule` depends on whether the calling thread is a
-     * worker thread spawned by a previous `schedule` call.
-     *
-     * If a nonworker thread schedules a task, a worker thread is spawned, and
-     * the task is transferred to the new worker thread's queue.
-     *
-     * If a worker thread schedules a task, the task is pushed to the back of its
-     * queue. The worker thread exits when the queue becomes empty.
-     */
-    void _schedule(Task task);
+    AtomicWord<bool> _stillRunning{false};
 
-    void _runOnDataAvailable(const std::shared_ptr<Session>& session, Task onCompletionCallback);
+    mutable Mutex _shutdownMutex = MONGO_MAKE_LATCH(HierarchicalAcquisitionLevel(0),
+                                                    "ServiceExecutorSynchronous::_shutdownMutex");
+    std::shared_ptr<stdx::condition_variable> _shutdownCondition;
 
-
-    std::shared_ptr<SharedState> _sharedState;
+    AtomicWord<size_t> _numRunningWorkerThreads{0};
+    size_t _numHardwareCores{0};
 };
 
 }  // namespace transport

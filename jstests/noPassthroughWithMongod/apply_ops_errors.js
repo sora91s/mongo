@@ -52,7 +52,6 @@ var res = db.runCommand({
 assert.eq(2, res.applied);
 assert(res.code);
 assert(res.errmsg);
-// applyOps is non-atomic
-assert.eq([true, false], res.results);
+assert.eq([false, false], res.results);
 assert.eq(0, res.ok);
 })();

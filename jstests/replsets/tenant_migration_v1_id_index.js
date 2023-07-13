@@ -3,6 +3,7 @@
  * maintained on the recipient after migration.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -11,12 +12,15 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 
 const tenantMigrationTest = new TenantMigrationTest({name: jsTestName()});
 
-const tenantId = ObjectId().str;
+const tenantId = 'testTenantId';
 const migrationOpts = {
     migrationIdString: extractUUIDFromObject(UUID()),
     tenantId: tenantId
@@ -59,3 +63,4 @@ TenantMigrationTest.assertCommitted(tenantMigrationTest.waitForMigrationToComple
 assert.commandWorked(tenantMigrationTest.forgetMigration(migrationOpts.migrationIdString));
 
 tenantMigrationTest.stop();
+})();

@@ -37,8 +37,9 @@ namespace mongo {
 /**
  * Part of the change stream API machinery used to look up the pre-image of a document.
  *
- * The identifier of pre-image is in "preImageId" field of the incoming document. The pre-image is
- * set to "fullDocumentBeforeChange" field of the returned document.
+ * After a document that should have its pre-image included is transformed from the oplog,
+ * its "fullDocumentBeforeChange" field shall be the optime of the noop oplog entry containing the
+ * pre-image. This stage replaces that field with the actual pre-image document.
  */
 class DocumentSourceChangeStreamAddPreImage final : public DocumentSource {
 public:
@@ -106,8 +107,6 @@ public:
         // whether metadata is available or needed.
         return DepsTracker::State::SEE_NEXT;
     }
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
 

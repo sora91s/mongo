@@ -8,7 +8,8 @@
  * @tags: [
  *   requires_sharding,
  *   assumes_balancer_on,
- *   antithesis_incompatible,
+ *   featureFlagBalanceAccordingToDataSize,
+ *   requires_fcv_60,
  *  ]
  */
 
@@ -52,29 +53,10 @@ var $config = (function() {
         },
     };
 
-    let defaultBalancerShouldReturnRandomMigrations;
-
     /*
      * Create sharded collections with random maxChunkSizeMB (betwen 1MB and 10MB)
      */
     let setup = function(db, collName, cluster) {
-        cluster.executeOnConfigNodes((db) => {
-            defaultBalancerShouldReturnRandomMigrations =
-                assert
-                    .commandWorked(db.adminCommand({
-                        getParameter: 1,
-                        'failpoint.balancerShouldReturnRandomMigrations': 1
-                    }))['failpoint.balancerShouldReturnRandomMigrations']
-                    .mode;
-
-            // If the failpoint is enabled on this suite, disable it because this test relies on the
-            // balancer taking correct decisions.
-            if (defaultBalancerShouldReturnRandomMigrations === 1) {
-                assert.commandWorked(db.adminCommand(
-                    {configureFailPoint: 'balancerShouldReturnRandomMigrations', mode: 'off'}));
-            }
-        });
-
         const mongos = cluster.getDB('config').getMongo();
         const shardNames = Object.keys(cluster.getSerializedCluster().shards);
         const numShards = shardNames.length;
@@ -131,19 +113,6 @@ var $config = (function() {
 
             assert(testedAtLeastOneCollection);
         }
-
-        cluster.executeOnConfigNodes((db) => {
-            // Reset the failpoint to its original value.
-            if (defaultBalancerShouldReturnRandomMigrations === 1) {
-                defaultBalancerShouldReturnRandomMigrations =
-                    assert
-                        .commandWorked(db.adminCommand({
-                            configureFailPoint: 'balancerShouldReturnRandomMigrations',
-                            mode: 'alwaysOn'
-                        }))
-                        .was;
-            }
-        });
     };
 
     let transitions = {insert: {insert: 1.0}};

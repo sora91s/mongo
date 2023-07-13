@@ -6,7 +6,7 @@ from buildscripts.resmokelib.powercycle import powercycle, powercycle_constants
 POWERCYCLE_TASKS_CONFIG = "buildscripts/resmokeconfig/powercycle/powercycle_tasks.yml"
 
 
-class PowercycleTaskConfig:
+class PowercycleTaskConfig:  # pylint: disable=too-many-instance-attributes
     """Class represents single task in powercycle tasks config."""
 
     def __init__(self, task_yaml):

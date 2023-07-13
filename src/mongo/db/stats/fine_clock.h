@@ -30,7 +30,7 @@
 #ifndef DB_STATS_FINE_CLOCK_HEADER
 #define DB_STATS_FINE_CLOCK_HEADER
 
-#include <ctime>  // struct timespec
+#include <time.h>  // struct timespec
 
 namespace mongo {
 

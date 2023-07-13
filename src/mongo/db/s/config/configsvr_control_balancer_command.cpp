@@ -70,19 +70,18 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::internal)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::internal)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& unusedDbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
         uassert(ErrorCodes::InternalError,
@@ -112,7 +111,6 @@ private:
         auto balancerConfig = Grid::get(opCtx)->getBalancerConfiguration();
         uassertStatusOK(balancerConfig->setBalancerMode(opCtx, BalancerSettingsType::kFull));
         uassertStatusOK(balancerConfig->enableAutoSplit(opCtx, true));
-        uassertStatusOK(balancerConfig->changeAutoMergeSettings(opCtx, true));
         Balancer::get(opCtx)->notifyPersistedBalancerSettingsChanged(opCtx);
         ShardingLogging::get(opCtx)->logAction(opCtx, "balancer.start", "", BSONObj()).ignore();
     }
@@ -132,7 +130,6 @@ private:
         auto balancerConfig = Grid::get(opCtx)->getBalancerConfiguration();
         uassertStatusOK(balancerConfig->setBalancerMode(opCtx, BalancerSettingsType::kOff));
         uassertStatusOK(balancerConfig->enableAutoSplit(opCtx, false));
-        uassertStatusOK(balancerConfig->changeAutoMergeSettings(opCtx, false));
 
         Balancer::get(opCtx)->notifyPersistedBalancerSettingsChanged(opCtx);
         Balancer::get(opCtx)->joinCurrentRound(opCtx);

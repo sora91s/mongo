@@ -11,6 +11,7 @@
 
 load("jstests/replsets/rslib.js");  // For setLogVerbosity()
 load("jstests/libs/fail_point_util.js");
+load("jstests/libs/logv2_helpers.js");
 
 // Verify the 'find' command received by the primary includes a resume token request.
 function checkHasRequestResumeToken() {
@@ -26,7 +27,11 @@ function checkNoResumeAfter() {
 
 // Verify the 'find' command received by the primary has resumeAfter set with the given recordId.
 function checkHasResumeAfter(recordId) {
-    checkLog.contains(primary, `"$_resumeAfter":{"$recordId":${recordId}}`);
+    if (isJsonLogNoConn()) {
+        checkLog.contains(primary, `"$_resumeAfter":{"$recordId":${recordId}}`);
+    } else {
+        checkLog.contains(primary, "$_resumeAfter: { $recordId: " + recordId + " }");
+    }
 }
 
 const beforeRetryFailPointName = "hangBeforeRetryingClonerStage";

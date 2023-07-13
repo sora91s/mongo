@@ -101,29 +101,6 @@ inline std::error_code lastSystemError() {
 }
 
 /**
- * Returns `ec.message()`, possibly augmented to disambiguate unknowns.
- *
- * In libstdc++, the unknown error messages include the number. Windows and
- * Libc++ do not include it. So if the code is an unknown, it is replaced with the
- * message that libstdc++ would have given, which is the expanded format
- * expression:
- *     `"Unknown error {}"_format(ec.value())`
- */
-std::string errorMessage(std::error_code ec);
-
-/**
- * A category for `getaddrinfo` or `getnameinfo` (i.e. the netdb.h library)
- * results. Uses `gai_error` on Unix systems. On Windows, these errors are
- * compatible with the system error space.
- */
-const std::error_category& addrInfoCategory();
-
-/** Wrap `e` in a `std::error_code` with `addrInfoCategory`. */
-inline std::error_code addrInfoError(int e) {
-    return std::error_code(e, addrInfoCategory());
-}
-
-/**
  * Portable wrapper for socket API calls. On POSIX platforms this is just
  * `lastSystemError`. On Windows, Winsock API callers must query last error with
  * `WSAGetLastError` instead of `GetLastError`. The Winsock errors can use the
@@ -135,6 +112,27 @@ inline std::error_code lastSocketError() {
 #else
     return lastSystemError();
 #endif
+}
+
+/**
+ * Returns `ec.message()`, possibly augmented to disambiguate unknowns.
+ *
+ * In libstdc++, the unknown error messages include the number. Windows and
+ * Libc++ do not include it. So if the code is an unknown, it is replaced with the
+ * message that libstdc++ would have given, which is the expanded format
+ * expression:
+ *     `"Unknown error {}"_format(ec.value())`
+ */
+std::string errorMessage(std::error_code ec);
+
+/** A system error code's error message. */
+inline std::string errnoWithDescription(int e) {
+    return errorMessage(std::error_code{e, std::system_category()});
+}
+
+/** The last system error code's error message. */
+inline std::string errnoWithDescription() {
+    return errorMessage(lastSystemError());
 }
 
 }  // namespace mongo

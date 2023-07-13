@@ -14,14 +14,13 @@
 #include <boost/math/special_functions/factorials.hpp>
 #include <boost/math/special_functions/beta.hpp>
 #include <boost/math/policies/error_handling.hpp>
-#include <type_traits>
 
 namespace boost{ namespace math{
 
 template <class T, class Policy>
 T binomial_coefficient(unsigned n, unsigned k, const Policy& pol)
 {
-   static_assert(!std::is_integral<T>::value, "Type T must not be an integral type");
+   BOOST_STATIC_ASSERT(!boost::is_integral<T>::value);
    BOOST_MATH_STD_USING
    static const char* function = "boost::math::binomial_coefficient<%1%>(unsigned, unsigned)";
    if(k > n)

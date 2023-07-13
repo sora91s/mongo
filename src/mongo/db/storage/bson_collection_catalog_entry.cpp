@@ -33,7 +33,6 @@
 #include <numeric>
 
 #include "mongo/db/field_ref.h"
-#include "mongo/db/namespace_string.h"
 #include "mongo/db/server_options.h"
 
 namespace mongo {
@@ -87,7 +86,7 @@ void appendMultikeyPathsAsBytes(BSONObj keyPattern,
  */
 void parseMultikeyPathsFromBytes(BSONObj multikeyPathsObj, MultikeyPaths* multikeyPaths) {
     invariant(multikeyPaths);
-    for (const auto& elem : multikeyPathsObj) {
+    for (auto elem : multikeyPathsObj) {
         MultikeyComponents multikeyComponents;
         int len;
         const char* data = elem.binData(len);
@@ -217,7 +216,7 @@ bool BSONCollectionCatalogEntry::MetaData::eraseIndex(StringData name) {
 
 BSONObj BSONCollectionCatalogEntry::MetaData::toBSON(bool hasExclusiveAccess) const {
     BSONObjBuilder b;
-    b.append("ns", nss.toStringWithTenantId());
+    b.append("ns", ns);
     b.append("options", options.toBSON());
     {
         BSONArrayBuilder arr(b.subarrayStart("indexes"));
@@ -265,8 +264,7 @@ BSONObj BSONCollectionCatalogEntry::MetaData::toBSON(bool hasExclusiveAccess) co
 }
 
 void BSONCollectionCatalogEntry::MetaData::parse(const BSONObj& obj) {
-    nss = NamespaceString::parseFromStringExpectTenantIdInMultitenancyMode(
-        obj.getStringField("ns").toString());
+    ns = obj.getStringField("ns").toString();
 
     if (obj["options"].isABSONObj()) {
         options = uassertStatusOK(

@@ -18,7 +18,6 @@
  * Backup related WiredTiger files.
  */
 #define WT_BACKUP_TMP "WiredTiger.backup.tmp"  /* Backup tmp file */
-#define WT_EXPORT_BACKUP "WiredTiger.export"   /* Export backup file */
 #define WT_METADATA_BACKUP "WiredTiger.backup" /* Hot backup file */
 #define WT_LOGINCR_BACKUP "WiredTiger.ibackup" /* Log incremental backup */
 #define WT_LOGINCR_SRC "WiredTiger.isrc"       /* Log incremental source */
@@ -39,15 +38,11 @@
 #define WT_SYSTEM_CKPT_URI "system:checkpoint"                   /* Checkpoint timestamp URI */
 #define WT_SYSTEM_OLDEST_TS "oldest_timestamp"                   /* Oldest timestamp name */
 #define WT_SYSTEM_OLDEST_URI "system:oldest"                     /* Oldest timestamp URI */
-#define WT_SYSTEM_TS_TIME "checkpoint_time"                      /* Checkpoint wall time */
-#define WT_SYSTEM_TS_WRITE_GEN "write_gen"                       /* Checkpoint write generation */
 #define WT_SYSTEM_CKPT_SNAPSHOT "snapshots"                      /* List of snapshots */
 #define WT_SYSTEM_CKPT_SNAPSHOT_MIN "snapshot_min"               /* Snapshot minimum */
 #define WT_SYSTEM_CKPT_SNAPSHOT_MAX "snapshot_max"               /* Snapshot maximum */
 #define WT_SYSTEM_CKPT_SNAPSHOT_COUNT "snapshot_count"           /* Snapshot count */
 #define WT_SYSTEM_CKPT_SNAPSHOT_URI "system:checkpoint_snapshot" /* Checkpoint snapshot URI */
-#define WT_SYSTEM_CKPT_SNAPSHOT_TIME "checkpoint_time"           /* Checkpoint wall time */
-#define WT_SYSTEM_CKPT_SNAPSHOT_WRITE_GEN "write_gen"            /* Checkpoint write generation */
 #define WT_SYSTEM_BASE_WRITE_GEN_URI "system:checkpoint_base_write_gen" /* Base write gen URI */
 #define WT_SYSTEM_BASE_WRITE_GEN "base_write_gen"                       /* Base write gen name */
 
@@ -92,8 +87,8 @@ struct __wt_blkincr {
 #define WT_BLKINCR_FULL 0x1u  /* There is no checkpoint, always do full file */
 #define WT_BLKINCR_INUSE 0x2u /* This entry is active */
 #define WT_BLKINCR_VALID 0x4u /* This entry is valid */
-                              /* AUTOMATIC FLAG VALUE GENERATION STOP 8 */
-    uint8_t flags;
+                              /* AUTOMATIC FLAG VALUE GENERATION STOP 64 */
+    uint64_t flags;
 };
 
 /*
@@ -154,8 +149,6 @@ struct __wt_ckpt {
 
     WT_BLOCK_MODS backup_blocks[WT_BLKINCR_MAX];
 
-    WT_PAGE_STAT ps; /* Page information including row and byte counts */
-
     WT_TIME_AGGREGATE ta; /* Validity window */
 
     WT_ITEM addr; /* Checkpoint cookie string */
@@ -171,19 +164,4 @@ struct __wt_ckpt {
 #define WT_CKPT_UPDATE 0x10u     /* Checkpoint requires update */
                                  /* AUTOMATIC FLAG VALUE GENERATION STOP 32 */
     uint32_t flags;
-};
-
-/*
- * WT_CKPT_SNAPSHOT --
- *     Snapshot and timestamp information associated with a checkpoint.
- */
-struct __wt_ckpt_snapshot {
-    uint64_t ckpt_id;
-    uint64_t oldest_ts;
-    uint64_t stable_ts;
-    uint64_t snapshot_write_gen;
-    uint64_t snapshot_min;
-    uint64_t snapshot_max;
-    uint64_t *snapshot_txns;
-    uint32_t snapshot_count;
 };

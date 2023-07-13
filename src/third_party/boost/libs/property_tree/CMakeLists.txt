@@ -86,7 +86,7 @@ else()
     )
 endif()
 
-if(BOOST_PROPERTY_TREE_BUILD_TESTS)
+if(BUILD_TESTING)
     include(CTest)
     add_subdirectory(test)
 endif()

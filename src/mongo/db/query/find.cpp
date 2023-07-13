@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -36,6 +37,7 @@
 
 #include "mongo/base/error_codes.h"
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
@@ -62,13 +64,11 @@
 #include "mongo/db/stats/top.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/logv2/log.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -125,7 +125,7 @@ void endQueryOp(OperationContext* opCtx,
         CollectionQueryInfo::get(collection).notifyOfQuery(opCtx, collection, summaryStats);
     }
 
-    if (curOp->shouldDBProfile()) {
+    if (curOp->shouldDBProfile(opCtx)) {
         auto&& [stats, _] = explainer.getWinningPlanStats(ExplainOptions::Verbosity::kExecStats);
         curOp->debug().execStats = std::move(stats);
     }

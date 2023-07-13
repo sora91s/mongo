@@ -51,45 +51,47 @@ using ProjectionType = ABT;
 
 /**
  * Marker for node class (both logical and physical sub-classes).
- * A node not marked with either ExclusivelyLogicalNode or ExclusivelyPhysicalNode is considered to
- * be both a logical and a physical node (e.g. a filter node). It is invalid to mark a node with
- * both tags at the same time.
+ * A node not marked with either LogicalNode or PhysicalNode is considered to be both a logical and
+ * a physical node (e.g. a filter node). It is invalid to mark a node with both tags in the same
+ * time.
  */
 class Node {};
 
 /**
  * Marker for exclusively logical nodes.
  */
-class ExclusivelyLogicalNode : public Node {};
+class LogicalNode {};
 
 /**
  * Marker for exclusively physical nodes.
  */
-class ExclusivelyPhysicalNode : public Node {};
+class PhysicalNode {};
 
 inline void assertNodeSort(const ABT& e) {
-    tassert(6624009, "Node syntax sort expected", e.is<Node>());
+    if (!e.is<Node>()) {
+        uasserted(6624009, "Node syntax sort expected");
+    }
 }
 
 template <class T>
 inline constexpr bool canBeLogicalNode() {
     // Node which is not exclusively physical.
-    return std::is_base_of_v<Node, T> && !std::is_base_of_v<ExclusivelyPhysicalNode, T>;
+    return std::is_base_of_v<Node, T> && !std::is_base_of_v<PhysicalNode, T>;
 }
 
 template <class T>
 inline constexpr bool canBePhysicalNode() {
     // Node which is not exclusively logical.
-    return std::is_base_of_v<Node, T> && !std::is_base_of_v<ExclusivelyLogicalNode, T>;
+    return std::is_base_of_v<Node, T> && !std::is_base_of_v<LogicalNode, T>;
 }
 
 /**
  * Logical Scan node.
- * Represents scanning from an underlying collection and producing a single projection conceptually
- * containing the stream of BSON objects read from the collection.
+ * It defines scanning a collection with an optional projection name that contains the documents.
+ * The collection is specified via the scanDefName entry in the metadata.
  */
-class ScanNode final : public ABTOpFixedArity<1>, public ExclusivelyLogicalNode {
-    using Base = ABTOpFixedArity<1>;
+class ScanNode final : public Operator<ScanNode, 1>, public Node, public LogicalNode {
+    using Base = Operator<ScanNode, 1>;
 
 public:
     static constexpr const char* kDefaultCollectionNameSpec = "collectionName";
@@ -100,11 +102,12 @@ public:
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<0>();
-        tassert(6624010, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624010, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
     const ProjectionName& getProjectionName() const;
+    const ProjectionType& getProjection() const;
 
     const std::string& getScanDefName() const;
 
@@ -115,12 +118,15 @@ private:
 /**
  * Physical Scan node.
  * It defines scanning a collection with an optional projection name that contains the documents.
+ * The collection is specified via the scanDefName entry in the metadata.
  *
  * Optionally set of fields is specified to retrieve from the underlying collection, and expose as
  * projections.
  */
-class PhysicalScanNode final : public ABTOpFixedArity<1>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<1>;
+class PhysicalScanNode final : public Operator<PhysicalScanNode, 1>,
+                               public Node,
+                               public PhysicalNode {
+    using Base = Operator<PhysicalScanNode, 1>;
 
 public:
     PhysicalScanNode(FieldProjectionMap fieldProjectionMap,
@@ -131,7 +137,7 @@ public:
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<0>();
-        tassert(6624011, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624011, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
@@ -150,61 +156,41 @@ private:
 /**
  * Logical ValueScanNode.
  *
- * It originates a set of projections each with a fixed sequence of values, which is encoded as an
- * array. Each array element has as many entries as the number of projections plus one. If are
- * providing a row id, the first one must be of type RecordId.
+ * It originates a set of projections each with a fixed
+ * sequence of values, which is encoded as an array.
  */
-class ValueScanNode final : public ABTOpFixedArity<1>, public ExclusivelyLogicalNode {
-    using Base = ABTOpFixedArity<1>;
+class ValueScanNode final : public Operator<ValueScanNode, 1>, public Node, public LogicalNode {
+    using Base = Operator<ValueScanNode, 1>;
 
 public:
-    ValueScanNode(ProjectionNameVector projections,
-                  boost::optional<properties::LogicalProps> props);
-
-    /**
-     * Each element of 'valueArray' is an array itself and must have one entry corresponding to
-     * each of 'projections'.
-     */
-    ValueScanNode(ProjectionNameVector projections,
-                  boost::optional<properties::LogicalProps> props,
-                  ABT valueArray,
-                  bool hasRID);
+    ValueScanNode(ProjectionNameVector projections);
+    ValueScanNode(ProjectionNameVector projections, ABT valueArray);
 
     bool operator==(const ValueScanNode& other) const;
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<0>();
-        tassert(6624012, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624012, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
     const ABT& getValueArray() const;
     size_t getArraySize() const;
 
-    const boost::optional<properties::LogicalProps>& getProps() const;
-
-    bool getHasRID() const;
-
 private:
-    // Optional logical properties. Used as a seed during logical proeprties derivation.
-    const boost::optional<properties::LogicalProps> _props;
-
     const ABT _valueArray;
     size_t _arraySize;
-
-    // Indicates if the valueArray provides a column with RecordId elements.
-    const bool _hasRID;
 };
 
 /**
  * Physical CoScanNode.
  *
- * The "Co" in CoScan indicates that it is constant; conceptually it originates an infinite stream
- * of Nothing. A typical use case is to limit it to one document, and attach projections with a
- * following EvaluationNode(s).
+ * Conceptually it originates an infinite stream of Nothing.
+ * A typical use case is to limit it to one document, and attach projections with a following
+ * EvaluationNode(s).
  */
-class CoScanNode final : public ABTOpFixedArity<0>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<0>;
+class CoScanNode final : public Operator<CoScanNode, 0>, public Node, public PhysicalNode {
+    using Base = Operator<CoScanNode, 0>;
 
 public:
     CoScanNode();
@@ -216,49 +202,29 @@ public:
  * Index scan node.
  * Retrieve data using an index. Return recordIds or values (if the index is covering).
  * This is a physical node.
+ *
+ * The collection is specified by scanDef, and the index by the indexDef.
  */
-class IndexScanNode final : public ABTOpFixedArity<1>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<1>;
+class IndexScanNode final : public Operator<IndexScanNode, 1>, public Node, public PhysicalNode {
+    using Base = Operator<IndexScanNode, 1>;
 
 public:
-    IndexScanNode(FieldProjectionMap fieldProjectionMap,
-                  std::string scanDefName,
-                  std::string indexDefName,
-                  CompoundIntervalRequirement indexInterval,
-                  bool isIndexReverseOrder);
+    IndexScanNode(FieldProjectionMap fieldProjectionMap, IndexSpecification indexSpec);
 
     bool operator==(const IndexScanNode& other) const;
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<0>();
-        tassert(6624013, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624013, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
     const FieldProjectionMap& getFieldProjectionMap() const;
-
-    const std::string& getScanDefName() const;
-
-    const std::string& getIndexDefName() const;
-
-    const CompoundIntervalRequirement& getIndexInterval() const;
-
-    bool isIndexReverseOrder() const;
+    const IndexSpecification& getIndexSpecification() const;
 
 private:
     const FieldProjectionMap _fieldProjectionMap;
-
-    // Name of the collection.
-    const std::string _scanDefName;
-
-    // The name of the index.
-    const std::string _indexDefName;
-
-    // The index interval.
-    const CompoundIntervalRequirement _indexInterval;
-
-    // Do we reverse the index order.
-    const bool _isIndexReverseOrder;
+    const IndexSpecification _indexSpec;
 };
 
 /**
@@ -270,11 +236,10 @@ private:
  * seek. 'fieldProjectionMap' may choose to include an outgoing rid which will contain the
  * successive (if we do not have a following limit) document ids.
  *
- * TODO SERVER-68936: Can we let it advance with a limit based on upper rid limit in case of primary
- * index?
+ * TODO: Can we let it advance with a limit based on upper rid limit in case of primary index?
  */
-class SeekNode final : public ABTOpFixedArity<2>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<2>;
+class SeekNode final : public Operator<SeekNode, 2>, public Node, public PhysicalNode {
+    using Base = Operator<SeekNode, 2>;
 
 public:
     SeekNode(ProjectionName ridProjectionName,
@@ -285,7 +250,7 @@ public:
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<0>();
-        tassert(6624014, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624014, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
@@ -306,8 +271,10 @@ private:
  * Logical group delegator node: scan from a given group.
  * Used in conjunction with memo.
  */
-class MemoLogicalDelegatorNode final : public ABTOpFixedArity<0>, public ExclusivelyLogicalNode {
-    using Base = ABTOpFixedArity<0>;
+class MemoLogicalDelegatorNode final : public Operator<MemoLogicalDelegatorNode, 0>,
+                                       public Node,
+                                       public LogicalNode {
+    using Base = Operator<MemoLogicalDelegatorNode, 0>;
 
 public:
     MemoLogicalDelegatorNode(GroupIdType groupId);
@@ -324,8 +291,10 @@ private:
  * Physical group delegator node: refer to a physical node in a memo group.
  * Used in conjunction with memo.
  */
-class MemoPhysicalDelegatorNode final : public ABTOpFixedArity<0>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<0>;
+class MemoPhysicalDelegatorNode final : public Operator<MemoPhysicalDelegatorNode, 0>,
+                                        public Node,
+                                        public PhysicalNode {
+    using Base = Operator<MemoPhysicalDelegatorNode, 0>;
 
 public:
     MemoPhysicalDelegatorNode(MemoPhysicalNodeId nodeId);
@@ -343,12 +312,9 @@ private:
  * It applies a filter over its input.
  *
  * This node is both logical and physical.
- *
- * The Filter node evaluates its Expression child. If the expression evaluates to false or is not a
- * boolean, the value is filtered out, otherwise it's retained.
  */
-class FilterNode final : public ABTOpFixedArity<2>, public Node {
-    using Base = ABTOpFixedArity<2>;
+class FilterNode final : public Operator<FilterNode, 2>, public Node {
+    using Base = Operator<FilterNode, 2>;
 
 public:
     FilterNode(FilterType filter, ABT child);
@@ -368,8 +334,8 @@ public:
  *
  * This node is both logical and physical.
  */
-class EvaluationNode final : public ABTOpFixedArity<2>, public Node {
-    using Base = ABTOpFixedArity<2>;
+class EvaluationNode final : public Operator<EvaluationNode, 2>, public Node {
+    using Base = Operator<EvaluationNode, 2>;
 
 public:
     EvaluationNode(ProjectionName projectionName, ProjectionType projection, ABT child);
@@ -378,7 +344,7 @@ public:
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<1>();
-        tassert(6624015, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624015, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
@@ -409,11 +375,17 @@ public:
  * restrict the type of operations on RIDs (in this case only set intersection) as opposed to say
  * filter on rid = 5.
  */
-class RIDIntersectNode final : public ABTOpFixedArity<2>, public ExclusivelyLogicalNode {
-    using Base = ABTOpFixedArity<2>;
+class RIDIntersectNode final : public Operator<RIDIntersectNode, 2>,
+                               public Node,
+                               public LogicalNode {
+    using Base = Operator<RIDIntersectNode, 2>;
 
 public:
-    RIDIntersectNode(ProjectionName scanProjectionName, ABT leftChild, ABT rightChild);
+    RIDIntersectNode(ProjectionName scanProjectionName,
+                     bool hasLeftIntervals,
+                     bool hasRightIntervals,
+                     ABT leftChild,
+                     ABT rightChild);
 
     bool operator==(const RIDIntersectNode& other) const;
 
@@ -425,32 +397,15 @@ public:
 
     const ProjectionName& getScanProjectionName() const;
 
-private:
-    const ProjectionName _scanProjectionName;
-};
-
-/**
- * RID union node.
- * This is a logical node representing index-index unioning. Used for index OR-ing.
- */
-class RIDUnionNode final : public ABTOpFixedArity<2>, public ExclusivelyLogicalNode {
-    using Base = ABTOpFixedArity<2>;
-
-public:
-    RIDUnionNode(ProjectionName scanProjectionName, ABT leftChild, ABT rightChild);
-
-    bool operator==(const RIDUnionNode& other) const;
-
-    const ABT& getLeftChild() const;
-    ABT& getLeftChild();
-
-    const ABT& getRightChild() const;
-    ABT& getRightChild();
-
-    const ProjectionName& getScanProjectionName() const;
+    bool hasLeftIntervals() const;
+    bool hasRightIntervals() const;
 
 private:
     const ProjectionName _scanProjectionName;
+
+    // If true left and right children have at least one proper interval (not fully open).
+    const bool _hasLeftIntervals;
+    const bool _hasRightIntervals;
 };
 
 /**
@@ -467,18 +422,12 @@ private:
  *      PathGet "a" Traverse Id | scan_0     ->  [1, +inf], <none>
  *      PathGet "b" Id          | scan_0      -> (-inf, +inf),  "pb"
  */
-class SargableNode final : public ABTOpFixedArity<3>, public ExclusivelyLogicalNode {
-    using Base = ABTOpFixedArity<3>;
+class SargableNode final : public Operator<SargableNode, 3>, public Node, public LogicalNode {
+    using Base = Operator<SargableNode, 3>;
 
 public:
-    /**
-     * Maximum size of the PartialSchemaRequirements that can be used to create a SargableNode.
-     */
-    static constexpr size_t kMaxPartialSchemaReqs = 10;
-
     SargableNode(PartialSchemaRequirements reqMap,
-                 CandidateIndexes candidateIndexes,
-                 boost::optional<ScanParams> scanParams,
+                 CandidateIndexMap candidateIndexMap,
                  IndexReqTarget target,
                  ABT child);
 
@@ -486,7 +435,7 @@ public:
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<1>();
-        tassert(6624016, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624016, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
@@ -498,16 +447,14 @@ public:
     }
 
     const PartialSchemaRequirements& getReqMap() const;
-    const CandidateIndexes& getCandidateIndexes() const;
-    const boost::optional<ScanParams>& getScanParams() const;
+    const CandidateIndexMap& getCandidateIndexMap() const;
 
     IndexReqTarget getTarget() const;
 
 private:
     const PartialSchemaRequirements _reqMap;
 
-    CandidateIndexes _candidateIndexes;
-    boost::optional<ScanParams> _scanParams;
+    CandidateIndexMap _candidateIndexMap;
 
     // Performance optimization to limit number of groups.
     // Under what indexing requirements can this node be implemented.
@@ -528,11 +475,13 @@ MAKE_PRINTABLE_ENUM_STRING_ARRAY(JoinTypeEnum, JoinType, JOIN_TYPE);
  * Logical binary join.
  * Join of two logical nodes. Can express inner and outer joins, with an associated join predicate.
  *
- * Variables specified in correlatedProjectionNames and used in the inner (right) side are
- * automatically bound with variables from the left (outer) side.
+ * This node is logical, with a default physical implementation corresponding to a Nested Loops Join
+ * (NLJ).
+ * Variables used in the inner (right) side are automatically bound with variables from the left
+ * (outer) side.
  */
-class BinaryJoinNode final : public ABTOpFixedArity<3>, public ExclusivelyLogicalNode {
-    using Base = ABTOpFixedArity<3>;
+class BinaryJoinNode final : public Operator<BinaryJoinNode, 3>, public Node {
+    using Base = Operator<BinaryJoinNode, 3>;
 
 public:
     BinaryJoinNode(JoinType joinType,
@@ -566,11 +515,12 @@ private:
 /**
  * Physical hash join node.
  * Join condition is a conjunction of pairwise equalities between corresponding left and right keys.
- * It assumes the outer side is probe side and inner side is "build" side. Currently supports only
- * inner joins.
+ * It assumes the outer side is probe side and inner side is "build" side.
+ *
+ * TODO: support all join types (not just Inner).
  */
-class HashJoinNode final : public ABTOpFixedArity<3>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<3>;
+class HashJoinNode final : public Operator<HashJoinNode, 3>, public Node, public PhysicalNode {
+    using Base = Operator<HashJoinNode, 3>;
 
 public:
     HashJoinNode(JoinType joinType,
@@ -603,8 +553,8 @@ private:
  * Merge Join node.
  * This is a physical node representing joining of two sorted inputs.
  */
-class MergeJoinNode final : public ABTOpFixedArity<3>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<3>;
+class MergeJoinNode final : public Operator<MergeJoinNode, 3>, public Node, public PhysicalNode {
+    using Base = Operator<MergeJoinNode, 3>;
 
 public:
     MergeJoinNode(ProjectionNameVector leftKeys,
@@ -635,95 +585,14 @@ private:
     const ProjectionNameVector _rightKeys;
 };
 
-// This struct is a workaround to avoid a use-after-move problem while initializing the base
-// class and passing constructor arguments. Due to the way how the base class is designed, we
-// need to std::move the children vector as the first argument to the Base vector, but then
-// obtain the size of the moved vector while computing the last argument. So, we'll preserve
-// the children's vector size in this struct to avoid this situation. Used by SortedMergeNode and
-// UnionNode.
-struct NodeChildrenHolder {
-    NodeChildrenHolder(ABTVector children) : _nodes(std::move(children)) {
-        _numOfNodes = _nodes.size();
-    }
-
-    ABTVector _nodes;
-    size_t _numOfNodes;
-};
-
-/**
- * Sorted Merge node.
- * Used to merge an arbitrary number of sorted input streams.
- */
-class SortedMergeNode final : public ABTOpDynamicArity<2>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpDynamicArity<2>;
-
-public:
-    SortedMergeNode(properties::CollationRequirement collReq, ABTVector children);
-
-    const ExpressionBinder& binder() const {
-        const ABT& result = get<0>();
-        tassert(7063702, "Invalid binder type", result.is<ExpressionBinder>());
-        return *result.cast<ExpressionBinder>();
-    }
-
-    const properties::CollationRequirement& getCollationReq() const;
-
-    bool operator==(const SortedMergeNode& other) const;
-
-private:
-    SortedMergeNode(properties::CollationRequirement collReq, NodeChildrenHolder children);
-
-    // Describes how to merge the sorted streams.
-    properties::CollationRequirement _collationReq;
-};
-
-/**
- * Physical nested loop join (NLJ). Can express inner and outer joins, with an associated join
- * predicate.
- *
- * Variables specified in correlatedProjectionNames and used in the inner (right) side are
- * automatically bound with variables from the left (outer) side.
- */
-class NestedLoopJoinNode final : public ABTOpFixedArity<3>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<3>;
-
-public:
-    NestedLoopJoinNode(JoinType joinType,
-                       ProjectionNameSet correlatedProjectionNames,
-                       FilterType filter,
-                       ABT leftChild,
-                       ABT rightChild);
-
-    bool operator==(const NestedLoopJoinNode& other) const;
-
-    JoinType getJoinType() const;
-
-    const ProjectionNameSet& getCorrelatedProjectionNames() const;
-
-    const ABT& getLeftChild() const;
-    ABT& getLeftChild();
-
-    const ABT& getRightChild() const;
-    ABT& getRightChild();
-
-    const ABT& getFilter() const;
-
-private:
-    const JoinType _joinType;
-
-    // Those projections must exist on the outer side and are used to bind free variables on the
-    // inner side.
-    const ProjectionNameSet _correlatedProjectionNames;
-};
-
 /**
  * Union of several logical nodes. Projections in common to all nodes are logically union-ed in the
  * output. It can be used with a single child just to restrict projections.
  *
  * This node is both logical and physical.
  */
-class UnionNode final : public ABTOpDynamicArity<2>, public Node {
-    using Base = ABTOpDynamicArity<2>;
+class UnionNode final : public OperatorDynamic<UnionNode, 2>, public Node {
+    using Base = OperatorDynamic<UnionNode, 2>;
 
 public:
     UnionNode(ProjectionNameVector unionProjectionNames, ABTVector children);
@@ -732,12 +601,9 @@ public:
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<0>();
-        tassert(6624017, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624017, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
-
-private:
-    UnionNode(ProjectionNameVector unionProjectionNames, NodeChildrenHolder children);
 };
 
 #define GROUPNODETYPE_OPNAMES(F) \
@@ -747,23 +613,19 @@ private:
 
 MAKE_PRINTABLE_ENUM(GroupNodeType, GROUPNODETYPE_OPNAMES);
 MAKE_PRINTABLE_ENUM_STRING_ARRAY(GroupNodeTypeEnum, GroupNodeType, GROUPNODETYPE_OPNAMES);
-#undef GROUPNODETYPE_OPNAMES
+#undef PATHSYNTAX_OPNAMES
 
 /**
  * Group-by node.
  * This node is logical with a default physical implementation corresponding to a hash group-by.
  * Projects the group-by column from its child, and adds aggregation expressions.
+ *
+ * TODO: other physical implementations: stream group-by.
  */
-class GroupByNode : public ABTOpFixedArity<5>, public Node {
-    using Base = ABTOpFixedArity<5>;
+class GroupByNode : public Operator<GroupByNode, 5>, public Node {
+    using Base = Operator<GroupByNode, 5>;
 
 public:
-    /**
-     * groupByProjectionNames: The group keys for the group operation. These bindings are also
-     * accessible to parents of this node. aggregationProjectionNames: The output bindings for each
-     * aggregation function. aggregationExpressions: The aggregation functions to compute the values
-     * for the groups.
-     */
     GroupByNode(ProjectionNameVector groupByProjectionNames,
                 ProjectionNameVector aggregationProjectionNames,
                 ABTVector aggregationExpressions,
@@ -779,13 +641,13 @@ public:
 
     const ExpressionBinder& binderAgg() const {
         const ABT& result = get<1>();
-        tassert(6624018, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624018, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
     const ExpressionBinder& binderGb() const {
         const ABT& result = get<3>();
-        tassert(6624019, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624019, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
@@ -824,8 +686,8 @@ private:
  *
  * This node is both logical and physical.
  */
-class UnwindNode final : public ABTOpFixedArity<3>, public Node {
-    using Base = ABTOpFixedArity<3>;
+class UnwindNode final : public Operator<UnwindNode, 3>, public Node {
+    using Base = Operator<UnwindNode, 3>;
 
 public:
     UnwindNode(ProjectionName projectionName,
@@ -837,7 +699,7 @@ public:
 
     const ExpressionBinder& binder() const {
         const ABT& result = get<1>();
-        tassert(6624020, "Invalid binder type", result.is<ExpressionBinder>());
+        uassert(6624020, "Invalid binder type", result.is<ExpressionBinder>());
         return *result.cast<ExpressionBinder>();
     }
 
@@ -870,12 +732,12 @@ private:
 /**
  * Unique node.
  *
- * This is a physical node. It encodes an operation which will deduplicate the child input using a
+ * This is a physical node. It encodes an operation which will duplicate the child input using a
  * sequence of given projection names. It is similar to GroupBy using the given projections as a
  * compound grouping key.
  */
-class UniqueNode final : public ABTOpFixedArity<2>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<2>;
+class UniqueNode final : public Operator<UniqueNode, 2>, public Node, public PhysicalNode {
+    using Base = Operator<UniqueNode, 2>;
 
 public:
     UniqueNode(ProjectionNameVector projections, ABT child);
@@ -885,109 +747,9 @@ public:
     const ProjectionNameVector& getProjections() const;
 
     const ABT& getChild() const;
-    ABT& getChild();
 
 private:
     ProjectionNameVector _projections;
-};
-
-#define SPOOL_PRODUCER_TYPE_OPNAMES(F) \
-    F(Eager)                           \
-    F(Lazy)
-
-MAKE_PRINTABLE_ENUM(SpoolProducerType, SPOOL_PRODUCER_TYPE_OPNAMES);
-MAKE_PRINTABLE_ENUM_STRING_ARRAY(SpoolProducerTypeEnum,
-                                 SpoolProducerType,
-                                 SPOOL_PRODUCER_TYPE_OPNAMES);
-#undef SPOOL_PRODUCER_TYPE_OPNAMES
-
-/**
- * Spool producer node.
- *
- * This is a physical node. It buffers the values coming from its child in a shared buffer indexed
- * by the "spoolId" field. This buffer in turn is accessed via a corresponding SpoolConsumer node.
- * It can be used to implement recursive plans.
- *
- * We have two different modes of operation:
- *    1. Eager: on startup it will read and store the entire input from its child into the buffer
- * identified by the "spoolId" parameter. Then when asked for more data, it will return data from
- * the buffer.
- *    2. Lazy: by contrast to "eager", it will request each value from its child incrementally
- * and store it into the shared buffer, and immediately propagate it to the parent.
- */
-class SpoolProducerNode final : public ABTOpFixedArity<4>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<4>;
-
-public:
-    SpoolProducerNode(SpoolProducerType type,
-                      int64_t spoolId,
-                      ProjectionNameVector projections,
-                      ABT filter,
-                      ABT child);
-
-    bool operator==(const SpoolProducerNode& other) const;
-
-    const ExpressionBinder& binder() const {
-        const ABT& result = get<2>();
-        tassert(6624126, "Invalid binder type", result.is<ExpressionBinder>());
-        return *result.cast<ExpressionBinder>();
-    }
-
-    SpoolProducerType getType() const;
-    int64_t getSpoolId() const;
-
-    const ABT& getFilter() const;
-
-    const ABT& getChild() const;
-    ABT& getChild();
-
-private:
-    const SpoolProducerType _type;
-    const int64_t _spoolId;
-};
-
-#define SPOOL_CONSUMER_TYPE_OPNAMES(F) \
-    F(Stack)                           \
-    F(Regular)
-
-MAKE_PRINTABLE_ENUM(SpoolConsumerType, SPOOL_CONSUMER_TYPE_OPNAMES);
-MAKE_PRINTABLE_ENUM_STRING_ARRAY(SpoolConsumerTypeEnum,
-                                 SpoolConsumerType,
-                                 SPOOL_CONSUMER_TYPE_OPNAMES);
-#undef SPOOL_CONSUMER_TYPE_OPNAMES
-
-/**
- * Spool consumer node.
- *
- * This is a physical node. It delivers incoming values from a shared buffer (indexed by "spoolId").
- * This shared buffer is populated by a corresponding SpoolProducer node.
- *
- * It has two modes of operation:
- *   1. Stack: the consumer removes each value from the buffer as it is returned. The values are
- * returned in reverse order (hence "stack") of insertion in the shared buffer.
- *   2. Regular: the node will return the values in the same order in which they were inserted. The
- * values are not removed from the buffer.
- */
-class SpoolConsumerNode final : public ABTOpFixedArity<1>, public ExclusivelyPhysicalNode {
-    using Base = ABTOpFixedArity<1>;
-
-public:
-    SpoolConsumerNode(SpoolConsumerType type, int64_t spoolId, ProjectionNameVector projections);
-
-    bool operator==(const SpoolConsumerNode& other) const;
-
-    const ExpressionBinder& binder() const {
-        const ABT& result = get<0>();
-        tassert(6624135, "Invalid binder type", result.is<ExpressionBinder>());
-        return *result.cast<ExpressionBinder>();
-    }
-
-    SpoolConsumerType getType() const;
-    int64_t getSpoolId() const;
-
-private:
-    const SpoolConsumerType _type;
-    const int64_t _spoolId;
 };
 
 /**
@@ -996,8 +758,8 @@ private:
  *
  * It represents an operator to collate (sort, or cluster) the input.
  */
-class CollationNode final : public ABTOpFixedArity<2>, public Node {
-    using Base = ABTOpFixedArity<2>;
+class CollationNode final : public Operator<CollationNode, 2>, public Node {
+    using Base = Operator<CollationNode, 2>;
 
 public:
     CollationNode(properties::CollationRequirement property, ABT child);
@@ -1021,8 +783,8 @@ private:
  *
  * It limits the size of the input by a fixed amount.
  */
-class LimitSkipNode final : public ABTOpFixedArity<1>, public Node {
-    using Base = ABTOpFixedArity<1>;
+class LimitSkipNode final : public Operator<LimitSkipNode, 1>, public Node {
+    using Base = Operator<LimitSkipNode, 1>;
 
 public:
     LimitSkipNode(properties::LimitSkipRequirement property, ABT child);
@@ -1044,11 +806,12 @@ private:
  * Exchange node.
  * It specifies how the relation is spread across machines in the execution environment.
  * Currently only single-node, and hash-based partitioning are supported.
+ * TODO: range-based partitioning, replication, and round-robin.
  *
  * This node is both logical and physical.
  */
-class ExchangeNode final : public ABTOpFixedArity<2>, public Node {
-    using Base = ABTOpFixedArity<2>;
+class ExchangeNode final : public Operator<ExchangeNode, 2>, public Node {
+    using Base = Operator<ExchangeNode, 2>;
 
 public:
     ExchangeNode(properties::DistributionRequirement distribution, ABT child);
@@ -1064,6 +827,12 @@ public:
 
 private:
     properties::DistributionRequirement _distribution;
+
+    /**
+     * Defined for hash and range-based partitioning.
+     * TODO: other exchange-specific params (e.g. chunk boundaries?)
+     */
+    const ProjectionName _projectionName;
 };
 
 /**
@@ -1074,8 +843,8 @@ private:
  *
  * This node is only logical.
  */
-class RootNode final : public ABTOpFixedArity<2>, public Node {
-    using Base = ABTOpFixedArity<2>;
+class RootNode final : public Operator<RootNode, 2>, public Node {
+    using Base = Operator<RootNode, 2>;
 
 public:
     RootNode(properties::ProjectionRequirement property, ABT child);

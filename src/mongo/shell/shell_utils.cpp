@@ -27,16 +27,19 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/shell/shell_utils.h"
 
+#include <iostream>
+
 #include <algorithm>
 #include <boost/filesystem.hpp>
-#include <cstdlib>
 #include <memory>
 #include <set>
+#include <stdlib.h>
 #include <string>
 #include <vector>
 
@@ -48,8 +51,7 @@
 #include "mongo/base/shim.h"
 #include "mongo/client/dbclient_base.h"
 #include "mongo/client/replica_set_monitor.h"
-#include "mongo/db/auth/security_token_gen.h"
-#include "mongo/db/auth/validated_tenancy_scope.h"
+#include "mongo/db/auth/security_token.h"
 #include "mongo/db/hasher.h"
 #include "mongo/logv2/log.h"
 #include "mongo/platform/decimal128.h"
@@ -68,11 +70,7 @@
 #include "mongo/util/text.h"
 #include "mongo/util/version.h"
 
-#include "mongo/unittest/golden_test_base.h"
-#include "mongo/unittest/test_info.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
+using namespace std;
 
 namespace mongo::shell_utils {
 namespace {
@@ -150,7 +148,7 @@ auto benchRunConfigCreateConnectionImplRegistration = MONGO_WEAK_FUNCTION_REGIST
 
 // helper functions for isBalanced
 bool isUseCmd(std::string code) {
-    size_t first_space = code.find(' ');
+    size_t first_space = code.find(" ");
     if (first_space)
         code = code.substr(0, first_space);
     return code == "use";
@@ -440,9 +438,7 @@ BSONObj _createSecurityToken(const BSONObj& args, void* data) {
 
     constexpr auto authUserFieldName = auth::SecurityToken::kAuthenticatedUserFieldName;
     auto authUser = args.firstElement().Obj();
-    using VTS = auth::ValidatedTenancyScope;
-    auto token = VTS(BSON(authUserFieldName << authUser), VTS::TokenForTestingTag{});
-    return BSON("" << token.getOriginalToken());
+    return BSON("" << auth::signSecurityToken(BSON(authUserFieldName << authUser)));
 }
 
 BSONObj replMonitorStats(const BSONObj& a, void* data) {
@@ -555,109 +551,6 @@ BSONObj numberDecimalsAlmostEqual(const BSONObj& input, void*) {
     return BSON("" << isErrorAcceptable);
 }
 
-
-class GoldenTestContextShell : public unittest::GoldenTestContextBase {
-public:
-    explicit GoldenTestContextShell(const unittest::GoldenTestConfig* config,
-                                    boost::filesystem::path testPath,
-                                    bool validateOnClose)
-        : GoldenTestContextBase(config, testPath, validateOnClose, [this](auto const&... args) {
-              return onError(args...);
-          }) {}
-
-    // Disable move/copy because onError captures 'this' address.
-    GoldenTestContextShell(GoldenTestContextShell&&) = delete;
-
-
-protected:
-    void onError(const std::string& message,
-                 const std::string& actualStr,
-                 const boost::optional<std::string>& expectedStr) {
-        throw GoldenTestContextShellFailure{
-            message, getActualOutputPath().string(), getExpectedOutputPath().string()};
-    }
-};
-
-std::string GoldenTestContextShellFailure::toString() const {
-    return "Test output verification failed: {}\n"
-           "Actual output file: {}, "
-           "expected output file: {}"
-           ""_format(message, actualOutputFile, expectedOutputFile);
-}
-
-void GoldenTestContextShellFailure::diff() const {
-    auto cmd = unittest::GoldenTestEnvironment::getInstance()->diffCmd(expectedOutputFile,
-                                                                       actualOutputFile);
-    int status = std::system(cmd.c_str());
-    // Ignore return code: 'diff' returns non-zero when files differ, which we expect.
-    (void)status;
-}
-
-unittest::GoldenTestConfig goldenTestConfig{"jstests/expected_output"};
-boost::optional<GoldenTestContextShell> goldenTestContext;
-
-void closeGoldenTestContext() {
-    if (goldenTestContext) {
-        goldenTestContext->verifyOutput();
-        goldenTestContext = boost::none;
-    }
-}
-
-BSONObj _openGoldenData(const BSONObj& input, void*) {
-    uassert(6741513,
-            str::stream() << "_openGoldenData expects 2 arguments: 'testPath' and 'config'.",
-            input.nFields() == 2);
-
-    BSONObjIterator i(input);
-    auto testPathArg = i.next();
-    auto configArg = i.next();
-    invariant(i.next().eoo());
-
-    uassert(6741512,
-            "_openGoldenData 'testPath' must be a string",
-            testPathArg.type() == BSONType::String);
-    auto testPath = testPathArg.valueStringData();
-
-    uassert(6741511,
-            "_openGoldenData 'config' must be an object",
-            configArg.type() == BSONType::Object);
-    auto config = configArg.Obj();
-    goldenTestConfig = unittest::GoldenTestConfig::parseFromBson(config);
-
-    goldenTestContext.emplace(&goldenTestConfig, testPath.toString(), true /*validateOnClose*/);
-
-    return {};
-}
-BSONObj _writeGoldenData(const BSONObj& input, void*) {
-    uassert(6741510,
-            str::stream() << "_writeGoldenData expects 1 argument: 'content'. got: " << input,
-            input.nFields() == 1);
-
-    BSONObjIterator i(input);
-    auto contentArg = i.next();
-    invariant(i.next().eoo());
-
-    uassert(6741509,
-            "_writeGoldenData 'content' must be a string",
-            contentArg.type() == BSONType::String);
-    auto content = contentArg.valueStringData();
-
-    uassert(6741508, "_writeGoldenData() requires _openGoldenData() first", goldenTestContext);
-    auto& os = goldenTestContext->outStream();
-    os << content;
-
-    return {};
-}
-BSONObj _closeGoldenData(const BSONObj& input, void*) {
-    uassert(6741507,
-            str::stream() << "_closeGoldenData expects 0 arguments. got: " << input,
-            input.nFields() == 0);
-
-    closeGoldenTestContext();
-
-    return {};
-}
-
 void installShellUtils(Scope& scope) {
     scope.injectNative("getMemInfo", JSGetMemInfo);
     scope.injectNative("_createSecurityToken", _createSecurityToken);
@@ -674,9 +567,6 @@ void installShellUtils(Scope& scope) {
     scope.injectNative("isInteractive", isInteractive);
     scope.injectNative("numberDecimalsEqual", numberDecimalsEqual);
     scope.injectNative("numberDecimalsAlmostEqual", numberDecimalsAlmostEqual);
-    scope.injectNative("_openGoldenData", _openGoldenData);
-    scope.injectNative("_writeGoldenData", _writeGoldenData);
-    scope.injectNative("_closeGoldenData", _closeGoldenData);
 
     installShellUtilsLauncher(scope);
     installShellUtilsExtended(scope);
@@ -709,9 +599,8 @@ void initScope(Scope& scope) {
 
     initializeEnterpriseScope(scope);
 
-    scope.injectNative("benchRun", BenchRunner::benchRunSync);  // alias
+    scope.injectNative("benchRun", BenchRunner::benchRunSync);
     scope.injectNative("benchRunSync", BenchRunner::benchRunSync);
-    scope.injectNative("benchRunOnce", BenchRunner::benchRunOnce);
     scope.injectNative("benchStart", BenchRunner::benchStart);
     scope.injectNative("benchFinish", BenchRunner::benchFinish);
 
@@ -750,7 +639,7 @@ void ConnectionRegistry::registerConnection(DBClientBase& client, StringData uri
         command = BSON("whatsmyuri" << 1);
     }
 
-    if (client.runCommand({boost::none, "admin"}, command, info)) {
+    if (client.runCommand("admin", command, info)) {
         stdx::lock_guard<Latch> lk(_mutex);
         _connectionUris[uri.toString()].insert(info["you"].str());
     }
@@ -771,7 +660,7 @@ void ConnectionRegistry::killOperationsOnAllConnections(bool withPrompt) const {
         const std::set<std::string>& uris = connection.second;
 
         BSONObj currentOpRes;
-        conn->runCommand({boost::none, "admin"}, BSON("currentOp" << 1), currentOpRes);
+        conn->runCommand("admin", BSON("currentOp" << 1), currentOpRes);
         if (!currentOpRes["inprog"].isABSONObj()) {
             // We don't have permissions (or the call didn't succeed) - go to the next connection.
             continue;
@@ -807,8 +696,7 @@ void ConnectionRegistry::killOperationsOnAllConnections(bool withPrompt) const {
             if (uris.count(client)) {
                 if (!withPrompt || prompter.confirm()) {
                     BSONObj info;
-                    conn->runCommand(
-                        {boost::none, "admin"}, BSON("killOp" << 1 << "op" << op["opid"]), info);
+                    conn->runCommand("admin", BSON("killOp" << 1 << "op" << op["opid"]), info);
                 } else {
                     return;
                 }
@@ -840,5 +728,7 @@ bool fileExists(const std::string& file) {
     }
 }
 
+
+Mutex& mongoProgramOutputMutex(*(new Mutex()));
 }  // namespace shell_utils
 }  // namespace mongo

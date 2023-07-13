@@ -1,5 +1,5 @@
 // Auth tests for the $listSessions {allUsers:true} aggregation stage.
-// @tags: [requires_sharding, requires_auth]
+// @tags: [requires_sharding]
 
 (function() {
 'use strict';

@@ -46,6 +46,15 @@
 #include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/unittest/unittest.h"
 
+#define ASSERT_DOES_NOT_THROW(EXPRESSION)                                          \
+    try {                                                                          \
+        EXPRESSION;                                                                \
+    } catch (const AssertionException& e) {                                        \
+        str::stream err;                                                           \
+        err << "Threw an exception incorrectly: " << e.toString();                 \
+        ::mongo::unittest::TestAssertionFailure(__FILE__, __LINE__, err).stream(); \
+    }
+
 namespace mongo {
 namespace {
 
@@ -60,7 +69,7 @@ constexpr auto reduceJavascript = "reduce!"_sd;
 constexpr auto finalizeJavascript = "finalize!"_sd;
 
 TEST(MapReduceAggTest, testBasicTranslate) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr =
         MapReduceCommandRequest{nss,
                                 MapReduceJavascriptCode{mapJavascript.toString()},
@@ -77,7 +86,7 @@ TEST(MapReduceAggTest, testBasicTranslate) {
 }
 
 TEST(MapReduceAggTest, testSortWithoutLimit) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr =
         MapReduceCommandRequest{nss,
                                 MapReduceJavascriptCode{mapJavascript.toString()},
@@ -98,7 +107,7 @@ TEST(MapReduceAggTest, testSortWithoutLimit) {
 }
 
 TEST(MapReduceAggTest, testSortWithLimit) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr =
         MapReduceCommandRequest{nss,
                                 MapReduceJavascriptCode{mapJavascript.toString()},
@@ -123,7 +132,7 @@ TEST(MapReduceAggTest, testSortWithLimit) {
 }
 
 TEST(MapReduceAggTest, testLimitNoSort) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr =
         MapReduceCommandRequest{nss,
                                 MapReduceJavascriptCode{mapJavascript.toString()},
@@ -144,7 +153,7 @@ TEST(MapReduceAggTest, testLimitNoSort) {
 }
 
 TEST(MapReduceAggTest, testFeatureLadenTranslate) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr = MapReduceCommandRequest{
         nss,
         MapReduceJavascriptCode{mapJavascript.toString()},
@@ -170,7 +179,7 @@ TEST(MapReduceAggTest, testFeatureLadenTranslate) {
 }
 
 TEST(MapReduceAggTest, testOutMergeTranslate) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr = MapReduceCommandRequest{
         nss,
         MapReduceJavascriptCode{mapJavascript.toString()},
@@ -190,7 +199,7 @@ TEST(MapReduceAggTest, testOutMergeTranslate) {
 }
 
 TEST(MapReduceAggTest, testOutReduceTranslate) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr = MapReduceCommandRequest{
         nss,
         MapReduceJavascriptCode{mapJavascript.toString()},
@@ -212,7 +221,7 @@ TEST(MapReduceAggTest, testOutReduceTranslate) {
 }
 
 TEST(MapReduceAggTest, testOutSameCollection) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr = MapReduceCommandRequest{
         nss,
         MapReduceJavascriptCode{mapJavascript.toString()},
@@ -230,7 +239,7 @@ TEST(MapReduceAggTest, testOutSameCollection) {
 }
 
 TEST(MapReduceAggTest, testSourceDestinationCollectionsEqualMergeDoesNotFail) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr = MapReduceCommandRequest{
         nss,
         MapReduceJavascriptCode{mapJavascript.toString()},
@@ -241,7 +250,7 @@ TEST(MapReduceAggTest, testSourceDestinationCollectionsEqualMergeDoesNotFail) {
 }
 
 TEST(MapReduceAggTest, testSourceDestinationCollectionsNotEqualMergeDoesNotFail) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr = MapReduceCommandRequest{
         nss,
         MapReduceJavascriptCode{mapJavascript.toString()},
@@ -252,7 +261,7 @@ TEST(MapReduceAggTest, testSourceDestinationCollectionsNotEqualMergeDoesNotFail)
 }
 
 TEST(MapReduceAggTest, testShardedTrueWithReplaceActionIsNotAllowed) {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     auto mr = MapReduceCommandRequest{
         nss,
         MapReduceJavascriptCode{mapJavascript.toString()},
@@ -265,7 +274,7 @@ TEST(MapReduceAggTest, testShardedTrueWithReplaceActionIsNotAllowed) {
 
 TEST(MapReduceAggTest, testErrorMessagesTranslated) {
     // Verifies that agg specific error messages are translated to be mapReduce specific.
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll1");
+    auto nss = NamespaceString{"db", "coll1"};
 
     auto mr = MapReduceCommandRequest{
         nss,

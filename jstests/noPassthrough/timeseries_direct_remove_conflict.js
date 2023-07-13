@@ -38,7 +38,7 @@ assert.commandWorked(
 assert.contains(bucketsColl.getName(), testDB.getCollectionNames());
 
 assert.commandWorked(coll.insert(docs[0]));
-assert.docEq(docs.slice(0, 1), coll.find().sort({_id: 1}).toArray());
+assert.docEq(coll.find().sort({_id: 1}).toArray(), docs.slice(0, 1));
 
 let buckets = bucketsColl.find().sort({_id: 1}).toArray();
 assert.eq(buckets.length, 1);
@@ -69,7 +69,7 @@ awaitInsert();
 // The expected ordering is that the insert finished, then the remove deleted the bucket document,
 // so there should be no documents left.
 
-assert.docEq(0, coll.find().sort({_id: 1}).toArray().length);
+assert.docEq(coll.find().sort({_id: 1}).toArray().length, 0);
 
 buckets = bucketsColl.find().sort({_id: 1}).toArray();
 assert.eq(buckets.length, 0);
@@ -77,7 +77,7 @@ assert.eq(buckets.length, 0);
 // Now another insert should generate a new bucket.
 
 assert.commandWorked(coll.insert(docs[2]));
-assert.docEq(docs.slice(2, 3), coll.find().sort({_id: 1}).toArray());
+assert.docEq(coll.find().sort({_id: 1}).toArray(), docs.slice(2, 3));
 
 buckets = bucketsColl.find().sort({_id: 1}).toArray();
 assert.eq(buckets.length, 1);

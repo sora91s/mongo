@@ -27,12 +27,10 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/commands/killoperations_common.h"
 #include "mongo/db/cursor_manager.h"
-#include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -52,6 +50,6 @@ public:
             }
         }
     }
-} killOperationsCmd;
+} KillOperationsCmd;
 
 }  // namespace mongo

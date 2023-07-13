@@ -99,14 +99,7 @@ var config = mongos.getDB("config");
 var configCopy = standalone.getDB("configCopy");
 config.getCollectionInfos().forEach(function(c) {
     // It's illegal to copy the system collections.
-    if ([
-            "system.indexBuilds",
-            "system.preimages",
-            "system.change_collection",
-            "cache.chunks.config.system.sessions",
-            "system.sessions",
-            "system.sharding_ddl_coordinators",
-        ].includes(c.name)) {
+    if (["system.indexBuilds", "system.preimages"].includes(c.name)) {
         return;
     }
 

@@ -31,18 +31,15 @@
 
 #include "mongo/db/curop.h"
 #include "mongo/db/error_labels.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/pipeline/aggregate_command_gen.h"
 #include "mongo/db/pipeline/aggregation_request_helper.h"
 #include "mongo/db/pipeline/lite_parsed_pipeline.h"
 #include "mongo/db/service_context_test_fixture.h"
-#include "mongo/db/session/logical_session_id.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
 namespace {
-
-const repl::OpTime kOpTime{Timestamp(10, 10), 10};
-const repl::OpTime kLaterOpTime{Timestamp(10, 11), 10};
 
 TEST(IsTransientTransactionErrorTest, WriteConflictIsTransient) {
     ASSERT_TRUE(isTransientTransactionError(
@@ -126,7 +123,7 @@ public:
 
     void setCommand(BSONObj cmdObj) const {
         CurOp::get(opCtx())->setGenericOpRequestDetails(
-            _testNss, nullptr, cmdObj, NetworkOp::dbMsg);
+            opCtx(), _testNss, nullptr, cmdObj, NetworkOp::dbMsg);
     }
 
     void setGetMore(BSONObj originatingCommand) const {
@@ -144,27 +141,18 @@ public:
     }
 
 private:
-    const NamespaceString _testNss =
-        NamespaceString::createNamespaceString_forTest("test", "testing");
+    const NamespaceString _testNss{"test", "testing"};
     ServiceContext::UniqueOperationContext _opCtx;
 };
 
 TEST_F(ErrorLabelBuilderTest, NonErrorCodesHaveNoLabel) {
     OperationSessionInfoFromClient sessionInfo;
     std::string commandName = "insert";
-    ErrorLabelBuilder builder(opCtx(),
-                              sessionInfo,
-                              commandName,
-                              boost::none,
-                              boost::none,
-                              false,
-                              false /* isMongos */,
-                              kOpTime,
-                              kOpTime);
+    ErrorLabelBuilder builder(
+        opCtx(), sessionInfo, commandName, boost::none, boost::none, false, false /* isMongos */);
     ASSERT_FALSE(builder.isTransientTransactionError());
     ASSERT_FALSE(builder.isRetryableWriteError());
     ASSERT_FALSE(builder.isResumableChangeStreamError());
-    ASSERT_FALSE(builder.isErrorWithNoWritesPerformed());
 }
 
 TEST_F(ErrorLabelBuilderTest, NonTransactionsHaveNoTransientTransactionErrorLabel) {
@@ -176,9 +164,7 @@ TEST_F(ErrorLabelBuilderTest, NonTransactionsHaveNoTransientTransactionErrorLabe
                               ErrorCodes::WriteConflict,
                               boost::none,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_FALSE(builder.isTransientTransactionError());
 }
 
@@ -192,9 +178,7 @@ TEST_F(ErrorLabelBuilderTest, RetryableWritesHaveNoTransientTransactionErrorLabe
                               ErrorCodes::WriteConflict,
                               boost::none,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_FALSE(builder.isTransientTransactionError());
 }
 
@@ -209,9 +193,7 @@ TEST_F(ErrorLabelBuilderTest, NonTransientTransactionErrorsHaveNoTransientTransa
                               ErrorCodes::NotWritablePrimary,
                               boost::none,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_FALSE(builder.isTransientTransactionError());
 }
 
@@ -226,9 +208,7 @@ TEST_F(ErrorLabelBuilderTest, TransientTransactionErrorsHaveTransientTransaction
                               ErrorCodes::NoSuchTransaction,
                               boost::none,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_TRUE(builder.isTransientTransactionError());
 }
 
@@ -248,9 +228,7 @@ TEST_F(
                                             transientError,
                                             retryableError,
                                             false /* isInternalClient */,
-                                            false /* isMongos */,
-                                            repl::OpTime{},
-                                            repl::OpTime{});
+                                            false /* isMongos */);
 
     // Ensure only the TransientTransactionError label is attached so users know to retry the entire
     // transaction.
@@ -268,9 +246,7 @@ TEST_F(ErrorLabelBuilderTest, NonRetryableWritesHaveNoRetryableWriteErrorLabel) 
                               ErrorCodes::NotWritablePrimary,
                               boost::none,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
 
     // Test regular writes.
     ASSERT_FALSE(builder.isRetryableWriteError());
@@ -291,9 +267,7 @@ TEST_F(ErrorLabelBuilderTest, NonRetryableWriteErrorsHaveNoRetryableWriteErrorLa
                               ErrorCodes::WriteConflict,
                               boost::none,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_FALSE(builder.isRetryableWriteError());
 }
 
@@ -307,9 +281,7 @@ TEST_F(ErrorLabelBuilderTest, RetryableWriteErrorsHaveRetryableWriteErrorLabel) 
                               ErrorCodes::NotWritablePrimary,
                               boost::none,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_TRUE(builder.isRetryableWriteError());
 }
 
@@ -323,9 +295,7 @@ TEST_F(ErrorLabelBuilderTest, NonLocalShutDownErrorsOnMongosDoNotHaveRetryableWr
                               ErrorCodes::InterruptedAtShutdown,
                               boost::none,
                               false /* isInternalClient */,
-                              true /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              true /* isMongos */);
     ASSERT_FALSE(builder.isRetryableWriteError());
 }
 
@@ -341,9 +311,7 @@ TEST_F(ErrorLabelBuilderTest,
                               ErrorCodes::InterruptedAtShutdown,
                               boost::none,
                               false /* isInternalClient */,
-                              true /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              true /* isMongos */);
     ASSERT_TRUE(builder.isRetryableWriteError());
 }
 
@@ -359,9 +327,7 @@ TEST_F(ErrorLabelBuilderTest,
                               ErrorCodes::CallbackCanceled,
                               boost::none,
                               false /* isInternalClient */,
-                              true /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              true /* isMongos */);
     ASSERT_TRUE(builder.isRetryableWriteError());
 }
 
@@ -376,9 +342,7 @@ TEST_F(ErrorLabelBuilderTest,
                               ErrorCodes::NotWritablePrimary,
                               boost::none,
                               true /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_FALSE(builder.isRetryableWriteError());
 }
 
@@ -393,9 +357,7 @@ TEST_F(ErrorLabelBuilderTest,
                               ErrorCodes::WriteConcernFailed,
                               ErrorCodes::WriteConcernFailed,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_FALSE(builder.isRetryableWriteError());
 }
 
@@ -410,9 +372,7 @@ TEST_F(ErrorLabelBuilderTest,
                               ErrorCodes::WriteConcernFailed,
                               ErrorCodes::PrimarySteppedDown,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_TRUE(builder.isRetryableWriteError());
 }
 
@@ -429,9 +389,7 @@ TEST_F(ErrorLabelBuilderTest, RetryableWriteErrorsOnCommitAbortHaveRetryableWrit
                                     ErrorCodes::NotWritablePrimary,
                                     boost::none,
                                     false /* isInternalClient */,
-                                    false /* isMongos */,
-                                    repl::OpTime{},
-                                    repl::OpTime{});
+                                    false /* isMongos */);
     ASSERT_TRUE(commitBuilder.isRetryableWriteError());
     ASSERT_FALSE(commitBuilder.isTransientTransactionError());
 
@@ -442,9 +400,7 @@ TEST_F(ErrorLabelBuilderTest, RetryableWriteErrorsOnCommitAbortHaveRetryableWrit
                                            ErrorCodes::NotWritablePrimary,
                                            boost::none,
                                            false /* isInternalClient */,
-                                           true /* isMongos */,
-                                           repl::OpTime{},
-                                           repl::OpTime{});
+                                           true /* isMongos */);
     ASSERT_TRUE(commitBuilder.isRetryableWriteError());
     ASSERT_FALSE(commitBuilder.isTransientTransactionError());
 
@@ -455,9 +411,7 @@ TEST_F(ErrorLabelBuilderTest, RetryableWriteErrorsOnCommitAbortHaveRetryableWrit
                                               ErrorCodes::NotWritablePrimary,
                                               boost::none,
                                               false /* isInternalClient */,
-                                              false /* isMongos */,
-                                              repl::OpTime{},
-                                              repl::OpTime{});
+                                              false /* isMongos */);
     ASSERT_TRUE(coordinateCommitBuilder.isRetryableWriteError());
     ASSERT_FALSE(commitBuilder.isTransientTransactionError());
 
@@ -468,9 +422,7 @@ TEST_F(ErrorLabelBuilderTest, RetryableWriteErrorsOnCommitAbortHaveRetryableWrit
                                    ErrorCodes::NotWritablePrimary,
                                    boost::none,
                                    false /* isInternalClient */,
-                                   false /* isMongos */,
-                                   repl::OpTime{},
-                                   repl::OpTime{});
+                                   false /* isMongos */);
     ASSERT_TRUE(abortBuilder.isRetryableWriteError());
     ASSERT_FALSE(commitBuilder.isTransientTransactionError());
 
@@ -481,9 +433,7 @@ TEST_F(ErrorLabelBuilderTest, RetryableWriteErrorsOnCommitAbortHaveRetryableWrit
                                           ErrorCodes::NotWritablePrimary,
                                           boost::none,
                                           false /* isInternalClient */,
-                                          true /* isMongos */,
-                                          repl::OpTime{},
-                                          repl::OpTime{});
+                                          true /* isMongos */);
     ASSERT_TRUE(commitBuilder.isRetryableWriteError());
     ASSERT_FALSE(commitBuilder.isTransientTransactionError());
 }
@@ -497,9 +447,7 @@ TEST_F(ErrorLabelBuilderTest, NonResumableChangeStreamError) {
                               ErrorCodes::ChangeStreamHistoryLost,
                               boost::none,
                               false /* isInternalClient */,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
+                              false /* isMongos */);
     ASSERT_TRUE(builder.isNonResumableChangeStreamError());
 }
 
@@ -523,9 +471,7 @@ TEST_F(ErrorLabelBuilderTest, ResumableChangeStreamErrorAppliesToChangeStreamAgg
                                           ErrorCodes::NetworkTimeout,
                                           boost::none,
                                           false /* isInternalClient */,
-                                          false /* isMongos */,
-                                          repl::OpTime{},
-                                          repl::OpTime{});
+                                          false /* isMongos */);
     ASSERT_TRUE(resumableAggBuilder.isResumableChangeStreamError());
     // The label applies to a "getMore" command on a $changeStream cursor.
     commandName = "getMore";
@@ -536,9 +482,7 @@ TEST_F(ErrorLabelBuilderTest, ResumableChangeStreamErrorAppliesToChangeStreamAgg
                                               ErrorCodes::NetworkTimeout,
                                               boost::none,
                                               false /* isInternalClient */,
-                                              false /* isMongos */,
-                                              repl::OpTime{},
-                                              repl::OpTime{});
+                                              false /* isMongos */);
     ASSERT_TRUE(resumableGetMoreBuilder.isResumableChangeStreamError());
 }
 
@@ -562,9 +506,7 @@ TEST_F(ErrorLabelBuilderTest, ResumableChangeStreamErrorDoesNotApplyToNonResumab
                                           ErrorCodes::ChangeStreamFatalError,
                                           boost::none,
                                           false /* isInternalClient */,
-                                          false /* isMongos */,
-                                          repl::OpTime{},
-                                          repl::OpTime{});
+                                          false /* isMongos */);
     ASSERT_FALSE(resumableAggBuilder.isResumableChangeStreamError());
     // The label does not apply to a ChangeStreamFatalError error on a $changeStream getMore.
     commandName = "getMore";
@@ -575,9 +517,7 @@ TEST_F(ErrorLabelBuilderTest, ResumableChangeStreamErrorDoesNotApplyToNonResumab
                                               ErrorCodes::ChangeStreamFatalError,
                                               boost::none,
                                               false /* isInternalClient */,
-                                              false /* isMongos */,
-                                              repl::OpTime{},
-                                              repl::OpTime{});
+                                              false /* isMongos */);
     ASSERT_FALSE(resumableGetMoreBuilder.isResumableChangeStreamError());
 }
 
@@ -601,9 +541,7 @@ TEST_F(ErrorLabelBuilderTest, ResumableChangeStreamErrorDoesNotApplyToNonChangeS
                                              ErrorCodes::NetworkTimeout,
                                              boost::none,
                                              false /* isInternalClient */,
-                                             false /* isMongos */,
-                                             repl::OpTime{},
-                                             repl::OpTime{});
+                                             false /* isMongos */);
     ASSERT_FALSE(nonResumableAggBuilder.isResumableChangeStreamError());
     // The label does not apply to a "getMore" command on a non-$changeStream cursor.
     commandName = "getMore";
@@ -614,9 +552,7 @@ TEST_F(ErrorLabelBuilderTest, ResumableChangeStreamErrorDoesNotApplyToNonChangeS
                                                  ErrorCodes::NetworkTimeout,
                                                  boost::none,
                                                  false /* isInternalClient */,
-                                                 false /* isMongos */,
-                                                 repl::OpTime{},
-                                                 repl::OpTime{});
+                                                 false /* isMongos */);
     ASSERT_FALSE(nonResumableGetMoreBuilder.isResumableChangeStreamError());
 }
 
@@ -632,9 +568,7 @@ TEST_F(ErrorLabelBuilderTest, ResumableChangeStreamErrorDoesNotApplyToNonAggrega
                                               ErrorCodes::NetworkTimeout,
                                               boost::none,
                                               false /* isInternalClient */,
-                                              false /* isMongos */,
-                                              repl::OpTime{},
-                                              repl::OpTime{});
+                                              false /* isMongos */);
     ASSERT_FALSE(nonResumableFindBuilder.isResumableChangeStreamError());
     // The label does not apply to a "getMore" command on a "find" cursor.
     commandName = "getMore";
@@ -645,108 +579,8 @@ TEST_F(ErrorLabelBuilderTest, ResumableChangeStreamErrorDoesNotApplyToNonAggrega
                                                  ErrorCodes::NetworkTimeout,
                                                  boost::none,
                                                  false /* isInternalClient */,
-                                                 false /* isMongos */,
-                                                 repl::OpTime{},
-                                                 repl::OpTime{});
+                                                 false /* isMongos */);
     ASSERT_FALSE(nonResumableGetMoreBuilder.isResumableChangeStreamError());
-}
-
-TEST_F(ErrorLabelBuilderTest, NoWritesPerformedLabelApplied) {
-    OperationSessionInfoFromClient sessionInfo;
-    std::string commandName = "find";
-    ErrorLabelBuilder builder(opCtx(),
-                              sessionInfo,
-                              commandName,
-                              ErrorCodes::WriteConcernFailed,
-                              ErrorCodes::WriteConcernFailed,
-                              false,
-                              false /* isMongos */,
-                              kOpTime,
-                              kOpTime);
-    ASSERT_TRUE(builder.isErrorWithNoWritesPerformed());
-}
-
-TEST_F(ErrorLabelBuilderTest, NoWritesPerformedLabelNotAppliedAfterWrite) {
-    OperationSessionInfoFromClient sessionInfo;
-    std::string commandName = "update";
-    ErrorLabelBuilder builder(opCtx(),
-                              sessionInfo,
-                              commandName,
-                              ErrorCodes::WriteConcernFailed,
-                              ErrorCodes::WriteConcernFailed,
-                              false,
-                              false /* isMongos */,
-                              kOpTime,
-                              kLaterOpTime);
-    ASSERT_FALSE(builder.isErrorWithNoWritesPerformed());
-}
-
-TEST_F(ErrorLabelBuilderTest, NoWritesPerformedLabelNotAppliedIfUnknown) {
-    OperationSessionInfoFromClient sessionInfo;
-    std::string commandName = "update";
-    ErrorLabelBuilder builder(opCtx(),
-                              sessionInfo,
-                              commandName,
-                              ErrorCodes::WriteConcernFailed,
-                              ErrorCodes::WriteConcernFailed,
-                              false,
-                              false /* isMongos */,
-                              repl::OpTime{},
-                              repl::OpTime{});
-    ASSERT_FALSE(builder.isErrorWithNoWritesPerformed());
-}
-
-TEST_F(ErrorLabelBuilderTest, NoWritesPerformedAndRetryableWriteAppliesBothLabels) {
-    OperationSessionInfoFromClient sessionInfo;
-    sessionInfo.setTxnNumber(1);
-    std::string commandName = "update";
-    auto actualErrorLabels = getErrorLabels(opCtx(),
-                                            sessionInfo,
-                                            commandName,
-                                            ErrorCodes::NotWritablePrimary,
-                                            boost::none,
-                                            false /* isInternalClient */,
-                                            false /* isMongos */,
-                                            kOpTime,
-                                            kOpTime);
-    BSONArrayBuilder expectedLabelArray;
-    expectedLabelArray << ErrorLabel::kRetryableWrite;
-    expectedLabelArray << ErrorLabel::kNoWritesPerformed;
-    ASSERT_BSONOBJ_EQ(actualErrorLabels, BSON(kErrorLabelsFieldName << expectedLabelArray.arr()));
-}
-
-TEST_F(ErrorLabelBuilderTest, NoWritesPerformedNotAppliedDuringOrdinaryUpdate) {
-    OperationSessionInfoFromClient sessionInfo;
-    std::string commandName = "update";
-    auto actualErrorLabels = getErrorLabels(opCtx(),
-                                            sessionInfo,
-                                            commandName,
-                                            ErrorCodes::NotWritablePrimary,
-                                            boost::none,
-                                            false /* isInternalClient */,
-                                            false /* isMongos */,
-                                            kOpTime,
-                                            kOpTime);
-    ASSERT_BSONOBJ_EQ(actualErrorLabels, BSONObj());
-}
-
-TEST_F(ErrorLabelBuilderTest, NoWritesPerformedNotAppliedDuringTransientTransactionError) {
-    OperationSessionInfoFromClient sessionInfo;
-    sessionInfo.setTxnNumber(1);
-    sessionInfo.setAutocommit(false);
-    std::string commandName = "commitTransaction";
-    auto actualErrorLabels = getErrorLabels(opCtx(),
-                                            sessionInfo,
-                                            commandName,
-                                            ErrorCodes::NoSuchTransaction,
-                                            boost::none,
-                                            false /* isInternalClient */,
-                                            false /* isMongos */,
-                                            kOpTime,
-                                            kOpTime);
-    BSONArrayBuilder expectedLabelArray;
-    expectedLabelArray << ErrorLabel::kTransientTransaction;
-    ASSERT_BSONOBJ_EQ(actualErrorLabels, BSON(kErrorLabelsFieldName << expectedLabelArray.arr()));
 }
 
 }  // namespace

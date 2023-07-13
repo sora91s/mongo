@@ -31,7 +31,6 @@
 
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/auth/role_name.h"
-#include "mongo/db/database_name.h"
 #include "mongo/stdx/unordered_set.h"
 
 namespace mongo {
@@ -48,7 +47,7 @@ bool addPrivilegesForBuiltinRole(const RoleName& role, PrivilegeVector* privileg
 /**
  * Ennumerate all builtin RoleNames for the given database.
  */
-stdx::unordered_set<RoleName> getBuiltinRoleNamesForDB(const DatabaseName& dbname);
+stdx::unordered_set<RoleName> getBuiltinRoleNamesForDB(StringData dbname);
 
 /**
  * Adds to "privileges" the necessary privileges to do absolutely anything on the system.

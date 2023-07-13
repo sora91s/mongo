@@ -6,6 +6,7 @@
  * retryable writes is tested elsewhere.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   incompatible_with_shard_merge,
@@ -15,15 +16,15 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    makeX509OptionsForTest,
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 load("jstests/libs/fail_point_util.js");  // For configureFailPoint().
 load("jstests/libs/uuid_util.js");        // For extractUUIDFromObject().
 
-const migrationX509Options = makeX509OptionsForTest();
+const migrationX509Options = TenantMigrationUtil.makeX509OptionsForTest();
 
 const donorRst = new ReplSetTest({
     nodes: 1,
@@ -46,7 +47,7 @@ recipientRst.initiate();
 
 const tenantMigrationTest = new TenantMigrationTest({name: jsTestName(), donorRst, recipientRst});
 
-const kTenantId = ObjectId().str;
+const kTenantId = "testTenantId";
 const kDbName = tenantMigrationTest.tenantDB(kTenantId, "testDb");
 const kCollName = "testColl";
 const kNs = `${kDbName}.${kCollName}`;
@@ -197,7 +198,7 @@ sessionsOnDonor.push({
 //     },
 //     "txnNumber" : NumberLong(0),
 //     "op" : "n",
-//     "ns" : "<OID>_testDb.testColl",
+//     "ns" : "testTenantId_testDb.testColl",
 //     "ui" : UUID("1aa099b9-879f-4cd5-b58e-0a654abfeb58"),
 //     "o" : {
 //         "_id" : ObjectId("5fa4d04d04c649017b6558ff"),
@@ -221,7 +222,7 @@ sessionsOnDonor.push({
 //     },
 //     "txnNumber" : NumberLong(0),
 //     "op" : "d",
-//     "ns" : "<OID>_testDb.testColl",
+//     "ns" : "testTenantId_testDb.testColl",
 //     "ui" : UUID("1aa099b9-879f-4cd5-b58e-0a654abfeb58"),
 //     "o" : {
 //         "_id" : ObjectId("5fa4d04d04c649017b6558ff")
@@ -327,3 +328,4 @@ assert.commandWorked(tenantMigrationTest.forgetMigration(migrationOpts.migration
 
 donorRst.stopSet();
 recipientRst.stopSet();
+})();

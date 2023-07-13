@@ -3,6 +3,7 @@
  * on the recipient.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -11,20 +12,18 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    isShardMergeEnabled,
-    runMigrationAsync
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");  // for 'Thread'
 load("jstests/libs/uuid_util.js");
-load("jstests/replsets/rslib.js");  // 'createRstArgs'
 
 const tenantMigrationTest = new TenantMigrationTest({name: jsTestName()});
 
-const kTenantId = ObjectId().str;
+const kTenantId = "testTenantId";
 const kDbName = tenantMigrationTest.tenantDB(kTenantId, "testDb");
 const kCollNameBefore = "testCollBefore";
 const kCollNameDuring = "testCollDuring";
@@ -38,10 +37,10 @@ const recipientDb = recipientPrimary.getDB(kDbName);
 // wrongly restarts the Shard Merge protocol. It copies and imports donor files again, and
 // eventually hits an invariant in TenantFileImporterService, which doesn't support restart.
 // Once we fix Shard Merge to not resume on stepup, this test will work as-is.
-if (isShardMergeEnabled(donorPrimary.getDB("adminDB"))) {
+if (TenantMigrationUtil.isShardMergeEnabled(donorPrimary.getDB("adminDB"))) {
     jsTestLog("Skip: featureFlagShardMerge enabled, but shard merge does not survive stepup");
     tenantMigrationTest.stop();
-    quit();
+    return;
 }
 
 jsTestLog("Run a migration to the end of cloning");
@@ -166,8 +165,9 @@ assert.commandWorked(
 assert.commandWorked(
     donorDb.runCommand(beforeWrites.retryableFindAndModifyUpdateWithPreImageCommand));
 
-const donorRstArgs = createRstArgs(tenantMigrationTest.getDonorRst());
-const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+const donorRstArgs = TenantMigrationUtil.createRstArgs(tenantMigrationTest.getDonorRst());
+const migrationThread =
+    new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 migrationThread.start();
 waitBeforeFetchingTransactions.wait();
 
@@ -296,3 +296,4 @@ testRecipientRetryableWrites(recipient2Db, duringWrites);
 
 tenantMigrationTest2.stop();
 tenantMigrationTest.stop();
+})();

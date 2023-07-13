@@ -50,8 +50,8 @@ public:
      */
     enum class BlockerType { kDonor, kRecipient };
 
-    TenantMigrationAccessBlocker(BlockerType type, const UUID& migrationId)
-        : _type(type), _migrationId(migrationId) {}
+    TenantMigrationAccessBlocker(BlockerType type, MigrationProtocolEnum protocol)
+        : _type(type), _protocol(protocol) {}
     virtual ~TenantMigrationAccessBlocker() = default;
 
     //
@@ -90,11 +90,9 @@ public:
     virtual void appendInfoForServerStatus(BSONObjBuilder* builder) const = 0;
 
     /**
-     * Returns structured info.
+     * Returns structured info with tenant id and connection string.
      */
-    BSONObj getDebugInfo() const {
-        return BSON("migrationId" << _migrationId.toString());
-    }
+    virtual BSONObj getDebugInfo() const = 0;
 
     /**
      * Updates the runtime statistics for the number of tenant migration errors that have been
@@ -110,15 +108,15 @@ public:
     }
 
     /**
-     * Returns the migration id of access blocker.
+     * Returns the protocol of the access blocker.
      */
-    const UUID& getMigrationId() const {
-        return _migrationId;
+    MigrationProtocolEnum getProtocol() {
+        return _protocol;
     }
 
 private:
     const BlockerType _type;
-    const UUID _migrationId;
+    const MigrationProtocolEnum _protocol;
 };
 
 }  // namespace mongo

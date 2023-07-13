@@ -38,10 +38,12 @@
 
 namespace mongo {
 
-REGISTER_WINDOW_FUNCTION(
+REGISTER_WINDOW_FUNCTION_CONDITIONALLY(
     locf,
     mongo::window_function::ExpressionFromLeftUnboundedWindowFunction<AccumulatorLocf>::parse,
-    AllowedWithApiStrict::kAlways);
+    feature_flags::gFeatureFlagLocf.getVersion(),
+    AllowedWithApiStrict::kAlways,
+    feature_flags::gFeatureFlagLocf.isEnabledAndIgnoreFCV());
 
 AccumulatorLocf::AccumulatorLocf(ExpressionContext* const expCtx)
     : AccumulatorForWindowFunctions(expCtx) {

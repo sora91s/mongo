@@ -29,56 +29,31 @@
 
 #pragma once
 
-#include "mongo/db/cursor_id.h"
-#include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/repl_sync_shared_data.h"
 
 namespace mongo {
 namespace repl {
-
-enum class ResumePhase { kNone, kDataSync, kOplogCatchup };
-
-struct BackupCursorInfo {
-    BackupCursorInfo() = default;
-    BackupCursorInfo(CursorId cursorId, NamespaceString nss, Timestamp checkpointTimestamp)
-        : cursorId(cursorId),
-          nss(std::move(nss)),
-          checkpointTimestamp(std::move(checkpointTimestamp)) {}
-
-    CursorId cursorId = 0;
-    NamespaceString nss;
-    Timestamp checkpointTimestamp;
-};
-
 class TenantMigrationSharedData final : public ReplSyncSharedData {
 public:
     TenantMigrationSharedData(ClockSource* clock, const UUID& migrationId)
-        : ReplSyncSharedData(clock), _migrationId(migrationId), _resumePhase(ResumePhase::kNone) {}
-    TenantMigrationSharedData(ClockSource* clock, const UUID& migrationId, ResumePhase resumePhase)
-        : ReplSyncSharedData(clock), _migrationId(migrationId), _resumePhase(resumePhase) {}
+        : ReplSyncSharedData(clock), _migrationId(migrationId), _resuming(false) {}
+    TenantMigrationSharedData(ClockSource* clock, const UUID& migrationId, bool resuming)
+        : ReplSyncSharedData(clock), _migrationId(migrationId), _resuming(resuming) {}
 
     void setLastVisibleOpTime(WithLock, OpTime opTime);
 
     OpTime getLastVisibleOpTime(WithLock);
 
-    void setDonorBackupCursorInfo(WithLock, BackupCursorInfo donorBackupCursor);
-
-    const BackupCursorInfo& getDonorBackupCursorInfo(WithLock) const;
-
     const mongo::UUID& getMigrationId() const {
         return _migrationId;
     }
 
-    ResumePhase getResumePhase() const {
-        return _resumePhase;
+    bool isResuming() const {
+        return _resuming;
     }
 
 private:
-    // Holds the info about the donor backup cursor.
-    // Concurrency rule: Must hold mutex (in base class) to access this.
-    BackupCursorInfo _donorBackupCursorInfo;
-
     // Must hold mutex (in base class) to access this.
     // Represents last visible majority committed donor opTime.
     OpTime _lastVisibleOpTime;
@@ -86,9 +61,8 @@ private:
     // Id of the current tenant migration.
     const UUID _migrationId;
 
-    // Indicate the phase from which the tenant migration is resuming due to recipient/donor
-    // failovers.
-    const ResumePhase _resumePhase;
+    // Indicate whether the tenant migration is resuming from a failover.
+    const bool _resuming;
 };
 }  // namespace repl
 }  // namespace mongo

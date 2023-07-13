@@ -40,7 +40,7 @@ namespace mongo {
 class InternalSchemaMinItemsMatchExpression final
     : public InternalSchemaNumArrayItemsMatchExpression {
 public:
-    InternalSchemaMinItemsMatchExpression(boost::optional<StringData> path,
+    InternalSchemaMinItemsMatchExpression(StringData path,
                                           long long numItems,
                                           clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : InternalSchemaNumArrayItemsMatchExpression(INTERNAL_SCHEMA_MIN_ITEMS,

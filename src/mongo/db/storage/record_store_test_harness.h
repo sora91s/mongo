@@ -36,11 +36,11 @@
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/kv/kv_engine.h"
-#include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/test_harness_helper.h"
 
 namespace mongo {
 
+class RecordStore;
 class RecoveryUnit;
 
 class RecordStoreHarnessHelper : public HarnessHelper {
@@ -60,21 +60,6 @@ public:
     virtual std::unique_ptr<RecordStore> newOplogRecordStore() = 0;
 
     virtual KVEngine* getEngine() = 0;
-
-    /**
-     * Advances the stable timestamp of the engine.
-     */
-    void advanceStableTimestamp(Timestamp newTimestamp) {
-        auto opCtx = this->client()->getOperationContext();
-        auto engine = getEngine();
-        // Disable the callback for oldest active transaction as it blocks the timestamps from
-        // advancing.
-        engine->setOldestActiveTransactionTimestampCallback(
-            StorageEngine::OldestActiveTransactionTimestampCallback{});
-        engine->setInitialDataTimestamp(newTimestamp);
-        engine->setStableTimestamp(newTimestamp, true);
-        engine->checkpoint(opCtx);
-    }
 };
 
 void registerRecordStoreHarnessHelperFactory(

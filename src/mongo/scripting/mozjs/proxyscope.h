@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include <vm/PosixNSPR.h>
+#include "vm/PosixNSPR.h"
 
 #include "mongo/client/dbclient_cursor.h"
 #include "mongo/platform/mutex.h"
@@ -174,6 +174,15 @@ public:
               bool reportError,
               bool assertOnError,
               int timeoutMs) override;
+    
+
+    bool execAndGetResult(StringData code,
+                                 const std::string& name,
+                                 bool printResult,
+                                 bool reportError,
+                                 bool assertOnError,
+                                 std::string& res,
+                                 int timeoutMs) override;
 
     void injectNative(const char* field, NativeFunction func, void* data = nullptr) override;
 

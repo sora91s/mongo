@@ -9,8 +9,6 @@ load('jstests/ssl/libs/ssl_helpers.js');
 // Checking index consistency involves reconnecting to the mongos.
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckRoutingTableConsistency = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 let path = "jstests/libs/";
 let pemKeyFile = path + "server.pem";

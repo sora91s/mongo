@@ -287,9 +287,10 @@ void ClusterExplain::buildExecStats(const vector<AsyncRequestsSender::Response>&
         appendElementsIfRoom(&singleShardBob, execStats);
         singleShardBob.doneFast();
     }
-
     execShardsBuilder.doneFast();
+
     executionStagesBob.doneFast();
+
     if (!firstShardResponseData["executionStats"].Obj().hasField("allPlansExecution")) {
         // The shards don't have execution stats for all plans, so we're done.
         executionStatsBob.doneFast();
@@ -301,7 +302,7 @@ void ClusterExplain::buildExecStats(const vector<AsyncRequestsSender::Response>&
     for (size_t i = 0; i < shardResponses.size(); i++) {
         auto responseData = shardResponses[i].swResponse.getValue().data;
 
-        BSONObjBuilder singleShardBob(allPlansExecBob.subobjStart());
+        BSONObjBuilder singleShardBob(execShardsBuilder.subobjStart());
         singleShardBob.append("shardName", shardResponses[i].shardId.toString());
 
         BSONObj execStats = responseData["executionStats"].Obj();
@@ -315,8 +316,8 @@ void ClusterExplain::buildExecStats(const vector<AsyncRequestsSender::Response>&
 
         singleShardBob.doneFast();
     }
-
     allPlansExecBob.doneFast();
+
     executionStatsBob.doneFast();
 }
 

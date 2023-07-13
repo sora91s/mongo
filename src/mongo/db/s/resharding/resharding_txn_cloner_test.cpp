@@ -27,14 +27,17 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
+#include <boost/optional/optional_io.hpp>
 #include <vector>
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/cancelable_operation_context.h"
 #include "mongo/db/dbdirectclient.h"
+#include "mongo/db/logical_session_cache_noop.h"
 #include "mongo/db/persistent_task_store.h"
 #include "mongo/db/pipeline/process_interface/shardsvr_process_interface.h"
 #include "mongo/db/repl/storage_interface_impl.h"
@@ -44,11 +47,9 @@
 #include "mongo/db/s/resharding/resharding_txn_cloner_progress_gen.h"
 #include "mongo/db/s/shard_server_test_fixture.h"
 #include "mongo/db/s/sharding_state.h"
-#include "mongo/db/session/logical_session_cache_noop.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/session/session_txn_record_gen.h"
-#include "mongo/db/transaction/session_catalog_mongod_transaction_interface_impl.h"
-#include "mongo/db/transaction/transaction_participant.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/session_txn_record_gen.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/db/vector_clock_metadata_hook.h"
 #include "mongo/executor/network_interface_factory.h"
 #include "mongo/executor/thread_pool_task_executor.h"
@@ -60,9 +61,6 @@
 #include "mongo/s/database_version.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/concurrency/thread_pool.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 namespace {
@@ -81,9 +79,10 @@ class ReshardingTxnClonerTest : public ShardServerTestFixture {
         auto mockLoader = std::make_unique<CatalogCacheLoaderMock>();
 
         // The config database's primary shard is always config, and it is always sharded.
-        mockLoader->setDatabaseRefreshReturnValue(DatabaseType{DatabaseName::kConfig.toString(),
-                                                               ShardId::kConfigServerId,
-                                                               DatabaseVersion::makeFixed()});
+        mockLoader->setDatabaseRefreshReturnValue(
+            DatabaseType{NamespaceString::kConfigDb.toString(),
+                         ShardId::kConfigServerId,
+                         DatabaseVersion::makeFixed()});
 
         // The config.transactions collection is always unsharded.
         mockLoader->setCollectionRefreshReturnValue(
@@ -108,12 +107,7 @@ class ReshardingTxnClonerTest : public ShardServerTestFixture {
         // onStepUp() relies on the storage interface to create the config.transactions table.
         repl::StorageInterface::set(getServiceContext(),
                                     std::make_unique<repl::StorageInterfaceImpl>());
-        MongoDSessionCatalog::set(
-            getServiceContext(),
-            std::make_unique<MongoDSessionCatalog>(
-                std::make_unique<MongoDSessionCatalogTransactionInterfaceImpl>()));
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(operationContext());
-        mongoDSessionCatalog->onStepUp(operationContext());
+        MongoDSessionCatalog::onStepUp(operationContext());
         LogicalSessionCache::set(getServiceContext(), std::make_unique<LogicalSessionCacheNoop>());
     }
 
@@ -148,15 +142,6 @@ class ReshardingTxnClonerTest : public ShardServerTestFixture {
                 return repl::OpTimeWith<std::vector<ShardType>>(shardTypes);
             }
 
-            std::pair<CollectionType, std::vector<IndexCatalogType>>
-            getCollectionAndShardingIndexCatalogEntries(
-                OperationContext* opCtx,
-                const NamespaceString& nss,
-                const repl::ReadConcernArgs& readConcern) override {
-                uasserted(ErrorCodes::NamespaceNotFound,
-                          str::stream() << "Collection " << nss.ns() << " not found");
-            }
-
         private:
             const std::vector<ShardId> _shardIds;
         };
@@ -165,6 +150,9 @@ class ReshardingTxnClonerTest : public ShardServerTestFixture {
     }
 
 protected:
+    // TODO (SERVER-65303): Use wiredTiger.
+    ReshardingTxnClonerTest() : ShardServerTestFixture(Options{}.engine("ephemeralForTest")) {}
+
     const UUID kDefaultReshardingId = UUID::gen();
     const std::vector<ShardId> kTwoShardIdList{_myShardName, {"otherShardName"}};
     const std::vector<ReshardingSourceId> kTwoSourceIdList = {
@@ -192,7 +180,7 @@ protected:
     }
 
     LogicalSessionId getTxnRecordLsid(BSONObj txnRecord) {
-        return SessionTxnRecord::parse(IDLParserContext("ReshardingTxnClonerTest"), txnRecord)
+        return SessionTxnRecord::parse(IDLParserErrorContext("ReshardingTxnClonerTest"), txnRecord)
             .getSessionId();
     }
 
@@ -252,8 +240,7 @@ protected:
             opCtx->setInMultiDocumentTransaction();
         }
 
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
 
         auto txnParticipant = TransactionParticipant::get(opCtx);
         ASSERT(txnParticipant);
@@ -276,9 +263,9 @@ protected:
         auto bsonOplog = client.findOne(std::move(findCmd));
         ASSERT(!bsonOplog.isEmpty());
         auto oplogEntry = repl::MutableOplogEntry::parse(bsonOplog).getValue();
-        ASSERT_EQ(oplogEntry.getTxnNumber().value(), txnNum);
+        ASSERT_EQ(oplogEntry.getTxnNumber().get(), txnNum);
         ASSERT_BSONOBJ_EQ(oplogEntry.getObject(), BSON("$sessionMigrateInfo" << 1));
-        ASSERT_BSONOBJ_EQ(oplogEntry.getObject2().value(), BSON("$incompleteOplogHistory" << 1));
+        ASSERT_BSONOBJ_EQ(oplogEntry.getObject2().get(), BSON("$incompleteOplogHistory" << 1));
         ASSERT(oplogEntry.getOpType() == repl::OpTypeEnum::kNoop);
 
         auto bsonTxn =
@@ -286,7 +273,7 @@ protected:
                            BSON(SessionTxnRecord::kSessionIdFieldName << sessionId.toBSON()));
         ASSERT(!bsonTxn.isEmpty());
         auto txn = SessionTxnRecord::parse(
-            IDLParserContext("resharding config transactions cloning test"), bsonTxn);
+            IDLParserErrorContext("resharding config transactions cloning test"), bsonTxn);
         ASSERT_EQ(txn.getTxnNum(), txnNum);
         ASSERT_EQ(txn.getLastWriteOpTime(), oplogEntry.getOpTime());
     }
@@ -294,8 +281,7 @@ protected:
     void checkTxnHasNotBeenUpdated(LogicalSessionId sessionId, TxnNumber txnNum) {
         auto opCtx = operationContext();
         opCtx->setLogicalSessionId(sessionId);
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
         auto txnParticipant = TransactionParticipant::get(opCtx);
 
         DBDirectClient client(operationContext());
@@ -318,8 +304,8 @@ protected:
             return boost::none;
         }
 
-        return ReshardingTxnClonerProgress::parse(IDLParserContext("ReshardingTxnClonerProgress"),
-                                                  progressDoc);
+        return ReshardingTxnClonerProgress::parse(
+            IDLParserErrorContext("ReshardingTxnClonerProgress"), progressDoc);
     }
 
     boost::optional<LogicalSessionId> getProgressLsid(const ReshardingSourceId& sourceId) {
@@ -370,8 +356,8 @@ protected:
         std::shared_ptr<executor::ThreadPoolTaskExecutor> cleanupExecutor,
         boost::optional<CancellationToken> customCancelToken = boost::none) {
         // Allows callers to control the cancellation of the cloner's run() function when specified.
-        auto cancelToken = customCancelToken.has_value()
-            ? customCancelToken.value()
+        auto cancelToken = customCancelToken.is_initialized()
+            ? customCancelToken.get()
             : operationContext()->getCancellationToken();
 
         auto cancelableOpCtxExecutor = std::make_shared<ThreadPool>([] {
@@ -402,8 +388,7 @@ protected:
         opCtx->setLogicalSessionId(std::move(lsid));
         opCtx->setTxnNumber(txnNumber);
 
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
         auto txnParticipant = TransactionParticipant::get(opCtx);
         txnParticipant.beginOrContinue(
             opCtx, {txnNumber}, false /* autocommit */, true /* startTransaction */);
@@ -419,8 +404,7 @@ protected:
         opCtx->setLogicalSessionId(std::move(lsid));
         opCtx->setTxnNumber(txnNumber);
 
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
         auto txnParticipant = TransactionParticipant::get(opCtx);
         txnParticipant.beginOrContinue(
             opCtx, {txnNumber}, false /* autocommit */, true /* startTransaction */);
@@ -429,18 +413,7 @@ protected:
 
         // The transaction machinery cannot store an empty locker.
         { Lock::GlobalLock globalLock(opCtx, MODE_IX); }
-        auto opTime = [opCtx] {
-            TransactionParticipant::SideTransactionBlock sideTxn{opCtx};
-
-            WriteUnitOfWork wuow{opCtx};
-            auto opTime = repl::getNextOpTime(opCtx);
-            wuow.release();
-
-            opCtx->recoveryUnit()->abortUnitOfWork();
-            opCtx->lockState()->endWriteUnitOfWork();
-
-            return opTime;
-        }();
+        auto opTime = repl::getNextOpTime(opCtx);
         txnParticipant.prepareTransaction(opCtx, opTime);
         txnParticipant.stashTransactionResources(opCtx);
 
@@ -452,8 +425,7 @@ protected:
         opCtx->setLogicalSessionId(std::move(lsid));
         opCtx->setTxnNumber(txnNumber);
 
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-        auto ocs = mongoDSessionCatalog->checkOutSession(opCtx);
+        MongoDOperationContextSession ocs(opCtx);
         auto txnParticipant = TransactionParticipant::get(opCtx);
         txnParticipant.beginOrContinue(
             opCtx, {txnNumber}, false /* autocommit */, boost::none /* startTransaction */);

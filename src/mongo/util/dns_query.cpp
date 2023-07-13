@@ -30,6 +30,8 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/util/dns_query.h"
+#include <arpa/nameser.h>
+#include <resolv.h>
 
 #include <array>
 #include <cassert>

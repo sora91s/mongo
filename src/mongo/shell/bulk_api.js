@@ -89,7 +89,7 @@ var _bulk_api_module = (function() {
         };
 
         this.toString = function() {
-            return "WriteConcern(" + this.tojson() + ")";
+            return this.tojson();
         };
 
         this.shellPrint = function() {
@@ -203,9 +203,9 @@ var _bulk_api_module = (function() {
         this.toString = function() {
             // Suppress all output for the write concern w:0, since the client doesn't care.
             if (writeConcern && writeConcern.w == 0) {
-                return "WriteResult(" + tojson({}) + ")";
+                return tojson({});
             }
-            return "WriteResult(" + this.tojson() + ")";
+            return this.tojson();
         };
 
         this.shellPrint = function() {
@@ -299,9 +299,9 @@ var _bulk_api_module = (function() {
         this.toString = function() {
             // Suppress all output for the write concern w:0, since the client doesn't care.
             if (writeConcern && writeConcern.w == 0) {
-                return "BulkWriteResult(" + tojson({}) + ")";
+                return tojson({});
             }
-            return "BulkWriteResult(" + this.tojson() + ")";
+            return this.tojson();
         };
 
         this.shellPrint = function() {
@@ -366,7 +366,7 @@ var _bulk_api_module = (function() {
         delete this.toError;
 
         this.toString = function() {
-            return "BulkWriteError(" + this.tojson() + ")";
+            return this.tojson();
         };
         this.stack = this.toString() + "\n" + (new Error().stack);
 
@@ -416,7 +416,7 @@ var _bulk_api_module = (function() {
         };
 
         this.toString = function() {
-            return "WriteCommandError(" + this.tojson() + ")";
+            return this.tojson();
         };
         this.stack = this.toString() + "\n" + (new Error().stack);
 
@@ -460,7 +460,7 @@ var _bulk_api_module = (function() {
         };
 
         this.toString = function() {
-            return "WriteError(" + tojson(err) + ")";
+            return tojson(err);
         };
         this.stack = this.toString() + "\n" + (new Error().stack);
 
@@ -495,7 +495,7 @@ var _bulk_api_module = (function() {
         };
 
         this.toString = function() {
-            return "WriteConcernError(" + tojson(err) + ")";
+            return tojson(err);
         };
         this.stack = this.toString() + "\n" + (new Error().stack);
 
@@ -527,7 +527,7 @@ var _bulk_api_module = (function() {
 
         // Set max byte size
         var maxBatchSizeBytes = 1024 * 1024 * 16;
-        var maxNumberOfDocsInBatch = 1000;
+        var maxNumberOfDocsInBatch = (TestData && TestData.disableBatchWrites) ? 1 : 1000;
         var idFieldOverhead = Object.bsonsize({_id: ObjectId()}) - Object.bsonsize({});
         var writeConcern = null;
         var letParams = null;

@@ -963,16 +963,14 @@ TEST(NewYorkTimeAfterEpoch, DoesOutputFormatDate) {
     auto date = Date_t::fromMillisSinceEpoch(1496777923234LL);
     std::ostringstream os;
     auto newYorkZone = kDefaultTimeZoneDatabase.getTimeZone("America/New_York");
-    ASSERT_OK(newYorkZone.outputDateWithFormat(
-        os,
-        "%Y/%m/%d %H:%M:%S:%L, dayOfYear: %j, "
-        "dayOfWeek: %w, week: %U, isoYear: %G, "
-        "isoWeek: %V, isoDayOfWeek: %u, monthName: %B, monthNameThreeLetter: %b, percent: %%",
-        date));
-    ASSERT_EQ(
-        os.str(),
-        "2017/06/06 15:38:43:234, dayOfYear: 157, dayOfWeek: 3, week: 23, isoYear: 2017, "
-        "isoWeek: 23, isoDayOfWeek: 2, monthName: June, monthNameThreeLetter: Jun, percent: %");
+    ASSERT_OK(newYorkZone.outputDateWithFormat(os,
+                                               "%Y/%m/%d %H:%M:%S:%L, dayOfYear: %j, "
+                                               "dayOfWeek: %w, week: %U, isoYear: %G, "
+                                               "isoWeek: %V, isoDayOfWeek: %u, percent: %%",
+                                               date));
+    ASSERT_EQ(os.str(),
+              "2017/06/06 15:38:43:234, dayOfYear: 157, dayOfWeek: 3, week: 23, isoYear: 2017, "
+              "isoWeek: 23, isoDayOfWeek: 2, percent: %");
 }
 
 TEST(DateFormat, ThrowsUserExceptionIfGivenUnrecognizedFormatter) {
@@ -1036,17 +1034,6 @@ TEST(DateFromString, CorrectlyParsesStringThatMatchesFormat) {
     auto result = TimeZoneDatabase::utcZone().formatDate(format, date);
     ASSERT_OK(result);
     ASSERT_EQ(input, result.getValue());
-}
-
-TEST(DateFromString, CorrectlyParsesStringWithDayFromYearFormat) {
-    auto input = "2017-302";
-    auto expected = "2017, Day 303";
-    auto inputFormat = "%Y-%j"_sd;
-    auto outputFormat = "%Y, Day %j"_sd;
-    auto date = kDefaultTimeZoneDatabase.fromString(input, kDefaultTimeZone, inputFormat);
-    auto result = TimeZoneDatabase::utcZone().formatDate(outputFormat, date);
-    ASSERT_OK(result);
-    ASSERT_EQ(expected, result.getValue());
 }
 
 TEST(DateFromString, RejectsStringWithInvalidYearFormat) {
@@ -2981,14 +2968,6 @@ TEST(ParseDayOfWeek, Basic) {
     ASSERT(DayOfWeek::thursday == parseDayOfWeek("thursday"));
     ASSERT(DayOfWeek::saturday == parseDayOfWeek("SAT"));
     ASSERT_THROWS_CODE(parseDayOfWeek(""), AssertionException, ErrorCodes::FailedToParse);
-}
-
-TEST(TimeZoneToString, Basic) {
-    // Just asserting that these do not throw exceptions.
-    ASSERT_EQ(kDefaultTimeZoneDatabase.getTimeZone("UTC").toString(), "TimeZone(UTC)");
-    ASSERT_EQ(kDefaultTimeZoneDatabase.getTimeZone("America/New_York").toString(),
-              "TimeZone(name=America/New_York)");
-    ASSERT_EQ(kDefaultTimeZoneDatabase.getTimeZone("+02").toString(), "TimeZone(utcOffset=7200s)");
 }
 }  // namespace
 }  // namespace mongo

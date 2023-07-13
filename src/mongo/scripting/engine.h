@@ -28,11 +28,13 @@
  */
 
 #pragma once
+#include <iostream>
 
 #include "mongo/base/string_data.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/service_context.h"
 #include "mongo/platform/atomic_word.h"
+using namespace std;
 
 namespace mongo {
 typedef unsigned long long ScriptingFunction;
@@ -163,6 +165,14 @@ public:
                       bool assertOnError,
                       int timeoutMs = 0) = 0;
 
+    virtual bool execAndGetResult(StringData code,
+                      const std::string& name,
+                      bool printResult,
+                      bool reportError,
+                      bool assertOnError,
+                      std::string& res,
+                      int timeoutMs = 0) = 0;
+
     virtual void execSetup(StringData code, const std::string& name = "setup") {
         exec(code, name, false, true, true, 0);
     }
@@ -244,9 +254,6 @@ public:
 
     virtual int getJSHeapLimitMB() const = 0;
     virtual void setJSHeapLimitMB(int limit) = 0;
-
-    virtual std::string getLoadPath() const = 0;
-    virtual void setLoadPath(const std::string& loadPath) = 0;
 
     /**
      * Calls the constructor for the Global ScriptEngine. 'disableLoadStored' causes future calls to

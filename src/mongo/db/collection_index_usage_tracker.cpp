@@ -27,30 +27,37 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/collection_index_usage_tracker.h"
 
 #include <atomic>
 
+#include "mongo/base/counter.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/clock_source.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 namespace {
-CounterMetric collectionScansCounter("queryExecutor.collectionScans.total");
-CounterMetric collectionScansNonTailableCounter("queryExecutor.collectionScans.nonTailable");
+Counter64 collectionScansCounter;
+Counter64 collectionScansNonTailableCounter;
+
+ServerStatusMetricField<Counter64> displayCollectionScans("queryExecutor.collectionScans.total",
+                                                          &collectionScansCounter);
+ServerStatusMetricField<Counter64> displayCollectionScansNonTailable(
+    "queryExecutor.collectionScans.nonTailable", &collectionScansNonTailableCounter);
+
 }  // namespace
 
 CollectionIndexUsageTracker::CollectionIndexUsageTracker(
-    AggregatedIndexUsageTracker* aggregatedIndexUsageTracker, ClockSource* clockSource)
+    GlobalIndexUsageTracker* globalIndexUsageTracker, ClockSource* clockSource)
     : _indexUsageStatsMap(std::make_shared<CollectionIndexUsageMap>()),
       _clockSource(clockSource),
-      _aggregatedIndexUsageTracker(aggregatedIndexUsageTracker) {
+      _globalIndexUsageTracker(globalIndexUsageTracker) {
     invariant(_clockSource);
 }
 
@@ -67,7 +74,7 @@ void CollectionIndexUsageTracker::recordIndexAccess(StringData indexName) {
         return;
     }
 
-    _aggregatedIndexUsageTracker->onAccess(it->second->features);
+    _globalIndexUsageTracker->onAccess(it->second->features);
 
     // Increment the index usage atomic counter.
     it->second->accesses.fetchAndAdd(1);
@@ -100,7 +107,7 @@ void CollectionIndexUsageTracker::registerIndex(StringData indexName,
         indexName, make_intrusive<IndexUsageStats>(_clockSource->now(), indexKey, features));
     invariant(inserted.second);
 
-    _aggregatedIndexUsageTracker->onRegister(inserted.first->second->features);
+    _globalIndexUsageTracker->onRegister(inserted.first->second->features);
 
     // Swap the modified map into place atomically.
     atomic_store(&_indexUsageStatsMap, std::move(mapCopy));
@@ -115,7 +122,7 @@ void CollectionIndexUsageTracker::unregisterIndex(StringData indexName) {
 
     auto it = mapCopy->find(indexName);
     if (it != mapCopy->end()) {
-        _aggregatedIndexUsageTracker->onUnregister(it->second->features);
+        _globalIndexUsageTracker->onUnregister(it->second->features);
 
         // Remove the map entry.
         mapCopy->erase(it);

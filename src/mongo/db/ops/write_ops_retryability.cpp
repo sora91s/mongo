@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/logv2/redaction.h"
 #include "mongo/stdx/mutex.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 namespace {
 
@@ -58,7 +56,7 @@ void validateFindAndModifyRetryability(const write_ops::FindAndModifyCommandRequ
                                        const repl::OplogEntry& oplogWithCorrectLinks) {
     auto opType = oplogEntry.getOpType();
     auto ts = oplogEntry.getTimestamp();
-    const bool needsRetryImage = oplogEntry.getNeedsRetryImage().has_value();
+    const bool needsRetryImage = oplogEntry.getNeedsRetryImage().is_initialized();
 
     if (opType == repl::OpTypeEnum::kDelete) {
         uassert(
@@ -119,11 +117,11 @@ BSONObj extractPreOrPostImage(OperationContext* opCtx, const repl::OplogEntry& o
     DBDirectClient client(opCtx);
     if (oplog.getNeedsRetryImage()) {
         // Extract image from side collection.
-        LogicalSessionId sessionId = oplog.getSessionId().value();
-        TxnNumber txnNumber = oplog.getTxnNumber().value();
+        LogicalSessionId sessionId = oplog.getSessionId().get();
+        TxnNumber txnNumber = oplog.getTxnNumber().get();
         Timestamp ts = oplog.getTimestamp();
         auto curOp = CurOp::get(opCtx);
-        const auto existingNS = curOp->getNSS();
+        const std::string existingNS = curOp->getNS();
         BSONObj imageDoc = client.findOne(NamespaceString::kConfigImagesNamespace,
                                           BSON("_id" << sessionId.toBSON()));
         {
@@ -144,7 +142,8 @@ BSONObj extractPreOrPostImage(OperationContext* opCtx, const repl::OplogEntry& o
                     << sessionId.toBSON() << " cannot be found");
         }
 
-        auto entry = repl::ImageEntry::parse(IDLParserContext("ImageEntryForRequest"), imageDoc);
+        auto entry =
+            repl::ImageEntry::parse(IDLParserErrorContext("ImageEntryForRequest"), imageDoc);
         if (entry.getInvalidated()) {
             // This case is expected when a node could not correctly compute a retry image due
             // to data inconsistency while in initial sync.

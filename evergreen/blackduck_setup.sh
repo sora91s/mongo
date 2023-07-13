@@ -9,7 +9,6 @@ cat > .restconfig.json << END_OF_CREDS
 "baseurl": "${blackduck_url}",
 "username": "${blackduck_username}",
 "password": "${blackduck_password}",
-"token": "${blackduck_token}",
 "debug": false,
 "insecure" : false
 }

@@ -165,7 +165,7 @@ const testCases = [
         // Invalid 'unit' value.
         pipeline: aggregationPipelineWithDateDiff,
         inputDocuments: [{startDate: someDate, endDate: someDate, unit: "decade", timeZone: "UTC"}],
-        expectedErrorCode: ErrorCodes.FailedToParse,
+        expectedErrorCode: 5439014,
     },
     {
         // Null 'timezone'.
@@ -174,12 +174,10 @@ const testCases = [
         expectedResults: [{date_diff: null}],
     },
     {
-        // Missing 'timezone' value in the document, invalid other fields. Result could be a null
-        // answer or an error code depending whether pipeline is optimized.
+        // Missing 'timezone' value in the document, invalid other fields.
         pipeline: aggregationPipelineWithDateDiff,
         inputDocuments: [{startDate: 1, endDate: 2, unit: "century"}],
         expectedResults: [{date_diff: null}],
-        expectedErrorCode: ErrorCodes.FailedToParse,
     },
     {
         // Invalid 'timezone' type.

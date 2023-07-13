@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -40,15 +41,14 @@
 #include "mongo/s/catalog/type_changelog.h"
 #include "mongo/s/grid.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 
 namespace {
 
 const std::string kActionLogCollectionName("actionlog");
 const int kActionLogCollectionSizeMB = 20 * 1024 * 1024;
+
+const std::string kChangeLogCollectionName("changelog");
 const int kChangeLogCollectionSizeMB = 200 * 1024 * 1024;
 
 // Global ShardingLogging instance
@@ -105,7 +105,7 @@ Status ShardingLogging::logChangeChecked(OperationContext* opCtx,
               writeConcern.isMajority());
     if (_changeLogCollectionCreated.load() == 0) {
         Status result = _createCappedConfigCollection(
-            opCtx, ChangeLogType::ConfigNS.coll(), kChangeLogCollectionSizeMB, writeConcern);
+            opCtx, kChangeLogCollectionName, kChangeLogCollectionSizeMB, writeConcern);
         if (result.isOK()) {
             _changeLogCollectionCreated.store(1);
         } else {
@@ -117,7 +117,7 @@ Status ShardingLogging::logChangeChecked(OperationContext* opCtx,
         }
     }
 
-    return _log(opCtx, ChangeLogType::ConfigNS.coll(), what, ns, detail, writeConcern);
+    return _log(opCtx, kChangeLogCollectionName, what, ns, detail, writeConcern);
 }
 
 Status ShardingLogging::_log(OperationContext* opCtx,
@@ -159,7 +159,7 @@ Status ShardingLogging::_log(OperationContext* opCtx,
           "namespace"_attr = logCollName,
           "event"_attr = redact(changeLogBSON));
 
-    const NamespaceString nss(NamespaceString::makeGlobalConfigCollection(logCollName));
+    const NamespaceString nss("config", logCollName);
     Status result = Grid::get(opCtx)->catalogClient()->insertConfigDocument(
         opCtx, nss, changeLogBSON, writeConcern);
 

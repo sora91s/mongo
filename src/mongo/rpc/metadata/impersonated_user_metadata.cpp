@@ -55,27 +55,12 @@ void readImpersonatedUserMetadata(const BSONElement& elem, OperationContext* opC
     // Always reset the current impersonation data to boost::none.
     MaybeImpersonatedUserMetadata newData;
     if (elem.type() == Object) {
-        IDLParserContext errCtx(kImpersonationMetadataSectionName);
+        IDLParserErrorContext errCtx(kImpersonationMetadataSectionName);
         auto data = ImpersonatedUserMetadata::parse(errCtx, elem.embeddedObject());
-
-        // TODO SERVER-72448: Remove the getUsers() pathway
-        // In the meantime, we only accept $impersonatedUser OR $impersonatedUsers with exactly 1
-        // user.
-        auto newImpersonatedUser = data.getUser();
-        auto legacyImpersonatedUser = data.getUsers();
-        uassert(ErrorCodes::BadValue,
-                "Cannot specify both $impersonatedUser and $impersonatedUsers",
-                !newImpersonatedUser || !legacyImpersonatedUser);
-        uassert(ErrorCodes::BadValue,
-                "Can only impersonate up to one user per connection",
-                !legacyImpersonatedUser || legacyImpersonatedUser->empty() ||
-                    legacyImpersonatedUser->size() == 1);
 
         // Set the impersonation data only if there are actually impersonated
         // users/roles.
-        const bool userExists =
-            newImpersonatedUser || (legacyImpersonatedUser && !legacyImpersonatedUser->empty());
-        if (userExists || !data.getRoles().empty()) {
+        if ((!data.getUsers().empty()) || (!data.getRoles().empty())) {
             newData = std::move(data);
         }
     }
@@ -90,32 +75,20 @@ void writeAuthDataToImpersonatedUserMetadata(OperationContext* opCtx, BSONObjBui
 
     // Otherwise construct a metadata section from the list of authenticated users/roles
     auto authSession = AuthorizationSession::get(opCtx->getClient());
-    auto userName = authSession->getImpersonatedUserName();
+    auto userNames = authSession->getImpersonatedUserNames();
     auto roleNames = authSession->getImpersonatedRoleNames();
-    if (!userName && !roleNames.more()) {
-        userName = authSession->getAuthenticatedUserName();
+    if (!userNames.more() && !roleNames.more()) {
+        userNames = authSession->getAuthenticatedUserNames();
         roleNames = authSession->getAuthenticatedRoleNames();
     }
 
     // If there are no users/roles being impersonated just exit
-    if (!userName && !roleNames.more()) {
+    if (!userNames.more() && !roleNames.more()) {
         return;
     }
 
     ImpersonatedUserMetadata metadata;
-    if (serverGlobalParams.featureCompatibility.isLessThanOrEqualTo(
-            multiversion::FeatureCompatibilityVersion::kVersion_6_2)) {
-        if (userName) {
-            metadata.setUsers({{userName.value()}});
-        } else {
-            metadata.setUsers({});
-        }
-    } else {
-        if (userName) {
-            metadata.setUser(userName.value());
-        }
-    }
-
+    metadata.setUsers(userNameIteratorToContainer<std::vector<UserName>>(userNames));
     metadata.setRoles(roleNameIteratorToContainer<std::vector<RoleName>>(roleNames));
 
     BSONObjBuilder section(out->subobjStart(kImpersonationMetadataSectionName));

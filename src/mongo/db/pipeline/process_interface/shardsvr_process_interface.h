@@ -51,7 +51,7 @@ public:
 
     void checkRoutingInfoEpochOrThrow(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                       const NamespaceString& nss,
-                                      ChunkVersion targetCollectionPlacementVersion) const final;
+                                      ChunkVersion targetCollectionVersion) const final;
 
     std::vector<FieldPath> collectDocumentKeyFieldsActingAsRouter(
         OperationContext*, const NamespaceString&) const final {
@@ -96,21 +96,21 @@ public:
     BSONObj preparePipelineAndExplain(Pipeline* ownedPipeline,
                                       ExplainOptions::Verbosity verbosity) final;
 
+    std::unique_ptr<ShardFilterer> getShardFilterer(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx) const override final;
+
     BSONObj getCollectionOptions(OperationContext* opCtx, const NamespaceString& nss) final;
 
     std::list<BSONObj> getIndexSpecs(OperationContext* opCtx,
                                      const NamespaceString& ns,
                                      bool includeBuildUUIDs) final;
     void renameIfOptionsAndIndexesHaveNotChanged(OperationContext* opCtx,
-                                                 const NamespaceString& sourceNs,
+                                                 const BSONObj& renameCommandObj,
                                                  const NamespaceString& targetNs,
-                                                 bool dropTarget,
-                                                 bool stayTemp,
-                                                 bool allowBuckets,
                                                  const BSONObj& originalCollectionOptions,
                                                  const std::list<BSONObj>& originalIndexes) final;
     void createCollection(OperationContext* opCtx,
-                          const DatabaseName& dbName,
+                          const std::string& dbName,
                           const BSONObj& cmdObj) final;
     void createIndexesOnEmptyCollection(OperationContext* opCtx,
                                         const NamespaceString& ns,
@@ -134,25 +134,6 @@ public:
         const boost::optional<DatabaseVersion>& dbVersion) override;
 
     void checkOnPrimaryShardForDb(OperationContext* opCtx, const NamespaceString& nss) final;
-
-    void createTimeseries(OperationContext* opCtx,
-                          const NamespaceString& ns,
-                          const BSONObj& options,
-                          bool createView) final {
-        // TODO SERVER-74061 remove uassert.
-        uasserted(7268704,
-                  "$out for time-series collections is not supported on sharded clusters.");
-    }
-
-    Status insertTimeseries(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                            const NamespaceString& ns,
-                            std::vector<BSONObj>&& objs,
-                            const WriteConcernOptions& wc,
-                            boost::optional<OID> targetEpoch) final {
-        // TODO SERVER-74061 remove uassert.
-        uasserted(7268705,
-                  "$out for time-series collections is not supported on sharded clusters.");
-    }
 };
 
 }  // namespace mongo

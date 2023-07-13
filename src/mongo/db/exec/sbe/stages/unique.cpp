@@ -37,15 +37,13 @@ namespace mongo {
 namespace sbe {
 UniqueStage::UniqueStage(std::unique_ptr<PlanStage> input,
                          value::SlotVector keys,
-                         PlanNodeId planNodeId,
-                         bool participateInTrialRunTracking)
-    : PlanStage("unique"_sd, planNodeId, participateInTrialRunTracking), _keySlots(keys) {
+                         PlanNodeId planNodeId)
+    : PlanStage("unique"_sd, planNodeId), _keySlots(keys) {
     _children.emplace_back(std::move(input));
 }
 
 std::unique_ptr<PlanStage> UniqueStage::clone() const {
-    return std::make_unique<UniqueStage>(
-        _children[0]->clone(), _keySlots, _commonStats.nodeId, _participateInTrialRunTracking);
+    return std::make_unique<UniqueStage>(_children[0]->clone(), _keySlots, _commonStats.nodeId);
 }
 
 void UniqueStage::prepare(CompileCtx& ctx) {

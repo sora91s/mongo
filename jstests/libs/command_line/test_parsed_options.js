@@ -114,7 +114,7 @@ function testGetCmdLineOptsMongod(mongoRunnerConfig, expectedResult) {
     delete getCmdLineOptsResult.parsed.setParameter.backtraceLogFile;
 
     // Make sure the options are equal to what we expect
-    assert.docEq(expectedResult.parsed, getCmdLineOptsResult.parsed);
+    assert.docEq(getCmdLineOptsResult.parsed, expectedResult.parsed);
 
     // Cleanup
     mongod.getDB("admin").logout();
@@ -143,8 +143,8 @@ function testGetCmdLineOptsMongos(mongoRunnerConfig, expectedResult) {
     // options of its own, and we only want to compare against the options we care about.
     function getCmdLineOptsFromMongos(mongosOptions) {
         // Start mongod with no options
-        var baseMongod =
-            MongoRunner.runMongod({configsvr: "", replSet: "csrs", storageEngine: "wiredTiger"});
+        var baseMongod = MongoRunner.runMongod(
+            {configsvr: "", journal: "", replSet: "csrs", storageEngine: "wiredTiger"});
         assert.commandWorked(baseMongod.adminCommand({
             replSetInitiate:
                 {_id: "csrs", configsvr: true, members: [{_id: 0, host: baseMongod.host}]}
@@ -206,7 +206,7 @@ function testGetCmdLineOptsMongos(mongoRunnerConfig, expectedResult) {
     }
 
     // Make sure the options are equal to what we expect
-    assert.docEq(expectedResult.parsed, getCmdLineOptsResult.parsed);
+    assert.docEq(getCmdLineOptsResult.parsed, expectedResult.parsed);
 }
 
 // Tests that the passed configuration will not run a new mongod instances. Mainly used to test

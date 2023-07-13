@@ -21,5 +21,5 @@ assert.commandWorked(coll.insert([
 
 let res = coll.explain("executionStats").aggregate([{$unwind: '$x'}]);
 assert.eq(4, res.executionStats.nReturned);
-assertValueOnPlanPath("Unwind", res, "child.child.nodeType");
+assert.eq("Unwind", res.queryPlanner.winningPlan.optimizerPlan.child.child.nodeType);
 }());

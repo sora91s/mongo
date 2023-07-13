@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/embedded/periodic_runner_embedded.h"
 #include "mongo/transport/service_executor.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 
 namespace {
@@ -53,8 +51,8 @@ namespace {
  */
 class EmbeddedClientObserver final : public ServiceContext::ClientObserver {
     void onCreateClient(Client* client) {
-        auto seCtx = std::make_unique<transport::ServiceExecutorContext>();
-        seCtx->setUseDedicatedThread(true);
+        auto seCtx = transport::ServiceExecutorContext{};
+        seCtx.setThreadingModel(transport::ServiceExecutor::ThreadingModel::kDedicated);
         transport::ServiceExecutorContext::set(client, std::move(seCtx));
     }
     void onDestroyClient(Client*) {}
@@ -86,7 +84,7 @@ public:
                             const OpMsgRequest& request) const override {
         auto rcStatus = mongo::waitForReadConcern(opCtx,
                                                   repl::ReadConcernArgs::get(opCtx),
-                                                  invocation->ns().dbName(),
+                                                  request.getDatabase(),
                                                   invocation->allowsAfterClusterTime());
         uassertStatusOK(rcStatus);
     }
@@ -123,24 +121,20 @@ public:
 
     void attachCurOpErrInfo(OperationContext*, const BSONObj&) const override {}
 
-    bool refreshDatabase(OperationContext* opCtx,
-                         const StaleDbRoutingVersion& se) const noexcept override {
+    bool refreshDatabase(OperationContext* opCtx, const StaleDbRoutingVersion& se) const
+        noexcept override {
         return false;
     }
 
-    bool refreshCollection(OperationContext* opCtx,
-                           const StaleConfigInfo& se) const noexcept override {
+    bool refreshCollection(OperationContext* opCtx, const StaleConfigInfo& se) const
+        noexcept override {
         return false;
     }
 
-    bool refreshCatalogCache(
-        OperationContext* opCtx,
-        const ShardCannotRefreshDueToLocksHeldInfo& refreshInfo) const noexcept override {
+    bool refreshCatalogCache(OperationContext* opCtx,
+                             const ShardCannotRefreshDueToLocksHeldInfo& refreshInfo) const
+        noexcept override {
         return false;
-    }
-
-    void handleReshardingCriticalSectionMetrics(OperationContext* opCtx,
-                                                const StaleConfigInfo& se) const noexcept override {
     }
 
     void resetLockerState(OperationContext* opCtx) const noexcept override {}
@@ -149,6 +143,9 @@ public:
         OperationContext* opCtx) const override {
         return nullptr;
     }
+
+    void appendReplyMetadataOnError(OperationContext* opCtx,
+                                    BSONObjBuilder* metadataBob) const override {}
 
     void appendReplyMetadata(OperationContext* opCtx,
                              const OpMsgRequest& request,
@@ -165,7 +162,7 @@ Future<DbResponse> ServiceEntryPointEmbedded::handleRequest(OperationContext* op
     return ServiceEntryPointCommon::handleRequest(opCtx, m, std::make_unique<Hooks>());
 }
 
-void ServiceEntryPointEmbedded::startSession(std::shared_ptr<transport::Session> session) {
+void ServiceEntryPointEmbedded::startSession(transport::SessionHandle session) {
     UASSERT_NOT_IMPLEMENTED;
 }
 
@@ -184,10 +181,6 @@ void ServiceEntryPointEmbedded::appendStats(BSONObjBuilder*) const {
 }
 
 size_t ServiceEntryPointEmbedded::numOpenSessions() const {
-    UASSERT_NOT_IMPLEMENTED;
-}
-
-logv2::LogSeverity ServiceEntryPointEmbedded::slowSessionWorkflowLogSeverity() {
     UASSERT_NOT_IMPLEMENTED;
 }
 

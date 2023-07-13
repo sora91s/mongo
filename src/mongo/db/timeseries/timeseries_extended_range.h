@@ -55,7 +55,7 @@ bool bucketsHaveDateOutsideStandardRange(const TimeseriesOptions& options,
  * with dates that fall outside the standard range.
  */
 bool collectionMayRequireExtendedRangeSupport(OperationContext* opCtx,
-                                              const Collection& collection);
+                                              const CollectionPtr& collection);
 
 /**
  * Determines whether a time-series collection has an index primarily ordered by a time field. This

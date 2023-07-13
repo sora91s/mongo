@@ -83,9 +83,5 @@ void HeartbeatResponseAction::setBecameElectable(bool becameElectable) {
     _becameElectable = becameElectable;
 }
 
-void HeartbeatResponseAction::setChangedMemberState(bool changedMemberState) {
-    _changedMemberState = changedMemberState;
-}
-
 }  // namespace repl
 }  // namespace mongo

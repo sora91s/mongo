@@ -30,7 +30,6 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/matcher/schema/expression_internal_schema_allowed_properties.h"
-#include "mongo/util/errno_util.h"
 
 namespace mongo {
 constexpr StringData InternalSchemaAllowedPropertiesMatchExpression::kName;
@@ -48,10 +47,10 @@ InternalSchemaAllowedPropertiesMatchExpression::InternalSchemaAllowedPropertiesM
       _otherwise(std::move(otherwise)) {
 
     for (auto&& constraint : _patternProperties) {
-        const auto& re = constraint.first.regex;
+        const auto& errorStr = constraint.first.regex->error();
         uassert(ErrorCodes::BadValue,
-                str::stream() << "Invalid regular expression: " << errorMessage(re->error()),
-                *re);
+                str::stream() << "Invalid regular expression: " << errorStr,
+                errorStr.empty());
     }
 }
 
@@ -60,7 +59,7 @@ void InternalSchemaAllowedPropertiesMatchExpression::debugString(StringBuilder& 
     _debugAddSpace(debug, indentationLevel);
 
     BSONObjBuilder builder;
-    serialize(&builder, {});
+    serialize(&builder, true);
     debug << builder.obj().toString() << "\n";
 
     const auto* tag = getTag();
@@ -108,7 +107,7 @@ bool InternalSchemaAllowedPropertiesMatchExpression::_matchesBSONObj(const BSONO
     for (auto&& property : obj) {
         bool checkOtherwise = true;
         for (auto&& constraint : _patternProperties) {
-            if (constraint.first.regex->matchView(property.fieldName())) {
+            if (constraint.first.regex->PartialMatch(property.fieldName())) {
                 checkOtherwise = false;
                 if (!constraint.second->matchesBSONElement(property)) {
                     return false;
@@ -129,8 +128,7 @@ bool InternalSchemaAllowedPropertiesMatchExpression::_matchesBSONObj(const BSONO
 }
 
 void InternalSchemaAllowedPropertiesMatchExpression::serialize(BSONObjBuilder* builder,
-                                                               SerializationOptions opts) const {
-    // TODO SERVER-73678 respect 'opts'.
+                                                               bool includePath) const {
     BSONObjBuilder expressionBuilder(
         builder->subobjStart(InternalSchemaAllowedPropertiesMatchExpression::kName));
 
@@ -146,13 +144,13 @@ void InternalSchemaAllowedPropertiesMatchExpression::serialize(BSONObjBuilder* b
         itemBuilder.appendRegex("regex", item.first.rawRegex);
 
         BSONObjBuilder subexpressionBuilder(itemBuilder.subobjStart("expression"));
-        item.second->getFilter()->serialize(&subexpressionBuilder, opts);
+        item.second->getFilter()->serialize(&subexpressionBuilder, includePath);
         subexpressionBuilder.doneFast();
     }
     patternPropertiesBuilder.doneFast();
 
     BSONObjBuilder otherwiseBuilder(expressionBuilder.subobjStart("otherwise"));
-    _otherwise->getFilter()->serialize(&otherwiseBuilder, opts);
+    _otherwise->getFilter()->serialize(&otherwiseBuilder, includePath);
     otherwiseBuilder.doneFast();
     expressionBuilder.doneFast();
 }

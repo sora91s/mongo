@@ -42,7 +42,7 @@ public:
     WindowFunctionAddToSetTest() : expCtx(getExpCtx()), addToSet(expCtx.get()) {}
 
     void addValuesToWindow(const std::vector<Value>& values) {
-        for (const auto& val : values)
+        for (auto val : values)
             addToSet.add(val);
     }
 

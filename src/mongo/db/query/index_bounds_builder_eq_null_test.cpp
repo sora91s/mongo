@@ -207,7 +207,7 @@ TEST_F(IndexBoundsBuilderTest, TranslateNotEqualToNullShouldBuildExactBoundsIfIn
     BSONObj indexPattern = BSON("a" << 1);
     auto testIndex = buildSimpleIndexEntry(indexPattern);
 
-    for (const BSONObj& obj : kNeNullQueries) {
+    for (BSONObj obj : kNeNullQueries) {
         // It's necessary to call optimize since the $not will have a singleton $and child, which
         // IndexBoundsBuilder::translate cannot handle.
         auto [expr, inputParamIdMap] = parseMatchExpression(obj);
@@ -234,7 +234,7 @@ TEST_F(IndexBoundsBuilderTest,
     testIndex.multikeyPaths = {MultikeyComponents{},
                                MultikeyComponents{0}};  // "a" is not multi-key, but "b" is.
 
-    for (const BSONObj& obj : kNeNullQueries) {
+    for (BSONObj obj : kNeNullQueries) {
         // It's necessary to call optimize since the $not will have a singleton $and child, which
         // IndexBoundsBuilder::translate cannot handle.
         auto [expr, inputParamIdMap] = parseMatchExpression(obj);
@@ -258,7 +258,7 @@ TEST_F(IndexBoundsBuilderTest, TranslateNotEqualToNullShouldBuildExactBoundsOnRe
     BSONObj indexPattern = BSON("a" << -1);
     auto testIndex = buildSimpleIndexEntry(indexPattern);
 
-    for (const BSONObj& obj : kNeNullQueries) {
+    for (BSONObj obj : kNeNullQueries) {
         // It's necessary to call optimize since the $not will have a singleton $and child, which
         // IndexBoundsBuilder::translate cannot handle.
         auto [expr, inputParamIdMap] = parseMatchExpression(obj);
@@ -283,7 +283,7 @@ TEST_F(IndexBoundsBuilderTest, TranslateNotEqualToNullShouldBuildInexactBoundsIf
     auto testIndex = buildSimpleIndexEntry(indexPattern);
     testIndex.multikey = true;
 
-    for (const BSONObj& obj : kNeNullQueries) {
+    for (BSONObj obj : kNeNullQueries) {
         // It's necessary to call optimize since the $not will have a singleton $and child, which
         // IndexBoundsBuilder::translate cannot handle.
         auto [expr, inputParamIdMap] = parseMatchExpression(obj);
@@ -309,7 +309,7 @@ TEST_F(IndexBoundsBuilderTest, TranslateInequalityToNullShouldProduceExactEmptyB
     const std::vector<BSONObj> inequalities = {BSON("a" << BSON("$lt" << BSONNULL)),
                                                BSON("a" << BSON("$gt" << BSONNULL))};
 
-    for (const BSONObj& obj : inequalities) {
+    for (BSONObj obj : inequalities) {
         // It's necessary to call optimize since the $not will have a singleton $and child, which
         // IndexBoundsBuilder::translate cannot handle.
         auto [expr, inputParamIdMap] = parseMatchExpression(obj);
@@ -335,7 +335,7 @@ TEST_F(IndexBoundsBuilderTest, TranslateNotInequalityToNullShouldProduceExactFul
         BSON("a" << BSON("$not" << BSON("$lt" << BSONNULL))),
         BSON("a" << BSON("$not" << BSON("$gt" << BSONNULL)))};
 
-    for (const BSONObj& obj : inequalities) {
+    for (BSONObj obj : inequalities) {
         // It's necessary to call optimize since the $not will have a singleton $and child, which
         // IndexBoundsBuilder::translate cannot handle.
         auto [expr, inputParamIdMap] = parseMatchExpression(obj);
@@ -365,7 +365,7 @@ TEST_F(IndexBoundsBuilderTest,
         BSON("a" << BSON("$not" << BSON("$lt" << BSONNULL))),
         BSON("a" << BSON("$not" << BSON("$gt" << BSONNULL)))};
 
-    for (const BSONObj& obj : inequalities) {
+    for (BSONObj obj : inequalities) {
         // It's necessary to call optimize since the $not will have a singleton $and child, which
         // IndexBoundsBuilder::translate cannot handle.
         auto [expr, inputParamIdMap] = parseMatchExpression(obj);

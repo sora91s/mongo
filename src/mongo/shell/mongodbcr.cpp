@@ -41,8 +41,13 @@
 #include "mongo/rpc/op_msg.h"
 #include "mongo/rpc/unique_message.h"
 #include "mongo/util/password_digest.h"
+#include "mongo/shell/mongodbcr.h"
 
 namespace mongo {
+void initMymongodbcr() {
+
+}
+
 namespace auth {
 namespace {
 

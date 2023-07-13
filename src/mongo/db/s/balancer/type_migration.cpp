@@ -27,7 +27,6 @@
  *    it in the license file.
  */
 
-#include "mongo/idl/idl_parser.h"
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/s/balancer/type_migration.h"
@@ -36,11 +35,10 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/request_types/move_range_request_gen.h"
 
 namespace mongo {
 
-const NamespaceString MigrationType::ConfigNS(NamespaceString::kMigrationsNamespace);
+const NamespaceString MigrationType::ConfigNS("config.migrations");
 
 const BSONField<std::string> MigrationType::ns("ns");
 const BSONField<BSONObj> MigrationType::min("min");
@@ -63,7 +61,7 @@ MigrationType::MigrationType(
     const ShardId& toShard,
     const ChunkVersion& chunkVersion,
     bool waitForDelete,
-    const ForceJumbo forceJumbo,
+    MoveChunkRequest::ForceJumbo forceJumbo,
     const boost::optional<int64_t>& maxChunkSizeBytes,
     const boost::optional<MigrationSecondaryThrottleOptions>& secondaryThrottle)
     : _nss(nss),
@@ -73,7 +71,7 @@ MigrationType::MigrationType(
       _toShard(toShard),
       _chunkVersion(chunkVersion),
       _waitForDelete(waitForDelete),
-      _forceJumbo(forceJumbo),
+      _forceJumbo(MoveChunkRequest::forceJumboToString(forceJumbo)),
       _maxChunkSizeBytes(maxChunkSizeBytes),
       _secondaryThrottle(secondaryThrottle) {}
 
@@ -115,7 +113,8 @@ StatusWith<MigrationType> MigrationType::fromBSON(const BSONObj& source) {
     }
 
     try {
-        auto chunkVersionStatus = ChunkVersion::parse(source[chunkVersion.name()]);
+        auto chunkVersionStatus =
+            ChunkVersion::fromBSONPositionalOrNewerFormat(source[chunkVersion.name()]);
         migrationType._chunkVersion = chunkVersionStatus;
     } catch (const DBException& ex) {
         return ex.toStatus();
@@ -131,13 +130,18 @@ StatusWith<MigrationType> MigrationType::fromBSON(const BSONObj& source) {
     }
 
     {
-        long long forceJumboVal;
-        Status status = bsonExtractIntegerField(source, forceJumbo.name(), &forceJumboVal);
+        std::string forceJumboVal;
+        Status status = bsonExtractStringField(source, forceJumbo.name(), &forceJumboVal);
         if (!status.isOK())
             return status;
 
-        migrationType._forceJumbo =
-            ForceJumbo_parse(IDLParserContext("ForceJumbo"), static_cast<int32_t>(forceJumboVal));
+        auto forceJumbo = MoveChunkRequest::parseForceJumbo(forceJumboVal);
+        if (forceJumbo != MoveChunkRequest::ForceJumbo::kDoNotForce &&
+            forceJumbo != MoveChunkRequest::ForceJumbo::kForceManual &&
+            forceJumbo != MoveChunkRequest::ForceJumbo::kForceBalancer) {
+            return Status{ErrorCodes::BadValue, "Unknown value for forceJumbo"};
+        }
+        migrationType._forceJumbo = std::move(forceJumboVal);
     }
 
     {
@@ -174,14 +178,14 @@ BSONObj MigrationType::toBSON() const {
     builder.append(fromShard.name(), _fromShard.toString());
     builder.append(toShard.name(), _toShard.toString());
 
-    _chunkVersion.serialize(chunkVersion.name(), &builder);
+    _chunkVersion.serializeToBSON(chunkVersion.name(), &builder);
 
     builder.append(waitForDelete.name(), _waitForDelete);
     builder.append(forceJumbo.name(), _forceJumbo);
-    if (_maxChunkSizeBytes.has_value()) {
+    if (_maxChunkSizeBytes.is_initialized()) {
         builder.appendNumber(maxChunkSizeBytes.name(), static_cast<long long>(*_maxChunkSizeBytes));
     }
-    if (_secondaryThrottle.has_value()) {
+    if (_secondaryThrottle.is_initialized()) {
         _secondaryThrottle->append(&builder);
     }
     return builder.obj();

@@ -4,6 +4,7 @@
  * unique/prepareUnique index.
  *
  * @tags: [
+ *   requires_sharding,
  *   # TODO(SERVER-61182): Fix WiredTigerKVEngine::alterIdentMetadata() under inMemory.
  *   requires_persistence,
  * ]

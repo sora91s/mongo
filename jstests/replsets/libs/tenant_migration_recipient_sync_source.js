@@ -2,12 +2,11 @@
  * Helper functions for running tests related to sync source selection during a tenant migration.
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {makeX509OptionsForTest} from "jstests/replsets/libs/tenant_migration_util.js";
-
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
 load("jstests/libs/write_concern_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 load('jstests/replsets/rslib.js');
 
 /**
@@ -19,12 +18,12 @@ load('jstests/replsets/rslib.js');
  * 'startApplyingDonorOpTime' stored in the recipient state document. As a result, neither nodes are
  * eligible sync sources for the migration.
  */
-export function setUpMigrationSyncSourceTest() {
+const setUpMigrationSyncSourceTest = function() {
     const donorRst = new ReplSetTest({
         name: `${jsTestName()}_donor`,
         nodes: 3,
         settings: {chainingAllowed: false},
-        nodeOptions: Object.assign(makeX509OptionsForTest().donor, {
+        nodeOptions: Object.assign(TenantMigrationUtil.makeX509OptionsForTest().donor, {
             setParameter: {
                 tenantMigrationExcludeDonorHostTimeoutMS: 30 * 1000,
                 // Allow non-timestamped reads on donor after migration completes for testing.
@@ -104,8 +103,8 @@ export function setUpMigrationSyncSourceTest() {
     let res = recipientPrimary.adminCommand({currentOp: true, desc: "tenant recipient migration"});
     let currOp = res.inprog[0];
     // The migration should not be complete.
-    assert.eq(currOp.garbageCollectable, false, tojson(res));
     assert.eq(currOp.migrationCompleted, false, tojson(res));
+    assert.eq(currOp.dataSyncCompleted, false, tojson(res));
     // The sync source can only be 'donorSecondary'.
     assert.eq(donorSecondary.host, currOp.donorSyncSource, tojson(res));
 
@@ -143,8 +142,8 @@ export function setUpMigrationSyncSourceTest() {
     currOp = res.inprog[0];
     // The migration should not be complete and there should be no sync source stored, since the new
     // recipient primary does not have a valid sync source to choose from.
-    assert.eq(currOp.garbageCollectable, false, tojson(res));
     assert.eq(currOp.migrationCompleted, false, tojson(res));
+    assert.eq(currOp.dataSyncCompleted, false, tojson(res));
     assert(!currOp.donorSyncSource, tojson(res));
 
     return {
@@ -154,4 +153,4 @@ export function setUpMigrationSyncSourceTest() {
         delayedSecondary,
         hangAfterCreatingConnections: hangNewRecipientPrimaryAfterCreatingConnections
     };
-}
+};

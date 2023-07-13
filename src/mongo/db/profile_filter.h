@@ -53,15 +53,9 @@ public:
     virtual BSONObj serialize() const = 0;
     virtual ~ProfileFilter() = default;
 
-    /**
-     * Thread-safe getter for the global 'ProfileFilter' default.
-     */
     static std::shared_ptr<ProfileFilter> getDefault();
 
-    /**
-     * Thread-safe setter for the global 'ProfileFilter' default. Initially this is set from the
-     * configuration file on startup.
-     */
+    // Not thread-safe: should only be called during initialization.
     static void setDefault(std::shared_ptr<ProfileFilter>);
 };
 

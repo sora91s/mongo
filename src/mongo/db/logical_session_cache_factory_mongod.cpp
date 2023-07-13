@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -34,16 +35,13 @@
 
 #include <memory>
 
+#include "mongo/db/logical_session_cache_impl.h"
 #include "mongo/db/s/sessions_collection_config_server.h"
 #include "mongo/db/service_liaison_mongod.h"
-#include "mongo/db/session/logical_session_cache_impl.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/session/sessions_collection_rs.h"
-#include "mongo/db/session/sessions_collection_standalone.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/sessions_collection_rs.h"
+#include "mongo/db/sessions_collection_standalone.h"
 #include "mongo/s/sessions_collection_sharded.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 namespace mongo {
 
@@ -65,15 +63,8 @@ std::unique_ptr<LogicalSessionCache> makeLogicalSessionCacheD(LogicalSessionCach
         MONGO_UNREACHABLE;
     }();
 
-    auto reapSessionsOlderThanFn = [](OperationContext* opCtx,
-                                      SessionsCollection& sessionsCollection,
-                                      Date_t possiblyExpired) {
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-        return mongoDSessionCatalog->reapSessionsOlderThan(
-            opCtx, sessionsCollection, possiblyExpired);
-    };
     return std::make_unique<LogicalSessionCacheImpl>(
-        std::move(liaison), std::move(sessionsColl), std::move(reapSessionsOlderThanFn));
+        std::move(liaison), std::move(sessionsColl), MongoDSessionCatalog::reapSessionsOlderThan);
 }
 
 }  // namespace mongo

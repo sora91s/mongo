@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -40,12 +41,8 @@
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/db/pipeline/document_path_support.h"
 #include "mongo/db/pipeline/variable_validation.h"
-#include "mongo/db/query/allowed_contexts.h"
 #include "mongo/db/storage/duplicate_key_error_info.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 using namespace fmt::literals;
@@ -277,7 +274,7 @@ BSONObj extractMergeOnFieldsFromDoc(const Document& doc, const std::set<FieldPat
  * explicitly specified, it will be defaulted to 'defaultDb'.
  */
 DocumentSourceMergeSpec parseMergeSpecAndResolveTargetNamespace(const BSONElement& spec,
-                                                                const DatabaseName& defaultDb) {
+                                                                StringData defaultDb) {
     NamespaceString targetNss;
     DocumentSourceMergeSpec mergeSpec;
 
@@ -288,9 +285,7 @@ DocumentSourceMergeSpec parseMergeSpecAndResolveTargetNamespace(const BSONElemen
     if (spec.type() == BSONType::String) {
         targetNss = {defaultDb, spec.valueStringData()};
     } else {
-        mergeSpec = DocumentSourceMergeSpec::parse(
-            IDLParserContext(kStageName, false /* apiStrict */, defaultDb.tenantId()),
-            spec.embeddedObject());
+        mergeSpec = DocumentSourceMergeSpec::parse({kStageName}, spec.embeddedObject());
         targetNss = mergeSpec.getTargetNss();
         if (targetNss.coll().empty()) {
             // If the $merge spec is an object, the target namespace can be specified as a string
@@ -300,7 +295,7 @@ DocumentSourceMergeSpec parseMergeSpecAndResolveTargetNamespace(const BSONElemen
             // target namespace collection is empty, we'll use the default database name as a target
             // database, and the provided namespace value as a collection name.
             targetNss = {defaultDb, targetNss.ns()};
-        } else if (targetNss.dbName().db().empty()) {
+        } else if (targetNss.db().empty()) {
             // Use the default database name if it wasn't specified explicilty.
             targetNss = {defaultDb, targetNss.coll()};
         }
@@ -338,7 +333,7 @@ std::unique_ptr<DocumentSourceMerge::LiteParsed> DocumentSourceMerge::LiteParsed
                                                                            typeName(spec.type())),
             spec.type() == BSONType::String || spec.type() == BSONType::Object);
 
-    auto mergeSpec = parseMergeSpecAndResolveTargetNamespace(spec, nss.dbName());
+    auto mergeSpec = parseMergeSpecAndResolveTargetNamespace(spec, nss.db());
     auto targetNss = mergeSpec.getTargetNss();
 
     uassert(ErrorCodes::InvalidNamespace,
@@ -379,16 +374,15 @@ PrivilegeVector DocumentSourceMerge::LiteParsed::requiredPrivileges(
     return {{ResourcePattern::forExactNamespace(*_foreignNss), actions}};
 }
 
-DocumentSourceMerge::DocumentSourceMerge(
-    NamespaceString outputNs,
-    const boost::intrusive_ptr<ExpressionContext>& expCtx,
-    const MergeStrategyDescriptor& descriptor,
-    boost::optional<BSONObj> letVariables,
-    boost::optional<std::vector<BSONObj>> pipeline,
-    std::set<FieldPath> mergeOnFields,
-    boost::optional<ChunkVersion> targetCollectionPlacementVersion)
+DocumentSourceMerge::DocumentSourceMerge(NamespaceString outputNs,
+                                         const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                         const MergeStrategyDescriptor& descriptor,
+                                         boost::optional<BSONObj> letVariables,
+                                         boost::optional<std::vector<BSONObj>> pipeline,
+                                         std::set<FieldPath> mergeOnFields,
+                                         boost::optional<ChunkVersion> targetCollectionVersion)
     : DocumentSourceWriter(kStageName.rawData(), std::move(outputNs), expCtx),
-      _targetCollectionPlacementVersion(targetCollectionPlacementVersion),
+      _targetCollectionVersion(targetCollectionVersion),
       _descriptor(descriptor),
       _pipeline(std::move(pipeline)),
       _mergeOnFields(std::move(mergeOnFields)),
@@ -415,7 +409,7 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceMerge::create(
     boost::optional<BSONObj> letVariables,
     boost::optional<std::vector<BSONObj>> pipeline,
     std::set<FieldPath> mergeOnFields,
-    boost::optional<ChunkVersion> targetCollectionPlacementVersion) {
+    boost::optional<ChunkVersion> targetCollectionVersion) {
     uassert(51189,
             "Combination of {} modes 'whenMatched: {}' and 'whenNotMatched: {}' "
             "is not supported"_format(kStageName,
@@ -431,15 +425,13 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceMerge::create(
             "{} cannot be used in a transaction"_format(kStageName),
             !expCtx->opCtx->inMultiDocumentTransaction());
 
-    uassert(
-        31319,
-        "Cannot {} to special collection: {}"_format(kStageName, outputNs.coll()),
-        !outputNs.isSystem() ||
-            (outputNs.isSystemStatsCollection() && isInternalClient(expCtx->opCtx->getClient())));
+    uassert(31319,
+            "Cannot {} to special collection: {}"_format(kStageName, outputNs.coll()),
+            !outputNs.isSystem());
 
     uassert(31320,
             "Cannot {} to internal database: {}"_format(kStageName, outputNs.db()),
-            !outputNs.isOnInternalDb() || isInternalClient(expCtx->opCtx->getClient()));
+            !outputNs.isOnInternalDb());
 
     if (whenMatched == WhenMatched::kPipeline) {
         // If unspecified, 'letVariables' defaults to {new: "$$ROOT"}.
@@ -467,7 +459,7 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceMerge::create(
                                    std::move(letVariables),
                                    std::move(pipeline),
                                    std::move(mergeOnFields),
-                                   targetCollectionPlacementVersion);
+                                   targetCollectionVersion);
 }
 
 boost::intrusive_ptr<DocumentSource> DocumentSourceMerge::createFromBson(
@@ -476,14 +468,14 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceMerge::createFromBson(
             "{} only supports a string or object argument, not {}"_format(kStageName, spec.type()),
             spec.type() == BSONType::String || spec.type() == BSONType::Object);
 
-    auto mergeSpec = parseMergeSpecAndResolveTargetNamespace(spec, expCtx->ns.dbName());
+    auto mergeSpec = parseMergeSpecAndResolveTargetNamespace(spec, expCtx->ns.db());
     auto targetNss = mergeSpec.getTargetNss();
     auto whenMatched =
         mergeSpec.getWhenMatched() ? mergeSpec.getWhenMatched()->mode : kDefaultWhenMatched;
     auto whenNotMatched = mergeSpec.getWhenNotMatched().value_or(kDefaultWhenNotMatched);
     auto pipeline = mergeSpec.getWhenMatched() ? mergeSpec.getWhenMatched()->pipeline : boost::none;
     auto fieldPaths = convertToFieldPaths(mergeSpec.getOn());
-    auto [mergeOnFields, targetCollectionPlacementVersion] =
+    auto [mergeOnFields, targetCollectionVersion] =
         expCtx->mongoProcessInterface->ensureFieldsUniqueOrResolveDocumentKey(
             expCtx, std::move(fieldPaths), mergeSpec.getTargetCollectionVersion(), targetNss);
 
@@ -494,7 +486,7 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceMerge::createFromBson(
                                        mergeSpec.getLet(),
                                        std::move(pipeline),
                                        std::move(mergeOnFields),
-                                       targetCollectionPlacementVersion);
+                                       targetCollectionVersion);
 }
 
 StageConstraints DocumentSourceMerge::constraints(Pipeline::SplitState pipeState) const {
@@ -549,12 +541,12 @@ Value DocumentSourceMerge::serialize(boost::optional<ExplainOptions::Verbosity> 
     spec.setWhenNotMatched(_descriptor.mode.second);
     spec.setOn([&]() {
         std::vector<std::string> mergeOnFields;
-        for (const auto& path : _mergeOnFields) {
+        for (auto path : _mergeOnFields) {
             mergeOnFields.push_back(path.fullPath());
         }
         return mergeOnFields;
     }());
-    spec.setTargetCollectionVersion(_targetCollectionPlacementVersion);
+    spec.setTargetCollectionVersion(_targetCollectionVersion);
     return Value(Document{{getSourceName(), spec.toBSON()}});
 }
 
@@ -582,8 +574,8 @@ std::pair<DocumentSourceMerge::BatchObject, int> DocumentSourceMerge::makeBatchO
 
 void DocumentSourceMerge::spill(BatchedObjects&& batch) try {
     DocumentSourceWriteBlock writeBlock(pExpCtx->opCtx);
-    auto targetEpoch = _targetCollectionPlacementVersion
-        ? boost::optional<OID>(_targetCollectionPlacementVersion->epoch())
+    auto targetEpoch = _targetCollectionVersion
+        ? boost::optional<OID>(_targetCollectionVersion->epoch())
         : boost::none;
 
     _descriptor.strategy(

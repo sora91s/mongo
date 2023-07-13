@@ -69,8 +69,7 @@ public:
     Status appendStorageStats(OperationContext* opCtx,
                               const NamespaceString& nss,
                               const StorageStatsSpec& spec,
-                              BSONObjBuilder* builder,
-                              const boost::optional<BSONObj>& filterObj) const final;
+                              BSONObjBuilder* builder) const final;
     Status appendRecordCount(OperationContext* opCtx,
                              const NamespaceString& nss,
                              BSONObjBuilder* builder) const final;
@@ -104,11 +103,10 @@ public:
     std::unique_ptr<ResourceYielder> getResourceYielder(StringData cmdName) const final;
 
     std::pair<std::set<FieldPath>, boost::optional<ChunkVersion>>
-    ensureFieldsUniqueOrResolveDocumentKey(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        boost::optional<std::set<FieldPath>> fieldPaths,
-        boost::optional<ChunkVersion> targetCollectionPlacementVersion,
-        const NamespaceString& outputNs) const final;
+    ensureFieldsUniqueOrResolveDocumentKey(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                           boost::optional<std::set<FieldPath>> fieldPaths,
+                                           boost::optional<ChunkVersion> targetCollectionVersion,
+                                           const NamespaceString& outputNs) const final;
 
     std::unique_ptr<TemporaryRecordStore> createTemporaryRecordStore(
         const boost::intrusive_ptr<ExpressionContext>& expCtx, KeyFormat keyFormat) const final;
@@ -179,15 +177,11 @@ protected:
                                                  CurrentOpSessionsMode sessionMode,
                                                  std::vector<BSONObj>* ops) const final;
 
-    void _reportCurrentOpsForQueryAnalysis(OperationContext* opCtx,
-                                           std::vector<BSONObj>* ops) const final;
-
     /**
      * Converts a renameCollection command into an internalRenameIfOptionsAndIndexesMatch command.
      */
     BSONObj _convertRenameToInternalRename(OperationContext* opCtx,
-                                           const NamespaceString& sourceNs,
-                                           const NamespaceString& targetNs,
+                                           const BSONObj& renameCommandObj,
                                            const BSONObj& originalCollectionOptions,
                                            const std::list<BSONObj>& originalIndexes);
 
@@ -200,7 +194,7 @@ private:
      * collation.
      */
     std::unique_ptr<CollatorInterface> _getCollectionDefaultCollator(OperationContext* opCtx,
-                                                                     const DatabaseName& dbName,
+                                                                     StringData dbName,
                                                                      UUID collectionUUID);
 
     std::map<UUID, std::unique_ptr<const CollatorInterface>> _collatorCache;

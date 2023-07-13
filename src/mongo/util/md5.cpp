@@ -51,9 +51,8 @@
   1999-05-03 lpd Original version.
  */
 
-#include <cstring>
-
 #include "md5.h"
+#include <string.h>
 
 extern "C" {
 

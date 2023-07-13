@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#include <boost/lexical_cast.hpp>
 #include <string>
 
 #include "mongo/db/concurrency/fast_map_noalloc.h"
@@ -94,7 +95,8 @@ TEST(FastMapNoAlloc, FindAndRemove) {
     TestFastMapNoAlloc map;
 
     for (int i = 0; i < 6; i++) {
-        map.insert(ResourceId(RESOURCE_COLLECTION, i))->initNew(i, "Item" + std::to_string(i));
+        map.insert(ResourceId(RESOURCE_COLLECTION, i))
+            ->initNew(i, "Item" + boost::lexical_cast<std::string>(i));
     }
 
     for (int i = 0; i < 6; i++) {
@@ -102,7 +104,7 @@ TEST(FastMapNoAlloc, FindAndRemove) {
 
         ASSERT_EQUALS(i, map.find(ResourceId(RESOURCE_COLLECTION, i))->id);
 
-        ASSERT_EQUALS("Item" + std::to_string(i),
+        ASSERT_EQUALS("Item" + boost::lexical_cast<std::string>(i),
                       map.find(ResourceId(RESOURCE_COLLECTION, i))->value);
     }
 
@@ -136,15 +138,17 @@ TEST(FastMapNoAlloc, RemoveAll) {
     stdx::unordered_map<ResourceId, TestStruct> checkMap;
 
     for (int i = 1; i <= 6; i++) {
-        map.insert(ResourceId(RESOURCE_COLLECTION, i))->initNew(i, "Item" + std::to_string(i));
+        map.insert(ResourceId(RESOURCE_COLLECTION, i))
+            ->initNew(i, "Item" + boost::lexical_cast<std::string>(i));
 
-        checkMap[ResourceId(RESOURCE_COLLECTION, i)].initNew(i, "Item" + std::to_string(i));
+        checkMap[ResourceId(RESOURCE_COLLECTION, i)].initNew(
+            i, "Item" + boost::lexical_cast<std::string>(i));
     }
 
     TestFastMapNoAlloc::Iterator it = map.begin();
     while (!it.finished()) {
         ASSERT_EQUALS(it->id, checkMap[it.key()].id);
-        ASSERT_EQUALS("Item" + std::to_string(it->id), checkMap[it.key()].value);
+        ASSERT_EQUALS("Item" + boost::lexical_cast<std::string>(it->id), checkMap[it.key()].value);
 
         checkMap.erase(it.key());
         it.remove();

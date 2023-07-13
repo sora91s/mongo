@@ -89,28 +89,26 @@ using PhysProperty = algebra::PolyValue<CollationRequirement,
 using LogicalProps = opt::unordered_map<LogicalProperty::key_type, LogicalProperty>;
 using PhysProps = opt::unordered_map<PhysProperty::key_type, PhysProperty>;
 
-template <typename T,
-          std::enable_if_t<std::is_base_of_v<LogicalPropertyTag, T>, bool> = true,
-          typename... Args>
+template <typename T, typename... Args>
 inline auto makeProperty(Args&&... args) {
-    return LogicalProperty::make<T>(std::forward<Args>(args)...);
+    if constexpr (std::is_base_of_v<LogicalPropertyTag, T>) {
+        return LogicalProperty::make<T>(std::forward<Args>(args)...);
+    } else if constexpr (std::is_base_of_v<PhysPropertyTag, T>) {
+        return PhysProperty::make<T>(std::forward<Args>(args)...);
+    } else {
+        static_assert("Unknown property type");
+    }
 }
 
-template <typename T,
-          std::enable_if_t<std::is_base_of_v<PhysPropertyTag, T>, bool> = true,
-          typename... Args>
-inline auto makeProperty(Args&&... args) {
-    return PhysProperty::make<T>(std::forward<Args>(args)...);
-}
-
-template <class P, std::enable_if_t<std::is_base_of_v<LogicalPropertyTag, P>, bool> = true>
+template <class P>
 static constexpr auto getPropertyKey() {
-    return LogicalProperty::template tagOf<P>();
-}
-
-template <class P, std::enable_if_t<std::is_base_of_v<PhysPropertyTag, P>, bool> = true>
-static constexpr auto getPropertyKey() {
-    return PhysProperty::template tagOf<P>();
+    if constexpr (std::is_base_of_v<LogicalPropertyTag, P>) {
+        return LogicalProperty::template tagOf<P>();
+    } else if constexpr (std::is_base_of_v<PhysPropertyTag, P>) {
+        return PhysProperty::template tagOf<P>();
+    } else {
+        static_assert("Unknown property type");
+    }
 }
 
 template <class P, class C>
@@ -172,6 +170,9 @@ inline auto makePhysProps(Args&&... args) {
  */
 class CollationRequirement final : public PhysPropertyTag {
 public:
+    static CollationRequirement Empty;
+
+    CollationRequirement() = default;
     CollationRequirement(ProjectionCollationSpec spec);
 
     bool operator==(const CollationRequirement& other) const;
@@ -319,17 +320,16 @@ private:
  */
 class RepetitionEstimate final : public PhysPropertyTag {
 public:
-    RepetitionEstimate(double estimate);
+    RepetitionEstimate(CEType estimate);
 
     bool operator==(const RepetitionEstimate& other) const;
 
     ProjectionNameSet getAffectedProjectionNames() const;
 
-    double getEstimate() const;
+    CEType getEstimate() const;
 
 private:
-    // The repetition estimate is a unitless constant (not a cardinality estimate).
-    double _estimate;
+    CEType _estimate;
 };
 
 /**
@@ -369,9 +369,6 @@ private:
 
 /**
  * A logical property which provides an estimated row count for a given ABT tree.
- *
- * It also tracks a per-predicate CE. This allows us to split a SargableNode and estimate
- * the result, without consulting the CE module again for every split.
  */
 class CardinalityEstimate final : public LogicalPropertyTag {
 public:
@@ -382,14 +379,14 @@ public:
     CEType getEstimate() const;
     CEType& getEstimate();
 
-    const PartialSchemaKeyCE& getPartialSchemaKeyCE() const;
-    PartialSchemaKeyCE& getPartialSchemaKeyCE();
+    const PartialSchemaKeyCE& getPartialSchemaKeyCEMap() const;
+    PartialSchemaKeyCE& getPartialSchemaKeyCEMap();
 
 private:
     CEType _estimate;
 
     // Used for SargableNodes. Provide additional per partial schema key CE.
-    PartialSchemaKeyCE _partialSchemaKeyCE;
+    PartialSchemaKeyCE _partialSchemaKeyCEMap;
 };
 
 /**
@@ -402,42 +399,35 @@ public:
     IndexingAvailability(GroupIdType scanGroupId,
                          ProjectionName scanProjection,
                          std::string scanDefName,
-                         bool eqPredsOnly,
-                         bool hasProperInterval,
+                         bool possiblyEqPredsOnly,
                          opt::unordered_set<std::string> satisfiedPartialIndexes);
 
     bool operator==(const IndexingAvailability& other) const;
 
     GroupIdType getScanGroupId() const;
-    void setScanGroupId(GroupIdType scanGroupId);
-
     const ProjectionName& getScanProjection() const;
     const std::string& getScanDefName() const;
 
     const opt::unordered_set<std::string>& getSatisfiedPartialIndexes() const;
     opt::unordered_set<std::string>& getSatisfiedPartialIndexes();
 
-    bool getEqPredsOnly() const;
-    void setEqPredsOnly(bool value);
-
-    bool hasProperInterval() const;
-    void setHasProperInterval(bool hasProperInterval);
+    bool getPossiblyEqPredsOnly() const;
+    void setPossiblyEqPredsOnly(bool value);
 
 private:
-    GroupIdType _scanGroupId;
+    const GroupIdType _scanGroupId;
     const ProjectionName _scanProjection;
     const std::string _scanDefName;
 
-    // Specifies if all predicates in the current group and child group are equalities.
+    // Specifies if all predicates in the current group and child group are "possibly" equalities.
     // This is determined based on SargableNode exclusively containing equality intervals.
-    bool _eqPredsOnly;
+    // The "possibly" part is due to 'Get "a" Id' being equivalent 'Get "a" Traverse Id' with a
+    // multi-key index.
+    bool _possiblyEqPredsOnly;
 
     // Set of indexes with partial indexes whose partial filters are satisfied for the current
     // group.
     opt::unordered_set<std::string> _satisfiedPartialIndexes;
-
-    // True if there is at least one proper interval in a sargable node in this group.
-    bool _hasProperInterval;
 };
 
 

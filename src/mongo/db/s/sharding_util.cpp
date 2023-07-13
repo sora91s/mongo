@@ -27,27 +27,23 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/s/sharding_util.h"
 
 #include <fmt/format.h>
 
-#include "mongo/db/catalog/index_builds_manager.h"
-#include "mongo/db/catalog_raii.h"
 #include "mongo/db/commands.h"
-#include "mongo/db/concurrency/exception_util.h"
-#include "mongo/db/index_builds_coordinator.h"
-#include "mongo/db/s/shard_authoritative_catalog_gen.h"
+#include "mongo/db/dbdirectclient.h"
+#include "mongo/db/repl/repl_client_info.h"
+#include "mongo/db/s/type_shard_collection.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/type_collection.h"
-#include "mongo/s/catalog/type_index_catalog.h"
-#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/request_types/flush_routing_table_cache_updates_gen.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 namespace mongo {
-
 namespace sharding_util {
 
 using namespace fmt::literals;
@@ -60,16 +56,20 @@ void tellShardsToRefreshCollection(OperationContext* opCtx,
     cmd.setSyncFromConfig(true);
     cmd.setDbName(nss.db());
     auto cmdObj = CommandHelpers::appendMajorityWriteConcern(cmd.toBSON({}));
-    sendCommandToShards(opCtx, DatabaseName::kAdmin.db(), cmdObj, shardIds, executor);
+    sendCommandToShards(opCtx, NamespaceString::kAdminDb, cmdObj, shardIds, executor);
 }
 
-std::vector<AsyncRequestsSender::Response> processShardResponses(
+std::vector<AsyncRequestsSender::Response> sendCommandToShards(
     OperationContext* opCtx,
     StringData dbName,
     const BSONObj& command,
-    const std::vector<AsyncRequestsSender::Request>& requests,
+    const std::vector<ShardId>& shardIds,
     const std::shared_ptr<executor::TaskExecutor>& executor,
-    bool throwOnError) {
+    const bool throwOnError) {
+    std::vector<AsyncRequestsSender::Request> requests;
+    for (const auto& shardId : shardIds) {
+        requests.emplace_back(shardId, command);
+    }
 
     std::vector<AsyncRequestsSender::Response> responses;
     if (!requests.empty()) {
@@ -95,13 +95,13 @@ std::vector<AsyncRequestsSender::Response> processShardResponses(
                     "Failed command {} for database '{}' on shard '{}'"_format(
                         command.toString(), dbName, StringData{response.shardId});
 
-                uassertStatusOKWithContext(response.swResponse.getStatus(), errorContext);
-                const auto& respBody = response.swResponse.getValue().data;
+                auto shardResponse =
+                    uassertStatusOKWithContext(std::move(response.swResponse), errorContext);
 
-                const auto status = getStatusFromCommandResult(respBody);
+                auto status = getStatusFromCommandResult(shardResponse.data);
                 uassertStatusOKWithContext(status, errorContext);
 
-                const auto wcStatus = getWriteConcernStatusFromCommandResult(respBody);
+                auto wcStatus = getWriteConcernStatusFromCommandResult(shardResponse.data);
                 uassertStatusOKWithContext(wcStatus, errorContext);
             }
 
@@ -111,152 +111,44 @@ std::vector<AsyncRequestsSender::Response> processShardResponses(
     return responses;
 }
 
-std::vector<AsyncRequestsSender::Response> sendCommandToShards(
-    OperationContext* opCtx,
-    StringData dbName,
-    const BSONObj& command,
-    const std::vector<ShardId>& shardIds,
-    const std::shared_ptr<executor::TaskExecutor>& executor,
-    const bool throwOnError) {
-    std::vector<AsyncRequestsSender::Request> requests;
-    for (const auto& shardId : shardIds) {
-        requests.emplace_back(shardId, command);
-    }
-
-    return processShardResponses(opCtx, dbName, command, requests, executor, throwOnError);
-}
-
-std::vector<AsyncRequestsSender::Response> sendCommandToShardsWithVersion(
-    OperationContext* opCtx,
-    StringData dbName,
-    const BSONObj& command,
-    const std::vector<ShardId>& shardIds,
-    const std::shared_ptr<executor::TaskExecutor>& executor,
-    const CollectionRoutingInfo& cri,
-    const bool throwOnError) {
-    std::vector<AsyncRequestsSender::Request> requests;
-    for (const auto& shardId : shardIds) {
-        requests.emplace_back(shardId, appendShardVersion(command, cri.getShardVersion(shardId)));
-    }
-    return processShardResponses(opCtx, dbName, command, requests, executor, throwOnError);
-}
-
-
-// TODO SERVER-67593: Investigate if DBDirectClient can be used instead.
-Status createIndexOnCollection(OperationContext* opCtx,
-                               const NamespaceString& ns,
-                               const BSONObj& keys,
-                               bool unique) {
-    try {
-        // TODO SERVER-50983: Create abstraction for creating collection when using
-        // AutoGetCollection
-        AutoGetCollection autoColl(opCtx, ns, MODE_X);
-        const Collection* collection = autoColl.getCollection().get();
-        if (!collection) {
-            CollectionOptions options;
-            options.uuid = UUID::gen();
-            writeConflictRetry(opCtx, "createIndexOnCollection", ns.ns(), [&] {
-                WriteUnitOfWork wunit(opCtx);
-                auto db = autoColl.ensureDbExists(opCtx);
-                collection = db->createCollection(opCtx, ns, options);
-                invariant(collection,
-                          str::stream() << "Failed to create collection " << ns.ns()
-                                        << " for indexes: " << keys);
-                wunit.commit();
-            });
+void downgradeCollectionBalancingFieldsToPre53(OperationContext* opCtx) {
+    const NamespaceString collNss = [&]() {
+        if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
+            return NamespaceString::kShardConfigCollectionsNamespace;
+        } else if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            return CollectionType::ConfigNS;
         }
-        auto indexCatalog = collection->getIndexCatalog();
-        IndexSpec index;
-        index.addKeys(keys);
-        index.unique(unique);
-        index.version(int(IndexDescriptor::kLatestIndexVersion));
-        auto removeIndexBuildsToo = false;
-        auto indexSpecs = indexCatalog->removeExistingIndexes(
-            opCtx,
-            CollectionPtr(collection),
-            uassertStatusOK(
-                collection->addCollationDefaultsToIndexSpecsForCreate(opCtx, {index.toBSON()})),
-            removeIndexBuildsToo);
+        MONGO_UNREACHABLE;
+    }();
 
-        if (indexSpecs.empty()) {
-            return Status::OK();
-        }
-
-        auto fromMigrate = false;
-        if (!collection->isEmpty(opCtx)) {
-            // We typically create indexes on config/admin collections for sharding while setting up
-            // a sharded cluster, so we do not expect to see data in the collection.
-            // Therefore, it is ok to log this index build.
-            const auto& indexSpec = indexSpecs[0];
-            LOGV2(5173300,
-                  "Creating index on sharding collection with existing data",
-                  logAttrs(ns),
-                  "uuid"_attr = collection->uuid(),
-                  "index"_attr = indexSpec);
-            auto indexConstraints = IndexBuildsManager::IndexConstraints::kEnforce;
-            IndexBuildsCoordinator::get(opCtx)->createIndex(
-                opCtx, collection->uuid(), indexSpec, indexConstraints, fromMigrate);
+    write_ops::UpdateCommandRequest updateOp(collNss);
+    updateOp.setUpdates({[&] {
+        write_ops::UpdateOpEntry entry;
+        BSONObjBuilder updateCmd;
+        BSONObjBuilder unsetBuilder(updateCmd.subobjStart("$unset"));
+        unsetBuilder.append(CollectionType::kMaxChunkSizeBytesFieldName, 0);
+        if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+            unsetBuilder.append(CollectionType::kNoAutoSplitFieldName, 0);
         } else {
-            writeConflictRetry(opCtx, "createIndexOnConfigCollection", ns.ns(), [&] {
-                WriteUnitOfWork wunit(opCtx);
-                CollectionWriter collWriter(opCtx, collection->uuid());
-                IndexBuildsCoordinator::get(opCtx)->createIndexesOnEmptyCollection(
-                    opCtx, collWriter, indexSpecs, fromMigrate);
-                wunit.commit();
-            });
+            unsetBuilder.append(ShardCollectionTypeBase::kAllowAutoSplitFieldName, 0);
         }
-    } catch (const DBException& e) {
-        return e.toStatus();
-    }
+        unsetBuilder.doneFast();
+        entry.setQ({});
+        const BSONObj update = updateCmd.obj();
+        entry.setU(write_ops::UpdateModification::parseFromClassicUpdate(update));
+        entry.setUpsert(false);
+        entry.setMulti(true);
+        return entry;
+    }()});
 
-    return Status::OK();
-}
+    DBDirectClient client(opCtx);
+    client.update(updateOp);
 
-Status createShardingIndexCatalogIndexes(OperationContext* opCtx) {
-    bool unique = true;
-    NamespaceString indexCatalogNamespace;
-    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-        indexCatalogNamespace = NamespaceString::kConfigsvrIndexCatalogNamespace;
-    } else {
-        indexCatalogNamespace = NamespaceString::kShardIndexCatalogNamespace;
-    }
-    auto result = createIndexOnCollection(opCtx,
-                                          indexCatalogNamespace,
-                                          BSON(IndexCatalogType::kCollectionUUIDFieldName
-                                               << 1 << IndexCatalogType::kLastmodFieldName << 1),
-                                          !unique);
-    if (!result.isOK()) {
-        return result.withContext(str::stream()
-                                  << "couldn't create collectionUUID_1_lastmod_1 index on "
-                                  << indexCatalogNamespace);
-    }
-    result = createIndexOnCollection(opCtx,
-                                     indexCatalogNamespace,
-                                     BSON(IndexCatalogType::kCollectionUUIDFieldName
-                                          << 1 << IndexCatalogType::kNameFieldName << 1),
-                                     unique);
-    if (!result.isOK()) {
-        return result.withContext(str::stream()
-                                  << "couldn't create collectionUUID_1_name_1 index on "
-                                  << indexCatalogNamespace);
-    }
-    return Status::OK();
-}
-
-Status createShardCollectionCatalogIndexes(OperationContext* opCtx) {
-    bool unique = true;
-    auto result =
-        createIndexOnCollection(opCtx,
-                                NamespaceString::kShardCollectionCatalogNamespace,
-                                BSON(ShardAuthoritativeCollectionType::kUuidFieldName << 1),
-                                !unique);
-    if (!result.isOK()) {
-        return result.withContext(str::stream()
-                                  << "couldn't create uuid_1 index on "
-                                  << NamespaceString::kShardCollectionCatalogNamespace);
-    }
-
-    return Status::OK();
+    const WriteConcernOptions majorityWC{
+        WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::UNSET, Seconds(0)};
+    WriteConcernResult ignoreResult;
+    auto latestOpTime = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
+    uassertStatusOK(waitForWriteConcern(opCtx, latestOpTime, majorityWC, &ignoreResult));
 }
 
 }  // namespace sharding_util

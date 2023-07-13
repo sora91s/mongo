@@ -71,7 +71,7 @@ public:
     PlanExecutorTest() : _client(&_opCtx) {}
 
     virtual ~PlanExecutorTest() {
-        _client.dropCollection(nss);
+        _client.dropCollection(nss.ns());
     }
 
     void addIndex(const BSONObj& obj) {
@@ -79,19 +79,19 @@ public:
     }
 
     void insert(const BSONObj& obj) {
-        _client.insert(nss, obj);
+        _client.insert(nss.ns(), obj);
     }
 
     void remove(const BSONObj& obj) {
-        _client.remove(nss, obj);
+        _client.remove(nss.ns(), obj);
     }
 
     void dropCollection() {
-        _client.dropCollection(nss);
+        _client.dropCollection(nss.ns());
     }
 
     void update(BSONObj& query, BSONObj& updateSpec) {
-        _client.update(nss, query, updateSpec);
+        _client.update(nss.ns(), query, updateSpec);
     }
 
     /**
@@ -101,7 +101,7 @@ public:
     unique_ptr<PlanExecutor, PlanExecutor::Deleter> makeCollScanExec(
         const CollectionPtr* coll,
         BSONObj& filterObj,
-        PlanYieldPolicy::YieldPolicy yieldPolicy = PlanYieldPolicy::YieldPolicy::NO_YIELD,
+        PlanYieldPolicy::YieldPolicy yieldPolicy = PlanYieldPolicy::YieldPolicy::YIELD_MANUAL,
         TailableModeEnum tailableMode = TailableModeEnum::kNormal) {
         CollectionScanParams csparams;
         csparams.direction = CollectionScanParams::FORWARD;
@@ -170,7 +170,7 @@ public:
                                         std::move(ws),
                                         std::move(root),
                                         coll,
-                                        PlanYieldPolicy::YieldPolicy::NO_YIELD,
+                                        PlanYieldPolicy::YieldPolicy::YIELD_MANUAL,
                                         QueryPlannerParams::DEFAULT);
         ASSERT_OK(statusWithPlanExecutor.getStatus());
         return std::move(statusWithPlanExecutor.getValue());
@@ -185,11 +185,10 @@ protected:
 
 private:
     const IndexDescriptor* getIndex(Database* db, const BSONObj& obj) {
-        CollectionPtr collection(
-            CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, nss));
+        CollectionPtr collection =
+            CollectionCatalog::get(&_opCtx)->lookupCollectionByNamespace(&_opCtx, nss);
         std::vector<const IndexDescriptor*> indexes;
-        collection->getIndexCatalog()->findIndexesByKeyPattern(
-            &_opCtx, obj, IndexCatalog::InclusionPolicy::kReady, &indexes);
+        collection->getIndexCatalog()->findIndexesByKeyPattern(&_opCtx, obj, false, &indexes);
         ASSERT_LTE(indexes.size(), 1U);
         return indexes.size() == 0 ? nullptr : indexes[0];
     }

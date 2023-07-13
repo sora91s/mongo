@@ -29,7 +29,6 @@
 
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/shard_server_test_fixture.h"
-#include "mongo/s/shard_version_factory.h"
 
 namespace mongo {
 namespace {
@@ -40,7 +39,7 @@ const NamespaceString kAnotherNss("TestDB", "AnotherColl");
 using OperationShardingStateTest = ShardServerTestFixture;
 
 TEST_F(OperationShardingStateTest, ScopedSetShardRoleDbVersion) {
-    DatabaseVersion dbv{UUID::gen(), Timestamp(1, 0)};
+    DatabaseVersion dbv{DatabaseVersion::makeFixed()};
     ScopedSetShardRole scopedSetShardRole(operationContext(), kNss, boost::none, dbv);
 
     auto& oss = OperationShardingState::get(operationContext());
@@ -48,9 +47,7 @@ TEST_F(OperationShardingStateTest, ScopedSetShardRoleDbVersion) {
 }
 
 TEST_F(OperationShardingStateTest, ScopedSetShardRoleShardVersion) {
-    CollectionGeneration gen(OID::gen(), Timestamp(1, 0));
-    ShardVersion shardVersion =
-        ShardVersionFactory::make({gen, {1, 0}}, boost::optional<CollectionIndexes>(boost::none));
+    ChunkVersion shardVersion(1, 0, OID::gen(), Timestamp(1, 0));
     ScopedSetShardRole scopedSetShardRole(operationContext(), kNss, shardVersion, boost::none);
 
     auto& oss = OperationShardingState::get(operationContext());
@@ -61,17 +58,13 @@ TEST_F(OperationShardingStateTest, ScopedSetShardRoleChangeShardVersionSameNames
     auto& oss = OperationShardingState::get(operationContext());
 
     {
-        CollectionGeneration gen1(OID::gen(), Timestamp(10, 0));
-        ShardVersion shardVersion1 = ShardVersionFactory::make(
-            {gen1, {1, 0}}, boost::optional<CollectionIndexes>(boost::none));
+        ChunkVersion shardVersion1(1, 0, OID::gen(), Timestamp(10, 0));
         ScopedSetShardRole scopedSetShardRole1(
             operationContext(), kNss, shardVersion1, boost::none);
         ASSERT_EQ(shardVersion1, *oss.getShardVersion(kNss));
     }
     {
-        CollectionGeneration gen2(OID::gen(), Timestamp(20, 0));
-        ShardVersion shardVersion2 = ShardVersionFactory::make(
-            {gen2, {1, 0}}, boost::optional<CollectionIndexes>(boost::none));
+        ChunkVersion shardVersion2(1, 0, OID::gen(), Timestamp(20, 0));
         ScopedSetShardRole scopedSetShardRole2(
             operationContext(), kNss, shardVersion2, boost::none);
         ASSERT_EQ(shardVersion2, *oss.getShardVersion(kNss));
@@ -79,12 +72,8 @@ TEST_F(OperationShardingStateTest, ScopedSetShardRoleChangeShardVersionSameNames
 }
 
 TEST_F(OperationShardingStateTest, ScopedSetShardRoleRecursiveShardVersionDifferentNamespaces) {
-    CollectionGeneration gen1(OID::gen(), Timestamp(10, 0));
-    CollectionGeneration gen2(OID::gen(), Timestamp(20, 0));
-    ShardVersion shardVersion1 =
-        ShardVersionFactory::make({gen1, {1, 0}}, boost::optional<CollectionIndexes>(boost::none));
-    ShardVersion shardVersion2 =
-        ShardVersionFactory::make({gen2, {1, 0}}, boost::optional<CollectionIndexes>(boost::none));
+    ChunkVersion shardVersion1(1, 0, OID::gen(), Timestamp(10, 0));
+    ChunkVersion shardVersion2(1, 0, OID::gen(), Timestamp(20, 0));
 
     ScopedSetShardRole scopedSetShardRole1(operationContext(), kNss, shardVersion1, boost::none);
     ScopedSetShardRole scopedSetShardRole2(
@@ -93,43 +82,6 @@ TEST_F(OperationShardingStateTest, ScopedSetShardRoleRecursiveShardVersionDiffer
     auto& oss = OperationShardingState::get(operationContext());
     ASSERT_EQ(shardVersion1, *oss.getShardVersion(kNss));
     ASSERT_EQ(shardVersion2, *oss.getShardVersion(kAnotherNss));
-}
-
-TEST_F(OperationShardingStateTest, ScopedSetShardRoleIgnoresFixedDbVersion) {
-    DatabaseVersion dbv{DatabaseVersion::makeFixed()};
-    ScopedSetShardRole scopedSetShardRole(operationContext(), kNss, boost::none, dbv);
-
-    auto& oss = OperationShardingState::get(operationContext());
-    ASSERT_FALSE(oss.getDbVersion(kNss.db()));
-}
-
-TEST_F(OperationShardingStateTest, ScopedSetShardRoleAllowedShardVersionsWithFixedDbVersion) {
-    {
-        // The UNSHARDED version can be passed with a fixed dbVersion.
-        DatabaseVersion dbv{DatabaseVersion::makeFixed()};
-        ShardVersion sv{ShardVersion::UNSHARDED()};
-        ScopedSetShardRole scopedSetShardRole0(operationContext(), kNss, sv, dbv);
-    }
-
-    {
-        // No shard version can be passed with a fixed dbVersion.
-        DatabaseVersion dbv{DatabaseVersion::makeFixed()};
-        ScopedSetShardRole scopedSetShardRole1(operationContext(), kNss, boost::none, dbv);
-    }
-
-    {
-        // Any other shard version cannot be passed with a fixed dbVersion.
-        DatabaseVersion dbv{DatabaseVersion::makeFixed()};
-        CollectionGeneration gen(OID::gen(), Timestamp(1, 0));
-        ShardVersion sv = ShardVersionFactory::make(
-            {gen, {1, 0}}, boost::optional<CollectionIndexes>(boost::none));
-        ASSERT_THROWS_CODE(
-            [&] {
-                ScopedSetShardRole scopedSetShardRole(operationContext(), kNss, sv, dbv);
-            }(),
-            DBException,
-            7331300);
-    }
 }
 
 }  // namespace

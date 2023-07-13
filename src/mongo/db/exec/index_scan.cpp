@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -35,16 +36,12 @@
 #include <memory>
 
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/query/index_bounds_builder.h"
-#include "mongo/db/query/plan_executor_impl.h"
-#include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace {
 
@@ -76,8 +73,8 @@ IndexScan::IndexScan(ExpressionContext* expCtx,
       _forward(params.direction == 1),
       _shouldDedup(params.shouldDedup),
       _addKeyMetadata(params.addKeyMetadata),
-      _startKeyInclusive(IndexBounds::isStartIncludedInBound(_bounds.boundInclusion)),
-      _endKeyInclusive(IndexBounds::isEndIncludedInBound(_bounds.boundInclusion)) {
+      _startKeyInclusive(IndexBounds::isStartIncludedInBound(params.bounds.boundInclusion)),
+      _endKeyInclusive(IndexBounds::isEndIncludedInBound(params.bounds.boundInclusion)) {
     _specificStats.indexName = params.name;
     _specificStats.keyPattern = _keyPattern;
     _specificStats.isMultiKey = params.isMultiKey;
@@ -143,39 +140,28 @@ boost::optional<IndexKeyEntry> IndexScan::initIndexScan() {
 PlanStage::StageState IndexScan::doWork(WorkingSetID* out) {
     // Get the next kv pair from the index, if any.
     boost::optional<IndexKeyEntry> kv;
-
-    const auto ret = handlePlanStageYield(
-        expCtx(),
-        "IndexScan",
-        collection()->ns().ns(),
-        [&] {
-            switch (_scanState) {
-                case INITIALIZING:
-                    kv = initIndexScan();
-                    break;
-                case GETTING_NEXT:
-                    kv = _indexCursor->next();
-                    break;
-                case NEED_SEEK:
-                    ++_specificStats.seeks;
-                    kv = _indexCursor->seek(IndexEntryComparison::makeKeyStringFromSeekPointForSeek(
-                        _seekPoint,
-                        indexAccessMethod()->getSortedDataInterface()->getKeyStringVersion(),
-                        indexAccessMethod()->getSortedDataInterface()->getOrdering(),
-                        _forward));
-                    break;
-                case HIT_END:
-                    return PlanStage::IS_EOF;
-            }
-            return PlanStage::ADVANCED;
-        },
-        [&] {
-            // yieldHandler
-            *out = WorkingSet::INVALID_ID;
-        });
-
-    if (ret != PlanStage::ADVANCED) {
-        return ret;
+    try {
+        switch (_scanState) {
+            case INITIALIZING:
+                kv = initIndexScan();
+                break;
+            case GETTING_NEXT:
+                kv = _indexCursor->next();
+                break;
+            case NEED_SEEK:
+                ++_specificStats.seeks;
+                kv = _indexCursor->seek(IndexEntryComparison::makeKeyStringFromSeekPointForSeek(
+                    _seekPoint,
+                    indexAccessMethod()->getSortedDataInterface()->getKeyStringVersion(),
+                    indexAccessMethod()->getSortedDataInterface()->getOrdering(),
+                    _forward));
+                break;
+            case HIT_END:
+                return PlanStage::IS_EOF;
+        }
+    } catch (const WriteConflictException&) {
+        *out = WorkingSet::INVALID_ID;
+        return PlanStage::NEED_YIELD;
     }
 
     if (kv) {
@@ -244,7 +230,7 @@ PlanStage::StageState IndexScan::doWork(WorkingSetID* out) {
     // We found something to return, so fill out the WSM.
     WorkingSetID id = _workingSet->allocate();
     WorkingSetMember* member = _workingSet->get(id);
-    member->recordId = std::move(kv->loc);
+    member->recordId = kv->loc;
     member->keyData.push_back(IndexKeyDatum(
         _keyPattern, kv->key, workingSetIndexId(), opCtx()->recoveryUnit()->getSnapshotId()));
     _workingSet->transitionToRecordIdAndIdx(id);
@@ -294,7 +280,9 @@ std::unique_ptr<PlanStageStats> IndexScan::getStats() {
 
     // Add a BSON representation of the filter to the stats tree, if there is one.
     if (nullptr != _filter) {
-        _commonStats.filter = _filter->serialize();
+        BSONObjBuilder bob;
+        _filter->serialize(&bob);
+        _commonStats.filter = bob.obj();
     }
 
     // These specific stats fields never change.

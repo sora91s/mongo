@@ -36,6 +36,10 @@
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
+void initMyShutDownProgress() {
+
+}
+
 namespace {
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(ShutdownInProgressQuiesceInfo);

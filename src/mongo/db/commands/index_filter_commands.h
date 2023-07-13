@@ -66,7 +66,7 @@ public:
      */
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override;
 
@@ -80,9 +80,9 @@ public:
      * One action type defined for index filter commands:
      * - planCacheIndexFilter
      */
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override;
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override;
 
     virtual Status runIndexFilterCommand(OperationContext* opCtx,
                                          const CollectionPtr& collection,

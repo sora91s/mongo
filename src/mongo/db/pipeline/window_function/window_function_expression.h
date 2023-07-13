@@ -35,7 +35,6 @@
 #include "mongo/db/pipeline/accumulator_multi.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_set_window_fields_gen.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 #include "mongo/db/pipeline/window_function/window_bounds.h"
 #include "mongo/db/pipeline/window_function/window_function.h"
 #include "mongo/db/query/datetime/date_time_support.h"
@@ -54,25 +53,20 @@ class PartitionIterator;
 #define REGISTER_WINDOW_FUNCTION(name, parser, allowedWithApi) \
     REGISTER_WINDOW_FUNCTION_CONDITIONALLY(name, parser, boost::none, allowedWithApi, true)
 
-/**
- * We store featureFlag in the parserMap, so that it can be checked at runtime to correctly
- * enable/disable the parser.
- */
-#define REGISTER_WINDOW_FUNCTION_WITH_FEATURE_FLAG(name, parser, featureFlag, allowedWithApi) \
-    REGISTER_WINDOW_FUNCTION_CONDITIONALLY(name, parser, featureFlag, allowedWithApi, true)
+#define REGISTER_WINDOW_FUNCTION_WITH_MIN_VERSION(name, parser, minVersion) \
+    REGISTER_WINDOW_FUNCTION_CONDITIONALLY(                                 \
+        name, parser, minVersion, AllowedWithApiStrict::kNeverInVersion1, true)
 
-#define REGISTER_WINDOW_FUNCTION_CONDITIONALLY(name, parser, featureFlag, allowedWithApi, ...) \
-    MONGO_INITIALIZER_GENERAL(addToWindowFunctionMap_##name,                                   \
-                              ("BeginWindowFunctionRegistration"),                             \
-                              ("EndWindowFunctionRegistration"))                               \
-    (InitializerContext*) {                                                                    \
-        if (!__VA_ARGS__ ||                                                                    \
-            (boost::optional<FeatureFlag>(featureFlag) != boost::none &&                       \
-             !boost::optional<FeatureFlag>(featureFlag)->isEnabledAndIgnoreFCV())) {           \
-            return;                                                                            \
-        }                                                                                      \
-        ::mongo::window_function::Expression::registerParser(                                  \
-            "$" #name, parser, featureFlag, allowedWithApi);                                   \
+#define REGISTER_WINDOW_FUNCTION_CONDITIONALLY(name, parser, minVersion, allowedWithApi, ...) \
+    MONGO_INITIALIZER_GENERAL(addToWindowFunctionMap_##name,                                  \
+                              ("BeginWindowFunctionRegistration"),                            \
+                              ("EndWindowFunctionRegistration"))                              \
+    (InitializerContext*) {                                                                   \
+        if (!(__VA_ARGS__)) {                                                                 \
+            return;                                                                           \
+        }                                                                                     \
+        ::mongo::window_function::Expression::registerParser(                                 \
+            "$" #name, parser, minVersion, allowedWithApi);                                   \
     }
 
 #define REGISTER_STABLE_REMOVABLE_WINDOW_FUNCTION(name, accumClass, wfClass)           \
@@ -134,14 +128,15 @@ public:
 
     struct ExpressionParserRegistration {
         Parser parser;
-        boost::optional<FeatureFlag> featureFlag;
+        boost::optional<multiversion::FeatureCompatibilityVersion> fcv;
         AllowedWithApiStrict allowedWithApi;
     };
 
-    static void registerParser(std::string functionName,
-                               Parser parser,
-                               boost::optional<FeatureFlag> featureFlag,
-                               AllowedWithApiStrict allowedWithApi);
+    static void registerParser(
+        std::string functionName,
+        Parser parser,
+        boost::optional<multiversion::FeatureCompatibilityVersion> requiredMinVersion,
+        AllowedWithApiStrict allowedWithApi);
 
     /**
      * Is this a function that the parser knows about?
@@ -188,17 +183,11 @@ public:
 
     virtual std::unique_ptr<WindowFunctionState> buildRemovable() const = 0;
 
-    virtual void addDependencies(DepsTracker* deps) const {
+    void addDependencies(DepsTracker* deps) const {
         if (_input) {
-            expression::addDependencies(_input.get(), deps);
+            _input->addDependencies(deps);
         }
-    }
-
-    virtual void addVariableRefs(std::set<Variables::Id>* refs) const {
-        if (_input) {
-            expression::addVariableRefs(_input.get(), refs);
-        }
-    }
+    };
 
     virtual Value serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
         MutableDocument args;
@@ -920,26 +909,6 @@ public:
     boost::intrusive_ptr<AccumulatorState> buildAccumulatorOnly() const final;
 
     std::unique_ptr<WindowFunctionState> buildRemovable() const final;
-
-    void addDependencies(DepsTracker* deps) const final {
-        if (_input) {
-            expression::addDependencies(_input.get(), deps);
-        }
-
-        if (nExpr) {
-            expression::addDependencies(nExpr.get(), deps);
-        }
-    }
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {
-        if (_input) {
-            expression::addVariableRefs(_input.get(), refs);
-        }
-
-        if (nExpr) {
-            expression::addVariableRefs(nExpr.get(), refs);
-        }
-    }
 
     // TODO SERVER-59327 make these members private
     boost::intrusive_ptr<::mongo::Expression> nExpr;

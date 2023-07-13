@@ -102,3 +102,6 @@
 
 #define MONGO_STARTUP_OPTION_IN_GROUP_(fname, suffix, group) \
     MONGO_INITIALIZER_GENERAL(fname##suffix, ("Begin" #group), ("End" #group))
+namespace mongo {
+    void StaticInit();
+}

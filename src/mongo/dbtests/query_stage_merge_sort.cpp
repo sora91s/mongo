@@ -66,7 +66,7 @@ public:
 
     virtual ~QueryStageMergeSortTestBase() {
         dbtests::WriteContextForTests ctx(&_opCtx, ns());
-        _client.dropCollection(nss());
+        _client.dropCollection(ns());
     }
 
     void addIndex(const BSONObj& obj) {
@@ -75,8 +75,7 @@ public:
 
     const IndexDescriptor* getIndex(const BSONObj& obj, const CollectionPtr& coll) {
         std::vector<const IndexDescriptor*> indexes;
-        coll->getIndexCatalog()->findIndexesByKeyPattern(
-            &_opCtx, obj, IndexCatalog::InclusionPolicy::kReady, &indexes);
+        coll->getIndexCatalog()->findIndexesByKeyPattern(&_opCtx, obj, false, &indexes);
         return indexes.empty() ? nullptr : indexes[0];
     }
 
@@ -93,15 +92,15 @@ public:
     }
 
     void insert(const BSONObj& obj) {
-        _client.insert(nss(), obj);
+        _client.insert(ns(), obj);
     }
 
     void remove(const BSONObj& obj) {
-        _client.remove(nss(), obj);
+        _client.remove(ns(), obj);
     }
 
     void update(const BSONObj& predicate, const BSONObj& update) {
-        _client.update(nss(), predicate, update);
+        _client.update(ns(), predicate, update);
     }
 
     void getRecordIds(set<RecordId>* out, const CollectionPtr& coll) {
@@ -509,23 +508,20 @@ public:
         msparams.pattern = BSON("foo" << 1);
         auto ms = std::make_unique<MergeSortStage>(_expCtx.get(), msparams, ws.get());
 
-        const int numIndices = 20;
-        BSONObj indexSpec[numIndices];
-
+        int numIndices = 20;
         for (int i = 0; i < numIndices; ++i) {
             // 'a', 'b', ...
             string index(1, 'a' + i);
             insert(BSON(index << 1 << "foo" << i));
 
-            indexSpec[i] = BSON(index << 1 << "foo" << 1);
-            addIndex(indexSpec[i]);
+            BSONObj indexSpec = BSON(index << 1 << "foo" << 1);
+            addIndex(indexSpec);
+            auto params = makeIndexScanParams(
+                &_opCtx, ctx.getCollection(), getIndex(indexSpec, ctx.getCollection()));
+            ms->addChild(std::make_unique<IndexScan>(
+                _expCtx.get(), ctx.getCollection(), params, ws.get(), nullptr));
         }
-        const auto& coll = ctx.getCollection();
-        for (int i = 0; i < numIndices; ++i) {
-            auto params = makeIndexScanParams(&_opCtx, coll, getIndex(indexSpec[i], coll));
-            ms->addChild(
-                std::make_unique<IndexScan>(_expCtx.get(), coll, params, ws.get(), nullptr));
-        }
+        auto coll = ctx.getCollection();
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(_expCtx.get(), ws.get(), std::move(ms), nullptr, coll);
 
@@ -572,25 +568,22 @@ public:
 
         // Index 'a'+i has foo equal to 'i'.
 
-        const int numIndices = 20;
-        BSONObj indexSpec[numIndices];
+        int numIndices = 20;
         for (int i = 0; i < numIndices; ++i) {
             // 'a', 'b', ...
             string index(1, 'a' + i);
             insert(BSON(index << 1 << "foo" << i));
 
-            indexSpec[i] = BSON(index << 1 << "foo" << 1);
-            addIndex(indexSpec[i]);
-        }
-        const auto& coll = ctx.getCollection();
-        for (int i = 0; i < numIndices; ++i) {
-            auto params =
-                makeIndexScanParams(&_opCtx, coll, getIndex(indexSpec[i], ctx.getCollection()));
-            ms->addChild(std::make_unique<IndexScan>(_expCtx.get(), coll, params, &ws, nullptr));
+            BSONObj indexSpec = BSON(index << 1 << "foo" << 1);
+            addIndex(indexSpec);
+            auto params = makeIndexScanParams(
+                &_opCtx, ctx.getCollection(), getIndex(indexSpec, ctx.getCollection()));
+            ms->addChild(std::make_unique<IndexScan>(
+                _expCtx.get(), ctx.getCollection(), params, &ws, nullptr));
         }
 
         set<RecordId> recordIds;
-        getRecordIds(&recordIds, coll);
+        getRecordIds(&recordIds, ctx.getCollection());
 
         set<RecordId>::iterator it = recordIds.begin();
 
@@ -619,6 +612,7 @@ public:
         // stage, and therefore should still be returned.
         ms->saveState();
         remove(BSON(std::string(1u, 'a' + count) << 1));
+        auto coll = ctx.getCollection();
         ms->restoreState(&coll);
 
         // Make sure recordIds[11] is returned as expected. We expect the corresponding working set

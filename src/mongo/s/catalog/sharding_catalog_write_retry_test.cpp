@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -54,9 +55,6 @@
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/future.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 namespace {
 
@@ -77,8 +75,7 @@ const HostAndPort kTestHosts[] = {
     HostAndPort("TestHost1:12345"), HostAndPort("TestHost2:12345"), HostAndPort("TestHost3:12345")};
 
 Status getMockDuplicateKeyError() {
-    return {DuplicateKeyErrorInfo(
-                BSON("mock" << 1), BSON("" << 1), BSONObj{}, stdx::monostate{}, boost::none),
+    return {DuplicateKeyErrorInfo(BSON("mock" << 1), BSON("" << 1), BSONObj{}, stdx::monostate{}),
             "Mock duplicate key error"};
 }
 
@@ -409,7 +406,7 @@ TEST_F(UpdateRetryTest, NotWritablePrimaryOnceSuccessAfterRetry) {
     HostAndPort host2("TestHost2");
     configTargeter()->setFindHostReturnValue(host1);
 
-    CollectionType collection(NamespaceString::createNamespaceString_forTest("db.coll"),
+    CollectionType collection(NamespaceString("db.coll"),
                               OID::gen(),
                               Timestamp(1, 1),
                               network()->now(),

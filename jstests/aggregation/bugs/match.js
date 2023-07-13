@@ -57,9 +57,7 @@ assertError(2, {a: {$mod: [0 /* invalid */, 0]}});
 assertError(ErrorCodes.BadValue, {$where: 'true'});
 
 // Geo not allowed.
-assertError(5626500, {a: {$near: [-1, 1]}});
-assertError(5626500, {a: {$nearSphere: [-10, 10]}});
-assertError(5626500, {a: {$geoNear: [-100, 100]}});
+assertError(ErrorCodes.BadValue, {$match: {a: {$near: [0, 0]}}});
 
 function checkMatchResults(indexed) {
     // No results.

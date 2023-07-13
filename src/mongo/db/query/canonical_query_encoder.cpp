@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/db/query/canonical_query_encoder.h"
 
@@ -40,17 +41,13 @@
 #include "mongo/db/matcher/expression_text_noop.h"
 #include "mongo/db/matcher/expression_where.h"
 #include "mongo/db/matcher/expression_where_noop.h"
-#include "mongo/db/pipeline/document_source_group.h"
-#include "mongo/db/pipeline/document_source_lookup.h"
 #include "mongo/db/query/analyze_regex.h"
 #include "mongo/db/query/projection.h"
+#include "mongo/db/query/query_feature_flags_gen.h"
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/db/query/tree_walker.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/base64.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -76,6 +73,32 @@ bool isQueryNegatingEqualToNull(const mongo::MatchExpression* tree) {
 }
 
 namespace {
+
+// Delimiters for cache key encoding.
+const char kEncodeChildrenBegin = '[';
+const char kEncodeChildrenEnd = ']';
+const char kEncodeChildrenSeparator = ',';
+const char kEncodeCollationSection = '#';
+const char kEncodeProjectionSection = '|';
+const char kEncodeProjectionRequirementSeparator = '-';
+const char kEncodeRegexFlagsSeparator = '/';
+const char kEncodeSortSection = '~';
+const char kEncodeEngineSection = '@';
+
+// These special bytes are used in the encoding of auto-parameterized match expressions in the SBE
+// plan cache key.
+
+// Precedes the id number of a parameter marker.
+const char kEncodeParamMarker = '?';
+// Precedes the encoding of a constant when that constant has not been auto-paramterized. The
+// constant is typically encoded as a BSON type byte followed by a BSON value (without the
+// BSONElement's field name).
+const char kEncodeConstantLiteralMarker = ':';
+// Precedes a byte which encodes the bounds tightness associated with a predicate. The structure of
+// the plan (i.e. presence of filters) is affected by bounds tightness. Therefore, if different
+// parameter values can result in different tightnesses, this must be explicitly encoded into the
+// plan cache key.
+const char kEncodeBoundsTightnessDiscriminator = ':';
 
 /**
  * AppendChar provides the compiler with a type for a "appendChar(...)" member function.
@@ -107,17 +130,16 @@ void encodeUserString(StringData s, BuilderType* builder) {
             case kEncodeProjectionRequirementSeparator:
             case kEncodeRegexFlagsSeparator:
             case kEncodeSortSection:
-            case kEncodeFlagsSection:
+            case kEncodeEngineSection:
             case kEncodeParamMarker:
             case kEncodeConstantLiteralMarker:
-            case kEncodePipelineSection:
             case '\\':
                 if constexpr (hasAppendChar<BuilderType>) {
                     builder->appendChar('\\');
                 } else {
                     *builder << '\\';
                 }
-                [[fallthrough]];
+            // Fall through to default case.
             default:
                 if constexpr (hasAppendChar<BuilderType>) {
                     builder->appendChar(c);
@@ -407,30 +429,6 @@ void encodeCollation(const CollatorInterface* collation, StringBuilder* keyBuild
     // not be stable between versions.
 }
 
-void encodePipeline(const std::vector<std::unique_ptr<InnerPipelineStageInterface>>& pipeline,
-                    BufBuilder* bufBuilder) {
-    bufBuilder->appendChar(kEncodePipelineSection);
-    for (auto& stage : pipeline) {
-        std::vector<Value> serializedArray;
-        if (auto lookupStage = dynamic_cast<DocumentSourceLookUp*>(stage->documentSource())) {
-            lookupStage->serializeToArray(serializedArray, boost::none);
-            tassert(6443201,
-                    "$lookup stage isn't serialized to a single bson object",
-                    serializedArray.size() == 1 && serializedArray[0].getType() == Object);
-            const auto bson = serializedArray[0].getDocument().toBson();
-            bufBuilder->appendBuf(bson.objdata(), bson.objsize());
-        } else if (auto groupStage = dynamic_cast<DocumentSourceGroup*>(stage->documentSource())) {
-            auto serializedGroup = groupStage->serialize();
-            const auto bson = serializedGroup.getDocument().toBson();
-            bufBuilder->appendBuf(bson.objdata(), bson.objsize());
-        } else {
-            tasserted(6443200,
-                      str::stream() << "Pipeline stage cannot be encoded in plan cache key: "
-                                    << stage->documentSource()->getSourceName());
-        }
-    }
-}
-
 template <class RegexIterator>
 void encodeRegexFlagsForMatch(RegexIterator first, RegexIterator last, StringBuilder* keyBuilder) {
     // We sort the flags, so that queries with the same regex flags in different orders will have
@@ -459,9 +457,7 @@ void encodeRegexFlagsForMatch(RegexIterator first, RegexIterator last, StringBui
 // Helper overload to prepare a vector of unique_ptrs for the heavy-lifting function above.
 void encodeRegexFlagsForMatch(const std::vector<std::unique_ptr<RegexMatchExpression>>& regexes,
                               StringBuilder* keyBuilder) {
-    const auto transformFunc = [](const auto& regex) {
-        return regex.get();
-    };
+    const auto transformFunc = [](const auto& regex) { return regex.get(); };
     encodeRegexFlagsForMatch(boost::make_transform_iterator(regexes.begin(), transformFunc),
                              boost::make_transform_iterator(regexes.end(), transformFunc),
                              keyBuilder);
@@ -588,7 +584,7 @@ void encodeKeyForProj(const projection_ast::Projection* proj, StringBuilder* key
         return;
     }
 
-    auto requiredFields = proj->getRequiredFields();
+    std::set<std::string> requiredFields = proj->getRequiredFields();
 
     // If the only requirement is that $sortKey be included with some value, we just act as if the
     // entire document is needed.
@@ -652,16 +648,8 @@ void encodeFindCommandRequest(const FindCommandRequest& findCommand, BufBuilder*
         bufBuilder->appendBuf(obj.objdata(), obj.objsize());
     };
     encodeBSONObj(findCommand.getResumeAfter());
-
-    // Read concern "available" results in SBE plans that do not perform shard filtering, so it must
-    // be encoded differently from other read concerns.
-    bool isAvailableReadConcern{false};
-    if (const auto readConcern = findCommand.getReadConcern()) {
-        isAvailableReadConcern =
-            readConcern->getField(repl::ReadConcernArgs::kLevelFieldName).valueStringDataSafe() ==
-            repl::readConcernLevels::kAvailableName;
-    }
-    bufBuilder->appendChar(isAvailableReadConcern ? 't' : 'f');
+    encodeBSONObj(findCommand.getMin());
+    encodeBSONObj(findCommand.getMax());
 }
 }  // namespace
 
@@ -676,13 +664,7 @@ CanonicalQuery::QueryShapeString encode(const CanonicalQuery& cq) {
 
     // This encoding can be removed once the classic query engine reaches EOL and SBE is used
     // exclusively for all query execution.
-    keyBuilder << kEncodeFlagsSection << (cq.getForceClassicEngine() ? "f" : "t");
-
-    // The apiStrict flag can cause the query to see different set of indexes. For example, all
-    // sparse indexes will be ignored with apiStrict is used.
-    const bool apiStrict =
-        cq.getOpCtx() && APIParameters::get(cq.getOpCtx()).getAPIStrict().value_or(false);
-    keyBuilder << (apiStrict ? "t" : "f");
+    keyBuilder << kEncodeEngineSection << (cq.getForceClassicEngine() ? "f" : "t");
 
     return keyBuilder.str();
 }
@@ -821,7 +803,6 @@ public:
     void visit(const AlwaysFalseMatchExpression* expr) final {}
     void visit(const AlwaysTrueMatchExpression* expr) final {}
     void visit(const AndMatchExpression* expr) final {}
-    void visit(const ElemMatchValueMatchExpression* matchExpr) final {}
     void visit(const ElemMatchObjectMatchExpression* matchExpr) final {}
     void visit(const NorMatchExpression* expr) final {}
     void visit(const NotMatchExpression* expr) final {}
@@ -837,6 +818,9 @@ public:
     /**
      * These node types are not yet supported in SBE.
      */
+    void visit(const ElemMatchValueMatchExpression* matchExpr) final {
+        MONGO_UNREACHABLE_TASSERT(6142110);
+    }
     void visit(const GeoMatchExpression* expr) final {
         MONGO_UNREACHABLE_TASSERT(6142111);
     }
@@ -1069,6 +1053,9 @@ void encodeKeyForAutoParameterizedMatchSBE(MatchExpression* matchExpr, BufBuilde
 }  // namespace
 
 std::string encodeSBE(const CanonicalQuery& cq) {
+    tassert(6512900,
+            "using the SBE plan cache key encoding requires the SBE plan cache to be enabled",
+            feature_flags::gFeatureFlagSbePlanCache.isEnabledAndIgnoreFCV());
     tassert(6142104,
             "attempting to encode SBE plan cache key for SBE-incompatible query",
             cq.isSbeCompatible());
@@ -1093,22 +1080,13 @@ std::string encodeSBE(const CanonicalQuery& cq) {
 
     bufBuilder.appendBuf(proj.objdata(), proj.objsize());
     bufBuilder.appendStr(strBuilderEncoded, false /* includeEndingNull */);
-    bufBuilder.appendChar(cq.getForceGenerateRecordId() ? 1 : 0);
-    bufBuilder.appendChar(cq.isCountLike() ? 1 : 0);
-    // The apiStrict flag can cause the query to see different set of indexes. For example, all
-    // sparse indexes will be ignored with apiStrict is used.
-    const bool apiStrict =
-        cq.getOpCtx() && APIParameters::get(cq.getOpCtx()).getAPIStrict().value_or(false);
-    bufBuilder.appendChar(apiStrict ? 1 : 0);
 
     encodeFindCommandRequest(cq.getFindCommandRequest(), &bufBuilder);
-
-    encodePipeline(cq.pipeline(), &bufBuilder);
 
     return base64::encode(StringData(bufBuilder.buf(), bufBuilder.len()));
 }
 
-CanonicalQuery::PlanCacheCommandKey encodeForPlanCacheCommand(const CanonicalQuery& cq) {
+CanonicalQuery::IndexFilterKey encodeForIndexFilters(const CanonicalQuery& cq) {
     StringBuilder keyBuilder;
     encodeKeyForMatch(cq.root(), &keyBuilder);
     encodeKeyForSort(cq.getFindCommandRequest().getSort(), &keyBuilder);

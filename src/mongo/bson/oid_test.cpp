@@ -166,11 +166,4 @@ TEST(Basic, FromTerm) {
     ASSERT_OK(mongo::NumberParser::strToAny()(oidTail, &oidTailInt));
     ASSERT_EQUALS(term, oidTailInt);
 }
-
-TEST(Basic, AbslHash) {
-    OID o1 = OID::gen();
-    OID o2 = o1;
-    ASSERT_EQUALS(absl::Hash<OID>{}(o1), absl::Hash<OID>{}(o2));
-}
-
 }  // namespace

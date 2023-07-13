@@ -69,22 +69,20 @@ ConfigValues mergeConfigValues(const ConfigValues& oldValues, const ConfigValues
 }
 }  // namespace
 
-Status HealthMonitoringIntensitiesServerParameter::setFromString(StringData value,
-                                                                 const boost::optional<TenantId>&) {
+Status HealthMonitoringIntensitiesServerParameter::setFromString(const std::string& value) {
     const auto oldValue = **_data;
     auto newValue = HealthObserverIntensities::parse(
-        IDLParserContext("health monitoring intensities"), fromjson(value));
+        IDLParserErrorContext("health monitoring intensities"), fromjson(value));
     newValue = mergeConfigValues(oldValue, newValue);
     **_data = newValue;
     process_health::FaultManager::healthMonitoringIntensitiesUpdated(oldValue, newValue);
     return Status::OK();
 }
 
-Status HealthMonitoringIntensitiesServerParameter::set(const BSONElement& newValueElement,
-                                                       const boost::optional<TenantId>&) {
+Status HealthMonitoringIntensitiesServerParameter::set(const BSONElement& newValueElement) {
     const auto oldValue = **_data;
     auto newValue = HealthObserverIntensities::parse(
-        IDLParserContext("health monitoring intensities"), newValueElement.Obj());
+        IDLParserErrorContext("health monitoring intensities"), newValueElement.Obj());
     newValue = mergeConfigValues(oldValue, newValue);
     **_data = newValue;
     process_health::FaultManager::healthMonitoringIntensitiesUpdated(oldValue, newValue);
@@ -92,64 +90,57 @@ Status HealthMonitoringIntensitiesServerParameter::set(const BSONElement& newVal
 }
 
 void HealthMonitoringIntensitiesServerParameter::append(OperationContext*,
-                                                        BSONObjBuilder* b,
-                                                        StringData name,
-                                                        const boost::optional<TenantId>&) {
+                                                        BSONObjBuilder& b,
+                                                        const std::string& name) {
     BSONObjBuilder healthMonitoring;
     _data->serialize(&healthMonitoring);
-    b->append(name, healthMonitoring.obj());
+    b.append(name, healthMonitoring.obj());
 }
 
-Status HealthMonitoringProgressMonitorServerParameter::setFromString(
-    StringData value, const boost::optional<TenantId>&) {
+Status HealthMonitoringProgressMonitorServerParameter::setFromString(const std::string& value) {
     *_data = HealthObserverProgressMonitorConfig::parse(
-        IDLParserContext("health monitoring liveness"), fromjson(value));
+        IDLParserErrorContext("health monitoring liveness"), fromjson(value));
     return Status::OK();
 }
 
-Status HealthMonitoringProgressMonitorServerParameter::set(const BSONElement& newValueElement,
-                                                           const boost::optional<TenantId>&) {
+Status HealthMonitoringProgressMonitorServerParameter::set(const BSONElement& newValueElement) {
     *_data = HealthObserverProgressMonitorConfig::parse(
-        IDLParserContext("health monitoring liveness"), newValueElement.Obj());
+        IDLParserErrorContext("health monitoring liveness"), newValueElement.Obj());
     return Status::OK();
 }
 
 void HealthMonitoringProgressMonitorServerParameter::append(OperationContext*,
-                                                            BSONObjBuilder* b,
-                                                            StringData name,
-                                                            const boost::optional<TenantId>&) {
+                                                            BSONObjBuilder& b,
+                                                            const std::string& name) {
     BSONObjBuilder healthMonitoring;
     _data->serialize(&healthMonitoring);
-    b->append(name, healthMonitoring.obj());
+    b.append(name, healthMonitoring.obj());
 }
 
-Status PeriodicHealthCheckIntervalsServerParameter::setFromString(
-    StringData value, const boost::optional<TenantId>&) {
+Status PeriodicHealthCheckIntervalsServerParameter::setFromString(const std::string& value) {
     const auto oldValue = **_data;
-    auto newValue = HealthObserverIntervals::parse(IDLParserContext("health monitoring interval"),
-                                                   fromjson(value));
+    auto newValue = HealthObserverIntervals::parse(
+        IDLParserErrorContext("health monitoring interval"), fromjson(value));
     newValue = mergeConfigValues(oldValue, newValue);
     **_data = newValue;
     return Status::OK();
 }
 
-Status PeriodicHealthCheckIntervalsServerParameter::set(const BSONElement& newValueElement,
-                                                        const boost::optional<TenantId>&) {
+Status PeriodicHealthCheckIntervalsServerParameter::set(const BSONElement& newValueElement) {
     const auto oldValue = **_data;
-    auto newValue = HealthObserverIntervals::parse(IDLParserContext("health monitoring interval"),
-                                                   newValueElement.Obj());
+    auto newValue = HealthObserverIntervals::parse(
+        IDLParserErrorContext("health monitoring interval"), newValueElement.Obj());
     newValue = mergeConfigValues(oldValue, newValue);
     **_data = newValue;
     return Status::OK();
 }
 
 void PeriodicHealthCheckIntervalsServerParameter::append(OperationContext*,
-                                                         BSONObjBuilder* b,
-                                                         StringData name,
-                                                         const boost::optional<TenantId>&) {
+                                                         BSONObjBuilder& b,
+                                                         const std::string& name) {
     BSONObjBuilder healthMonitoring;
     _data->serialize(&healthMonitoring);
-    b->append(name, healthMonitoring.obj());
+    b.append(name, healthMonitoring.obj());
 }
 
 }  // namespace mongo

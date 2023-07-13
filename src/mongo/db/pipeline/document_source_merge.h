@@ -141,7 +141,7 @@ public:
         boost::optional<BSONObj> letVariables,
         boost::optional<std::vector<BSONObj>> pipeline,
         std::set<FieldPath> mergeOnFields,
-        boost::optional<ChunkVersion> targetCollectionPlacementVersion);
+        boost::optional<ChunkVersion> targetCollectionVersion);
 
     /**
      * Parses a $merge stage from the user-supplied BSON.
@@ -155,30 +155,20 @@ public:
 
     void initialize() override {
         // This implies that the stage will soon start to write, so it's safe to verify the target
-        // collection placement version. This is done here instead of parse time since it requires
-        // that locks are not held.
-        if (!pExpCtx->inMongos && _targetCollectionPlacementVersion) {
-            // If mongos has sent us a target placement version, we need to be sure we are prepared
-            // to act as a router which is at least as recent as that mongos.
+        // collection version. This is done here instead of parse time since it requires that locks
+        // are not held.
+        if (!pExpCtx->inMongos && _targetCollectionVersion) {
+            // If mongos has sent us a target shard version, we need to be sure we are prepared to
+            // act as a router which is at least as recent as that mongos.
             pExpCtx->mongoProcessInterface->checkRoutingInfoEpochOrThrow(
-                pExpCtx, getOutputNs(), *_targetCollectionPlacementVersion);
-        }
-    }
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {
-        // Although $merge is not allowed in sub-pipelines and this method is used for correlation
-        // analysis, the method is generic enough to be used in the future for other purposes.
-        if (_letVariables) {
-            for (auto&& [name, expr] : *_letVariables) {
-                expression::addVariableRefs(expr.get(), refs);
-            }
+                pExpCtx, getOutputNs(), *_targetCollectionVersion);
         }
     }
 
 private:
     /**
      * Builds a new $merge stage which will merge all documents into 'outputNs'. If
-     * 'targetCollectionPlacementVersion' is provided then processing will stop with an error if the
+     * 'targetCollectionVersion' is provided then processing will stop with an error if the
      * collection's epoch changes during the course of execution. This is used as a mechanism to
      * prevent the shard key from changing.
      */
@@ -188,7 +178,7 @@ private:
                         boost::optional<BSONObj> letVariables,
                         boost::optional<std::vector<BSONObj>> pipeline,
                         std::set<FieldPath> mergeOnFields,
-                        boost::optional<ChunkVersion> targetCollectionPlacementVersion);
+                        boost::optional<ChunkVersion> targetCollectionVersion);
 
     /**
      * Creates an UpdateModification object from the given 'doc' to be used with the batched update.
@@ -224,7 +214,7 @@ private:
 
     std::pair<BatchObject, int> makeBatchObject(Document&& doc) const override;
 
-    boost::optional<ChunkVersion> _targetCollectionPlacementVersion;
+    boost::optional<ChunkVersion> _targetCollectionVersion;
 
     // A merge descriptor contains a merge strategy function describing how to merge two
     // collections, as well as some other metadata needed to perform the merge operation. This is

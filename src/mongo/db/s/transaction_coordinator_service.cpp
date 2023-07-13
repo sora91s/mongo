@@ -27,22 +27,21 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTransaction
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/s/transaction_coordinator_service.h"
 
+#include "mongo/db/internal_transactions_feature_flag_gen.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/transaction_coordinator_document_gen.h"
 #include "mongo/db/s/transaction_coordinator_params_gen.h"
 #include "mongo/db/storage/flow_control.h"
-#include "mongo/db/transaction/transaction_participant_gen.h"
+#include "mongo/db/transaction_participant_gen.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/grid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTransaction
-
 
 namespace mongo {
 namespace {
@@ -216,6 +215,7 @@ void TransactionCoordinatorService::onStepUp(OperationContext* opCtx,
                                             WriteConcernOptions::kNoTimeout},
                         &unusedWCResult));
 
+                    FlowControl::Bypass flowControlBypass(opCtx);
                     auto coordinatorDocs = txn::readAllCoordinatorDocs(opCtx);
 
                     LOGV2(22452,
@@ -368,6 +368,37 @@ void TransactionCoordinatorService::cancelIfCommitNotYetStarted(
             latestTxnNumberRetryCounterAndCoordinator->second->cancelIfCommitNotYetStarted();
         }
     }
+}
+
+const std::vector<SharedSemiFuture<void>>
+TransactionCoordinatorService::getAllRemovalFuturesForCoordinatorsForInternalTransactions(
+    OperationContext* opCtx) {
+    std::vector<SharedSemiFuture<void>> coordinatorStateDocRemovalFutures;
+    std::shared_ptr<CatalogAndScheduler> cas = _getCatalogAndScheduler(opCtx);
+    auto& catalog = cas->catalog;
+
+    // On step up, we want to wait until the catalog has recovered all active transaction
+    // coordinators before getting the removal futures.
+    cas->recoveryTaskCompleted->get(opCtx);
+
+    auto predicate = [](const LogicalSessionId lsid,
+                        const TxnNumberAndRetryCounter txnNumberAndRetryCounter,
+                        const std::shared_ptr<TransactionCoordinator> transactionCoordinator) {
+        TransactionCoordinator::Step step = transactionCoordinator->getStep();
+        if (step > TransactionCoordinator::Step::kInactive && isChildSession(lsid)) {
+            return true;
+        }
+        return false;
+    };
+
+    auto visitorAction = [&](const LogicalSessionId lsid,
+                             const TxnNumberAndRetryCounter txnNumberAndRetryCounter,
+                             const std::shared_ptr<TransactionCoordinator> transactionCoordinator) {
+        coordinatorStateDocRemovalFutures.push_back(
+            transactionCoordinator->getCoordinatorDocRemovalFuture());
+    };
+    catalog.filter(predicate, visitorAction);
+    return coordinatorStateDocRemovalFutures;
 }
 
 }  // namespace mongo

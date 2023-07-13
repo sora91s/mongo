@@ -4,24 +4,19 @@ load("jstests/concurrency/fsm_workload_helpers/server_types.js");  // For isMong
  * Create a FLE client that has an unencrypted and encrypted client to the same database
  */
 
-var kSafeContentField = "__safeContent__";
+const kSafeContentField = "__safeContent__";
 
-var EncryptedClient = class {
+class EncryptedClient {
     /**
      * Create a new encrypted FLE connection to the target server with a local KMS
      *
      * @param {Mongo} conn Connection to mongod or mongos
      * @param {string} dbName Name of database to setup key vault in
-     * @param {string} userName user name used for authentication (optional).
-     * @param {string} adminPwd Admin password used for authentication (optional).
      */
-    constructor(conn, dbName, userName = undefined, adminPwd = undefined) {
+    constructor(conn, dbName) {
         // Detect if jstests/libs/override_methods/implicitly_shard_accessed_collections.js is in
         // use
         this.useImplicitSharding = !(typeof (ImplicitlyShardAccessCollSettings) === "undefined");
-
-        // TODO: SERVER-73303 remove when v2 is enabled by default
-        this.ecocCountMatchesEscCount = false;
 
         const localKMS = {
             key: BinData(
@@ -38,20 +33,7 @@ var EncryptedClient = class {
         };
 
         let connectionString = conn.host.toString();
-        var shell = undefined;
-        assert((userName && adminPwd) || (!userName && !adminPwd),
-               `EncryptedClient takes either no credential or both credentials`);
-        if (userName && adminPwd) {
-            // We are using the admin database as a hack for our jstests to avoid having to pass
-            // a tenantId that is required when featureFlagRequireTenantID is set.
-            clientSideFLEOptions.keyVaultNamespace = "admin" +
-                "." + dbName + ".keystore";
-            shell = Mongo(connectionString, clientSideFLEOptions);
-            // auth is needed when using $tenant.
-            assert(shell.getDB('admin').auth(userName, adminPwd));
-        } else {
-            shell = Mongo(connectionString, clientSideFLEOptions);
-        }
+        var shell = Mongo(connectionString, clientSideFLEOptions);
         var edb = shell.getDB(dbName);
 
         var keyVault = shell.getKeyVault();
@@ -87,25 +69,6 @@ var EncryptedClient = class {
     }
 
     /**
-     * Get the namespaces of the state collections that are associated with the given
-     * encrypted data collection namespace.
-     * @param {string} name Name of the encrypted data collection
-     * @returns Object with fields "esc", "ecc", and "ecoc" whose values
-     *          are the corresponding namespace strings.
-     */
-    getStateCollectionNamespaces(collName) {
-        const baseCollInfos = this._edb.getCollectionInfos({"name": collName});
-        assert.eq(baseCollInfos.length, 1);
-        const baseCollInfo = baseCollInfos[0];
-        assert(baseCollInfo.options.encryptedFields !== undefined);
-        return {
-            esc: baseCollInfo.options.encryptedFields.escCollection,
-            ecc: baseCollInfo.options.encryptedFields.eccCollection,
-            ecoc: baseCollInfo.options.encryptedFields.ecocCollection,
-        };
-    }
-
-    /**
      * Create an encrypted collection. If key ids are not specified, it creates them automatically
      * in the key vault.
      *
@@ -132,17 +95,11 @@ var EncryptedClient = class {
             `options must contain an encryptedFields document'`);
 
         const res = assert.commandWorked(this._edb.createCollection(name, options));
-        let listCollCmdObj = {listCollections: 1, nameOnly: false, filter: {name: name}};
-        const dollarTenant = options["$tenant"];
-        if (dollarTenant) {
-            Object.extend(listCollCmdObj, {"$tenant": dollarTenant});
-        }
-        const cis = assert.commandWorked(this._edb.runCommand(listCollCmdObj));
 
-        assert.eq(
-            cis.cursor.firstBatch.length, 1, `Expected to find one collection named '${name}'`);
+        const cis = this._edb.getCollectionInfos({"name": name});
+        assert.eq(cis.length, 1, `Expected to find one collection named '${name}'`);
 
-        const ci = cis.cursor.firstBatch[0];
+        const ci = cis[0];
         assert(ci.hasOwnProperty("options"), `Expected collection '${name}' to have 'options'`);
         const storedOptions = ci.options;
         assert(options.hasOwnProperty("encryptedFields"),
@@ -170,23 +127,12 @@ var EncryptedClient = class {
             jsTestLog("Sharding: " + tojson(shardCollCmd));
         }
 
-        const indexOptions = [{"key": {__safeContent__: 1}, name: "__safeContent___1"}];
-        const createIndexCmdObj = {createIndexes: name, indexes: indexOptions};
-        if (dollarTenant) {
-            Object.extend(createIndexCmdObj, {"$tenant": dollarTenant});
-        }
-        assert.commandWorked(this._edb.runCommand(createIndexCmdObj));
-        let tenantOption = {};
-        if (dollarTenant) {
-            Object.extend(tenantOption, {"$tenant": dollarTenant});
-        }
-        assert.commandWorked(this._edb.createCollection(ef.escCollection, tenantOption));
-        assert.commandWorked(this._edb.createCollection(ef.ecocCollection, tenantOption));
+        assert.commandWorked(this._edb.getCollection(name).createIndex({__safeContent__: 1}));
 
-        // TODO: SERVER-73303 remove once v2 is enabled by default
-        if (!isFLE2ProtocolVersion2Enabled()) {
-            assert.commandWorked(this._edb.createCollection(ef.eccCollection, tenantOption));
-        }
+        assert.commandWorked(this._edb.createCollection(ef.escCollection));
+        assert.commandWorked(this._edb.createCollection(ef.eccCollection));
+        assert.commandWorked(this._edb.createCollection(ef.ecocCollection));
+
         return res;
     }
 
@@ -200,57 +146,36 @@ var EncryptedClient = class {
      * @param {number} ecoc Number of documents in ECOC
      */
     assertEncryptedCollectionCountsByObject(
-        sessionDB, name, expectedEdc, expectedEsc, expectedEcc, expectedEcoc, tenantId) {
-        let listCollCmdObj = {listCollections: 1, nameOnly: false, filter: {name: name}};
-        if (tenantId) {
-            Object.extend(listCollCmdObj, {"$tenant": tenantId});
-        }
-        const cis = assert.commandWorked(this._db.runCommand(listCollCmdObj));
-        assert.eq(
-            cis.cursor.firstBatch.length, 1, `Expected to find one collection named '${name}'`);
+        sessionDB, name, expectedEdc, expectedEsc, expectedEcc, expectedEcoc) {
+        const cis = this._db.getCollectionInfos({"name": name});
+        assert.eq(cis.length, 1, `Expected to find one collection named '${name}'`);
 
-        const ci = cis.cursor.firstBatch[0];
+        const ci = cis[0];
         assert(ci.hasOwnProperty("options"), `Expected collection '${name}' to have 'options'`);
         const options = ci.options;
         assert(options.hasOwnProperty("encryptedFields"),
                `Expected collection '${name}' to have 'encryptedFields'`);
 
-        function countDocuments(sessionDB, name, tenantId) {
-            // FLE2 tests are testing transactions and using the count command is not supported.
-            // For the purpose of testing NTDI and `$tenant` we are going to simply use the count
-            // command since we are not testing any transaction. Otherwise fall back to use
-            // aggregation.
-            if (tenantId) {
-                return assert
-                    .commandWorked(sessionDB.runCommand({count: name, "$tenant": tenantId}))
-                    .n;
-            } else {
-                return sessionDB.getCollection(name).countDocuments({});
-            }
-        }
+        const ef = options.encryptedFields;
 
-        const actualEdc = countDocuments(sessionDB, name, tenantId);
+        const actualEdc = sessionDB.getCollection(name).countDocuments({});
         assert.eq(actualEdc,
                   expectedEdc,
                   `EDC document count is wrong: Actual ${actualEdc} vs Expected ${expectedEdc}`);
 
-        const ef = options.encryptedFields;
-        const actualEsc = countDocuments(sessionDB, ef.escCollection, tenantId);
+        const actualEsc = sessionDB.getCollection(ef.escCollection).countDocuments({});
         assert.eq(actualEsc,
                   expectedEsc,
                   `ESC document count is wrong: Actual ${actualEsc} vs Expected ${expectedEsc}`);
 
-        if (!isFLE2ProtocolVersion2Enabled()) {
-            const actualEcc = countDocuments(sessionDB, ef.eccCollection, tenantId);
-            assert.eq(
-                actualEcc,
-                expectedEcc,
-                `ECC document count is wrong: Actual ${actualEcc} vs Expected ${expectedEcc}`);
-        }
+        const actualEcc = sessionDB.getCollection(ef.eccCollection).countDocuments({});
+        assert.eq(actualEcc,
+                  expectedEcc,
+                  `ECC document count is wrong: Actual ${actualEcc} vs Expected ${expectedEcc}`);
 
-        const actualEcoc = countDocuments(sessionDB, ef.ecocCollection, tenantId);
+        const actualEcoc = sessionDB.getCollection(ef.ecocCollection).countDocuments({});
         assert.eq(actualEcoc,
-                  this.ecocCountMatchesEscCount ? expectedEsc : expectedEcoc,
+                  expectedEcoc,
                   `ECOC document count is wrong: Actual ${actualEcoc} vs Expected ${expectedEcoc}`);
     }
 
@@ -263,10 +188,9 @@ var EncryptedClient = class {
      * @param {number} ecc Number of documents in ECC
      * @param {number} ecoc Number of documents in ECOC
      */
-    assertEncryptedCollectionCounts(
-        name, expectedEdc, expectedEsc, expectedEcc, expectedEcoc, tenantId) {
+    assertEncryptedCollectionCounts(name, expectedEdc, expectedEsc, expectedEcc, expectedEcoc) {
         this.assertEncryptedCollectionCountsByObject(
-            this._db, name, expectedEdc, expectedEsc, expectedEcc, expectedEcoc, tenantId);
+            this._db, name, expectedEdc, expectedEsc, expectedEcc, expectedEcoc);
     }
 
     /**
@@ -277,24 +201,17 @@ var EncryptedClient = class {
      * @param {object} query
      * @param {object} fields
      */
-    assertOneEncryptedDocumentFields(coll, query, fields, tenantId) {
-        let cmd = {find: coll};
-        if (query) {
-            cmd.filter = query;
-        }
-        if (tenantId) {
-            Object.extend(cmd, {"$tenant": tenantId});
-        }
-        const encryptedDocs = assert.commandWorked(this._db.runCommand(cmd)).cursor.firstBatch;
+    assertOneEncryptedDocumentFields(coll, query, fields) {
+        let encryptedDocs = this._db.getCollection(coll).find(query).toArray();
         assert.eq(encryptedDocs.length,
                   1,
                   `Expected query ${tojson(query)} to only return one document. Found ${
                       encryptedDocs.length}`);
-        const unEncryptedDocs = assert.commandWorked(this._edb.runCommand(cmd)).cursor.firstBatch;
+        let unEncryptedDocs = this._edb.getCollection(coll).find(query).toArray();
         assert.eq(unEncryptedDocs.length, 1);
 
-        const encryptedDoc = encryptedDocs[0];
-        const unEncryptedDoc = unEncryptedDocs[0];
+        let encryptedDoc = encryptedDocs[0];
+        let unEncryptedDoc = unEncryptedDocs[0];
 
         assert(encryptedDoc[kSafeContentField] !== undefined);
 
@@ -376,10 +293,10 @@ var EncryptedClient = class {
 
         let onDiskDocs = coll.find({}, {[kSafeContentField]: 0}).sort({_id: 1}).toArray();
 
-        assert.docEq(docs, onDiskDocs);
+        assert.docEq(onDiskDocs, docs);
     }
 
-    assertStateCollectionsAfterCompact(collName, ecocExists, ecocTempExists = false) {
+    assertStateCollectionsAfterCompact(collName, ecocExists) {
         const baseCollInfos = this._edb.getCollectionInfos({"name": collName});
         assert.eq(baseCollInfos.length, 1);
         const baseCollInfo = baseCollInfos[0];
@@ -392,7 +309,7 @@ var EncryptedClient = class {
         checkMap[baseCollInfo.options.encryptedFields.escCollection] = true;
         checkMap[baseCollInfo.options.encryptedFields.eccCollection] = true;
         checkMap[baseCollInfo.options.encryptedFields.ecocCollection] = ecocExists;
-        checkMap[baseCollInfo.options.encryptedFields.ecocCollection + ".compact"] = ecocTempExists;
+        checkMap[baseCollInfo.options.encryptedFields.ecocCollection + ".compact"] = false;
 
         const edb = this._edb;
         Object.keys(checkMap).forEach(function(coll) {
@@ -401,7 +318,7 @@ var EncryptedClient = class {
             assert.eq(info.length, checkMap[coll], msg);
         });
     }
-};
+}
 
 function runEncryptedTest(db, dbName, collName, encryptedFields, runTestsCallback) {
     const dbTest = db.getSiblingDB(dbName);
@@ -425,93 +342,29 @@ function runEncryptedTest(db, dbName, collName, encryptedFields, runTestsCallbac
 }
 
 /**
+ * @returns Returns true if talking to a sharded cluster
+ */
+function isFLE2ShardingEnabled() {
+    return typeof (testingFLESharding) == "undefined" || testingFLESharding === true;
+}
+
+/**
  * @returns Returns true if talking to a replica set
  */
 function isFLE2ReplicationEnabled() {
     return typeof (testingReplication) == "undefined" || testingReplication === true;
 }
 
-// TODO SERVER-67760 remove once feature flag is gone
-
 /**
- * @returns Returns true if featureFlagFLE2Range is enabled
- */
-function isFLE2RangeEnabled() {
-    return typeof (testingFLE2Range) !== "undefined" && testingFLE2Range &&
-        (TestData == undefined || TestData.setParameters.featureFlagFLE2Range);
-}
-
-/**
- * @returns Returns true if featureFlagFLE2ProtocolVersion2 is enabled
- */
-function isFLE2ProtocolVersion2Enabled() {
-    return typeof (TestData) !== "undefined" &&
-        TestData.setParameters.featureFlagFLE2ProtocolVersion2;
-}
-
-/**
- * @returns Returns true if internalQueryFLEAlwaysUseEncryptedCollScanMode is enabled
- */
-function isFLE2AlwaysUseCollScanModeEnabled(db) {
-    const doc = assert.commandWorked(
-        db.adminCommand({getParameter: 1, internalQueryFLEAlwaysUseEncryptedCollScanMode: 1}));
-    return (doc.internalQueryFLEAlwaysUseEncryptedCollScanMode === true);
-}
-
-/**
- * Assert a field is an indexed encrypted field. That includes both
- * equality and range
+ * Assert a field is an indexed encrypted field
  *
  * @param {BinData} value bindata value
  */
 function assertIsIndexedEncryptedField(value) {
     assert(value instanceof BinData, "Expected BinData, found: " + value);
     assert.eq(value.subtype(), 6, "Expected Encrypted bindata: " + value);
-
-    // TODO: SERVER-73303 remove once v2 is enabled by default
-    if (!isFLE2ProtocolVersion2Enabled()) {
-        assert(value.hex().startsWith("07") || value.hex().startsWith("09"),
-               "Expected subtype 7 or 9 but found the wrong type: " + value.hex());
-        return;
-    }
-    assert(value.hex().startsWith("0e") || value.hex().startsWith("0f"),
-           "Expected subtype 14 or 15 but found the wrong type: " + value.hex());
-}
-
-/**
- * Assert a field is an equality indexed encrypted field
- *
- * @param {BinData} value bindata value
- */
-function assertIsEqualityIndexedEncryptedField(value) {
-    assert(value instanceof BinData, "Expected BinData, found: " + value);
-    assert.eq(value.subtype(), 6, "Expected Encrypted bindata: " + value);
-    // TODO: SERVER-73303 remove once v2 is enabled by default
-    if (!isFLE2ProtocolVersion2Enabled()) {
-        assert(value.hex().startsWith("07"),
-               "Expected subtype 7 but found the wrong type: " + value.hex());
-        return;
-    }
-    assert(value.hex().startsWith("0e"),
-           "Expected subtype 14 but found the wrong type: " + value.hex());
-}
-
-/**
- * Assert a field is a range indexed encrypted field
- *
- * @param {BinData} value bindata value
- */
-function assertIsRangeIndexedEncryptedField(value) {
-    assert(value instanceof BinData, "Expected BinData, found: " + value);
-    assert.eq(value.subtype(), 6, "Expected Encrypted bindata: " + value);
-    // TODO: SERVER-73303 remove once v2 is enabled by default
-    if (!isFLE2ProtocolVersion2Enabled()) {
-        assert(value.hex().startsWith("09"),
-               "Expected subtype 9 but found the wrong type: " + value.hex());
-        return;
-    }
-    assert(value.hex().startsWith("0f"),
-           "Expected subtype 15 but found the wrong type: " + value.hex());
+    assert(value.hex().startsWith("07"),
+           "Expected subtype 7 but found the wrong type: " + value.hex());
 }
 
 /**
@@ -522,12 +375,6 @@ function assertIsRangeIndexedEncryptedField(value) {
 function assertIsUnindexedEncryptedField(value) {
     assert(value instanceof BinData, "Expected BinData, found: " + value);
     assert.eq(value.subtype(), 6, "Expected Encrypted bindata: " + value);
-    // TODO: SERVER-73303 remove once v2 is enabled by default
-    if (!isFLE2ProtocolVersion2Enabled()) {
-        assert(value.hex().startsWith("06"),
-               "Expected subtype 6 but found the wrong type: " + value.hex());
-        return;
-    }
-    assert(value.hex().startsWith("10"),
+    assert(value.hex().startsWith("06"),
            "Expected subtype 6 but found the wrong type: " + value.hex());
 }

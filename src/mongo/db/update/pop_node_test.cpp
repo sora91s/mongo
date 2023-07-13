@@ -42,7 +42,7 @@ namespace mongo {
 namespace {
 
 namespace mmb = mongo::mutablebson;
-using PopNodeTest = UpdateTestFixture;
+using PopNodeTest = UpdateNodeTest;
 
 TEST(PopNodeTest, InitSucceedsPositiveOne) {
     auto update = fromjson("{$pop: {a: 1}}");
@@ -237,7 +237,8 @@ TEST_F(PopNodeTest, PopsSingleElementFromTheBack) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: []}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {u: {b: []}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b': []}}"),
+                     fromjson("{$v: 2, diff: {sa: {u: {b: []}}}}"));
     ASSERT_EQUALS("{a.b}", getModifiedPaths());
 }
 
@@ -256,7 +257,8 @@ TEST_F(PopNodeTest, PopsSingleElementFromTheFront) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: []}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {u: {b: []}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b': []}}"),
+                     fromjson("{$v: 2, diff: {sa: {u: {b: []}}}}"));
     ASSERT_EQUALS("{a.b}", getModifiedPaths());
 }
 
@@ -275,7 +277,8 @@ TEST_F(PopNodeTest, PopsFromTheBackOfMultiElementArray) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: [1, 2]}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {u: {b: [1, 2]}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b': [1, 2]}}"),
+                     fromjson("{$v: 2, diff: {sa: {u: {b: [1, 2]}}}}"));
     ASSERT_EQUALS("{a.b}", getModifiedPaths());
 }
 
@@ -294,7 +297,8 @@ TEST_F(PopNodeTest, PopsFromTheFrontOfMultiElementArray) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: [2, 3]}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {u: {b: [2, 3]}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b': [2, 3]}}"),
+                     fromjson("{$v: 2, diff: {sa: {u: {b: [2, 3]}}}}"));
     ASSERT_EQUALS("{a.b}", getModifiedPaths());
 }
 
@@ -313,7 +317,8 @@ TEST_F(PopNodeTest, PopsFromTheFrontOfMultiElementArrayWithoutAffectingIndexes) 
     ASSERT_FALSE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: [2, 3]}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {u: {b: [2, 3]}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b': [2, 3]}}"),
+                     fromjson("{$v: 2, diff: {sa: {u: {b: [2, 3]}}}}"));
     ASSERT_EQUALS("{a.b}", getModifiedPaths());
 }
 
@@ -331,7 +336,8 @@ TEST_F(PopNodeTest, SucceedsWithNullUpdateIndexData) {
     ASSERT_FALSE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: [1, 2]}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {u: {b: [1, 2]}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b': [1, 2]}}"),
+                     fromjson("{$v: 2, diff: {sa: {u: {b: [1, 2]}}}}"));
     ASSERT_EQUALS("{a.b}", getModifiedPaths());
 }
 

@@ -43,6 +43,10 @@ namespace mongo {
  */
 class CatalogTestFixture : public ServiceContextMongoDTest {
 public:
+    /**
+     * Allows selection of storage engine to back the unit test, defaulting to ephemeralForTest
+     * when not specified.
+     */
     explicit CatalogTestFixture(Options options = {})
         : ServiceContextMongoDTest(std::move(options)) {}
 

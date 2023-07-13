@@ -1,4 +1,5 @@
 """Unit tests for buildscripts/resmokelib/setup_multiversion/setup_multiversion.py."""
+# pylint: disable=missing-docstring
 import unittest
 from argparse import Namespace
 

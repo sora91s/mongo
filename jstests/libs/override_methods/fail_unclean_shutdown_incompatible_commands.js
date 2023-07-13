@@ -14,21 +14,30 @@ function runCommandFailUncleanShutdownIncompatibleCommands(
         return func.apply(conn, makeFuncArgs(commandObj));
     }
 
-    if (commandName === "count" &&
-        (!commandObj.hasOwnProperty("query") || Object.keys(commandObj["query"]).length === 0)) {
-        throw new Error("Cowardly fail if fastcount is run with a mongod that had an unclean" +
-                        " shutdown: " + tojson(commandObj));
+    // If the command is in a wrapped form, then we look for the actual command object inside
+    // the query/$query object.
+    let commandObjUnwrapped = commandObj;
+    if (commandName === "query" || commandName === "$query") {
+        commandObjUnwrapped = commandObj[commandName];
+        commandName = Object.keys(commandObjUnwrapped)[0];
     }
 
-    if (commandName === "dataSize" && !commandObj.hasOwnProperty("min") &&
-        !commandObj.hasOwnProperty("max")) {
+    if (commandName === "count" &&
+        (!commandObjUnwrapped.hasOwnProperty("query") ||
+         Object.keys(commandObjUnwrapped["query"]).length === 0)) {
+        throw new Error("Cowardly fail if fastcount is run with a mongod that had an unclean" +
+                        " shutdown: " + tojson(commandObjUnwrapped));
+    }
+
+    if (commandName === "dataSize" && !commandObjUnwrapped.hasOwnProperty("min") &&
+        !commandObjUnwrapped.hasOwnProperty("max")) {
         throw new Error("Cowardly fail if unbounded dataSize is run with a mongod that had an" +
-                        " unclean shutdown: " + tojson(commandObj));
+                        " unclean shutdown: " + tojson(commandObjUnwrapped));
     }
 
     if (commandName === "collStats" || commandName === "dbStats") {
         throw new Error("Cowardly fail if " + commandName + " is run with a mongod that had" +
-                        " an unclean shutdown: " + tojson(commandObj));
+                        " an unclean shutdown: " + tojson(commandObjUnwrapped));
     }
 
     return func.apply(conn, makeFuncArgs(commandObj));

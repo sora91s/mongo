@@ -19,7 +19,7 @@ load("jstests/libs/sbe_util.js");      // For checkSBEEnabled.
 const st = new ShardingTest({shards: 2, config: 1});
 const db = st.s.getDB("test");
 
-if (!checkSBEEnabled(db)) {
+if (!checkSBEEnabled(db, ["featureFlagSBELookupPushdown"])) {
     jsTestLog("Skipping test because SBE $lookup is not enabled.");
     st.stop();
     return;

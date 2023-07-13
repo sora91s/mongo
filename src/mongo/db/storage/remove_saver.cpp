@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -41,8 +42,6 @@
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/errno_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 
 using std::ios_base;
@@ -98,13 +97,12 @@ RemoveSaver::~RemoveSaver() {
 
         _out->write(reinterpret_cast<const char*>(protectedBuffer.get()), resultLen);
         if (_out->fail()) {
-            auto ec = lastSystemError();
             LOGV2_FATAL(34351,
                         "Couldn't write finalized DataProtector data to: {file} for remove "
                         "saving: {error}",
                         "Couldn't write finalized DataProtector for remove saving",
                         "file"_attr = _file.generic_string(),
-                        "error"_attr = redact(errorMessage(ec)));
+                        "error"_attr = redact(errnoWithDescription()));
         }
 
         protectedBuffer.reset(new uint8_t[protectedSizeMax]);
@@ -130,13 +128,12 @@ RemoveSaver::~RemoveSaver() {
         _out->write(reinterpret_cast<const char*>(protectedBuffer.get()), resultLen);
 
         if (_out->fail()) {
-            auto ec = lastSystemError();
             LOGV2_FATAL(34354,
                         "Couldn't write finalizeTag from DataProtector to: {file} for "
                         "remove saving: {error}",
                         "Couldn't write finalizeTag from DataProtector for remove saving",
                         "file"_attr = _file.generic_string(),
-                        "error"_attr = redact(errorMessage(ec)));
+                        "error"_attr = redact(errnoWithDescription()));
         }
 
         _storage->dumpBuffer();
@@ -148,13 +145,12 @@ Status RemoveSaver::goingToDelete(const BSONObj& o) {
         _out = _storage->makeOstream(_file, _root);
 
         if (_out->fail()) {
-            auto ec = lastSystemError();
             string msg = str::stream() << "couldn't create file: " << _file.string()
-                                       << " for remove saving: " << redact(errorMessage(ec));
+                                       << " for remove saving: " << redact(errnoWithDescription());
             LOGV2_ERROR(23734,
                         "Failed to create file for remove saving",
                         "file"_attr = _file.generic_string(),
-                        "error"_attr = redact(errorMessage(ec)));
+                        "error"_attr = redact(errnoWithDescription()));
             _out.reset();
             _out = nullptr;
             return Status(ErrorCodes::FileNotOpen, msg);
@@ -187,7 +183,7 @@ Status RemoveSaver::goingToDelete(const BSONObj& o) {
     _out->write(reinterpret_cast<const char*>(data), dataSize);
 
     if (_out->fail()) {
-        auto errorStr = redact(errorMessage(lastSystemError()));
+        auto errorStr = redact(errnoWithDescription());
         string msg = str::stream() << "couldn't write document to file: " << _file.string()
                                    << " for remove saving: " << errorStr;
         LOGV2_ERROR(23735,

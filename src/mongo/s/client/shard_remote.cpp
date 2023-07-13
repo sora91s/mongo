@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/s/client/shard_remote.h"
 
@@ -52,9 +53,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/util/str.h"
 #include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 
@@ -102,13 +100,61 @@ ShardRemote::ShardRemote(const ShardId& id,
 ShardRemote::~ShardRemote() = default;
 
 bool ShardRemote::isRetriableError(ErrorCodes::Error code, RetryPolicy options) {
-    return remoteIsRetriableError(code, options);
+    if (gInternalProhibitShardOperationRetry.loadRelaxed()) {
+        return false;
+    }
+
+    switch (options) {
+        case RetryPolicy::kNoRetry: {
+            return false;
+        } break;
+
+        case RetryPolicy::kIdempotent: {
+            return isMongosRetriableError(code);
+        } break;
+
+        case RetryPolicy::kIdempotentOrCursorInvalidated: {
+            return isRetriableError(code, Shard::RetryPolicy::kIdempotent) ||
+                ErrorCodes::isCursorInvalidatedError(code);
+        } break;
+
+        case RetryPolicy::kNotIdempotent: {
+            return ErrorCodes::isNotPrimaryError(code);
+        } break;
+    }
+
+    MONGO_UNREACHABLE;
 }
 
 // Any error code changes should possibly also be made to Shard::shouldErrorBePropagated!
 void ShardRemote::updateReplSetMonitor(const HostAndPort& remoteHost,
                                        const Status& remoteCommandStatus) {
-    _targeter->updateHostWithStatus(remoteHost, remoteCommandStatus);
+    if (remoteCommandStatus.isOK())
+        return;
+
+    if (ErrorCodes::isNotPrimaryError(remoteCommandStatus.code())) {
+        _targeter->markHostNotPrimary(remoteHost, remoteCommandStatus);
+    } else if (ErrorCodes::isNetworkError(remoteCommandStatus.code())) {
+        _targeter->markHostUnreachable(remoteHost, remoteCommandStatus);
+    } else if (remoteCommandStatus == ErrorCodes::NetworkInterfaceExceededTimeLimit) {
+        _targeter->markHostUnreachable(remoteHost, remoteCommandStatus);
+    } else if (ErrorCodes::isShutdownError(remoteCommandStatus.code())) {
+        _targeter->markHostShuttingDown(remoteHost, remoteCommandStatus);
+    }
+}
+
+void ShardRemote::updateLastCommittedOpTime(LogicalTime lastCommittedOpTime) {
+    stdx::lock_guard<Latch> lk(_lastCommittedOpTimeMutex);
+
+    // A secondary may return a lastCommittedOpTime less than the latest seen so far.
+    if (lastCommittedOpTime > _lastCommittedOpTime) {
+        _lastCommittedOpTime = lastCommittedOpTime;
+    }
+}
+
+LogicalTime ShardRemote::getLastCommittedOpTime() const {
+    stdx::lock_guard<Latch> lk(_lastCommittedOpTimeMutex);
+    return _lastCommittedOpTime;
 }
 
 std::string ShardRemote::toString() const {
@@ -264,14 +310,8 @@ StatusWith<Shard::QueryResponse> ShardRemote::_runExhaustiveCursorCommand(
         getMoreBob->append("collection", data.nss.coll());
     };
 
-    const Milliseconds requestTimeout = [&] {
-        auto minMaxTimeMS = std::min(opCtx->getRemainingMaxTimeMillis(), maxTimeMSOverride);
-        if (minMaxTimeMS < Milliseconds::max()) {
-            return minMaxTimeMS;
-        }
-        // The Fetcher expects kNoTimeout when there is no maxTimeMS instead of Milliseconds::max().
-        return RemoteCommandRequest::kNoTimeout;
-    }();
+    const Milliseconds requestTimeout =
+        std::min(opCtx->getRemainingMaxTimeMillis(), maxTimeMSOverride);
 
     auto executor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
     Fetcher fetcher(executor.get(),
@@ -313,17 +353,6 @@ StatusWith<Shard::QueryResponse> ShardRemote::_runExhaustiveCursorCommand(
     return response;
 }
 
-Milliseconds getExhaustiveFindOnConfigMaxTimeMS(OperationContext* opCtx,
-                                                const NamespaceString& nss) {
-    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-        // Don't use a timeout on the config server to guarantee it can always refresh.
-        return Milliseconds::max();
-    }
-
-    return std::min(opCtx->getRemainingMaxTimeMillis(),
-                    nss == ChunkType::ConfigNS ? Milliseconds(gFindChunksOnConfigTimeoutMS.load())
-                                               : Shard::kDefaultConfigCommandTimeout);
-}
 
 StatusWith<Shard::QueryResponse> ShardRemote::_exhaustiveFindOnConfig(
     OperationContext* opCtx,
@@ -358,7 +387,10 @@ StatusWith<Shard::QueryResponse> ShardRemote::_exhaustiveFindOnConfig(
         return bob.done().getObjectField(repl::ReadConcernArgs::kReadConcernFieldName).getOwned();
     }();
 
-    const Milliseconds maxTimeMS = getExhaustiveFindOnConfigMaxTimeMS(opCtx, nss);
+    const Milliseconds maxTimeMS =
+        std::min(opCtx->getRemainingMaxTimeMillis(),
+                 nss == ChunkType::ConfigNS ? Milliseconds(gFindChunksOnConfigTimeoutMS.load())
+                                            : kDefaultConfigCommandTimeout);
 
     BSONObjBuilder findCmdBuilder;
 
@@ -382,6 +414,13 @@ StatusWith<Shard::QueryResponse> ShardRemote::_exhaustiveFindOnConfig(
 
     return _runExhaustiveCursorCommand(
         opCtx, readPrefWithConfigTime, nss.db().toString(), maxTimeMS, findCmdBuilder.done());
+}
+
+Status ShardRemote::createIndexOnConfig(OperationContext* opCtx,
+                                        const NamespaceString& ns,
+                                        const BSONObj& keys,
+                                        bool unique) {
+    MONGO_UNREACHABLE;
 }
 
 void ShardRemote::runFireAndForgetCommand(OperationContext* opCtx,
@@ -504,9 +543,7 @@ StatusWith<ShardRemote::AsyncCmdHandle> ShardRemote::_scheduleCommand(
     const TaskExecutor::RemoteCommandCallbackFn& cb) {
 
     const auto readPrefWithConfigTime = [&]() -> ReadPreferenceSetting {
-        // TODO SERVER-74281: Append this higher up when we know we're targeting the config to read
-        // metadata or use a better filter to avoid matching logical sessions collection.
-        if (isConfig() && (dbName == DatabaseName::kConfig || dbName == DatabaseName::kAdmin)) {
+        if (isConfig()) {
             const auto vcTime = VectorClock::get(opCtx)->getTime();
             ReadPreferenceSetting readPrefToReturn{readPref};
             readPrefToReturn.minClusterTime = vcTime.configTime().asTimestamp();

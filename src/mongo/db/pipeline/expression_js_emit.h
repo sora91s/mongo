@@ -34,6 +34,8 @@
 
 namespace mongo {
 
+void initMyExpressionJsEmit();
+
 /**
  * This expression takes in a JavaScript function and a "this" reference, and returns an array of
  * key/value objects which are the results of calling emit() from the provided JS function.
@@ -55,7 +57,7 @@ public:
 
     Value evaluate(const Document& root, Variables* variables) const final;
 
-    Value serialize(SerializationOptions options) const final;
+    Value serialize(bool explain) const final;
 
     void acceptVisitor(ExpressionMutableVisitor* visitor) final {
         return visitor->visit(this);
@@ -91,6 +93,8 @@ private:
     ExpressionInternalJsEmit(ExpressionContext* expCtx,
                              boost::intrusive_ptr<Expression> thisRef,
                              std::string funcSourceString);
+
+    void _doAddDependencies(DepsTracker* deps) const final override;
 
     const boost::intrusive_ptr<Expression>& _thisRef;
     std::string _funcSource;

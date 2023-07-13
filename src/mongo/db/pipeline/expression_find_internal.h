@@ -78,7 +78,7 @@ public:
         return visitor->visit(this);
     }
 
-    Value serialize(SerializationOptions options) const final {
+    Value serialize(bool explain) const final {
         MONGO_UNREACHABLE;
     }
 
@@ -104,8 +104,13 @@ public:
         return this;
     }
 
-    const CopyableMatchExpression& getMatchExpr() const {
-        return _matchExpr;
+protected:
+    void _doAddDependencies(DepsTracker* deps) const final {
+        for (const auto& child : _children) {
+            child->addDependencies(deps);
+        }
+        _matchExpr->addDependencies(deps);
+        deps->needWholeDocument = true;
     }
 
 private:
@@ -148,7 +153,7 @@ public:
         return visitor->visit(this);
     }
 
-    Value serialize(SerializationOptions options) const final {
+    Value serialize(bool explain) const final {
         MONGO_UNREACHABLE;
     }
 
@@ -164,6 +169,14 @@ public:
 
         _children[0]->optimize();
         return this;
+    }
+
+protected:
+    void _doAddDependencies(DepsTracker* deps) const final {
+        invariant(_children.size() == 1ul);
+
+        _children[0]->addDependencies(deps);
+        deps->needWholeDocument = true;
     }
 
 private:
@@ -201,7 +214,7 @@ public:
         return visitor->visit(this);
     }
 
-    Value serialize(SerializationOptions options) const final {
+    Value serialize(bool explain) const final {
         MONGO_UNREACHABLE;
     }
 
@@ -220,8 +233,13 @@ public:
         return this;
     }
 
-    const CopyableMatchExpression& getMatchExpr() const {
-        return _matchExpr;
+protected:
+    void _doAddDependencies(DepsTracker* deps) const final {
+        invariant(_children.size() == 1ul);
+
+        _children[0]->addDependencies(deps);
+        _matchExpr->addDependencies(deps);
+        deps->needWholeDocument = true;
     }
 
 private:

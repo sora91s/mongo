@@ -27,15 +27,17 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/s/config/config_server_test_fixture.h"
 #include "mongo/db/s/sharding_util.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/type_shard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
+#include "mongo/s/shard_id.h"
 
 namespace mongo {
 namespace {
@@ -74,7 +76,7 @@ protected:
 
 TEST_F(ShardingRefresherTest, refresherTwoShardsSucceed) {
     auto opCtx = operationContext();
-    auto nss = NamespaceString::createNamespaceString_forTest("mydb", "mycoll");
+    auto nss = NamespaceString("mydb", "mycoll");
     auto future = launchAsync([&] {
         sharding_util::tellShardsToRefreshCollection(opCtx, kShardIdList, nss, executor());
     });
@@ -87,7 +89,7 @@ TEST_F(ShardingRefresherTest, refresherTwoShardsSucceed) {
 
 TEST_F(ShardingRefresherTest, refresherTwoShardsFirstErrors) {
     auto opCtx = operationContext();
-    auto nss = NamespaceString::createNamespaceString_forTest("mydb", "mycoll");
+    auto nss = NamespaceString("mydb", "mycoll");
     auto future = launchAsync([&] {
         sharding_util::tellShardsToRefreshCollection(opCtx, kShardIdList, nss, executor());
     });
@@ -99,7 +101,7 @@ TEST_F(ShardingRefresherTest, refresherTwoShardsFirstErrors) {
 
 TEST_F(ShardingRefresherTest, refresherTwoShardsSecondErrors) {
     auto opCtx = operationContext();
-    auto nss = NamespaceString::createNamespaceString_forTest("mydb", "mycoll");
+    auto nss = NamespaceString("mydb", "mycoll");
     auto future = launchAsync([&] {
         sharding_util::tellShardsToRefreshCollection(opCtx, kShardIdList, nss, executor());
     });
@@ -112,7 +114,7 @@ TEST_F(ShardingRefresherTest, refresherTwoShardsSecondErrors) {
 
 TEST_F(ShardingRefresherTest, refresherTwoShardsWriteConcernFailed) {
     auto opCtx = operationContext();
-    auto nss = NamespaceString::createNamespaceString_forTest("mydb", "mycoll");
+    auto nss = NamespaceString("mydb", "mycoll");
     auto future = launchAsync([&] {
         sharding_util::tellShardsToRefreshCollection(opCtx, kShardIdList, nss, executor());
     });

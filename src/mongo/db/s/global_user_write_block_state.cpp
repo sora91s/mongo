@@ -27,14 +27,12 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/s/global_user_write_block_state.h"
 #include "mongo/db/write_block_bypass.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 
@@ -51,11 +49,11 @@ GlobalUserWriteBlockState* GlobalUserWriteBlockState::get(OperationContext* opCt
 }
 
 void GlobalUserWriteBlockState::enableUserWriteBlocking(OperationContext* opCtx) {
-    _globalUserWritesBlocked.store(true);
+    _globalUserWritesBlocked = true;
 }
 
 void GlobalUserWriteBlockState::disableUserWriteBlocking(OperationContext* opCtx) {
-    _globalUserWritesBlocked.store(false);
+    _globalUserWritesBlocked = false;
 }
 
 void GlobalUserWriteBlockState::checkUserWritesAllowed(OperationContext* opCtx,
@@ -63,14 +61,14 @@ void GlobalUserWriteBlockState::checkUserWritesAllowed(OperationContext* opCtx,
     invariant(opCtx->lockState()->isLocked());
     uassert(ErrorCodes::UserWritesBlocked,
             "User writes blocked",
-            !_globalUserWritesBlocked.load() ||
-                WriteBlockBypass::get(opCtx).isWriteBlockBypassEnabled() || nss.isOnInternalDb() ||
-                nss.isTemporaryReshardingCollection() || nss.isSystemDotProfile());
+            !_globalUserWritesBlocked || WriteBlockBypass::get(opCtx).isWriteBlockBypassEnabled() ||
+                nss.isOnInternalDb() || nss.isTemporaryReshardingCollection() ||
+                nss.isSystemDotProfile());
 }
 
 bool GlobalUserWriteBlockState::isUserWriteBlockingEnabled(OperationContext* opCtx) const {
     invariant(opCtx->lockState()->isLocked());
-    return _globalUserWritesBlocked.load();
+    return _globalUserWritesBlocked;
 }
 
 void GlobalUserWriteBlockState::enableUserShardedDDLBlocking(OperationContext* opCtx) {

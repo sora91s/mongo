@@ -7,8 +7,6 @@
 (function() {
 "use strict";
 
-load("jstests/libs/catalog_shard_util.js");
-
 const dbName = jsTestName();
 const setupShardedCluster = (shards = 1) => {
     const st = new ShardingTest(
@@ -82,12 +80,8 @@ assert.commandFailedWithCode(
 // The shardId field should be a string.
 assert.commandFailedWithCode(assert.throws(() => pscWatch(sdb, "coll", 42)),
                                           ErrorCodes.TypeMismatch);
-
-const isCatalogShardEnabled = CatalogShardUtil.isEnabledIgnoringFCV(st);
-if (!isCatalogShardEnabled) {
-    // Can't open a per shard cursor on the config RS.
-    assert.commandFailedWithCode(assert.throws(() => pscWatch(sdb, "coll", "config")), 6273803);
-}
+// Can't open a per shard cursor on the config RS.
+assert.commandFailedWithCode(assert.throws(() => pscWatch(sdb, "coll", "config")), 6273803);
 
 // The shardId should be a valid shard.
 assert.commandFailedWithCode(
@@ -108,19 +102,6 @@ for (let i = 1; i <= 4; i++) {
     c.next();
 }
 assert(!c.hasNext());
-
-if (isCatalogShardEnabled) {
-    // Can open a per shard cursor on the config server.
-    const configDB = st.s0.getDB("config");
-    c = pscWatch(configDB, "coll", "config", undefined /* options */, {allowToRunOnConfigDB: true});
-    for (let i = 1; i <= 4; i++) {
-        configDB.coll.insertOne({location: 2, i});
-        assert(!c.isExhausted());
-        assert.soon(() => c.hasNext());
-        c.next();
-    }
-    assert(!c.hasNext());
-}
 
 // Simple database level watch
 c = pscWatch(sdb, 1, shardId);
@@ -159,7 +140,7 @@ assert(!explainOut.hasOwnProperty("splitPipeline"));
 assert.hasOwnProperty(explainOut, "stages");
 
 // If we getMore an invalidated cursor the cursor should have been closed on mongos and we should
-// get CursorNotFound, even if the invalidate event was never received by mongos.
+// get CursorNotFound, even if the invalidate event was never recieved by mongos.
 [[], [{$match: {f: "filter out invalidate event"}}]].forEach((pipeline) => {
     assert.commandWorked(st.s.adminCommand({shardCollection: dbName + ".toDrop", key: {_id: 1}}));
     let c = pscWatch(sdb, "toDrop", shardId, {pipeline});

@@ -2,6 +2,7 @@
  * Tests that in tenant migration, the recipient set can resume collection cloning from the last
  * document cloned after a failover even if the collection has been renamed on the donor.
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -11,22 +12,19 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    checkTenantDBHashes,
-    makeX509OptionsForTest,
-    runMigrationAsync
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");       // for 'extractUUIDFromObject'
 load("jstests/libs/parallelTester.js");  // for 'Thread'
-load('jstests/replsets/rslib.js');       // 'createRstArgs'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 const recipientRst = new ReplSetTest({
     nodes: 2,
     name: jsTestName() + "_recipient",
-    nodeOptions: Object.assign(makeX509OptionsForTest().recipient, {
+    nodeOptions: Object.assign(TenantMigrationUtil.makeX509OptionsForTest().recipient, {
         setParameter: {
             // Use a batch size of 2 so that collection cloner requires more than a single batch to
             // complete.
@@ -42,7 +40,7 @@ recipientRst.initiate();
 
 const tenantMigrationTest =
     new TenantMigrationTest({name: jsTestName(), recipientRst: recipientRst});
-const tenantId = ObjectId().str;
+const tenantId = "testTenantId";
 const dbName = tenantMigrationTest.tenantDB(tenantId, "testDB");
 const collName = "testColl";
 
@@ -58,7 +56,7 @@ const migrationIdString = extractUUIDFromObject(migrationId);
 const migrationOpts = {
     migrationIdString: migrationIdString,
     recipientConnString: tenantMigrationTest.getRecipientConnString(),
-    tenantId,
+    tenantId: tenantId,
 };
 
 // Configure a fail point to have the recipient primary hang after cloning 2 documents.
@@ -70,8 +68,9 @@ const hangDuringCollectionClone =
                        {nss: recipientColl.getFullName()});
 
 // Start a migration and wait for recipient to hang after cloning 2 documents.
-const donorRstArgs = createRstArgs(tenantMigrationTest.getDonorRst());
-const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+const donorRstArgs = TenantMigrationUtil.createRstArgs(tenantMigrationTest.getDonorRst());
+const migrationThread =
+    new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 migrationThread.start();
 hangDuringCollectionClone.wait();
 assert.soon(() => recipientColl.find().itcount() === 2);
@@ -113,11 +112,9 @@ TenantMigrationTest.assertCommitted(migrationThread.returnData());
 recipientColl = newRecipientPrimary.getDB(dbName).getCollection(collNameRenamed);
 assert.eq(4, recipientColl.find().itcount());
 assert.eq(recipientColl.find().sort({_id: 1}).toArray(), docs);
-checkTenantDBHashes({
-    donorRst: tenantMigrationTest.getDonorRst(),
-    recipientRst: tenantMigrationTest.getRecipientRst(),
-    tenantId
-});
+TenantMigrationUtil.checkTenantDBHashes(
+    tenantMigrationTest.getDonorRst(), tenantMigrationTest.getRecipientRst(), tenantId);
 
 tenantMigrationTest.stop();
 recipientRst.stopSet();
+})();

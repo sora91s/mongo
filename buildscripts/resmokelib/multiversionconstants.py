@@ -98,7 +98,7 @@ LAST_LTS_MONGOS_BINARY = version_constants.build_last_lts_binary("mongos")
 
 REQUIRES_FCV_TAG_LATEST = version_constants.get_latest_tag()
 
-# Generate tags for all FCVS in (lastLTS, latest].
+# Generate tags for all FCVS in (lastLTS, latest], or (lowerBoundOverride, latest] if requested.
 # All multiversion tests should be run with these tags excluded.
 REQUIRES_FCV_TAG = version_constants.get_fcv_tag_list()
 
@@ -110,12 +110,3 @@ OLD_VERSIONS = [
     LAST_LTS
 ] if LAST_CONTINUOUS_FCV == LAST_LTS_FCV or LAST_CONTINUOUS_FCV in version_constants.get_eols(
 ) else [LAST_LTS, LAST_CONTINUOUS]
-
-
-def log_constants(exec_log):
-    """Log FCV constants."""
-    exec_log.info("Last LTS FCV: {}".format(LAST_LTS_FCV))
-    exec_log.info("Last Continuous FCV: {}".format(LAST_CONTINUOUS_FCV))
-    exec_log.info("Latest FCV: {}".format(LATEST_FCV))
-    exec_log.info("Requires FCV Tag Latest: {}".format(REQUIRES_FCV_TAG_LATEST))
-    exec_log.info("Requires FCV Tag: {}".format(REQUIRES_FCV_TAG))

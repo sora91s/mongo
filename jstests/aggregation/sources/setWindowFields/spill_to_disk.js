@@ -29,22 +29,22 @@ let smallPartitionSize = 6;
 let largePartitionSize = 21;
 setParameterOnAllHosts(DiscoverTopology.findNonConfigNodes(db.getMongo()),
                        "internalDocumentSourceSetWindowFieldsMaxMemoryBytes",
-                       avgDocSize * smallPartitionSize + 73);
+                       avgDocSize * smallPartitionSize + 50);
 
 seedWithTickerData(coll, 10);
 
 // Run $sum test with memory limits that cause spilling to disk.
 testAccumAgainstGroup(coll, "$sum", 0);
 
-function checkProfilerForDiskWrite(dbToCheck, expectedFirstStage) {
+function checkProfilerForDiskWrite(dbToCheck) {
     if (!FixtureHelpers.isMongos(dbToCheck)) {
         const profileObj = getLatestProfilerEntry(dbToCheck, {usedDisk: true});
         jsTestLog(profileObj);
         // Verify that this was a $setWindowFields stage as expected.
         if (profileObj.hasOwnProperty("originatingCommand")) {
-            assert(profileObj.originatingCommand.pipeline[0].hasOwnProperty(expectedFirstStage));
+            assert(profileObj.originatingCommand.pipeline[0].hasOwnProperty("$setWindowFields"));
         } else if (profileObj.hasOwnProperty("command")) {
-            assert(profileObj.command.pipeline[0].hasOwnProperty(expectedFirstStage));
+            assert(profileObj.command.pipeline[0].hasOwnProperty("$setWindowFields"));
         } else {
             assert(false, "Profiler should have had command field", profileObj);
         }
@@ -72,7 +72,7 @@ const wfResults =
             {allowDiskUse: true, cursor: {batchSize: 1}})
         .toArray();
 assert.eq(wfResults.length, 20);
-checkProfilerForDiskWrite(db, "$setWindowFields");
+checkProfilerForDiskWrite(db);
 
 // Test a small, in memory, partition and a larger partition that requires spilling to disk.
 coll.drop();
@@ -113,7 +113,7 @@ for (let i = 0; i < results.length; i++) {
         assert.eq(results[i].sum, 210, "Unexepcted result in second partition at position " + i);
     }
 }
-checkProfilerForDiskWrite(db, "$setWindowFields");
+checkProfilerForDiskWrite(db);
 
 // We don't execute setWindowFields in a sharded explain.
 if (!FixtureHelpers.isMongos(db)) {
@@ -172,7 +172,7 @@ results = coll.aggregate(
                   ],
                   {allowDiskUse: true})
               .toArray();
-checkProfilerForDiskWrite(db, "$setWindowFields");
+checkProfilerForDiskWrite(db);
 for (let i = 0; i < results.length; i++) {
     if (results[i].partition === 1) {
         assert(arrayEq(results[i].arr, [0, 1, 2, 3, 4, 5]),
@@ -234,35 +234,12 @@ results =
             ],
             {allowDiskUse: true})
         .toArray();
-checkProfilerForDiskWrite(db, "$setWindowFields");
+checkProfilerForDiskWrite(db);
 // Check that the command succeeded.
 assert.eq(results.length, numDocs);
 for (let i = 0; i < numDocs; i++) {
     assert.eq(results[i].arr, 616605, results);
 }
-
-// Test that usedDisk true is set when spilling occurs inside $lookup subpipline.
-// Lower the memory limit to ensure spilling occurs.
-setParameterOnAllHosts(DiscoverTopology.findNonConfigNodes(db.getMongo()),
-                       "internalDocumentSourceSetWindowFieldsMaxMemoryBytes",
-                       500);
-resetProfiler(db);
-coll.aggregate(
-            [
-                 {$lookup: {
-                    from: coll.getName(),
-                    as: "same",
-                    pipeline: [{
-                    $setWindowFields: {
-                        sortBy: {_id: 1},
-                        output: {res: {$sum: "$price", window: {documents: ["unbounded", 5]}}}
-                    },
-                }],
-            }}],
-            {allowDiskUse: true, cursor: {}})
-        .toArray();
-checkProfilerForDiskWrite(db, "$lookup");
-
 // Reset limit for other tests.
 setParameterOnAllHosts(DiscoverTopology.findNonConfigNodes(db.getMongo()),
                        "internalDocumentSourceSetWindowFieldsMaxMemoryBytes",

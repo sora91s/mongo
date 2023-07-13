@@ -58,7 +58,7 @@ public:
         _debugAddSpace(debug, indentationLevel);
 
         BSONObjBuilder builder;
-        serialize(&builder, {});
+        serialize(&builder, true);
         debug << builder.obj().toString();
     }
 
@@ -90,7 +90,7 @@ public:
     }
 
     MatchExpression* getChild(size_t i) const final {
-        tassert(6400203, "Out-of-bounds access to child of MatchExpression.", i < nargs);
+        invariant(i < nargs);
         return _expressions[i].get();
     }
 
@@ -107,12 +107,11 @@ public:
     /**
      * Serializes each subexpression sequentially in a BSONArray.
      */
-    void serialize(BSONObjBuilder* builder, SerializationOptions opts) const final {
-        // TODO SERVER-73678 respect 'opts'.
+    void serialize(BSONObjBuilder* builder, bool includePath) const final {
         BSONArrayBuilder exprArray(builder->subarrayStart(name()));
         for (const auto& expr : _expressions) {
             BSONObjBuilder exprBuilder(exprArray.subobjStart());
-            expr->serialize(&exprBuilder, opts);
+            expr->serialize(&exprBuilder, includePath);
             exprBuilder.doneFast();
         }
         exprArray.doneFast();

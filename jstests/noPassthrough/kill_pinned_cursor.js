@@ -2,8 +2,6 @@
 //   does_not_support_stepdowns,
 //   requires_getmore,
 //   requires_replication,
-//    # TODO SERVER-64007: Support yielding in CQF plans.
-//   cqf_incompatible,
 // ]
 //
 // Uses getMore to pin an open cursor.
@@ -58,7 +56,7 @@ const rs0Conn = st.rs0.getPrimary();
 const testParameters = {
     conn: rs0Conn,
     failPointName: "waitAfterPinningCursorBeforeGetMoreBatch",
-    runGetMoreFunc: function(collName, cursorId) {
+    runGetMoreFunc: function() {
         const response = db.runCommand({getMore: cursorId, collection: collName});
         // We expect that the operation will get interrupted and fail.
         assert.commandFailedWithCode(response, ErrorCodes.CursorKilled);
@@ -105,7 +103,7 @@ for (let conn of connsToRunOn) {
     // batch is returned to the client but a subsequent getMore will fail with a
     // 'CursorNotFound' error.
     testParameters.failPointName = "waitBeforeUnpinningOrDeletingCursorAfterGetMoreBatch";
-    testParameters.runGetMoreFunc = function(collName, cursorId) {
+    testParameters.runGetMoreFunc = function() {
         const getMoreCmd = {getMore: cursorId, collection: collName, batchSize: 2};
         // We expect that the first getMore will succeed, while the second fails because the
         // cursor has been killed.

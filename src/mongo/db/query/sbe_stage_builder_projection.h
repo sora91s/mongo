@@ -38,15 +38,14 @@
 #include "mongo/db/query/sbe_stage_builder_helpers.h"
 
 namespace mongo::stage_builder {
-class PlanStageSlots;
-
 /**
- * Generates an EvalExpr implementing a query projection. The 'inputSlot' defines a slot to read
- * the input document from. 'slots' can optionaly be provided as well so that generateExpression()
- * can make use of kField slots when appropriate.
+ * Generates an SBE plan stage sub-tree implementing a query projection. The 'stage' parameter
+ * defines an input stage to the generated SBE plan stage sub-tree. The 'inputVar' defines a
+ * variable to read the input document from.
  */
-EvalExpr generateProjection(StageBuilderState& state,
-                            const projection_ast::Projection* proj,
-                            sbe::value::SlotId inputSlot,
-                            const PlanStageSlots* slots = nullptr);
+std::pair<sbe::value::SlotId, EvalStage> generateProjection(StageBuilderState& state,
+                                                            const projection_ast::Projection* proj,
+                                                            EvalStage stage,
+                                                            sbe::value::SlotId inputVar,
+                                                            PlanNodeId planNodeId);
 }  // namespace mongo::stage_builder

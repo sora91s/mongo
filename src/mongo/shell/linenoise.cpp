@@ -97,9 +97,9 @@
 
 #else /* _WIN32 */
 
-#include <csignal>
-#include <cstdlib>
-#include <cstring>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <termios.h>
@@ -110,12 +110,12 @@
 #include "linenoise.h"
 #include "linenoise_utf8.h"
 #include "mk_wcwidth.h"
-#include <cerrno>
-#include <cstdio>
 #include <cwctype>
+#include <errno.h>
 #include <fcntl.h>
 #include <memory>
 #include <sstream>
+#include <stdio.h>
 #include <string>
 #include <vector>
 
@@ -2775,9 +2775,9 @@ namespace {
 mongo::Status linenoiseFileError(mongo::ErrorCodes::Error code,
                                  const char* what,
                                  const char* filename,
-                                 std::error_code ec) {
+                                 const std::string& ewd) {
     std::stringstream ss;
-    ss << "Unable to " << what << " file " << filename << ": " << mongo::errorMessage(ec);
+    ss << "Unable to " << what << " file " << filename << ": " << ewd;
     return {code, ss.str()};
 }
 }  // namespace
@@ -2788,39 +2788,39 @@ mongo::Status linenoiseHistorySave(const char* filename) {
 #if _POSIX_C_SOURCE >= 1 || _XOPEN_SOURCE || _POSIX_SOURCE || defined(__APPLE__)
     int fd = open(filename, O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR);
     if (fd == -1) {
-        auto ec = mongo::lastSystemError();
-        return linenoiseFileError(mongo::ErrorCodes::FileOpenFailed, "open()", filename, ec);
+        const auto ewd = mongo::errnoWithDescription();
+        return linenoiseFileError(mongo::ErrorCodes::FileOpenFailed, "open()", filename, ewd);
     }
     fp = fdopen(fd, "wt");
     if (fp == nullptr) {
-        auto ec = mongo::lastSystemError();
+        const auto ewd = mongo::errnoWithDescription();
         // We've already failed, so no need to report any close() failure.
         (void)close(fd);
-        return linenoiseFileError(mongo::ErrorCodes::FileOpenFailed, "fdopen()", filename, ec);
+        return linenoiseFileError(mongo::ErrorCodes::FileOpenFailed, "fdopen()", filename, ewd);
     }
 #else
     fp = fopen(filename, "wt");
     if (fp == nullptr) {
-        auto ec = mongo::lastSystemError();
-        return linenoiseFileError(mongo::ErrorCodes::FileOpenFailed, "fopen()", filename, ec);
+        const auto ewd = mongo::errnoWithDescription();
+        return linenoiseFileError(mongo::ErrorCodes::FileOpenFailed, "fopen()", filename, ewd);
     }
 #endif  // _POSIX_C_SOURCE >= 1 || _XOPEN_SOURCE || _POSIX_SOURCE || defined(__APPLE__)
 
     for (int j = 0; j < historyLen; ++j) {
         if (history[j][0] != '\0') {
             if (fprintf(fp, "%s\n", history[j]) < 0) {
-                auto ec = mongo::lastSystemError();
+                const auto ewd = mongo::errnoWithDescription();
                 // We've already failed, so no need to report any fclose() failure.
                 (void)fclose(fp);
                 return linenoiseFileError(
-                    mongo::ErrorCodes::FileStreamFailed, "fprintf() to", filename, ec);
+                    mongo::ErrorCodes::FileStreamFailed, "fprintf() to", filename, ewd);
             }
         }
     }
     // Closing fp also causes fd to be closed.
     if (fclose(fp) != 0) {
-        auto ec = mongo::lastSystemError();
-        return linenoiseFileError(mongo::ErrorCodes::FileStreamFailed, "fclose()", filename, ec);
+        const auto ewd = mongo::errnoWithDescription();
+        return linenoiseFileError(mongo::ErrorCodes::FileStreamFailed, "fclose()", filename, ewd);
     }
     return mongo::Status::OK();
 }
@@ -2834,8 +2834,8 @@ mongo::Status linenoiseHistoryLoad(const char* filename) {
             // For example, it's always the case when the shell is run for the first time.
             return mongo::Status::OK();
         }
-        auto ec = mongo::lastSystemError();
-        return linenoiseFileError(mongo::ErrorCodes::FileOpenFailed, "fopen()", filename, ec);
+        const auto ewd = mongo::errnoWithDescription();
+        return linenoiseFileError(mongo::ErrorCodes::FileOpenFailed, "fopen()", filename, ewd);
     }
 
     bool historyLinesTruncated = false;
@@ -2862,15 +2862,15 @@ mongo::Status linenoiseHistoryLoad(const char* filename) {
     // fgets() returns NULL on error or EOF (with nothing read).
     // So if we aren't EOF, it must have been an error.
     if (!feof(fp)) {
-        auto ec = mongo::lastSystemError();
+        const auto ewd = mongo::errnoWithDescription();
         // We've already failed, so no need to report any fclose() failure.
         (void)fclose(fp);
         return linenoiseFileError(
-            mongo::ErrorCodes::FileStreamFailed, "fgets() from", filename, ec);
+            mongo::ErrorCodes::FileStreamFailed, "fgets() from", filename, ewd);
     }
     if (fclose(fp) != 0) {
-        auto ec = mongo::lastSystemError();
-        return linenoiseFileError(mongo::ErrorCodes::FileStreamFailed, "fclose()", filename, ec);
+        const auto ewd = mongo::errnoWithDescription();
+        return linenoiseFileError(mongo::ErrorCodes::FileStreamFailed, "fclose()", filename, ewd);
     }
     return mongo::Status::OK();
 }

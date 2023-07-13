@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/s/request_types/abort_reshard_collection_gen.h"
 #include "mongo/s/resharding/resharding_feature_flag_gen.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 namespace {
 
@@ -58,7 +56,7 @@ public:
         using InvocationBase::InvocationBase;
 
         void typedRun(OperationContext* opCtx) {
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
 
             uassert(ErrorCodes::IllegalOperation,
                     "_shardsvrAbortReshardCollection can only be run on shard servers",
@@ -92,14 +90,14 @@ public:
                 (*machine)->abort(isUserCanceled());
             }
 
-            for (const auto& doneFuture : futuresToWait) {
+            for (auto doneFuture : futuresToWait) {
                 doneFuture.get(opCtx);
             }
 
             // If abort actually went through, the resharding documents should be cleaned up.
             // If they still exists, it could be because that it was interrupted or it is no
             // longer primary.
-            resharding::doNoopWrite(opCtx, "_shardsvrAbortReshardCollection no-op", ns());
+            doNoopWrite(opCtx, "_shardsvrAbortReshardCollection no-op", ns());
             PersistentTaskStore<CommonReshardingMetadata> donorReshardingOpStore(
                 NamespaceString::kDonorReshardingOperationsNamespace);
             uassert(5563802,

@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/db/pipeline/document_source_set_variable_from_subpipeline.h"
 #include "mongo/platform/basic.h"
@@ -39,19 +40,19 @@
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
-
 namespace mongo {
 
 using boost::intrusive_ptr;
 
 constexpr StringData DocumentSourceSetVariableFromSubPipeline::kStageName;
 
-REGISTER_INTERNAL_DOCUMENT_SOURCE(setVariableFromSubPipeline,
-                                  LiteParsedDocumentSourceDefault::parse,
-                                  DocumentSourceSetVariableFromSubPipeline::createFromBson,
-                                  true);
+REGISTER_INTERNAL_DOCUMENT_SOURCE(
+    setVariableFromSubPipeline,
+    LiteParsedDocumentSourceDefault::parse,
+    DocumentSourceSetVariableFromSubPipeline::createFromBson,
+    // This can only be generated in certain versions, and registering document sources is too early
+    // to check the FCV.
+    feature_flags::gFeatureFlagSearchShardedFacets.isEnabledAndIgnoreFCV());
 
 Value DocumentSourceSetVariableFromSubPipeline::serialize(
     boost::optional<ExplainOptions::Verbosity> explain) const {
@@ -65,13 +66,8 @@ Value DocumentSourceSetVariableFromSubPipeline::serialize(
 
 DepsTracker::State DocumentSourceSetVariableFromSubPipeline::getDependencies(
     DepsTracker* deps) const {
-    return DepsTracker::State::NOT_SUPPORTED;
-}
-
-void DocumentSourceSetVariableFromSubPipeline::addVariableRefs(
-    std::set<Variables::Id>* refs) const {
-    refs->insert(_variableID);
-    _subPipeline->addVariableRefs(refs);
+    // TODO SERVER-63845: change to NOT_SUPPORTED.
+    return DepsTracker::State::SEE_NEXT;
 }
 
 boost::intrusive_ptr<DocumentSource> DocumentSourceSetVariableFromSubPipeline::createFromBson(
@@ -83,8 +79,8 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceSetVariableFromSubPipeline::c
             << typeName(elem.type()),
         elem.type() == BSONType::Object);
 
-    auto spec =
-        SetVariableFromSubPipelineSpec::parse(IDLParserContext(kStageName), elem.embeddedObject());
+    auto spec = SetVariableFromSubPipelineSpec::parse(IDLParserErrorContext(kStageName),
+                                                      elem.embeddedObject());
     const auto searchMetaStr = "$$" + Variables::getBuiltinVariableName(Variables::kSearchMetaId);
     uassert(
         625291,
@@ -135,19 +131,6 @@ DocumentSource::GetNextResult DocumentSourceSetVariableFromSubPipeline::doGetNex
 void DocumentSourceSetVariableFromSubPipeline::addSubPipelineInitialSource(
     boost::intrusive_ptr<DocumentSource> source) {
     _subPipeline->addInitialSource(std::move(source));
-}
-
-void DocumentSourceSetVariableFromSubPipeline::detachFromOperationContext() {
-    _subPipeline->detachFromOperationContext();
-}
-
-void DocumentSourceSetVariableFromSubPipeline::reattachToOperationContext(OperationContext* opCtx) {
-    _subPipeline->reattachToOperationContext(opCtx);
-}
-
-bool DocumentSourceSetVariableFromSubPipeline::validateOperationContext(
-    const OperationContext* opCtx) const {
-    return getContext()->opCtx == opCtx && _subPipeline->validateOperationContext(opCtx);
 }
 
 }  // namespace mongo

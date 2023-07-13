@@ -2,8 +2,9 @@
  * Tests that a system.buckets collection cannot be renamed.
  *
  * @tags: [
- *   # We need a timeseries collection.
- *   requires_timeseries,
+ *   does_not_support_stepdowns,
+ *   does_not_support_transactions,
+ *   requires_getmore,
  * ]
  */
 (function() {

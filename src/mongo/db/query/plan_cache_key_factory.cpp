@@ -29,29 +29,30 @@
 
 #include "mongo/db/query/plan_cache_key_factory.h"
 
-#include "mongo/db/query/canonical_query_encoder.h"
 #include "mongo/db/query/collection_query_info.h"
 #include "mongo/db/query/planner_ixselect.h"
 #include "mongo/db/s/operation_sharding_state.h"
 
 namespace mongo {
 namespace plan_cache_detail {
+// Delimiters for cache key encoding.
+const char kEncodeDiscriminatorsBegin = '<';
+const char kEncodeDiscriminatorsEnd = '>';
 
 void encodeIndexabilityForDiscriminators(const MatchExpression* tree,
                                          const IndexToDiscriminatorMap& discriminators,
                                          StringBuilder* keyBuilder) {
-
     for (auto&& indexAndDiscriminatorPair : discriminators) {
         *keyBuilder << indexAndDiscriminatorPair.second.isMatchCompatibleWithIndex(tree);
     }
 }
 
-void encodeIndexabilityRecursive(const MatchExpression* tree,
-                                 const PlanCacheIndexabilityState& indexabilityState,
-                                 StringBuilder* keyBuilder) {
+void encodeIndexability(const MatchExpression* tree,
+                        const PlanCacheIndexabilityState& indexabilityState,
+                        StringBuilder* keyBuilder) {
     if (!tree->path().empty()) {
         const IndexToDiscriminatorMap& discriminators =
-            indexabilityState.getPathDiscriminators(tree->path());
+            indexabilityState.getDiscriminators(tree->path());
         IndexToDiscriminatorMap wildcardDiscriminators =
             indexabilityState.buildWildcardDiscriminators(tree->path());
         if (!discriminators.empty() || !wildcardDiscriminators.empty()) {
@@ -71,26 +72,8 @@ void encodeIndexabilityRecursive(const MatchExpression* tree,
     }
 
     for (size_t i = 0; i < tree->numChildren(); ++i) {
-        encodeIndexabilityRecursive(tree->getChild(i), indexabilityState, keyBuilder);
+        encodeIndexability(tree->getChild(i), indexabilityState, keyBuilder);
     }
-}
-
-void encodeIndexability(const MatchExpression* tree,
-                        const PlanCacheIndexabilityState& indexabilityState,
-                        StringBuilder* keyBuilder) {
-    // Before encoding the indexability of the leaf MatchExpressions, apply the global
-    // discriminators to the expression as a whole. This is for cases such as partial indexes which
-    // must discriminate based on the entire query.
-    const auto& globalDiscriminators = indexabilityState.getGlobalDiscriminators();
-    if (!globalDiscriminators.empty()) {
-        *keyBuilder << kEncodeGlobalDiscriminatorsBegin;
-        for (auto&& indexAndDiscriminatorPair : globalDiscriminators) {
-            *keyBuilder << indexAndDiscriminatorPair.second.isMatchCompatibleWithIndex(tree);
-        }
-        *keyBuilder << kEncodeGlobalDiscriminatorsEnd;
-    }
-
-    encodeIndexabilityRecursive(tree, indexabilityState, keyBuilder);
 }
 
 PlanCacheKeyInfo makePlanCacheKeyInfo(const CanonicalQuery& query,
@@ -104,6 +87,12 @@ PlanCacheKeyInfo makePlanCacheKeyInfo(const CanonicalQuery& query,
         &indexabilityKeyBuilder);
 
     return PlanCacheKeyInfo(shapeString, indexabilityKeyBuilder.str());
+}
+
+PlanCacheKey make(const CanonicalQuery& query,
+                  const CollectionPtr& collection,
+                  PlanCacheKeyTag<PlanCacheKey>) {
+    return {makePlanCacheKeyInfo(query, collection)};
 }
 
 namespace {
@@ -122,8 +111,8 @@ boost::optional<Timestamp> computeNewestVisibleIndexTimestamp(OperationContext* 
 
     Timestamp currentNewestVisible = Timestamp::min();
 
-    auto ii = collection->getIndexCatalog()->getIndexIterator(
-        opCtx, IndexCatalog::InclusionPolicy::kReady);
+    std::unique_ptr<IndexCatalog::IndexIterator> ii =
+        collection->getIndexCatalog()->getIndexIterator(opCtx, /*includeUnfinishedIndexes*/ true);
     while (ii->more()) {
         const IndexCatalogEntry* ice = ii->next();
         auto minVisibleSnapshot = ice->getMinimumVisibleSnapshot();
@@ -140,63 +129,24 @@ boost::optional<Timestamp> computeNewestVisibleIndexTimestamp(OperationContext* 
 
     return currentNewestVisible.isNull() ? boost::optional<Timestamp>{} : currentNewestVisible;
 }
-
-sbe::PlanCacheKeyCollectionState computeCollectionState(OperationContext* opCtx,
-                                                        const CollectionPtr& collection,
-                                                        bool isSecondaryColl) {
-    boost::optional<sbe::PlanCacheKeyShardingEpoch> keyShardingEpoch;
-    // We don't version secondary collections in the current shard versioning protocol. Also, since
-    // currently we only push down $lookup to SBE when secondary collections (and main collection)
-    // are unsharded, it's OK to not encode the sharding information here.
-    if (!isSecondaryColl) {
-        const auto shardVersion{
-            OperationShardingState::get(opCtx).getShardVersion(collection->ns())};
-        if (shardVersion) {
-            keyShardingEpoch =
-                sbe::PlanCacheKeyShardingEpoch{shardVersion->placementVersion().epoch(),
-                                               shardVersion->placementVersion().getTimestamp()};
-        }
-    }
-    return {collection->uuid(),
-            CollectionQueryInfo::get(collection).getPlanCacheInvalidatorVersion(),
-            plan_cache_detail::computeNewestVisibleIndexTimestamp(opCtx, collection),
-            keyShardingEpoch};
-}
 }  // namespace
-
-PlanCacheKey make(const CanonicalQuery& query,
-                  const CollectionPtr& collection,
-                  PlanCacheKeyTag<PlanCacheKey> tag) {
-    return {plan_cache_detail::makePlanCacheKeyInfo(query, collection)};
-}
 
 sbe::PlanCacheKey make(const CanonicalQuery& query,
                        const CollectionPtr& collection,
-                       PlanCacheKeyTag<sbe::PlanCacheKey> tag) {
-    return plan_cache_key_factory::make(query, MultipleCollectionAccessor(collection));
+                       PlanCacheKeyTag<sbe::PlanCacheKey>) {
+    OperationContext* opCtx = query.getOpCtx();
+    auto collectionVersion = CollectionQueryInfo::get(collection).getPlanCacheInvalidatorVersion();
+    const auto shardVersion{OperationShardingState::get(opCtx).getShardVersion(collection->ns())};
+    const auto keyShardingEpoch = shardVersion
+        ? boost::make_optional(
+              sbe::PlanCacheKeyShardingEpoch{shardVersion->epoch(), shardVersion->getTimestamp()})
+        : boost::none;
+
+    return {makePlanCacheKeyInfo(query, collection),
+            collection->uuid(),
+            collectionVersion,
+            computeNewestVisibleIndexTimestamp(opCtx, collection),
+            keyShardingEpoch};
 }
 }  // namespace plan_cache_detail
-
-namespace plan_cache_key_factory {
-sbe::PlanCacheKey make(const CanonicalQuery& query, const MultipleCollectionAccessor& collections) {
-    OperationContext* opCtx = query.getOpCtx();
-    auto mainCollectionState = plan_cache_detail::computeCollectionState(
-        opCtx, collections.getMainCollection(), false /* isSecondaryColl */);
-    std::vector<sbe::PlanCacheKeyCollectionState> secondaryCollectionStates;
-    secondaryCollectionStates.reserve(collections.getSecondaryCollections().size());
-    // We always use the collection order saved in MultipleCollectionAccessor to populate the plan
-    // cache key, which is ordered by the secondary collection namespaces.
-    for (auto& [_, collection] : collections.getSecondaryCollections()) {
-        if (collection) {
-            secondaryCollectionStates.emplace_back(plan_cache_detail::computeCollectionState(
-                opCtx, collection, true /* isSecondaryColl */));
-        }
-    }
-
-    return {plan_cache_detail::makePlanCacheKeyInfo(query, collections.getMainCollection()),
-            std::move(mainCollectionState),
-            std::move(secondaryCollectionStates)};
-}
-}  // namespace plan_cache_key_factory
-
 }  // namespace mongo

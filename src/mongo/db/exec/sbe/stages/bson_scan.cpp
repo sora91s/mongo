@@ -31,30 +31,29 @@
 
 #include "mongo/db/exec/sbe/stages/bson_scan.h"
 
-#include "mongo/db/exec/sbe/expressions/compile_ctx.h"
 #include "mongo/db/exec/sbe/expressions/expression.h"
 #include "mongo/db/exec/sbe/size_estimator.h"
 #include "mongo/util/str.h"
 
 namespace mongo {
 namespace sbe {
-BSONScanStage::BSONScanStage(std::vector<BSONObj> bsons,
+BSONScanStage::BSONScanStage(const char* bsonBegin,
+                             const char* bsonEnd,
                              boost::optional<value::SlotId> recordSlot,
-                             PlanNodeId planNodeId,
                              std::vector<std::string> fields,
                              value::SlotVector vars,
-                             bool participateInTrialRunTracking)
-    : PlanStage("bsonscan"_sd, planNodeId, participateInTrialRunTracking),
-      _bsons(std::move(bsons)),
+                             PlanNodeId planNodeId)
+    : PlanStage("bsonscan"_sd, planNodeId),
+      _bsonBegin(bsonBegin),
+      _bsonEnd(bsonEnd),
       _recordSlot(recordSlot),
       _fields(std::move(fields)),
-      _vars(std::move(vars)) {
-    _bsonCurrent = _bsons.begin();
-}
+      _vars(std::move(vars)),
+      _bsonCurrent(bsonBegin) {}
 
 std::unique_ptr<PlanStage> BSONScanStage::clone() const {
     return std::make_unique<BSONScanStage>(
-        _bsons, _recordSlot, _commonStats.nodeId, _fields, _vars, _participateInTrialRunTracking);
+        _bsonBegin, _bsonEnd, _recordSlot, _fields, _vars, _commonStats.nodeId);
 }
 
 void BSONScanStage::prepare(CompileCtx& ctx) {
@@ -87,27 +86,32 @@ void BSONScanStage::open(bool reOpen) {
     auto optTimer(getOptTimer(_opCtx));
 
     _commonStats.opens++;
-    _bsonCurrent = _bsons.begin();
+    _bsonCurrent = _bsonBegin;
 }
 
 PlanState BSONScanStage::getNext() {
     auto optTimer(getOptTimer(_opCtx));
 
-    if (_bsonCurrent != _bsons.end()) {
+    if (_bsonCurrent < _bsonEnd) {
         if (_recordAccessor) {
             _recordAccessor->reset(value::TypeTags::bsonObject,
-                                   value::bitcastFrom<const char*>(_bsonCurrent->objdata()));
+                                   value::bitcastFrom<const char*>(_bsonCurrent));
         }
 
         if (auto fieldsToMatch = _fieldAccessors.size(); fieldsToMatch != 0) {
+            auto be = _bsonCurrent;
+            auto end = be + ConstDataView(be).read<LittleEndian<uint32_t>>();
+            // Skip document length.
+            be += 4;
             for (auto& [name, accessor] : _fieldAccessors) {
                 accessor->reset();
             }
-            for (const auto& element : *_bsonCurrent) {
-                auto fieldName = element.fieldNameStringData();
-                if (auto it = _fieldAccessors.find(fieldName); it != _fieldAccessors.end()) {
+            while (*be != 0) {
+                auto sv = bson::fieldNameView(be);
+                if (auto it = _fieldAccessors.find(sv); it != _fieldAccessors.end()) {
                     // Found the field so convert it to Value.
-                    auto [tag, val] = bson::convertFrom</*View = */ true>(element);
+                    auto [tag, val] = bson::convertFrom<true>(be, end, sv.size());
+
                     it->second->reset(tag, val);
 
                     if ((--fieldsToMatch) == 0) {
@@ -115,11 +119,13 @@ PlanState BSONScanStage::getNext() {
                         break;
                     }
                 }
+
+                be = bson::advance(be, sv.size());
             }
         }
 
         // Advance to the next document.
-        ++_bsonCurrent;
+        _bsonCurrent += ConstDataView(_bsonCurrent).read<LittleEndian<uint32_t>>();
 
         _specificStats.numReads++;
         return trackPlanState(PlanState::ADVANCED);
@@ -159,7 +165,7 @@ std::vector<DebugPrinter::Block> BSONScanStage::debugPrint() const {
     auto ret = PlanStage::debugPrint();
 
     if (_recordSlot) {
-        DebugPrinter::addIdentifier(ret, _recordSlot.value());
+        DebugPrinter::addIdentifier(ret, _recordSlot.get());
     }
 
     ret.emplace_back(DebugPrinter::Block("[`"));

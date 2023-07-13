@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -45,15 +46,11 @@
 #include "mongo/logv2/log.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/exit_code.h"
 #include "mongo/util/options_parser/environment.h"
 #include "mongo/util/options_parser/option_section.h"
 #include "mongo/util/options_parser/options_parser.h"
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/signal_handlers_synchronous.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace moe = mongo::optionenvironment;
 
@@ -271,13 +268,13 @@ int main(int argc, char** argv) {
     auto ret = mongo::embedded::addMongocEmbeddedTestOptions(&options);
     if (!ret.isOK()) {
         std::cerr << ret << std::endl;
-        return static_cast<int>(mongo::ExitCode::fail);
+        return EXIT_FAILURE;
     }
 
     ret = parser.run(options, std::vector<std::string>(argv, argv + argc), &environment);
     if (!ret.isOK()) {
         std::cerr << options.helpString();
-        return static_cast<int>(mongo::ExitCode::fail);
+        return EXIT_FAILURE;
     }
     if (environment.count("tempPath")) {
         ::mongo::unittest::TempDir::setTempPath(environment["tempPath"].as<std::string>());
@@ -291,13 +288,13 @@ int main(int argc, char** argv) {
     ret = mongo::runGlobalInitializers(std::vector<std::string>{});
     if (!ret.isOK()) {
         std::cerr << "Global initilization failed";
-        return static_cast<int>(mongo::ExitCode::fail);
+        return EXIT_FAILURE;
     }
 
     ret = mongo::runGlobalDeinitializers();
     if (!ret.isOK()) {
         std::cerr << "Global deinitilization failed";
-        return static_cast<int>(mongo::ExitCode::fail);
+        return EXIT_FAILURE;
     }
 
     mongo::StatusPtr status(mongo_embedded_v1_status_create());
@@ -311,14 +308,14 @@ int main(int argc, char** argv) {
     global_lib_handle = mongo_embedded_v1_lib_init(&params, status.get());
     if (global_lib_handle == nullptr) {
         std::cerr << "Error: " << mongo_embedded_v1_status_get_explanation(status.get());
-        return static_cast<int>(mongo::ExitCode::fail);
+        return EXIT_FAILURE;
     }
 
     auto result = ::mongo::unittest::Suite::run(std::vector<std::string>(), "", "", 1);
 
     if (mongo_embedded_v1_lib_fini(global_lib_handle, status.get()) != MONGO_EMBEDDED_V1_SUCCESS) {
         std::cerr << "Error: " << mongo_embedded_v1_status_get_explanation(status.get());
-        return static_cast<int>(mongo::ExitCode::fail);
+        return EXIT_FAILURE;
     }
 
     mongoc_cleanup();

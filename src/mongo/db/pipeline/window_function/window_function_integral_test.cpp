@@ -43,7 +43,7 @@ public:
     WindowFunctionIntegralTest() : expCtx(getExpCtx()), integral(expCtx.get()) {}
 
     void addValuesToWindow(const std::vector<Value>& values) {
-        for (const auto& val : values)
+        for (auto val : values)
             integral.add(val);
     }
 

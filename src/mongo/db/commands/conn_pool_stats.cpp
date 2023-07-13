@@ -36,7 +36,6 @@
 #include "mongo/client/connpool.h"
 #include "mongo/client/dbclient_connection.h"
 #include "mongo/client/global_conn_pool.h"
-#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/executor/connection_pool_stats.h"
@@ -63,20 +62,16 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                  ActionType::connPoolStats)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const override {
+        ActionSet actions;
+        actions.addAction(ActionType::connPoolStats);
+        out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& db,
              const mongo::BSONObj& cmdObj,
              mongo::BSONObjBuilder& result) override {
         executor::ConnectionPoolStats stats{};

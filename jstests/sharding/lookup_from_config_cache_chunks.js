@@ -98,7 +98,13 @@ const nodeList = DiscoverTopology.findNonConfigNodes(st.s);
 
 // Tests that $lookup from config.cache.chunks.* yields the expected results.
 const testLookupFromConfigCacheChunks = (lookupAgg) => {
-    jsTestLog(`Running test on lookup: ${tojson(lookupAgg)}`);
+    const getShardedLookupParam = st.s.adminCommand({getParameter: 1, featureFlagShardedLookup: 1});
+    const isShardedLookupEnabled =
+        getShardedLookupParam.hasOwnProperty("featureFlagShardedLookup") &&
+        getShardedLookupParam.featureFlagShardedLookup.value;
+
+    jsTestLog(`Running test on lookup: ${tojson(lookupAgg)} with featureFlagShardedLookup: ${
+        isShardedLookupEnabled}`);
 
     const results = sourceCollection.aggregate(lookupAgg).toArray();
     results.forEach((res) => {

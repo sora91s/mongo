@@ -123,11 +123,9 @@ Pipeline::SourceContainer::iterator DocumentSourceSequentialDocumentCache::doOpt
     //  2. depends on a variable defined in this scope, or
     //  3. generates random numbers.
     DocumentSource* lastPtr = nullptr;
-    std::set<Variables::Id> prefixVarRefs;
     for (; prefixSplit != container->end(); ++prefixSplit) {
-        (*prefixSplit)->addVariableRefs(&prefixVarRefs);
         if (((*prefixSplit)->getDependencies(&deps) == DepsTracker::State::NOT_SUPPORTED) ||
-            Variables::hasVariableReferenceTo(prefixVarRefs, varIDs) || deps.needRandomGenerator) {
+            deps.hasVariableReferenceTo(varIDs) || deps.needRandomGenerator) {
             break;
         }
 
@@ -162,9 +160,9 @@ Value DocumentSourceSequentialDocumentCache::serialize(
             {kStageName,
              Document{{"maxSizeBytes"_sd, Value(static_cast<long long>(_cache->maxSizeBytes()))},
                       {"status"_sd,
-                       _cache->isBuilding()      ? "kBuilding"_sd
-                           : _cache->isServing() ? "kServing"_sd
-                                                 : "kAbandoned"_sd}}}});
+                       _cache->isBuilding()
+                           ? "kBuilding"_sd
+                           : _cache->isServing() ? "kServing"_sd : "kAbandoned"_sd}}}});
     }
 
     return Value();

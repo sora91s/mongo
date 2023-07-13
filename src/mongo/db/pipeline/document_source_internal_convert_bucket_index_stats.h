@@ -83,8 +83,6 @@ public:
         return boost::none;
     };
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
-
 private:
     GetNextResult doGetNext() final;
 

@@ -16,6 +16,9 @@ load('./jstests/multiVersion/libs/multi_cluster.js');
 // command is nondeterministic, skip the consistency check for this test.
 TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 
+const kMinVersion = 5;
+const kCurrentVerion = 6;
+
 var testCRUDAndAgg = function(db) {
     assert.commandWorked(db.foo.insert({x: 1}));
     assert.commandWorked(db.foo.insert({x: -1}));
@@ -49,8 +52,11 @@ for (let oldVersion of ["last-lts", "last-continuous"]) {
 
     // check that config.version document gets initialized properly
     var version = st.s.getCollection('config.version').findOne();
+    assert.eq(version.minCompatibleVersion, kMinVersion);
+    assert.eq(version.currentVersion, kCurrentVerion);
     var clusterID = version.clusterId;
     assert.neq(null, clusterID);
+    assert.eq(version.excluding, undefined);
 
     // Setup sharded collection
     assert.commandWorked(st.s.adminCommand({enableSharding: 'sharded'}));
@@ -108,13 +114,16 @@ for (let oldVersion of ["last-lts", "last-continuous"]) {
 
     // Check that version document is unmodified.
     version = st.s.getCollection('config.version').findOne();
+    assert.eq(version.minCompatibleVersion, kMinVersion);
+    assert.eq(version.currentVersion, kCurrentVerion);
     assert.eq(clusterID, version.clusterId);
+    assert.eq(version.excluding, undefined);
 
     ///////////////////////////////////////////////////////////////////////////////////////////
     // Downgrade back
 
     jsTest.log('downgrading mongos servers');
-    st.downgradeCluster(oldVersion, {downgradeConfigs: false, downgradeShards: false});
+    st.upgradeCluster(oldVersion, {upgradeConfigs: false, upgradeShards: false});
 
     testCRUDAndAgg(st.s.getDB('unsharded'));
     testCRUDAndAgg(st.s.getDB('sharded'));
@@ -126,7 +135,7 @@ for (let oldVersion of ["last-lts", "last-continuous"]) {
     testCRUDAndAgg(st.s.getDB('sharded'));
 
     jsTest.log('downgrading shard servers');
-    st.downgradeCluster(oldVersion, {downgradeMongos: false, downgradeConfigs: false});
+    st.upgradeCluster(oldVersion, {upgradeMongos: false, upgradeConfigs: false});
 
     awaitRSClientHosts(st.s, st.rs0.getPrimary(), {ok: true, ismaster: true});
     awaitRSClientHosts(st.s, st.rs1.getPrimary(), {ok: true, ismaster: true});
@@ -141,7 +150,7 @@ for (let oldVersion of ["last-lts", "last-continuous"]) {
     testCRUDAndAgg(st.s.getDB('sharded'));
 
     jsTest.log('downgrading config servers');
-    st.downgradeCluster(oldVersion, {downgradeMongos: false, downgradeShards: false});
+    st.upgradeCluster(oldVersion, {upgradeMongos: false, upgradeShards: false});
 
     testCRUDAndAgg(st.s.getDB('unsharded'));
     testCRUDAndAgg(st.s.getDB('sharded'));
@@ -154,7 +163,10 @@ for (let oldVersion of ["last-lts", "last-continuous"]) {
 
     // Check that version document is unmodified.
     version = st.s.getCollection('config.version').findOne();
+    assert.eq(version.minCompatibleVersion, kMinVersion);
+    assert.eq(version.currentVersion, kCurrentVerion);
     assert.eq(clusterID, version.clusterId);
+    assert.eq(version.excluding, undefined);
 
     st.stop();
 }

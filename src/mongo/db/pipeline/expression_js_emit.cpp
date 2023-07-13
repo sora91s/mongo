@@ -35,6 +35,10 @@
 #include "mongo/db/query/query_knobs_gen.h"
 
 namespace mongo {
+    
+void initMyExpressionJsEmit() {
+
+}
 
 REGISTER_STABLE_EXPRESSION(_internalJsEmit, ExpressionInternalJsEmit::parse);
 
@@ -48,9 +52,7 @@ namespace {
 void extract2Args(const BSONObj& args, BSONElement* elts) {
     const size_t nToExtract = 2;
 
-    auto fail = []() {
-        uasserted(31220, "emit takes 2 args");
-    };
+    auto fail = []() { uasserted(31220, "emit takes 2 args"); };
     BSONObjIterator it(args);
     for (size_t i = 0; i < nToExtract; ++i) {
         if (!it.more()) {
@@ -100,6 +102,10 @@ ExpressionInternalJsEmit::ExpressionInternalJsEmit(ExpressionContext* const expC
     expCtx->sbeCompatible = false;
 }
 
+void ExpressionInternalJsEmit::_doAddDependencies(mongo::DepsTracker* deps) const {
+    _children[0]->addDependencies(deps);
+}
+
 boost::intrusive_ptr<Expression> ExpressionInternalJsEmit::parse(ExpressionContext* const expCtx,
                                                                  BSONElement expr,
                                                                  const VariablesParseState& vps) {
@@ -128,10 +134,10 @@ boost::intrusive_ptr<Expression> ExpressionInternalJsEmit::parse(ExpressionConte
     return new ExpressionInternalJsEmit(expCtx, std::move(thisRef), std::move(funcSourceString));
 }
 
-Value ExpressionInternalJsEmit::serialize(SerializationOptions options) const {
+Value ExpressionInternalJsEmit::serialize(bool explain) const {
     return Value(
         Document{{kExpressionName,
-                  Document{{"eval", _funcSource}, {"this", _thisRef->serialize(options)}}}});
+                  Document{{"eval", _funcSource}, {"this", _thisRef->serialize(explain)}}}});
 }
 
 Value ExpressionInternalJsEmit::evaluate(const Document& root, Variables* variables) const {

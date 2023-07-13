@@ -1,7 +1,7 @@
 /**
- * Overrides the runCommand method to prefix all databases and namespaces ("config", "admin",
- * "local" excluded) with a tenant prefix, so that the accessed data will be migrated by the
- * background operations run by the ContinuousTenantMigration and ContinuousShardSplit hooks.
+ * Overrides the database name of each accessed database ("config", "admin", "local" excluded) to
+ * have the prefix TestData.tenantId so that the accessed data will be migrated by the background
+ * tenant migrations run by the ContinuousTenantMigration hook.
  */
 (function() {
 'use strict';
@@ -11,93 +11,18 @@ load("jstests/libs/transactions_util.js");
 
 // Save references to the original methods in the IIFE's scope.
 // This scoping allows the original methods to be called by the overrides below.
-const originalRunCommand = Mongo.prototype.runCommand;
-const originalCloseMethod = Mongo.prototype.close;
+let originalRunCommand = Mongo.prototype.runCommand;
+let originalMarkNodeAsFailed = Mongo.prototype._markNodeAsFailed;
 
-// Save a reference to the connection created at shell startup. This will be used as a proxy for
-// multiple internal routing connections for the lifetime of the test execution.
-const initialConn = db.getMongo();
+const denylistedDbNames = ["config", "admin", "local"];
 
-const testTenantMigrationDB = "testTenantMigration";
-// For shard merge we need to use the local DB that is not blocked by tenant access blockers.
-const localDB = "local";
-
-/**
- * Asserts that the provided connection is an internal routing connection, not the top-level proxy
- * connection. The proxy connection also has an internal routing connection, so it is excluded from
- * this check.
- */
-function assertRoutingConnection(conn) {
-    if (conn !== initialConn) {
-        assert.eq(null,
-                  conn._internalRoutingConnection,
-                  "Expected connection to have no internal routing connection.");
-    }
-}
-
-/**
- * @returns The internal routing connection for a provided connection
- */
-function getRoutingConnection(conn) {
-    if (conn === initialConn && conn._internalRoutingConnection == null) {
-        conn._internalRoutingConnection = conn;
-    }
-
-    // Since we are patching the prototype below, there must eventually be a "base case" for
-    // determining which connection to run a method on. If the provided `conn` has no internal
-    // routing connection, we assume that it _is_ the internal routing connection, and return
-    // here.
-    if (conn._internalRoutingConnection == null) {
-        return conn;
-    }
-
-    // Sanity check ensuring we have not accidentally created an internal routing connection on an
-    // internal routing connection.
-    assertRoutingConnection(conn._internalRoutingConnection);
-    return conn._internalRoutingConnection;
-}
-
-/**
- * Assigns a newly establish connection as the internal routing connection for a Mongo instance.
- *
- * @param {Mongo} conn The original Mongo connection
- * @param {Mongo} mongo The newly established, internal connection
- */
-function setRoutingConnection(conn, mongo) {
-    assert.neq(null,
-               conn._internalRoutingConnection,
-               "Expected connection to already have an internal routing connection.");
-    conn._internalRoutingConnection = mongo;
-}
-
-function closeRoutingConnection(conn) {
-    if (conn === initialConn) {
-        // We need to close the initial connection differently, since we patch the close method
-        // below to always proxy calls to the internal routing connection.
-        return originalCloseMethod.apply(conn);
-    }
-
-    // For all other connections we are safe to call close directly
-    conn.close();
-}
-
-/**
- * @returns Whether we are currently running an operation with multiple tenants.
- */
-function usingMultipleTenants() {
-    return !!TestData.tenantIds;
-}
-
-const kDenylistedDbNames = new Set(["config", "admin", "local"]);
 function isDenylistedDb(dbName) {
-    return kDenylistedDbNames.has(dbName);
+    return denylistedDbNames.includes(dbName);
 }
 
-const kTenantPrefixMap = {};
-
 /**
- * If the database with the given name can be migrated, prepend a tenant prefix if one has not
- * already been applied.
+ * If the database with the given name can be migrated, prepends TestData.tenantId to the name if
+ * it does not already start with the prefix.
  */
 function prependTenantIdToDbNameIfApplicable(dbName) {
     if (dbName.length === 0) {
@@ -105,83 +30,50 @@ function prependTenantIdToDbNameIfApplicable(dbName) {
         // ignored.
         return dbName;
     }
-
-    let prefix;
-    // If running shard split passthroughs, then assign a database to a randomly selected tenant
-    if (usingMultipleTenants()) {
-        if (!kTenantPrefixMap[dbName]) {
-            const tenantId =
-                TestData.tenantIds[Math.floor(Math.random() * TestData.tenantIds.length)];
-            kTenantPrefixMap[dbName] = `${tenantId}_`;
-        }
-
-        prefix = kTenantPrefixMap[dbName];
-    } else {
-        prefix = `${TestData.tenantId}_`;
-    }
-
-    return (isDenylistedDb(dbName) || dbName.startsWith(prefix)) ? dbName : `${prefix}${dbName}`;
+    const prefix = TestData.tenantId + "_";
+    return isDenylistedDb(dbName) || dbName.startsWith(prefix) ? dbName : prefix + dbName;
 }
 
 /**
- * If the database for the given namespace can be migrated, prepend a tenant prefix if one has not
- * already been applied.
+ * If the database for the given namespace can be migrated, prepends TestData.tenantId to the
+ * namespace if it does not already start with the prefix.
  */
 function prependTenantIdToNsIfApplicable(ns) {
     if (ns.length === 0 || !ns.includes(".")) {
         // There are input validation tests that use invalid namespaces, those should be ignored.
         return ns;
     }
-
-    const splitNs = ns.split(".");
+    let splitNs = ns.split(".");
     splitNs[0] = prependTenantIdToDbNameIfApplicable(splitNs[0]);
     return splitNs.join(".");
 }
 
 /**
- * Remove a tenant prefix from the provided database name, if applicable.
+ * If the given database name starts TestData.tenantId, removes the prefix.
  */
 function extractOriginalDbName(dbName) {
-    if (usingMultipleTenants()) {
-        const anyTenantPrefixOnceRegex = new RegExp(Object.values(kTenantPrefixMap).join('|'), '');
-        return dbName.replace(anyTenantPrefixOnceRegex, "");
-    }
-
-    return dbName.replace(`${TestData.tenantId}_`, "");
+    return dbName.replace(TestData.tenantId + "_", "");
 }
 
 /**
- * Remove a tenant prefix from the provided namespace, if applicable.
+ * If the database name for the given namespace starts TestData.tenantId, removes the prefix.
  */
 function extractOriginalNs(ns) {
-    const splitNs = ns.split(".");
+    let splitNs = ns.split(".");
     splitNs[0] = extractOriginalDbName(splitNs[0]);
     return splitNs.join(".");
 }
 
 /**
- * Removes all occurrences of a tenant prefix in the provided string.
+ * Removes all occurrences of TestDatabase.tenantId in the string.
  */
 function removeTenantIdFromString(string) {
-    if (usingMultipleTenants()) {
-        const anyTenantPrefixGlobalRegex =
-            new RegExp(Object.values(kTenantPrefixMap).join('|'), 'g');
-        return string.replace(anyTenantPrefixGlobalRegex, "");
-    }
-
-    return string.replace(new RegExp(`${TestData.tenantId}_`, 'g'), "");
+    return string.replace(new RegExp(TestData.tenantId + "_", "g"), "");
 }
 
 /**
- * @returns Whether we are running a shard split passthrough.
- */
-function isShardSplitPassthrough() {
-    return !!TestData.splitPassthrough;
-}
-
-/**
- * Prepends a tenant prefix to all database name and namespace fields in the provided object, where
- * applicable.
+ * Prepends TestDatabase.tenantId to all the database name and namespace fields inside the given
+ * object.
  */
 function prependTenantId(obj) {
     for (let k of Object.keys(obj)) {
@@ -200,13 +92,12 @@ function prependTenantId(obj) {
             obj[k] = prependTenantId(v);
         }
     }
-
     return obj;
 }
 
 /**
- * Removes a tenant prefix from all the database name and namespace fields in the provided object,
- * where applicable.
+ * Removes TestDatabase.tenantId from all the database name and namespace fields inside the given
+ * object.
  */
 function removeTenantId(obj) {
     for (let k of Object.keys(obj)) {
@@ -228,7 +119,6 @@ function removeTenantId(obj) {
             obj[originalK] = removeTenantId(v);
         }
     }
-
     return obj;
 }
 
@@ -236,15 +126,18 @@ const kCmdsWithNsAsFirstField =
     new Set(["renameCollection", "checkShardingIndex", "dataSize", "datasize", "splitVector"]);
 
 /**
- * Returns true if the provided command object has had a tenant prefix appended to its namespaces.
+ * Returns true if cmdObj has been marked as having TestData.tenantId prepended to all of its
+ * database name and namespace fields, and false otherwise. Assumes that 'createCmdObjWithTenantId'
+ * sets cmdObj.comment.isCmdObjWithTenantId to true.
  */
 function isCmdObjWithTenantId(cmdObj) {
     return cmdObj.comment && cmdObj.comment.isCmdObjWithTenantId;
 }
 
 /**
- * Prepend a tenant prefix to all namespaces within a provided command object, and record a comment
- * indicating that the command object has alrady been modified.
+ * If cmdObj.comment.isCmdObjWithTenantId is false, returns a new cmdObj with TestData.tenantId
+ * prepended to all of its database name and namespace fields, and sets the flag to true after doing
+ * so. Otherwise, returns an exact copy of cmdObj.
  */
 function createCmdObjWithTenantId(cmdObj) {
     const cmdName = Object.keys(cmdObj)[0];
@@ -433,58 +326,34 @@ function removeSuccessfulOpIndexesExceptForUpserted(resObj, indexMap, ordered) {
 }
 
 /**
- * Rewrites a server connection string (ex: rsName/host,host,host) to a URI that the shell can
- * connect to.
+ * Returns the state document for the outgoing tenant migration for TestData.tenantId. Asserts
+ * that there is only one such migration.
  */
-function convertServerConnectionStringToURI(input) {
-    const inputParts = input.split('/');
-    return `mongodb://${inputParts[1]}/?replicaSet=${inputParts[0]}`;
-}
-
-/**
- * Returns the state document for the outgoing tenant migration or shard split operation. Asserts
- * that there is only one such operation.
- */
-function getOperationStateDocument(conn) {
-    const collection = isShardSplitPassthrough() ? "shardSplitDonors" : "tenantMigrationDonors";
-    let filter = {tenantId: TestData.tenantId};
-    if (usingMultipleTenants()) {
-        let tenantIds = [];
-        TestData.tenantIds.forEach(tenantId => tenantIds.push(ObjectId(tenantId)));
-        filter = {tenantIds: tenantIds};
-    }
-
-    const findRes = assert.commandWorked(
-        originalRunCommand.apply(conn, ["config", {find: collection, filter}, 0]));
-
+Mongo.prototype.getTenantMigrationStateDoc = function() {
+    const findRes = assert.commandWorked(originalRunCommand.apply(
+        this,
+        ["config", {find: "tenantMigrationDonors", filter: {tenantId: TestData.tenantId}}, 0]));
     const docs = findRes.cursor.firstBatch;
     // There should only be one active migration at any given time.
     assert.eq(docs.length, 1, tojson(docs));
-
-    const result = docs[0];
-    if (isShardSplitPassthrough()) {
-        result.recipientConnectionString =
-            convertServerConnectionStringToURI(result.recipientConnectionString);
-    }
-
-    return result;
-}
+    return docs[0];
+};
 
 /**
- * Marks the outgoing tenant migration or shard split operation as having caused the shell to
- * reroute commands by inserting a document for it into the testTenantMigration.rerouted collection
- * or local.rerouted collection for the shard merge protocol.
+ * Marks the outgoing migration for TestData.tenantId as having caused the shell to reroute
+ * commands by inserting a document for it into the testTenantMigration.rerouted collection.
  */
-function recordRerouteDueToTenantMigration(conn, migrationStateDoc) {
-    assertRoutingConnection(conn);
-    const dbToCheck = TestData.useLocalDBForDBCheck ? localDB : testTenantMigrationDB;
+Mongo.prototype.recordRerouteDueToTenantMigration = function() {
+    assert.neq(null, this.migrationStateDoc);
+    assert.neq(null, this.reroutingMongo);
+
     while (true) {
         try {
-            const res = originalRunCommand.apply(conn, [
-                dbToCheck,
+            const res = originalRunCommand.apply(this, [
+                "testTenantMigration",
                 {
                     insert: "rerouted",
-                    documents: [{_id: migrationStateDoc._id}],
+                    documents: [{_id: this.migrationStateDoc._id}],
                     writeConcern: {w: "majority"}
                 },
                 0
@@ -492,7 +361,8 @@ function recordRerouteDueToTenantMigration(conn, migrationStateDoc) {
 
             if (res.ok) {
                 break;
-            } else if (isRetryableError(res)) {
+            } else if (ErrorCodes.isNetworkError(res.code) ||
+                       ErrorCodes.isNotPrimaryError(res.code)) {
                 jsTest.log(
                     "Failed to write to testTenantMigration.rerouted due to a retryable error " +
                     tojson(res));
@@ -506,7 +376,8 @@ function recordRerouteDueToTenantMigration(conn, migrationStateDoc) {
             // these exceptions for specific network error messages.
             // TODO SERVER-54026: Remove check for network error messages once the shell reliably
             // returns error codes.
-            if (isRetryableError(e)) {
+            if (ErrorCodes.isNetworkError(e.code) || ErrorCodes.isNotPrimaryError(e.code) ||
+                isNetworkError(e)) {
                 jsTest.log(
                     "Failed to write to testTenantMigration.rerouted due to a retryable error exception " +
                     tojson(e));
@@ -515,7 +386,7 @@ function recordRerouteDueToTenantMigration(conn, migrationStateDoc) {
             throw e;
         }
     }
-}
+};
 
 /**
  * Keeps executing 'cmdObjWithTenantId' by running 'originalRunCommandFunc' if 'this.reroutingMongo'
@@ -524,8 +395,12 @@ function recordRerouteDueToTenantMigration(conn, migrationStateDoc) {
  * with TenantMigrationCommitted, sets 'this.reroutingMongo' to the mongo connection to the
  * recipient for the migration. 'dbNameWithTenantId' is only used for logging.
  */
-function runCommandRetryOnTenantMigrationErrors(
-    conn, dbNameWithTenantId, cmdObjWithTenantId, options) {
+Mongo.prototype.runCommandRetryOnTenantMigrationErrors = function(
+    dbNameWithTenantId, cmdObjWithTenantId, originalRunCommandFunc, reroutingRunCommandFunc) {
+    if (this.reroutingMongo) {
+        return reroutingRunCommandFunc();
+    }
+
     let numAttempts = 0;
 
     // Keep track of the write operations that were applied.
@@ -557,9 +432,13 @@ function runCommandRetryOnTenantMigrationErrors(
 
     while (true) {
         numAttempts++;
-        const newConn = getRoutingConnection(conn);
-        let resObj =
-            originalRunCommand.apply(newConn, [dbNameWithTenantId, cmdObjWithTenantId, options]);
+        let resObj;
+        if (this.reroutingMongo) {
+            this.recordRerouteDueToTenantMigration();
+            resObj = reroutingRunCommandFunc();
+        } else {
+            resObj = originalRunCommandFunc();
+        }
 
         const migrationCommittedErr =
             extractTenantMigrationError(resObj, ErrorCodes.TenantMigrationCommitted);
@@ -649,33 +528,27 @@ function runCommandRetryOnTenantMigrationErrors(
                 jsTestLog(`Got TenantMigrationCommitted for command against database ${
                     dbNameWithTenantId} after trying ${numAttempts} times: ${tojson(resObj)}`);
                 // Store the connection to the recipient so the next commands can be rerouted.
-                const donorConnection = getRoutingConnection(conn);
-                const migrationStateDoc = getOperationStateDocument(donorConnection);
-                setRoutingConnection(
-                    conn, connect(migrationStateDoc.recipientConnectionString).getMongo());
+                this.migrationStateDoc = this.getTenantMigrationStateDoc();
+                this.reroutingMongo =
+                    connect(this.migrationStateDoc.recipientConnectionString).getMongo();
 
                 // After getting a TenantMigrationCommitted error, wait for the python test fixture
                 // to do a dbhash check on the donor and recipient primaries before we retry the
                 // command on the recipient.
-                const dbToCheck = TestData.useLocalDBForDBCheck ? localDB : testTenantMigrationDB;
-                assert.soon(() => {
-                    let findRes = assert.commandWorked(originalRunCommand.apply(donorConnection, [
-                        dbToCheck,
-                        {
-                            find: "dbhashCheck",
-                            filter: {_id: migrationStateDoc._id},
-                        },
-                        0
-                    ]));
+                if (!TestData.skipTenantMigrationDBHash) {
+                    assert.soon(() => {
+                        let findRes = assert.commandWorked(originalRunCommand.apply(this, [
+                            "testTenantMigration",
+                            {
+                                find: "dbhashCheck",
+                                filter: {_id: this.migrationStateDoc._id},
+                            },
+                            0
+                        ]));
 
-                    const docs = findRes.cursor.firstBatch;
-                    return docs[0] != null;
-                });
-
-                recordRerouteDueToTenantMigration(donorConnection, migrationStateDoc);
-
-                if (isShardSplitPassthrough()) {
-                    closeRoutingConnection(donorConnection);
+                        const docs = findRes.cursor.firstBatch;
+                        return docs[0] != null;
+                    });
                 }
             } else if (migrationAbortedErr) {
                 jsTestLog(`Got TenantMigrationAborted for command against database ${
@@ -711,60 +584,38 @@ function runCommandRetryOnTenantMigrationErrors(
             return resObj;
         }
     }
-}
+};
 
 Mongo.prototype.runCommand = function(dbName, cmdObj, options) {
     const dbNameWithTenantId = prependTenantIdToDbNameIfApplicable(dbName);
 
-    // Prepend a tenant prefix to all database names and namespaces, where applicable.
+    // Use cmdObj with TestData.tenantId prepended to all the applicable database names and
+    // namespaces.
     const originalCmdObjContainsTenantId = isCmdObjWithTenantId(cmdObj);
-    const cmdObjWithTenantId =
+    let cmdObjWithTenantId =
         originalCmdObjContainsTenantId ? cmdObj : createCmdObjWithTenantId(cmdObj);
 
-    const resObj = runCommandRetryOnTenantMigrationErrors(
-        this, dbNameWithTenantId, cmdObjWithTenantId, options);
+    let resObj = this.runCommandRetryOnTenantMigrationErrors(
+        dbNameWithTenantId,
+        cmdObjWithTenantId,
+        () => originalRunCommand.apply(this, [dbNameWithTenantId, cmdObjWithTenantId, options]),
+        () => this.reroutingMongo.runCommand(dbNameWithTenantId, cmdObjWithTenantId, options));
 
     if (!originalCmdObjContainsTenantId) {
-        // Remove the tenant prefix from all database names and namespaces in the result since tests
+        // Remove TestData.tenantId from all database names and namespaces in the resObj since tests
         // assume the command was run against the original database.
         removeTenantId(resObj);
     }
 
+    Mongo.prototype._markNodeAsFailed = function(hostName, errorCode, errorReason) {
+        if (this.reroutingMongo)
+            originalMarkNodeAsFailed.apply(this.reroutingMongo, [hostName, errorCode, errorReason]);
+        else
+            originalMarkNodeAsFailed.apply(this, [hostName, errorCode, errorReason]);
+    };
+
     return resObj;
 };
-
-// Override all base methods on the Mongo prototype to try to proxy the call to the underlying
-// internal routing connection, if one exists.
-// NOTE: This list is derived from scripting/mozjs/mongo.cpp:62.
-['auth',
- 'close',
- 'compact',
- 'cursorHandleFromId',
- 'find',
- 'generateDataKey',
- 'getDataKeyCollection',
- 'logout',
- 'encrypt',
- 'decrypt',
- 'isReplicaSetConnection',
- '_markNodeAsFailed',
- 'getMinWireVersion',
- 'getMaxWireVersion',
- 'isReplicaSetMember',
- 'isMongos',
- 'isTLS',
- 'getApiParameters',
- '_startSession',
- '_refreshAccessToken',
- // Don't override this method, since it is never called directly in jstests. The expectation of is
- // that it will be run on the connection `Mongo.prototype.runCommand` chose.
- // '_runCommandImpl',
-].forEach(methodName => {
-    const $method = Mongo.prototype[methodName];
-    Mongo.prototype[methodName] = function() {
-        return $method.apply(getRoutingConnection(this), arguments);
-    };
-});
 
 OverrideHelpers.prependOverrideInParallelShell(
     "jstests/libs/override_methods/inject_tenant_prefix.js");

@@ -2,7 +2,7 @@
 // buffer.hpp
 // ~~~~~~~~~~
 //
-// Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2021 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -907,7 +907,7 @@ private:
 /**
  * @returns <tt>mutable_buffer(b)</tt>.
  */
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(
     const mutable_buffer& b) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(b);
@@ -920,8 +920,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  *     b.data(),
  *     min(b.size(), max_size_in_bytes)); @endcode
  */
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
-    const mutable_buffer& b,
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(const mutable_buffer& b,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(
@@ -938,7 +937,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
 /**
  * @returns <tt>const_buffer(b)</tt>.
  */
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     const const_buffer& b) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(b);
@@ -951,8 +950,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     b.data(),
  *     min(b.size(), max_size_in_bytes)); @endcode
  */
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
-    const const_buffer& b,
+inline BOOST_ASIO_CONST_BUFFER buffer(const const_buffer& b,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(b.data(),
@@ -968,8 +966,8 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
 /**
  * @returns <tt>mutable_buffer(data, size_in_bytes)</tt>.
  */
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
-    void* data, std::size_t size_in_bytes) BOOST_ASIO_NOEXCEPT
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(void* data,
+    std::size_t size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(data, size_in_bytes);
 }
@@ -978,8 +976,8 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
 /**
  * @returns <tt>const_buffer(data, size_in_bytes)</tt>.
  */
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
-    const void* data, std::size_t size_in_bytes) BOOST_ASIO_NOEXCEPT
+inline BOOST_ASIO_CONST_BUFFER buffer(const void* data,
+    std::size_t size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data, size_in_bytes);
 }
@@ -992,8 +990,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     N * sizeof(PodType)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
-    PodType (&data)[N]) BOOST_ASIO_NOEXCEPT
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(PodType (&data)[N]) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(data, N * sizeof(PodType));
 }
@@ -1006,8 +1003,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  *     min(N * sizeof(PodType), max_size_in_bytes)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
-    PodType (&data)[N],
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(PodType (&data)[N],
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(data,
@@ -1023,7 +1019,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  *     N * sizeof(PodType)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     const PodType (&data)[N]) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data, N * sizeof(PodType));
@@ -1037,8 +1033,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     min(N * sizeof(PodType), max_size_in_bytes)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
-    const PodType (&data)[N],
+inline BOOST_ASIO_CONST_BUFFER buffer(const PodType (&data)[N],
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data,
@@ -1088,8 +1083,7 @@ struct buffer_types
 } // namespace detail
 
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline
-typename detail::buffer_types<PodType>::container_type
+inline typename detail::buffer_types<PodType>::container_type
 buffer(boost::array<PodType, N>& data) BOOST_ASIO_NOEXCEPT
 {
   typedef typename boost::asio::detail::buffer_types<PodType>::buffer_type
@@ -1101,8 +1095,7 @@ buffer(boost::array<PodType, N>& data) BOOST_ASIO_NOEXCEPT
 }
 
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline
-typename detail::buffer_types<PodType>::container_type
+inline typename detail::buffer_types<PodType>::container_type
 buffer(boost::array<PodType, N>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
@@ -1126,7 +1119,7 @@ buffer(boost::array<PodType, N>& data,
  *     data.size() * sizeof(PodType)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(
     boost::array<PodType, N>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(
@@ -1141,8 +1134,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  *     min(data.size() * sizeof(PodType), max_size_in_bytes)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
-    boost::array<PodType, N>& data,
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(boost::array<PodType, N>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(data.c_array(),
@@ -1158,7 +1150,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  *     data.size() * sizeof(PodType)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     boost::array<const PodType, N>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(), data.size() * sizeof(PodType));
@@ -1172,8 +1164,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     min(data.size() * sizeof(PodType), max_size_in_bytes)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
-    boost::array<const PodType, N>& data,
+inline BOOST_ASIO_CONST_BUFFER buffer(boost::array<const PodType, N>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(),
@@ -1191,7 +1182,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     data.size() * sizeof(PodType)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     const boost::array<PodType, N>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(), data.size() * sizeof(PodType));
@@ -1205,8 +1196,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     min(data.size() * sizeof(PodType), max_size_in_bytes)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
-    const boost::array<PodType, N>& data,
+inline BOOST_ASIO_CONST_BUFFER buffer(const boost::array<PodType, N>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(),
@@ -1224,7 +1214,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     data.size() * sizeof(PodType)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(
     std::array<PodType, N>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(data.data(), data.size() * sizeof(PodType));
@@ -1238,8 +1228,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  *     min(data.size() * sizeof(PodType), max_size_in_bytes)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
-    std::array<PodType, N>& data,
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(std::array<PodType, N>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(data.data(),
@@ -1255,7 +1244,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  *     data.size() * sizeof(PodType)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     std::array<const PodType, N>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(), data.size() * sizeof(PodType));
@@ -1269,8 +1258,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     min(data.size() * sizeof(PodType), max_size_in_bytes)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
-    std::array<const PodType, N>& data,
+inline BOOST_ASIO_CONST_BUFFER buffer(std::array<const PodType, N>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(),
@@ -1286,7 +1274,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     data.size() * sizeof(PodType)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     const std::array<PodType, N>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(), data.size() * sizeof(PodType));
@@ -1300,8 +1288,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     min(data.size() * sizeof(PodType), max_size_in_bytes)); @endcode
  */
 template <typename PodType, std::size_t N>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
-    const std::array<PodType, N>& data,
+inline BOOST_ASIO_CONST_BUFFER buffer(const std::array<PodType, N>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(),
@@ -1322,7 +1309,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  * invalidate iterators.
  */
 template <typename PodType, typename Allocator>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(
     std::vector<PodType, Allocator>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(
@@ -1346,8 +1333,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  * invalidate iterators.
  */
 template <typename PodType, typename Allocator>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
-    std::vector<PodType, Allocator>& data,
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(std::vector<PodType, Allocator>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(data.size() ? &data[0] : 0,
@@ -1372,7 +1358,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  * invalidate iterators.
  */
 template <typename PodType, typename Allocator>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     const std::vector<PodType, Allocator>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(
@@ -1396,7 +1382,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  * invalidate iterators.
  */
 template <typename PodType, typename Allocator>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     const std::vector<PodType, Allocator>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
@@ -1420,7 +1406,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  * given string object.
  */
 template <typename Elem, typename Traits, typename Allocator>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(
     std::basic_string<Elem, Traits, Allocator>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_MUTABLE_BUFFER(data.size() ? &data[0] : 0,
@@ -1444,7 +1430,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  * given string object.
  */
 template <typename Elem, typename Traits, typename Allocator>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
+inline BOOST_ASIO_MUTABLE_BUFFER buffer(
     std::basic_string<Elem, Traits, Allocator>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
@@ -1467,7 +1453,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_MUTABLE_BUFFER buffer(
  * given string object.
  */
 template <typename Elem, typename Traits, typename Allocator>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     const std::basic_string<Elem, Traits, Allocator>& data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.data(), data.size() * sizeof(Elem)
@@ -1490,7 +1476,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  * given string object.
  */
 template <typename Elem, typename Traits, typename Allocator>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     const std::basic_string<Elem, Traits, Allocator>& data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
@@ -1514,7 +1500,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  * data.size() * sizeof(Elem))</tt>.
  */
 template <typename Elem, typename Traits>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     basic_string_view<Elem, Traits> data) BOOST_ASIO_NOEXCEPT
 {
   return BOOST_ASIO_CONST_BUFFER(data.size() ? &data[0] : 0,
@@ -1535,7 +1521,7 @@ BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
  *     min(data.size() * sizeof(Elem), max_size_in_bytes)); @endcode
  */
 template <typename Elem, typename Traits>
-BOOST_ASIO_NODISCARD inline BOOST_ASIO_CONST_BUFFER buffer(
+inline BOOST_ASIO_CONST_BUFFER buffer(
     basic_string_view<Elem, Traits> data,
     std::size_t max_size_in_bytes) BOOST_ASIO_NOEXCEPT
 {
@@ -2111,8 +2097,7 @@ private:
  * @returns <tt>dynamic_string_buffer<Elem, Traits, Allocator>(data)</tt>.
  */
 template <typename Elem, typename Traits, typename Allocator>
-BOOST_ASIO_NODISCARD inline
-dynamic_string_buffer<Elem, Traits, Allocator> dynamic_buffer(
+inline dynamic_string_buffer<Elem, Traits, Allocator> dynamic_buffer(
     std::basic_string<Elem, Traits, Allocator>& data) BOOST_ASIO_NOEXCEPT
 {
   return dynamic_string_buffer<Elem, Traits, Allocator>(data);
@@ -2124,8 +2109,7 @@ dynamic_string_buffer<Elem, Traits, Allocator> dynamic_buffer(
  * max_size)</tt>.
  */
 template <typename Elem, typename Traits, typename Allocator>
-BOOST_ASIO_NODISCARD inline
-dynamic_string_buffer<Elem, Traits, Allocator> dynamic_buffer(
+inline dynamic_string_buffer<Elem, Traits, Allocator> dynamic_buffer(
     std::basic_string<Elem, Traits, Allocator>& data,
     std::size_t max_size) BOOST_ASIO_NOEXCEPT
 {
@@ -2137,8 +2121,7 @@ dynamic_string_buffer<Elem, Traits, Allocator> dynamic_buffer(
  * @returns <tt>dynamic_vector_buffer<Elem, Allocator>(data)</tt>.
  */
 template <typename Elem, typename Allocator>
-BOOST_ASIO_NODISCARD inline
-dynamic_vector_buffer<Elem, Allocator> dynamic_buffer(
+inline dynamic_vector_buffer<Elem, Allocator> dynamic_buffer(
     std::vector<Elem, Allocator>& data) BOOST_ASIO_NOEXCEPT
 {
   return dynamic_vector_buffer<Elem, Allocator>(data);
@@ -2149,8 +2132,7 @@ dynamic_vector_buffer<Elem, Allocator> dynamic_buffer(
  * @returns <tt>dynamic_vector_buffer<Elem, Allocator>(data, max_size)</tt>.
  */
 template <typename Elem, typename Allocator>
-BOOST_ASIO_NODISCARD inline
-dynamic_vector_buffer<Elem, Allocator> dynamic_buffer(
+inline dynamic_vector_buffer<Elem, Allocator> dynamic_buffer(
     std::vector<Elem, Allocator>& data,
     std::size_t max_size) BOOST_ASIO_NOEXCEPT
 {

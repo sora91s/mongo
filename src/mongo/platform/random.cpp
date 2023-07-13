@@ -27,17 +27,18 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/platform/random.h"
 
-#include <cstring>
+#include <string.h>
 
 #ifdef _WIN32
 #include <bcrypt.h>
 #else
-#include <cerrno>
+#include <errno.h>
 #include <fcntl.h>
 #endif
 
@@ -52,9 +53,6 @@
 
 #include "mongo/logv2/log.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 #ifdef _WIN32
 #define SECURE_RANDOM_BCRYPT

@@ -56,7 +56,7 @@ public:
 
     ~ShardRemote();
 
-    ConnectionString getConnString() const override {
+    const ConnectionString getConnString() const override {
         return _connString;
     }
 
@@ -70,6 +70,15 @@ public:
     std::string toString() const override;
 
     bool isRetriableError(ErrorCodes::Error code, RetryPolicy options) final;
+
+    Status createIndexOnConfig(OperationContext* opCtx,
+                               const NamespaceString& ns,
+                               const BSONObj& keys,
+                               bool unique) override;
+
+    void updateLastCommittedOpTime(LogicalTime lastCommittedOpTime) final;
+
+    LogicalTime getLastCommittedOpTime() const final;
 
     void runFireAndForgetCommand(OperationContext* opCtx,
                                  const ReadPreferenceSetting& readPref,
@@ -135,6 +144,19 @@ private:
      * Targeter for obtaining hosts from which to read or to which to write.
      */
     std::shared_ptr<RemoteCommandTargeter> _targeter;
+
+    /**
+     * Protects _lastCommittedOpTime.
+     */
+    mutable Mutex _lastCommittedOpTimeMutex =
+        MONGO_MAKE_LATCH("ShardRemote::_lastCommittedOpTimeMutex");
+
+    /**
+     * Logical time representing the latest opTime timestamp known to be in this shard's majority
+     * committed snapshot. Only the latest time is kept because lagged secondaries may return
+     * earlier times.
+     */
+    LogicalTime _lastCommittedOpTime;
 };
 
 }  // namespace mongo

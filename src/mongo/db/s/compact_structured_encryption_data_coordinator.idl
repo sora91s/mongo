@@ -30,7 +30,7 @@ global:
     cpp_namespace: "mongo"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/db/commands/fle2_compact.idl"
     - "mongo/db/s/sharding_ddl_coordinator.idl"
 
@@ -47,7 +47,7 @@ enums:
 structs:
     CompactStructuredEncryptionDataState:
         description: "Represents the state of the compactStructuredEncryptionData pipeline"
-        strict: false
+        strict: true
         chained_structs:
             ShardingDDLCoordinatorMetadata: ShardingDDLCoordinatorMetadata
         fields:
@@ -82,7 +82,3 @@ structs:
             compactionTokens:
                 description: "Compaction tokens for the compact operation"
                 type: object_owned
-            response:
-                description: "Response to the compactStructuredEncryptedData command"
-                type: CompactStructuredEncryptionDataCommandReply
-                optional: true

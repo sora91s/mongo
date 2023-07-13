@@ -28,8 +28,6 @@
  */
 #pragma once
 
-#include "mongo/db/concurrency/lock_manager_defs.h"
-#include "mongo/platform/atomic_word.h"
 #include "mongo/util/tick_source.h"
 
 namespace mongo {
@@ -42,105 +40,27 @@ class AdmissionContext {
 public:
     AdmissionContext() {}
 
-    /**
-     * Classifies the priority that an operation acquires a ticket when the system is under high
-     * load (operations are throttled waiting for a ticket). Only applicable when there are no
-     * available tickets.
-     *
-     * 'kLow': It's of low importance that the operation acquires a ticket. These low-priority
-     * operations are reserved for background tasks that have no other operations dependent on them.
-     * These operations may be throttled under load and make significantly less progress as compared
-     * to operations of a higher priority.
-     *
-     * 'kNormal': It's important that the operation be throttled under load. If this operation is
-     * throttled, it will not affect system availability or observability. Most operations, both
-     * user and internal, should use this priority unless they qualify as 'kLow' or 'kImmediate'
-     * priority.
-     *
-     * 'kImmediate': It's crucial that the operation makes forward progress - bypasses the ticketing
-     * mechanism.
-     *
-     * Reserved for operations critical to availability (e.g. replication workers) or observability
-     * (e.g. FTDC), and any operation that is releasing resources (e.g. committing or aborting
-     * prepared transactions). Should be used sparingly.
-     */
-    enum class Priority { kLow = 0, kNormal, kImmediate };
-
     void start(TickSource* tickSource) {
-        admissions.fetchAndAdd(1);
+        admissions++;
         if (tickSource) {
-            _startProcessingTime.store(tickSource->getTicks());
+            _startProcessingTime = tickSource->getTicks();
         }
     }
 
-    TickSource::Tick getStartProcessingTime() const {
-        return _startProcessingTime.loadRelaxed();
+    TickSource::Tick getStartProcessingTime() {
+        return _startProcessingTime;
     }
 
     /**
      * Returns the number of times this context has taken a ticket.
      */
-    int getAdmissions() const {
-        return admissions.loadRelaxed();
-    }
-
-    void setLockMode(LockMode lockMode) {
-        _lockMode.store(lockMode);
-    }
-
-    LockMode getLockMode() const {
-        return _lockMode.loadRelaxed();
-    }
-
-    void setPriority(Priority priority) {
-        _priority.store(priority);
-    }
-
-    Priority getPriority() const {
-        return _priority.loadRelaxed();
+    int getAdmissions() {
+        return admissions;
     }
 
 private:
-    // We wrap these types in AtomicWord to avoid race conditions between reporting metrics and
-    // setting the values.
-    //
-    // Only a single writer thread will modify these variables and the readers allow relaxed memory
-    // semantics.
-    AtomicWord<TickSource::Tick> _startProcessingTime{0};
-    AtomicWord<int32_t> admissions{0};
-    AtomicWord<LockMode> _lockMode{LockMode::MODE_NONE};
-    AtomicWord<Priority> _priority{Priority::kNormal};
+    TickSource::Tick _startProcessingTime{};
+    int admissions{};
 };
-
-StringData toString(AdmissionContext::Priority priority);
-
-inline int compare(AdmissionContext::Priority lhs, AdmissionContext::Priority rhs) {
-    using enum_t = std::underlying_type_t<AdmissionContext::Priority>;
-    return static_cast<enum_t>(lhs) - static_cast<enum_t>(rhs);
-}
-
-inline bool operator==(AdmissionContext::Priority lhs, AdmissionContext::Priority rhs) {
-    return compare(lhs, rhs) == 0;
-}
-
-inline bool operator!=(AdmissionContext::Priority lhs, AdmissionContext::Priority rhs) {
-    return compare(lhs, rhs) != 0;
-}
-
-inline bool operator<(AdmissionContext::Priority lhs, AdmissionContext::Priority rhs) {
-    return compare(lhs, rhs) < 0;
-}
-
-inline bool operator>(AdmissionContext::Priority lhs, AdmissionContext::Priority rhs) {
-    return compare(lhs, rhs) > 0;
-}
-
-inline bool operator<=(AdmissionContext::Priority lhs, AdmissionContext::Priority rhs) {
-    return compare(lhs, rhs) <= 0;
-}
-
-inline bool operator>=(AdmissionContext::Priority lhs, AdmissionContext::Priority rhs) {
-    return compare(lhs, rhs) >= 0;
-}
 
 }  // namespace mongo

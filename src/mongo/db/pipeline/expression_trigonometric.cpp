@@ -33,6 +33,10 @@
 
 namespace mongo {
 
+void initMyExpressionTrigonometric() {
+    
+}
+
 // The parse methods of the expressions are registered here in the .cpp file to prevent multiple
 // definition errors.
 

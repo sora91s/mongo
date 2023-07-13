@@ -29,51 +29,15 @@
 
 #pragma once
 
-#include "mongo/util/duration.h"
 #include <boost/optional.hpp>
 #include <queue>
 
-#include "mongo/db/concurrency/exception_util.h"
 #include "mongo/db/exec/multi_plan.h"
-#include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/query_solution.h"
 
 namespace mongo {
-
-/**
- * Query execution helper. Runs the argument function 'f'. If 'f' throws an exception other than
- * 'WriteConflictException' or 'TemporarilyUnavailableException', then these exceptions escape
- * this function. In contrast 'WriteConflictException' or 'TemporarilyUnavailableException' are
- * caught, the given 'yieldHandler' is run, and the helper returns PlanStage::NEED_YIELD.
- *
- * In a multi-document transaction, it rethrows a TemporarilyUnavailableException as a
- * WriteConflictException.
- */
-template <typename F, typename H>
-auto handlePlanStageYield(
-    ExpressionContext* expCtx, StringData opStr, StringData ns, F&& f, H&& yieldHandler) {
-    auto opCtx = expCtx->opCtx;
-    invariant(opCtx);
-    invariant(opCtx->lockState());
-    invariant(opCtx->recoveryUnit());
-    invariant(!expCtx->getTemporarilyUnavailableException());
-
-    try {
-        return f();
-    } catch (const WriteConflictException&) {
-        yieldHandler();
-        return PlanStage::NEED_YIELD;
-    } catch (const TemporarilyUnavailableException& e) {
-        if (opCtx->inMultiDocumentTransaction()) {
-            handleTemporarilyUnavailableExceptionInTransaction(opCtx, opStr, ns, e);
-        }
-        expCtx->setTemporarilyUnavailableException(true);
-        yieldHandler();
-        return PlanStage::NEED_YIELD;
-    }
-}
 
 class CappedInsertNotifier;
 class CollectionScan;
@@ -116,7 +80,6 @@ public:
     UpdateResult executeUpdate() override;
     UpdateResult getUpdateResult() const override;
     long long executeDelete() override;
-    BatchedDeleteStats getBatchedDeleteStats() override;
     void markAsKilled(Status killStatus) final;
     void dispose(OperationContext* opCtx) final;
     void stashResult(const BSONObj& obj) final;
@@ -127,10 +90,6 @@ public:
     BSONObj getPostBatchResumeToken() const final;
     LockPolicy lockPolicy() const final;
     const PlanExplainer& getPlanExplainer() const final;
-
-    PlanExecutor::QueryFramework getQueryFramework() const override final {
-        return PlanExecutor::QueryFramework::kClassicOnly;
-    }
 
     /**
      * Same as restoreState() but without the logic to retry if a WriteConflictException is thrown.
@@ -149,10 +108,6 @@ public:
     void enableSaveRecoveryUnitAcrossCommandsIfSupported() override {}
     bool isSaveRecoveryUnitAcrossCommandsEnabled() const override {
         return false;
-    }
-
-    void setReturnOwnedData(bool returnOwnedData) override final {
-        _mustReturnOwnedBson = returnOwnedData;
     }
 
 private:
@@ -205,7 +160,7 @@ private:
     Status _killStatus = Status::OK();
 
     // Whether the executor must return owned BSON.
-    bool _mustReturnOwnedBson;
+    const bool _mustReturnOwnedBson;
 
     // What namespace are we operating over?
     NamespaceString _nss;

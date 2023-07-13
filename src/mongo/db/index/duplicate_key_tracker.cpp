@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/db/storage/execution_context.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
-
 
 namespace mongo {
 
@@ -103,8 +101,7 @@ Status DuplicateKeyTracker::recordKey(OperationContext* opCtx, const KeyString::
         return status.getStatus();
 
     auto numDuplicates = _duplicateCounter.addAndFetch(1);
-    opCtx->recoveryUnit()->onRollback(
-        [this](OperationContext*) { _duplicateCounter.fetchAndAdd(-1); });
+    opCtx->recoveryUnit()->onRollback([this]() { _duplicateCounter.fetchAndAdd(-1); });
 
     if (numDuplicates % 1000 == 0) {
         LOGV2_INFO(4806700,
@@ -129,9 +126,7 @@ Status DuplicateKeyTracker::checkConstraints(OperationContext* opCtx) const {
     {
         stdx::unique_lock<Client> lk(*opCtx->getClient());
         progress.set(
-            lk,
-            CurOp::get(opCtx)->setProgress_inlock(curopMessage, _duplicateCounter.load(), 1),
-            opCtx);
+            CurOp::get(opCtx)->setProgress_inlock(curopMessage, _duplicateCounter.load(), 1));
     }
 
     int resolved = 0;
@@ -152,17 +147,10 @@ Status DuplicateKeyTracker::checkConstraints(OperationContext* opCtx) const {
         wuow.commit();
         constraintsCursor->restore();
 
-        {
-            stdx::unique_lock<Client> lk(*opCtx->getClient());
-            progress.get(lk)->hit();
-        }
+        progress->hit();
         record = constraintsCursor->next();
     }
-
-    {
-        stdx::unique_lock<Client> lk(*opCtx->getClient());
-        progress.get(lk)->finished();
-    }
+    progress->finished();
 
     invariant(resolved == _duplicateCounter.load());
 

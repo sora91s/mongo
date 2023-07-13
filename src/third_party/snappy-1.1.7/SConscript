@@ -19,9 +19,7 @@ elif env.TargetOSIs('windows'):
 elif not env.TargetOSIs('windows'):
     env.Append(CPPPATH=["build_posix"])
 
-env.Append(CPPDEFINES=[
-    "HAVE_CONFIG_H",
-])
+env.Append( CPPDEFINES=[ "HAVE_CONFIG_H",  ] )
 
 if env.ToolchainIs('clang', 'GCC'):
     env.Append(CCFLAGS=['-Wno-sign-compare', '-Wno-unused-function'])
@@ -32,5 +30,4 @@ env.Library(
         'snappy-c.cc',
         'snappy.cc',
         'snappy-sinksource.cc',
-    ],
-)
+    ])

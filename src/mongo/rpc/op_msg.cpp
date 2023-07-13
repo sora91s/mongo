@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -40,19 +41,14 @@
 #include "mongo/db/auth/security_token_gen.h"
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/multitenancy_gen.h"
-#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/object_check.h"
 #include "mongo/util/bufreader.h"
-#include "mongo/util/database_name_util.h"
 #include "mongo/util/hex.h"
 
 #ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
 #include <wiredtiger.h>
 #endif
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo {
 namespace {
@@ -134,7 +130,7 @@ void OpMsg::appendChecksum(Message* message) {
 #endif
 }
 
-OpMsg OpMsg::parse(const Message& message, Client* client) try {
+OpMsg OpMsg::parse(const Message& message) try {
     // It is the caller's responsibility to call the correct parser for a given message type.
     invariant(!message.empty());
     invariant(message.operation() == dbMsg);
@@ -161,7 +157,6 @@ OpMsg OpMsg::parse(const Message& message, Client* client) try {
     // TODO some validation may make more sense in the IDL parser. I've tagged them with comments.
     bool haveBody = false;
     OpMsg msg;
-    BSONObj securityToken;
     while (!sectionsBuf.atEof()) {
         const auto sectionKind = sectionsBuf.read<Section>();
         switch (sectionKind) {
@@ -169,10 +164,6 @@ OpMsg OpMsg::parse(const Message& message, Client* client) try {
                 uassert(40430, "Multiple body sections in message", !haveBody);
                 haveBody = true;
                 msg.body = sectionsBuf.read<Validated<BSONObj>>();
-
-                uassert(ErrorCodes::InvalidOptions,
-                        "Multitenancy not enabled, cannot set $tenant in command body",
-                        gMultitenancySupport || !msg.body["$tenant"_sd]);
                 break;
             }
 
@@ -204,7 +195,7 @@ OpMsg OpMsg::parse(const Message& message, Client* client) try {
                 uassert(ErrorCodes::Unauthorized,
                         "Unsupported Security Token provided",
                         gMultitenancySupport);
-                securityToken = sectionsBuf.read<Validated<BSONObj>>();
+                msg.securityToken = sectionsBuf.read<Validated<BSONObj>>();
                 break;
             }
 
@@ -235,10 +226,6 @@ OpMsg OpMsg::parse(const Message& message, Client* client) try {
                 *checksum == calculateChecksum(message));
     }
 #endif
-    if (gMultitenancySupport) {
-        msg.validatedTenancyScope =
-            auth::ValidatedTenancyScope::create(client, msg.body, securityToken);
-    }
 
     return msg;
 } catch (const DBException& ex) {
@@ -253,112 +240,13 @@ OpMsg OpMsg::parse(const Message& message, Client* client) try {
     throw;
 }
 
-OpMsgRequest OpMsgRequest::fromDBAndBody(StringData db, BSONObj body, const BSONObj& extraFields) {
-    return OpMsgRequestBuilder::create({boost::none, db}, std::move(body), extraFields);
-}
-
-boost::optional<TenantId> parseDollarTenant(const BSONObj body) {
-    if (auto tenant = body.getField("$tenant")) {
-        return TenantId::parseFromBSON(tenant);
-    } else {
-        return boost::none;
-    }
-}
-
-bool appendDollarTenant(BSONObjBuilder& builder,
-                        const TenantId& tenant,
-                        boost::optional<TenantId> existingDollarTenant = boost::none) {
-    if (existingDollarTenant) {
-        massert(8423373,
-                str::stream() << "Unable to set TenantId '" << tenant
-                              << "' on OpMsgRequest as it already has "
-                              << existingDollarTenant->toString(),
-                tenant == existingDollarTenant.value());
-        return true;
-    }
-
-    if (gMultitenancySupport) {
-        if (serverGlobalParams.featureCompatibility.isVersionInitialized() &&
-            gFeatureFlagRequireTenantID.isEnabled(serverGlobalParams.featureCompatibility)) {
-            tenant.serializeToBSON("$tenant", &builder);
-            return true;
-        }
-    }
-    return false;
-}
-
-void appendDollarDbAndTenant(BSONObjBuilder& builder,
-                             const DatabaseName& dbName,
-                             boost::optional<TenantId> existingDollarTenant = boost::none) {
-    if (!dbName.tenantId() ||
-        appendDollarTenant(builder, dbName.tenantId().value(), existingDollarTenant)) {
-        builder.append("$db", dbName.db());
-    } else {
-        builder.append("$db", DatabaseNameUtil::serialize(dbName));
-    }
-}
-
-void OpMsgRequest::setDollarTenant(const TenantId& tenant) {
-    massert(8423372,
-            str::stream() << "Should not set dollar tenant " << tenant
-                          << " on the validated OpMsgRequest.",
-            !validatedTenancyScope);
-
-    auto dollarTenant = parseDollarTenant(body);
-    BSONObjBuilder bodyBuilder(std::move(body));
-    appendDollarTenant(bodyBuilder, tenant, dollarTenant);
-    body = bodyBuilder.obj();
-}
-
-OpMsgRequest OpMsgRequestBuilder::createWithValidatedTenancyScope(
-    const DatabaseName& dbName,
-    boost::optional<auth::ValidatedTenancyScope> validatedTenancyScope,
-    BSONObj body,
-    const BSONObj& extraFields) {
-    auto dollarTenant = parseDollarTenant(body);
-    OpMsgRequest request;
-    request.body = ([&] {
-        BSONObjBuilder bodyBuilder(std::move(body));
-        bodyBuilder.appendElements(extraFields);
-        if (dollarTenant) {
-            appendDollarDbAndTenant(bodyBuilder, dbName, dollarTenant);
-        } else if (validatedTenancyScope && !validatedTenancyScope->hasAuthenticatedUser()) {
-            // Add $tenant into the body if the validated tenant id comes from $tenant.
-            appendDollarDbAndTenant(bodyBuilder, dbName);
-        } else {
-            bodyBuilder.append("$db", DatabaseNameUtil::serialize(dbName));
-        }
-        return bodyBuilder.obj();
-    }());
-
-    request.validatedTenancyScope = validatedTenancyScope;
-    return request;
-}
-
-OpMsgRequest OpMsgRequestBuilder::create(const DatabaseName& dbName,
-                                         BSONObj body,
-                                         const BSONObj& extraFields) {
-    auto dollarTenant = parseDollarTenant(body);
-    BSONObjBuilder bodyBuilder(std::move(body));
-    bodyBuilder.appendElements(extraFields);
-
-    appendDollarDbAndTenant(bodyBuilder, dbName, dollarTenant);
-
-    OpMsgRequest request;
-    request.body = bodyBuilder.obj();
-    return request;
-}
-
 namespace {
 void serializeHelper(const std::vector<OpMsg::DocumentSequence>& sequences,
                      const BSONObj& body,
-                     const boost::optional<auth::ValidatedTenancyScope>& validatedTenancyScope,
+                     const BSONObj& securityToken,
                      OpMsgBuilder* output) {
-    if (validatedTenancyScope) {
-        auto securityToken = validatedTenancyScope->getOriginalToken();
-        if (securityToken.nFields() > 0) {
-            output->setSecurityToken(securityToken);
-        }
+    if (securityToken.nFields() > 0) {
+        output->setSecurityToken(securityToken);
     }
     for (auto&& seq : sequences) {
         auto docSeq = output->beginDocSequence(seq.name);
@@ -372,13 +260,13 @@ void serializeHelper(const std::vector<OpMsg::DocumentSequence>& sequences,
 
 Message OpMsg::serialize() const {
     OpMsgBuilder builder;
-    serializeHelper(sequences, body, validatedTenancyScope, &builder);
+    serializeHelper(sequences, body, securityToken, &builder);
     return builder.finish();
 }
 
 Message OpMsg::serializeWithoutSizeChecking() const {
     OpMsgBuilder builder;
-    serializeHelper(sequences, body, validatedTenancyScope, &builder);
+    serializeHelper(sequences, body, securityToken, &builder);
     return builder.finishWithoutSizeChecking();
 }
 
@@ -392,6 +280,9 @@ void OpMsg::shareOwnershipWith(const ConstSharedBuffer& buffer) {
                 obj.shareOwnershipWith(buffer);
             }
         }
+    }
+    if (!securityToken.isOwned()) {
+        securityToken.shareOwnershipWith(buffer);
     }
 }
 

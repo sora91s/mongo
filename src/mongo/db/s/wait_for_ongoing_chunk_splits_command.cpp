@@ -27,14 +27,12 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/commands.h"
 #include "mongo/db/s/chunk_splitter.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 
@@ -68,14 +66,14 @@ public:
     }
 
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
+    Status checkAuthForOperation(OperationContext* opCtx,
+                                 const std::string& dbname,
+                                 const BSONObj& cmdObj) const override {
         return Status::OK();
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& db,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         ChunkSplitter::get(opCtx).waitForIdle();

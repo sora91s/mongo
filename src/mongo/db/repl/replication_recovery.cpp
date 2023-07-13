@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 #define LOGV2_FOR_RECOVERY(ID, DLEVEL, MESSAGE, ...) \
     LOGV2_DEBUG_OPTIONS(ID, DLEVEL, {logv2::LogComponent::kStorageRecovery}, MESSAGE, ##__VA_ARGS__)
 
@@ -50,18 +51,15 @@
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/transaction_oplog_application.h"
 #include "mongo/db/server_recovery.h"
-#include "mongo/db/session/session.h"
+#include "mongo/db/session.h"
 #include "mongo/db/storage/control/journal_flusher.h"
 #include "mongo/db/storage/durable_history_pin.h"
 #include "mongo/db/storage/storage_parameters_gen.h"
-#include "mongo/db/transaction/transaction_history_iterator.h"
-#include "mongo/db/transaction/transaction_participant.h"
+#include "mongo/db/transaction_history_iterator.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 namespace mongo {
 namespace repl {
@@ -369,6 +367,16 @@ void ReplicationRecoveryImpl::recoverFromOplogAsStandalone(OperationContext* opC
     if (!_duringInitialSync) {
         // Initial sync will reconstruct prepared transactions when it is completely done.
         reconstructPreparedTransactions(opCtx, OplogApplication::Mode::kRecovering);
+
+        // Two-phase index builds are built in the background, which may still be in-progress after
+        // recovering from the oplog. To prevent crashing the server, skip enabling read-only mode.
+        if (IndexBuildsCoordinator::get(opCtx)->noIndexBuildInProgress()) {
+            LOGV2_WARNING(21558,
+                          "Setting mongod to readOnly mode as a result of specifying "
+                          "'recoverFromOplogAsStandalone'");
+
+            storageGlobalParams.readOnly = true;
+        }
     }
 }
 
@@ -396,7 +404,7 @@ void ReplicationRecoveryImpl::recoverFromOplogUpTo(OperationContext* opCtx, Time
         fassert(31436, "No recovery timestamp, cannot recover from the oplog");
     }
 
-    startPoint = _adjustStartPointIfNecessary(opCtx, startPoint.value());
+    startPoint = _adjustStartPointIfNecessary(opCtx, startPoint.get());
 
     invariant(!endPoint.isNull());
 
@@ -806,7 +814,7 @@ void ReplicationRecoveryImpl::_truncateOplogTo(OperationContext* opCtx,
 
     // Fetch the oplog collection.
     const NamespaceString oplogNss(NamespaceString::kRsOplogNamespace);
-    AutoGetDb autoDb(opCtx, oplogNss.dbName(), MODE_IX);
+    AutoGetDb autoDb(opCtx, oplogNss.db(), MODE_IX);
     Lock::CollectionLock oplogCollectionLoc(opCtx, oplogNss, MODE_X);
     auto oplogCollection =
         CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, oplogNss);
@@ -820,7 +828,7 @@ void ReplicationRecoveryImpl::_truncateOplogTo(OperationContext* opCtx,
     // Find an oplog entry <= truncateAfterTimestamp.
     boost::optional<BSONObj> truncateAfterOplogEntryBSON =
         _storageInterface->findOplogEntryLessThanOrEqualToTimestamp(
-            opCtx, CollectionPtr(oplogCollection), truncateAfterTimestamp);
+            opCtx, oplogCollection, truncateAfterTimestamp);
     if (!truncateAfterOplogEntryBSON) {
         LOGV2_FATAL_NOTRACE(40296,
                             "Reached end of oplog looking for an oplog entry lte to "
@@ -832,14 +840,14 @@ void ReplicationRecoveryImpl::_truncateOplogTo(OperationContext* opCtx,
 
     // Parse the response.
     auto truncateAfterOpTime =
-        fassert(51766, repl::OpTime::parseFromOplogEntry(truncateAfterOplogEntryBSON.value()));
+        fassert(51766, repl::OpTime::parseFromOplogEntry(truncateAfterOplogEntryBSON.get()));
     auto truncateAfterOplogEntryTs = truncateAfterOpTime.getTimestamp();
     auto truncateAfterRecordId = RecordId(truncateAfterOplogEntryTs.asULL());
 
     invariant(truncateAfterRecordId <= RecordId(truncateAfterTimestamp.asULL()),
               str::stream() << "Should have found a oplog entry timestamp lte to "
                             << truncateAfterTimestamp.toString() << ", but instead found "
-                            << redact(truncateAfterOplogEntryBSON.value()) << " with timestamp "
+                            << redact(truncateAfterOplogEntryBSON.get()) << " with timestamp "
                             << Timestamp(truncateAfterRecordId.getLong()).toString());
 
     // Truncate the oplog AFTER the oplog entry found to be <= truncateAfterTimestamp.
@@ -878,8 +886,7 @@ void ReplicationRecoveryImpl::_truncateOplogTo(OperationContext* opCtx,
                                                        truncateAfterOplogEntryTs);
         }
     }
-    oplogCollection->getRecordStore()->cappedTruncateAfter(
-        opCtx, truncateAfterRecordId, false /*inclusive*/, nullptr /* aboutToDelete callback */);
+    oplogCollection->cappedTruncateAfter(opCtx, truncateAfterRecordId, /*inclusive*/ false);
 
     LOGV2(21554,
           "Replication recovery oplog truncation finished in: {durationMillis}ms",
@@ -904,9 +911,9 @@ void ReplicationRecoveryImpl::_truncateOplogIfNeededAndThenClearOplogTruncateAft
               "The oplog truncation point is equal to or earlier than the stable timestamp, so "
               "truncating after the stable timestamp instead",
               "truncatePoint"_attr = truncatePoint,
-              "stableTimestamp"_attr = (*stableTimestamp).value());
+              "stableTimestamp"_attr = (*stableTimestamp).get());
 
-        truncatePoint = (*stableTimestamp).value();
+        truncatePoint = (*stableTimestamp).get();
     }
 
     LOGV2(21557,
@@ -945,7 +952,7 @@ Timestamp ReplicationRecoveryImpl::_adjustStartPointIfNecessary(OperationContext
     }
 
     auto adjustmentOpTime =
-        fassert(5466602, OpTime::parseFromOplogEntry(adjustmentOplogEntryBSON.value()));
+        fassert(5466602, OpTime::parseFromOplogEntry(adjustmentOplogEntryBSON.get()));
     auto adjustmentTimestamp = adjustmentOpTime.getTimestamp();
 
     if (startPoint != adjustmentTimestamp) {

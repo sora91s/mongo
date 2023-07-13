@@ -3,7 +3,6 @@
  */
 (function() {
 'use strict';
-load("jstests/libs/ttl_util.js");
 
 let conn = MongoRunner.runMongod({setParameter: 'ttlMonitorSleepSecs=1'});
 let db = conn.getDB('test');
@@ -34,7 +33,10 @@ for (let i = 0; i < 50; i++) {
     assert.commandWorked(db.runCommand({insert: 'ttl_coll', documents: [{x: past}]}));
 }
 
-TTLUtil.waitForPass(db);
+var ttlPasses = db.serverStatus().metrics.ttl.passes;
+assert.soon(function() {
+    return db.serverStatus().metrics.ttl.passes > ttlPasses;
+});
 
 assert.eq(coll.find().itcount(), 50);
 

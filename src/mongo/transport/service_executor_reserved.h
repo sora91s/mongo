@@ -39,6 +39,7 @@
 #include "mongo/transport/service_executor.h"
 
 namespace mongo {
+void initMyServiceExecutorReserved();
 namespace transport {
 
 /**
@@ -59,23 +60,22 @@ public:
 
     Status start() override;
     Status shutdown(Milliseconds timeout) override;
+    Status scheduleTask(Task task, ScheduleFlags flags) override;
 
     size_t getRunningThreads() const override {
         return _numRunningWorkerThreads.loadRelaxed();
     }
 
-    void appendStats(BSONObjBuilder* bob) const override;
+    void runOnDataAvailable(const SessionHandle& session,
+                            OutOfLineExecutor::Task onCompletionCallback) override;
 
-    std::unique_ptr<TaskRunner> makeTaskRunner() override;
+    void appendStats(BSONObjBuilder* bob) const override;
 
 private:
     Status _startWorker();
 
-    void _schedule(Task task);
-
-    void _runOnDataAvailable(const std::shared_ptr<Session>& session, Task task);
-
     static thread_local std::deque<Task> _localWorkQueue;
+    static thread_local int _localRecursionDepth;
     static thread_local int64_t _localThreadIdleCounter;
 
     AtomicWord<bool> _stillRunning{false};

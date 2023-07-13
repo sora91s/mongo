@@ -66,7 +66,7 @@ TEST_F(ThreadClientTest, TestDifferentArgs) {
     {
         ASSERT_FALSE(haveClient());
         transport::TransportLayerMock mock;
-        std::shared_ptr<transport::Session> handle = mock.createSession();
+        transport::SessionHandle handle = mock.createSession();
         ThreadClient tc(getThreadName(), getGlobalServiceContext(), handle);
         ASSERT_TRUE(haveClient());
     }

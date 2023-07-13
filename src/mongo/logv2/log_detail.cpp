@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -46,8 +47,6 @@
 #include "mongo/util/static_immortal.h"
 #include "mongo/util/testing_proctor.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 namespace mongo::logv2 {
 namespace {
@@ -66,9 +65,11 @@ void signalSafeWriteToStderr(StringData message) {
         auto ret = write(STDERR_FILENO, message.rawData(), message.size());
 #endif
         if (ret == -1) {
-            if (lastPosixError() == posixError(EINTR)) {
+#if !defined(_WIN32)
+            if (errno == EINTR) {
                 continue;
             }
+#endif
             return;
         }
         message = message.substr(ret);
@@ -174,21 +175,14 @@ static void checkUniqueAttrs(int32_t id, const TypeErasedAttributeStorage& attrs
     }
 }
 
-void doSafeLog(int32_t id,
+void doLogImpl(int32_t id,
                LogSeverity const& severity,
                LogOptions const& options,
                StringData message,
                TypeErasedAttributeStorage const& attrs) {
+    loggingDepth++;
+    ScopeGuard updateDepth = [] { loggingDepth--; };
 
-    signalSafeWriteToStderr(
-        format(FMT_STRING("{}({}): {}\n"), severity.toStringData(), id, message));
-}
-
-void _doLogImpl(int32_t id,
-                LogSeverity const& severity,
-                LogOptions const& options,
-                StringData message,
-                TypeErasedAttributeStorage const& attrs) {
     dassert(options.component() != LogComponent::kNumLogComponents);
     // TestingProctor isEnabled cannot be called before it has been
     // initialized. But log statements occurring earlier than that still need
@@ -222,43 +216,11 @@ void _doLogImpl(int32_t id,
                 record.attribute_values().insert(
                     attributes::tenant(),
                     boost::log::attribute_value(
-                        new boost::log::attributes::attribute_value_impl<TenantId>(
-                            tenant.value())));
+                        new boost::log::attributes::attribute_value_impl<TenantId>(tenant.get())));
             }
         }
 
         source.push_record(std::move(record));
-    }
-}
-
-void doLogImpl(int32_t id,
-               LogSeverity const& severity,
-               LogOptions const& options,
-               StringData message,
-               TypeErasedAttributeStorage const& attrs) {
-    if (loggingInProgress()) {
-        doSafeLog(id, severity, options, message, attrs);
-        return;
-    }
-
-    loggingDepth++;
-    ScopeGuard updateDepth = [] {
-        loggingDepth--;
-    };
-
-    try {
-        _doLogImpl(id, severity, options, message, attrs);
-    } catch (const fmt::format_error& ex) {
-        _doLogImpl(4638200,
-                   LogSeverity::Error(),
-                   LogOptions(LogComponent::kAssert),
-                   "Exception during log"_sd,
-                   AttributeStorage{"original_msg"_attr = message, "what"_attr = ex.what()});
-
-        invariant(!kDebugBuild, format(FMT_STRING("Exception during log: {}"), ex.what()));
-    } catch (...) {
-        doSafeLog(id, severity, options, message, attrs);
-        throw;
     }
 }
 

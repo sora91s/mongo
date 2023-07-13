@@ -33,6 +33,7 @@
 #include "mongo/db/namespace_string.h"
 
 namespace mongo {
+void initMyCannotImplicitlyCreateCollectionInfo();
 
 class CannotImplicitlyCreateCollectionInfo final : public ErrorExtraInfo {
 public:
@@ -50,5 +51,8 @@ public:
 private:
     NamespaceString _nss;
 };
+
+using ImplicitCreateCollectionException =
+    ExceptionFor<ErrorCodes::CannotImplicitlyCreateCollection>;
 
 }  // namespace mongo

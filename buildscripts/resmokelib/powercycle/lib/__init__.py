@@ -18,7 +18,7 @@ from buildscripts.resmokelib.powercycle.lib.named_temp_file import NamedTempFile
 LOGGER = logging.getLogger(__name__)
 
 
-# pylint: disable=abstract-method
+# pylint: disable=abstract-method, too-many-instance-attributes
 class PowercycleCommand(Subcommand):
     """Base class for remote operations to set up powercycle."""
 

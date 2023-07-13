@@ -32,11 +32,8 @@
 #include "mongo/db/exec/sbe/values/bson.h"
 #include "mongo/db/exec/sbe/values/value.h"
 #include "mongo/db/matcher/expression_array.h"
-#include "mongo/db/matcher/expression_visitor.h"
 #include "mongo/db/matcher/expression_where.h"
-#include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/query/sbe_stage_builder_filter.h"
-#include "mongo/db/query/sbe_stage_builder_index_scan.h"
 
 namespace mongo::input_params {
 namespace {
@@ -83,8 +80,8 @@ public:
     }
 
     void visit(const InMatchExpression* expr) final {
-        auto slotId = getSlotId(expr->getInputParamId());
-        if (!slotId) {
+        auto inputParam = expr->getInputParamId();
+        if (!inputParam) {
             return;
         }
 
@@ -92,16 +89,15 @@ public:
         // contains any regexes.
         tassert(6279503, "Unexpected parameter marker for $in with regexes", !expr->hasRegex());
 
-        auto&& [arrSetTag, arrSetVal, hasArray, hasObject, hasNull] =
+        auto&& [arrSetTag, arrSetVal, hasArray, hasNull] =
             stage_builder::convertInExpressionEqualities(expr);
-        bindParam(*slotId, true /*owned*/, arrSetTag, arrSetVal);
+        bindParam(*inputParam, true /*owned*/, arrSetTag, arrSetVal);
 
-        // Auto-parameterization should not kick in if the $in's list of equalities includes any
-        // arrays, objects or null values. Asserted after bind to avoid leaking memory allocated in
+        // Auto-parameterization should not kick in if the $in's list of equalities includes either
+        // any arrays or any nulls. Asserted after bind to avoid leaking memory allocated in
         // 'stage_builder::convertInExpressionEqualities()'.
-        tassert(6988502, "Should not auto-parameterize $in with an array value", !hasArray);
-        tassert(6988503, "Should not auto-parameterize $in with a null value", !hasNull);
-        tassert(6988504, "Should not auto-parameterize $in with an object value", !hasObject);
+        tassert(6279504, "Should not auto-parameterize $in with an array value", !hasArray);
+        tassert(6279505, "Should not auto-parameterize $in with a null value", !hasNull);
     }
 
     void visit(const ModMatchExpression* expr) final {
@@ -114,14 +110,14 @@ public:
         }
         tassert(6279508, "$mod had divisor param but not remainder param", remainderParam);
 
-        if (auto slotId = getSlotId(*divisorParam)) {
+        {
             auto value = sbe::value::bitcastFrom<int64_t>(expr->getDivisor());
-            bindParam(*slotId, true /*owned*/, sbe::value::TypeTags::NumberInt64, value);
+            bindParam(*divisorParam, true /*owned*/, sbe::value::TypeTags::NumberInt64, value);
         }
 
-        if (auto slotId = getSlotId(*remainderParam)) {
+        {
             auto value = sbe::value::bitcastFrom<int64_t>(expr->getRemainder());
-            bindParam(*slotId, true /*owned*/, sbe::value::TypeTags::NumberInt64, value);
+            bindParam(*remainderParam, true /*owned*/, sbe::value::TypeTags::NumberInt64, value);
         }
     }
 
@@ -134,32 +130,32 @@ public:
         }
         tassert(6279510, "$regex had source param but not compiled param", compiledRegexParam);
 
-        if (auto slotId = getSlotId(*sourceRegexParam)) {
+        {
             auto&& [bsonRegexTag, bsonRegexVal] =
                 sbe::value::makeNewBsonRegex(expr->getString(), expr->getFlags());
-            bindParam(*slotId, true /*owned*/, bsonRegexTag, bsonRegexVal);
+            bindParam(*sourceRegexParam, true /*owned*/, bsonRegexTag, bsonRegexVal);
         }
 
-        if (auto slotId = getSlotId(*compiledRegexParam)) {
+        {
             auto&& [compiledRegexTag, compiledRegexVal] =
                 sbe::value::makeNewPcreRegex(expr->getString(), expr->getFlags());
-            bindParam(*slotId, true /*owned*/, compiledRegexTag, compiledRegexVal);
+            bindParam(*compiledRegexParam, true /*owned*/, compiledRegexTag, compiledRegexVal);
         }
     }
 
     void visit(const SizeMatchExpression* expr) final {
-        auto slotId = getSlotId(expr->getInputParamId());
-        if (!slotId) {
+        auto inputParam = expr->getInputParamId();
+        if (!inputParam) {
             return;
         }
 
         auto value = sbe::value::bitcastFrom<int32_t>(expr->getData());
-        bindParam(*slotId, true /*owned*/, sbe::value::TypeTags::NumberInt32, value);
+        bindParam(*inputParam, true /*owned*/, sbe::value::TypeTags::NumberInt32, value);
     }
 
     void visit(const TypeMatchExpression* expr) final {
-        auto slotId = getSlotId(expr->getInputParamId());
-        if (!slotId) {
+        auto inputParam = expr->getInputParamId();
+        if (!inputParam) {
             return;
         }
 
@@ -169,12 +165,12 @@ public:
         auto value = sbe::value::bitcastFrom<int64_t>(expr->typeSet().getBSONTypeMask());
         tassert(
             6279506, "type mask cannot be negative", sbe::value::bitcastTo<int64_t>(value) >= 0);
-        bindParam(*slotId, true /*owned*/, sbe::value::TypeTags::NumberInt64, value);
+        bindParam(*inputParam, true /*owned*/, sbe::value::TypeTags::NumberInt64, value);
     }
 
     void visit(const WhereMatchExpression* expr) final {
-        auto slotId = getSlotId(expr->getInputParamId());
-        if (!slotId) {
+        auto inputParam = expr->getInputParamId();
+        if (!inputParam) {
             return;
         }
 
@@ -187,14 +183,14 @@ public:
             // being recovered from the SBE plan cache -- in this case, the visitor has exclusive
             // access to this match expression tree. Furthermore, after all input parameters are
             // bound the match expression tree is no longer used.
-            bindParam(*slotId,
+            bindParam(*inputParam,
                       true /*owned*/,
                       sbe::value::TypeTags::jsFunction,
                       sbe::value::bitcastFrom<JsFunction*>(
                           const_cast<WhereMatchExpression*>(expr)->extractPredicate().release()));
         } else {
             auto [typeTag, value] = sbe::value::makeCopyJsFunction(expr->getPredicate());
-            bindParam(*slotId, true /*owned*/, typeTag, value);
+            bindParam(*inputParam, true /*owned*/, typeTag, value);
         }
     }
 
@@ -247,15 +243,17 @@ public:
 
 private:
     void visitComparisonMatchExpression(const ComparisonMatchExpressionBase* expr) {
-        auto slotId = getSlotId(expr->getInputParamId());
-        if (!slotId) {
+        auto inputParam = expr->getInputParamId();
+        if (!inputParam) {
             return;
         }
+
         // This is an unowned value which is a view into the BSON owned by the MatchExpression. This
         // is acceptable because the 'MatchExpression' is held by the 'CanonicalQuery', and the
         // 'CanonicalQuery' lives for the lifetime of the query.
         auto&& [typeTag, val] = sbe::bson::convertFrom<true>(expr->getData());
-        bindParam(*slotId, false /*owned*/, typeTag, val);
+
+        bindParam(*inputParam, false /*owned*/, typeTag, val);
     }
 
     void visitBitTestExpression(const BitTestMatchExpression* expr) {
@@ -271,18 +269,18 @@ private:
                 "bit-test expression had bit positions param but not bitmask param",
                 bitMaskParam);
 
-        if (auto slotId = getSlotId(*bitPositionsParam)) {
+        {
             auto&& [bitPosTag, bitPosVal] = stage_builder::convertBitTestBitPositions(expr);
-            bindParam(*slotId, true /*owned*/, bitPosTag, bitPosVal);
+            bindParam(*bitPositionsParam, true /*owned*/, bitPosTag, bitPosVal);
         }
 
-        if (auto slotId = getSlotId(*bitMaskParam)) {
+        {
             auto val = sbe::value::bitcastFrom<uint64_t>(expr->getBitMask());
-            bindParam(*slotId, true /*owned*/, sbe::value::TypeTags::NumberInt64, val);
+            bindParam(*bitMaskParam, true /*owned*/, sbe::value::TypeTags::NumberInt64, val);
         }
     }
 
-    void bindParam(sbe::value::SlotId slotId,
+    void bindParam(MatchExpression::InputParamId paramId,
                    bool owned,
                    sbe::value::TypeTags typeTag,
                    sbe::value::Value value) {
@@ -290,24 +288,21 @@ private:
         if (owned) {
             guard.emplace(typeTag, value);
         }
-        auto accessor = _runtimeEnvironment->getAccessor(slotId);
-        if (owned) {
-            guard->reset();
-        }
-        accessor->reset(owned, typeTag, value);
-    }
 
-    boost::optional<sbe::value::SlotId> getSlotId(
-        boost::optional<MatchExpression::InputParamId> paramId) const {
-        return paramId ? getSlotId(*paramId) : boost::none;
-    }
-
-    boost::optional<sbe::value::SlotId> getSlotId(MatchExpression::InputParamId paramId) const {
         auto it = _inputParamToSlotMap.find(paramId);
+        // The encoding of the plan cache key should ensure that if we recover a cached plan from
+        // the cached, the auto-parameterization of the query is consistent with the way that the
+        // cached plan is parameterized.
         if (it != _inputParamToSlotMap.end()) {
-            return it->second;
+            auto accessor = _runtimeEnvironment->getAccessor(it->second);
+            if (guard) {
+                guard->reset();
+            }
+            accessor->reset(owned, typeTag, value);
+        } else {
+            // TODO SERVER-65361: add tassert here if the slotId is missing from
+            // _inputParamToSlotMap but not from IETs.
         }
-        return boost::none;
     }
 
     const stage_builder::InputParamToSlotMap& _inputParamToSlotMap;
@@ -336,90 +331,6 @@ public:
 private:
     MatchExpressionParameterBindingVisitor* const _visitor;
 };
-
-/**
- * Evaluates IndexBounds from the given IntervalEvaluationTrees for the given query.
- * 'indexBoundsInfo' contains the interval evaluation trees.
- *
- * Returns the built index bounds.
- */
-std::unique_ptr<IndexBounds> makeIndexBounds(
-    const stage_builder::IndexBoundsEvaluationInfo& indexBoundsInfo, const CanonicalQuery& cq) {
-    auto bounds = std::make_unique<IndexBounds>();
-    bounds->fields.reserve(indexBoundsInfo.iets.size());
-
-    tassert(6335200,
-            "IET list size must be equal to the number of fields in the key pattern",
-            static_cast<size_t>(indexBoundsInfo.index.keyPattern.nFields()) ==
-                indexBoundsInfo.iets.size());
-
-    BSONObjIterator it{indexBoundsInfo.index.keyPattern};
-    BSONElement keyElt = it.next();
-    for (auto&& iet : indexBoundsInfo.iets) {
-        auto oil = interval_evaluation_tree::evaluateIntervals(
-            iet, cq.getInputParamIdToMatchExpressionMap(), keyElt, indexBoundsInfo.index);
-        bounds->fields.emplace_back(std::move(oil));
-        keyElt = it.next();
-    }
-
-    IndexBoundsBuilder::alignBounds(bounds.get(),
-                                    indexBoundsInfo.index.keyPattern,
-                                    indexBoundsInfo.index.collator != nullptr,
-                                    indexBoundsInfo.direction);
-    return bounds;
-}
-
-void bindSingleIntervalPlanSlots(const stage_builder::IndexBoundsEvaluationInfo& indexBoundsInfo,
-                                 stage_builder::IndexIntervals intervals,
-                                 sbe::RuntimeEnvironment* runtimeEnvironment) {
-    // If there are no intervals, it means that the solution will be empty and will return EOF
-    // without executing the index scan.
-    if (intervals.empty()) {
-        return;
-    }
-
-    tassert(6584700, "Can only bind a single index interval", intervals.size() == 1);
-    auto&& [lowKey, highKey] = intervals[0];
-    const auto singleInterval =
-        stdx::get<mongo::stage_builder::ParameterizedIndexScanSlots::SingleIntervalPlan>(
-            indexBoundsInfo.slots.slots);
-    runtimeEnvironment->resetSlot(singleInterval.lowKey,
-                                  sbe::value::TypeTags::ksValue,
-                                  sbe::value::bitcastFrom<KeyString::Value*>(lowKey.release()),
-                                  /* owned */ true);
-
-    runtimeEnvironment->resetSlot(singleInterval.highKey,
-                                  sbe::value::TypeTags::ksValue,
-                                  sbe::value::bitcastFrom<KeyString::Value*>(highKey.release()),
-                                  /* owned */ true);
-}
-
-void bindGenericPlanSlots(const stage_builder::IndexBoundsEvaluationInfo& indexBoundsInfo,
-                          stage_builder::IndexIntervals intervals,
-                          std::unique_ptr<IndexBounds> bounds,
-                          sbe::RuntimeEnvironment* runtimeEnvironment) {
-    const auto indexSlots =
-        stdx::get<mongo::stage_builder::ParameterizedIndexScanSlots::GenericPlan>(
-            indexBoundsInfo.slots.slots);
-    const bool isGenericScan = intervals.empty();
-    runtimeEnvironment->resetSlot(indexSlots.isGenericScan,
-                                  sbe::value::TypeTags::Boolean,
-                                  sbe::value::bitcastFrom<bool>(isGenericScan),
-                                  /*owned*/ true);
-    if (isGenericScan) {
-        runtimeEnvironment->resetSlot(indexSlots.indexBounds,
-                                      sbe::value::TypeTags::indexBounds,
-                                      sbe::value::bitcastFrom<IndexBounds*>(bounds.release()),
-                                      /*owned*/ true);
-    } else {
-        auto [boundsTag, boundsVal] =
-            stage_builder::packIndexIntervalsInSbeArray(std::move(intervals));
-        runtimeEnvironment->resetSlot(indexSlots.lowHighKeyIntervals,
-                                      boundsTag,
-                                      boundsVal,
-                                      /*owned*/ true);
-    }
-}
 }  // namespace
 
 void bind(const CanonicalQuery& canonicalQuery,
@@ -430,24 +341,5 @@ void bind(const CanonicalQuery& canonicalQuery,
         inputParamToSlotMap, runtimeEnvironment, bindingCachedPlan};
     MatchExpressionParameterBindingWalker walker{&visitor};
     tree_walker::walk<true, MatchExpression>(canonicalQuery.root(), &walker);
-}
-
-void bindIndexBounds(const CanonicalQuery& cq,
-                     const stage_builder::IndexBoundsEvaluationInfo& indexBoundsInfo,
-                     sbe::RuntimeEnvironment* runtimeEnvironment) {
-    auto bounds = makeIndexBounds(indexBoundsInfo, cq);
-    auto intervals = stage_builder::makeIntervalsFromIndexBounds(*bounds,
-                                                                 indexBoundsInfo.direction == 1,
-                                                                 indexBoundsInfo.keyStringVersion,
-                                                                 indexBoundsInfo.ordering);
-    const bool isSingleIntervalSolution = stdx::holds_alternative<
-        mongo::stage_builder::ParameterizedIndexScanSlots::SingleIntervalPlan>(
-        indexBoundsInfo.slots.slots);
-    if (isSingleIntervalSolution) {
-        bindSingleIntervalPlanSlots(indexBoundsInfo, std::move(intervals), runtimeEnvironment);
-    } else {
-        bindGenericPlanSlots(
-            indexBoundsInfo, std::move(intervals), std::move(bounds), runtimeEnvironment);
-    }
 }
 }  // namespace mongo::input_params

@@ -39,7 +39,6 @@ namespace mongo {
 
 class Collection;
 class CollectionPtr;
-class MultipleCollectionAccessor;
 class OperationContext;
 class PlanExecutorPipeline;
 struct PlanSummaryStats;
@@ -78,26 +77,15 @@ public:
                               BSONObj extraInfo,
                               const BSONObj& command,
                               BSONObjBuilder* out);
-
-    /**
-     * Similar to the above function, but takes in multiple collections instead to support
-     * aggregation that involves multiple collections (e.g. $lookup).
-     */
-    static void explainStages(PlanExecutor* exec,
-                              const MultipleCollectionAccessor& collections,
-                              ExplainOptions::Verbosity verbosity,
-                              BSONObj extraInfo,
-                              const BSONObj& command,
-                              BSONObjBuilder* out);
-
     /**
      * Adds "queryPlanner" and "executionStats" (if requested in verbosity) fields to 'out'. Unlike
      * the other overload of explainStages() above, this one does not add the "serverInfo" section.
      *
      * - 'exec' is the stage tree for the operation being explained.
-     * - 'collections' are the relevant main and secondary collections (e.g. for $lookup). If the
-     * PlanExecutor uses 'kLockExternally' lock policy, the caller should hold the necessary db_raii
-     * object on the involved collections.
+     * - 'collection' is the relevant collection. During this call it may be required to execute the
+     * plan to collect statistics. If the PlanExecutor uses 'kLockExternally' lock policy, the
+     * caller should hold at least an IS lock on the collection the that the query runs on, even if
+     * 'collection' parameter is nullptr.
      * - 'verbosity' is the verbosity level of the explain.
      * - 'extraInfo' specifies additional information to include into the output.
      * - 'executePlanStatus' is the status returned after executing the query (Status::OK if the
@@ -109,7 +97,7 @@ public:
      */
     static void explainStages(
         PlanExecutor* exec,
-        const MultipleCollectionAccessor& collections,
+        const CollectionPtr& collection,
         ExplainOptions::Verbosity verbosity,
         Status executePlanStatus,
         boost::optional<PlanExplainer::PlanStatsDetails> winningPlanTrialStats,
@@ -140,8 +128,8 @@ public:
      * intended to be human readable, and useful for debugging query performance problems related to
      * the plan cache.
      */
-    static void planCacheEntryToBSON(const mongo::PlanCacheEntry& entry, BSONObjBuilder* out);
-    static void planCacheEntryToBSON(const mongo::sbe::PlanCacheEntry& entry, BSONObjBuilder* out);
+    static void planCacheEntryToBSON(const PlanCacheEntry& entry, BSONObjBuilder* out);
+    static void planCacheEntryToBSON(const sbe::PlanCacheEntry& entry, BSONObjBuilder* out);
 };
 
 }  // namespace mongo

@@ -62,6 +62,7 @@
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/shard_remote.h"
+#include "mongo/s/committed_optime_metadata_hook.h"
 #include "mongo/s/config_server_catalog_cache_loader.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
@@ -106,6 +107,7 @@ ShardingTestFixture::ShardingTestFixture()
     auto makeMetadataHookList = [&] {
         auto hookList = std::make_unique<rpc::EgressMetadataHookList>();
         hookList->addHook(std::make_unique<rpc::VectorClockMetadataHook>(service));
+        hookList->addHook(std::make_unique<rpc::CommittedOpTimeMetadataHook>(service));
         hookList->addHook(std::make_unique<rpc::ClientMetadataPropagationEgressHook>());
         return hookList;
     };
@@ -157,7 +159,7 @@ ShardingTestFixture::ShardingTestFixture()
     auto shardFactory =
         std::make_unique<ShardFactory>(std::move(buildersMap), std::move(targeterFactory));
 
-    auto shardRegistry(std::make_unique<ShardRegistry>(service, std::move(shardFactory), configCS));
+    auto shardRegistry(std::make_unique<ShardRegistry>(std::move(shardFactory), configCS));
     executorPool->startup();
 
     CatalogCacheLoader::set(service, std::make_unique<ConfigServerCatalogCacheLoader>());
@@ -250,16 +252,16 @@ void ShardingTestFixture::setupShards(const std::vector<ShardType>& shards) {
 void ShardingTestFixture::expectGetShards(const std::vector<ShardType>& shards) {
     onFindCommand([this, &shards](const RemoteCommandRequest& request) {
         const NamespaceString nss(request.dbname, request.cmdObj.firstElement().String());
-        ASSERT_EQ(nss, NamespaceString::kConfigsvrShardsNamespace);
+        ASSERT_EQ(nss, ShardType::ConfigNS);
 
         // If there is no '$db', append it.
         auto cmd = OpMsgRequest::fromDBAndBody(nss.db(), request.cmdObj).body;
         auto query = query_request_helper::makeFromFindCommandForTests(cmd, nss);
-        ASSERT_EQ(*query->getNamespaceOrUUID().nss(), NamespaceString::kConfigsvrShardsNamespace);
+        ASSERT_EQ(*query->getNamespaceOrUUID().nss(), ShardType::ConfigNS);
 
         ASSERT_BSONOBJ_EQ(query->getFilter(), BSONObj());
         ASSERT_BSONOBJ_EQ(query->getSort(), BSONObj());
-        ASSERT_FALSE(query->getLimit().has_value());
+        ASSERT_FALSE(query->getLimit().is_initialized());
 
         checkReadConcern(request.cmdObj,
                          VectorClock::kInitialComponentTime.asTimestamp(),
@@ -309,7 +311,7 @@ void ShardingTestFixture::expectUpdateCollection(const HostAndPort& expectedHost
         ASSERT_EQUALS(expectedHost, request.target);
         ASSERT_BSONOBJ_EQ(BSON(rpc::kReplSetMetadataFieldName << 1),
                           rpc::TrackingMetadata::removeTrackingData(request.metadata));
-        ASSERT_EQUALS(DatabaseName::kConfig.db(), request.dbname);
+        ASSERT_EQUALS(NamespaceString::kConfigDb, request.dbname);
 
         const auto opMsgRequest = OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj);
         const auto updateOp = UpdateOp::parse(opMsgRequest);
@@ -413,7 +415,7 @@ void ShardingTestFixture::checkReadConcern(const BSONObj& cmdObj,
 }
 
 std::unique_ptr<ShardingCatalogClient> ShardingTestFixture::makeShardingCatalogClient() {
-    return std::make_unique<ShardingCatalogClientImpl>(nullptr /* overrideConfigShard */);
+    return std::make_unique<ShardingCatalogClientImpl>();
 }
 
 }  // namespace mongo

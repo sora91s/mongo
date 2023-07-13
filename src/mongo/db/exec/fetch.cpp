@@ -34,11 +34,10 @@
 #include <memory>
 
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"
-#include "mongo/db/query/plan_executor_impl.h"
-#include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/str.h"
 
@@ -100,34 +99,25 @@ PlanStage::StageState FetchStage::doWork(WorkingSetID* out) {
             verify(WorkingSetMember::RID_AND_IDX == member->getState());
             verify(member->hasRecordId());
 
-            const auto ret = handlePlanStageYield(
-                expCtx(),
-                "FetchStage",
-                collection()->ns().ns(),
-                [&] {
-                    const auto& coll = collection();
-                    if (!_cursor)
-                        _cursor = coll->getCursor(opCtx());
+            try {
+                const auto& coll = collection();
+                if (!_cursor)
+                    _cursor = coll->getCursor(opCtx());
 
-                    if (!WorkingSetCommon::fetch(
-                            opCtx(), _ws, id, _cursor.get(), coll, coll->ns())) {
-                        _ws->free(id);
-                        return NEED_TIME;
-                    }
-                    return PlanStage::ADVANCED;
-                },
-                [&] {
-                    // yieldHandler
-                    // Ensure that the BSONObj underlying the WorkingSetMember is owned because it
-                    // may be freed when we yield.
-                    member->makeObjOwnedIfNeeded();
-                    _idRetrying = id;
-                    *out = WorkingSet::INVALID_ID;
-                });
-            if (ret != PlanStage::ADVANCED) {
-                return ret;
+                if (!WorkingSetCommon::fetch(opCtx(), _ws, id, _cursor.get(), coll, coll->ns())) {
+                    _ws->free(id);
+                    return NEED_TIME;
+                }
+            } catch (const WriteConflictException&) {
+                // Ensure that the BSONObj underlying the WorkingSetMember is owned because it may
+                // be freed when we yield.
+                member->makeObjOwnedIfNeeded();
+                _idRetrying = id;
+                *out = WorkingSet::INVALID_ID;
+                return NEED_YIELD;
             }
         }
+
         return returnIfMatches(member, id, out);
     } else if (PlanStage::NEED_YIELD == status) {
         *out = id;
@@ -191,8 +181,10 @@ unique_ptr<PlanStageStats> FetchStage::getStats() {
     _commonStats.isEOF = isEOF();
 
     // Add a BSON representation of the filter to the stats tree, if there is one.
-    if (_filter) {
-        _commonStats.filter = _filter->serialize();
+    if (nullptr != _filter) {
+        BSONObjBuilder bob;
+        _filter->serialize(&bob);
+        _commonStats.filter = bob.obj();
     }
 
     unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_FETCH);

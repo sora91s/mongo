@@ -28,6 +28,7 @@
  */
 
 #include <boost/optional/optional.hpp>
+#include <boost/optional/optional_io.hpp>
 #include <memory>
 
 #include "mongo/db/jsobj.h"
@@ -52,7 +53,7 @@ struct IndexValidateResults;
  * queries. The actual implementation is up to the storage engine. All the storage engines must
  * support an index key size up to the maximum document size.
  */
-class SortedDataInterface {
+class SortedDataInterface : public Ident {
 public:
     /**
      * Constructs a SortedDataInterface. The rsKeyFormat is the RecordId key format of the related
@@ -62,7 +63,7 @@ public:
                         KeyString::Version keyStringVersion,
                         Ordering ordering,
                         KeyFormat rsKeyFormat)
-        : _ident(std::make_shared<Ident>(ident.toString())),
+        : Ident(ident.toString()),
           _keyStringVersion(keyStringVersion),
           _ordering(ordering),
           _rsKeyFormat(rsKeyFormat) {}
@@ -90,15 +91,10 @@ public:
      * Inserts the given key into the index, which must have a RecordId appended to the end. Returns
      * DuplicateKey if `dupsAllowed` is false and the key already exists in the index with a
      * different RecordId. Returns OK if the key exists with the same RecordId.
-     *
-     * If `includeDuplicateRecordId` is kOn and DuplicateKey is returned, embeds the record id of
-     * the duplicate in the returned status.
      */
-    virtual Status insert(
-        OperationContext* opCtx,
-        const KeyString::Value& keyString,
-        bool dupsAllowed,
-        IncludeDuplicateRecordId includeDuplicateRecordId = IncludeDuplicateRecordId::kOff) = 0;
+    virtual Status insert(OperationContext* opCtx,
+                          const KeyString::Value& keyString,
+                          bool dupsAllowed) = 0;
 
     /**
      * Remove the entry from the index with the specified KeyString, which must have a RecordId
@@ -142,11 +138,11 @@ public:
     //
 
     /**
-     * Validates the sorted data. If 'full' is false, only performs checks which do not traverse the
-     * data. If 'full' is true, additionally traverses the data and validates its internal
-     * structure.
+     * TODO: expose full set of args for testing?
      */
-    virtual IndexValidateResults validate(OperationContext* opCtx, bool full) const = 0;
+    virtual void fullValidate(OperationContext* opCtx,
+                              long long* numKeysOut,
+                              IndexValidateResults* fullResults) const = 0;
 
     virtual bool appendCustomStats(OperationContext* opCtx,
                                    BSONObjBuilder* output,
@@ -173,15 +169,16 @@ public:
     virtual bool isEmpty(OperationContext* opCtx) = 0;
 
     /**
-     * Prints any storage engine provided metadata for the index entry with key 'keyString'.
-     */
-    virtual void printIndexEntryMetadata(OperationContext* opCtx,
-                                         const KeyString::Value& keyString) const = 0;
-
-    /**
      * Return the number of entries in 'this' index.
+     *
+     * The default implementation should be overridden with a more
+     * efficient one if at all possible.
      */
-    virtual int64_t numEntries(OperationContext* opCtx) const = 0;
+    virtual long long numEntries(OperationContext* opCtx) const {
+        long long x = -1;
+        fullValidate(opCtx, &x, nullptr);
+        return x;
+    }
 
     /*
      * Return the KeyString version for 'this' index.
@@ -202,14 +199,6 @@ public:
      */
     KeyFormat rsKeyFormat() const {
         return _rsKeyFormat;
-    }
-
-    std::shared_ptr<Ident> getSharedIdent() const {
-        return _ident;
-    }
-
-    void setIdent(std::shared_ptr<Ident> newIdent) {
-        _ident = std::move(newIdent);
     }
 
     /**
@@ -375,11 +364,6 @@ public:
          * old format due to rolling upgrades.
          */
         virtual bool isRecordIdAtEndOfKeyString() const = 0;
-
-        virtual uint64_t getCheckpointId() const {
-            uasserted(ErrorCodes::CommandNotSupported,
-                      "The current storage engine does not support checkpoint ids");
-        }
     };
 
     /**
@@ -409,8 +393,6 @@ public:
                                                    RecordId rid) = 0;
 
 protected:
-    std::shared_ptr<Ident> _ident;
-
     const KeyString::Version _keyStringVersion;
     const Ordering _ordering;
     const KeyFormat _rsKeyFormat;

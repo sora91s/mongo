@@ -147,7 +147,7 @@ std::unique_ptr<MatchExpression> treeToMatchExpression(
             expCtx, "_property", BSON("propertyName" << node.name)));
 
         andExpr->add(std::make_unique<InternalSchemaBinDataFLE2EncryptedTypeExpression>(
-            StringData(node.name),
+            node.name,
             node.type.has_value() ? MatcherTypeSet(node.type.value()) : MatcherTypeSet(),
             doc_validation_error::createAnnotation(expCtx, "fle2Encrypt", BSONObj())));
 
@@ -165,8 +165,7 @@ std::unique_ptr<MatchExpression> treeToMatchExpression(
         doc_validation_error::createAnnotation(expCtx, "properties", BSONObj()));
     for (auto& subnode : node.subobjs) {
         auto existsExpr = std::make_unique<ExistsMatchExpression>(
-            StringData(subnode.name),
-            doc_validation_error::createAnnotation(expCtx, AnnotationMode::kIgnore));
+            subnode.name, doc_validation_error::createAnnotation(expCtx, AnnotationMode::kIgnore));
         auto notExpr = std::make_unique<NotMatchExpression>(
             std::move(existsExpr),
             doc_validation_error::createAnnotation(expCtx, AnnotationMode::kIgnore));

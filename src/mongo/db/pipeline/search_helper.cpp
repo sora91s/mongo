@@ -38,13 +38,15 @@ ServiceContext::Decoration<std::unique_ptr<SearchDefaultHelperFunctions>> getSea
 
 void SearchDefaultHelperFunctions::assertSearchMetaAccessValid(
     const Pipeline::SourceContainer& pipeline, ExpressionContext* expCtx) {
-    // Any access of $$SEARCH_META is invalid.
+    // Any access of $$SEARCH_META is invalid. Note that if we hit a stage that does not support
+    // dep tracking we can't detect whether $$SEARCH_META is present. In that context $$SEARCH_META
+    // will evaluate to missing.
     for (const auto& source : pipeline) {
-        std::set<Variables::Id> stageRefs;
-        source->addVariableRefs(&stageRefs);
+        DepsTracker dep;
+        source->getDependencies(&dep);
         uassert(6347903,
                 "Can't access $$SEARCH_META without a $search stage earlier in the pipeline",
-                !Variables::hasVariableReferenceTo(stageRefs, {Variables::kSearchMetaId}));
+                !dep.hasVariableReferenceTo({Variables::kSearchMetaId}));
     }
 }
 

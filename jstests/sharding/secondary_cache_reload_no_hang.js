@@ -1,6 +1,5 @@
 /**
- * TODO (SERVER-69813): Evaluate to get rid of this when ShardServerCatalogCacheLoader will be
- * removed.
+ * TODO: SERVER-44105 maybe remove this test.
  * This test is a simplified version that tries to simulate the condition described in
  * SERVER-42737. It is very hard to replicate the exact condition because of:
  *

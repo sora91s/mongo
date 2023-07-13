@@ -32,7 +32,7 @@ global:
 
 imports:
     - "mongo/db/repl/replication_types.idl"
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 enums:
     ShardSplitDonorState:
@@ -40,7 +40,6 @@ enums:
         type: string
         values:
             kUninitialized: "uninitialized"
-            kAbortingIndexBuilds: "aborting index builds"
             kBlocking: "blocking"
             kCommitted: "committed"
             kAborted: "aborted"
@@ -69,17 +68,17 @@ structs:
                     monitor the recipient for split acceptance.
                 optional: true
             tenantIds:
-                type: array<tenant_id>
+                type: array<string>
                 optional: true
                 description: "The identifier for the list of tenants being migrated."
             state:
                 type: ShardSplitDonorState
                 description: "The current state of the shard split operation."
                 default: kUninitialized
-            blockOpTime:
-                type: optime
+            blockTimestamp:
+                type: timestamp
                 description: >-
-                    The opTime at which writes and causal reads against the databases
+                    The timestamp at which writes and causal reads against the databases
                     being migrated should start blocking.
                 optional: true
             commitOrAbortOpTime:

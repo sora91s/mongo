@@ -133,17 +133,17 @@ public:
     addSample(const BSONObj& sample) {
         auto st = _compressor.addSample(sample, Date_t());
 
-        if (!st.getValue().has_value()) {
+        if (!st.getValue().is_initialized()) {
             _docs.emplace_back(sample);
-        } else if (std::get<1>(st.getValue().value()) ==
+        } else if (std::get<1>(st.getValue().get()) ==
                    FTDCCompressor::CompressorState::kSchemaChanged) {
-            validate(std::get<0>(st.getValue().value()));
+            validate(std::get<0>(st.getValue().get()));
             _docs.clear();
             _docs.emplace_back(sample);
-        } else if (std::get<1>(st.getValue().value()) ==
+        } else if (std::get<1>(st.getValue().get()) ==
                    FTDCCompressor::CompressorState::kCompressorFull) {
             _docs.emplace_back(sample);
-            validate(std::get<0>(st.getValue().value()));
+            validate(std::get<0>(st.getValue().get()));
             _docs.clear();
         } else {
             MONGO_UNREACHABLE;
@@ -154,8 +154,8 @@ public:
 
     void validate(boost::optional<ConstDataRange> cdr) {
         std::vector<BSONObj> list;
-        if (cdr.has_value()) {
-            auto sw = _decompressor.uncompress(cdr.value());
+        if (cdr.is_initialized()) {
+            auto sw = _decompressor.uncompress(cdr.get());
             ASSERT_TRUE(sw.isOK());
             list = sw.getValue();
         } else {

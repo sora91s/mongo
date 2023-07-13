@@ -29,9 +29,8 @@
 
 
 #include <boost/optional.hpp>
-#include <s2cellid.h>
-#include <s2cellunion.h>
-#include <s2regioncoverer.h>
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/bson/dotted_path_support.h"
@@ -40,6 +39,9 @@
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/timeseries/timeseries_constants.h"
 
+#include "third_party/s2/s2cellid.h"
+#include "third_party/s2/s2cellunion.h"
+#include "third_party/s2/s2regioncoverer.h"
 
 namespace mongo {
 constexpr StringData InternalBucketGeoWithinMatchExpression::kName;
@@ -49,7 +51,7 @@ void InternalBucketGeoWithinMatchExpression::debugString(StringBuilder& debug,
     _debugAddSpace(debug, indentationLevel);
 
     BSONObjBuilder builder;
-    serialize(&builder, {});
+    serialize(&builder, true);
     debug << builder.obj().toString() << "\n";
 
     const auto* tag = getTag();
@@ -192,24 +194,13 @@ bool InternalBucketGeoWithinMatchExpression::_matchesBSONObj(const BSONObj& obj)
 }
 
 void InternalBucketGeoWithinMatchExpression::serialize(BSONObjBuilder* builder,
-                                                       SerializationOptions opts) const {
+                                                       bool includePath) const {
     BSONObjBuilder bob(builder->subobjStart(InternalBucketGeoWithinMatchExpression::kName));
-    // Serialize the geometry shape.
     BSONObjBuilder withinRegionBob(
         bob.subobjStart(InternalBucketGeoWithinMatchExpression::kWithinRegion));
-    if (opts.replacementForLiteralArgs) {
-        bob.append(_geoContainer->getGeoElement().fieldName(), *opts.replacementForLiteralArgs);
-    } else {
-        withinRegionBob.append(_geoContainer->getGeoElement());
-    }
+    withinRegionBob.append(_geoContainer->getGeoElement());
     withinRegionBob.doneFast();
-    // Serialize the field which is being searched over.
-    if (opts.redactFieldNames) {
-        bob.append(InternalBucketGeoWithinMatchExpression::kField,
-                   opts.redactFieldNamesStrategy(_field));
-    } else {
-        bob.append(InternalBucketGeoWithinMatchExpression::kField, _field);
-    }
+    bob.append(InternalBucketGeoWithinMatchExpression::kField, _field);
     bob.doneFast();
 }
 

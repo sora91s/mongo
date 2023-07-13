@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationInitialSync
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,9 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/fetcher.h"
 #include "mongo/client/remote_command_retry_scheduler.h"
+#include "mongo/db/commands/feature_compatibility_version_parser.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/feature_compatibility_version_parser.h"
 #include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
@@ -63,8 +64,7 @@
 #include "mongo/db/repl/sync_source_selector.h"
 #include "mongo/db/repl/tenant_migration_access_blocker_util.h"
 #include "mongo/db/repl/transaction_oplog_application.h"
-#include "mongo/db/serverless/serverless_operation_lock_registry.h"
-#include "mongo/db/session/session_txn_record_gen.h"
+#include "mongo/db/session_txn_record_gen.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/logv2/log.h"
@@ -78,9 +78,6 @@
 #include "mongo/util/time_support.h"
 #include "mongo/util/timer.h"
 #include "mongo/util/version/releases.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationInitialSync
-
 
 namespace mongo {
 namespace repl {
@@ -435,8 +432,8 @@ void InitialSyncer::_appendInitialSyncProgressMinimal_inlock(BSONObjBuilder* bob
         const auto approxTotalDataSize = allDbClonerStats.dataSize;
         bob->appendNumber("approxTotalDataSize", approxTotalDataSize);
         long long approxTotalBytesCopied = 0;
-        for (auto&& dbClonerStats : allDbClonerStats.databaseStats) {
-            for (auto&& collClonerStats : dbClonerStats.collectionStats) {
+        for (auto dbClonerStats : allDbClonerStats.databaseStats) {
+            for (auto collClonerStats : dbClonerStats.collectionStats) {
                 approxTotalBytesCopied += collClonerStats.approxBytesCopied;
             }
         }
@@ -551,7 +548,6 @@ void InitialSyncer::_setUp_inlock(OperationContext* opCtx, std::uint32_t initial
     _stats.initialSyncStart = _exec->now();
     _stats.maxFailedInitialSyncAttempts = initialSyncMaxAttempts;
     _stats.failedInitialSyncAttempts = 0;
-    _stats.exec = std::weak_ptr<executor::TaskExecutor>(_exec);
 
     _allowedOutageDuration = Seconds(initialSyncTransientErrorRetryPeriodSeconds.load());
 }
@@ -578,7 +574,6 @@ void InitialSyncer::_tearDown_inlock(OperationContext* opCtx,
     _storage->oplogDiskLocRegister(opCtx, initialDataTimestamp, orderedCommit);
 
     tenant_migration_access_blocker::recoverTenantMigrationAccessBlockers(opCtx);
-    ServerlessOperationLockRegistry::recoverLocks(opCtx);
     reconstructPreparedTransactions(opCtx, repl::OplogApplication::Mode::kInitialSync);
 
     _replicationProcess->getConsistencyMarkers()->setInitialSyncIdIfNotSet(opCtx);
@@ -629,9 +624,7 @@ void InitialSyncer::_startInitialSyncAttemptCallback(
           "initialSyncMaxAttempts"_attr = initialSyncMaxAttempts);
 
     // This completion guard invokes _finishInitialSyncAttempt on destruction.
-    auto cancelRemainingWorkInLock = [this]() {
-        _cancelRemainingWork_inlock();
-    };
+    auto cancelRemainingWorkInLock = [this]() { _cancelRemainingWork_inlock(); };
     auto finishInitialSyncAttemptFn = [this](const StatusWith<OpTimeAndWallTime>& lastApplied) {
         _finishInitialSyncAttempt(lastApplied);
     };
@@ -812,9 +805,6 @@ Status InitialSyncer::_truncateOplogAndDropReplicatedDatabases() {
                 "namespace"_attr = NamespaceString::kRsOplogNamespace);
 
     auto opCtx = makeOpCtx();
-    // This code can make untimestamped writes (deletes) to the _mdb_catalog on top of existing
-    // timestamped updates.
-    opCtx->recoveryUnit()->allowUntimestampedWrite();
 
     // We are not replicating nor validating these writes.
     UnreplicatedWritesBlock unreplicatedWritesBlock(opCtx.get());
@@ -998,10 +988,11 @@ void InitialSyncer::_getBeginFetchingOpTimeCallback(
     OpTime beginFetchingOpTime = defaultBeginFetchingOpTime;
     if (docs.size() != 0) {
         auto entry = SessionTxnRecord::parse(
-            IDLParserContext("oldest active transaction optime for initial sync"), docs.front());
+            IDLParserErrorContext("oldest active transaction optime for initial sync"),
+            docs.front());
         auto optime = entry.getStartOpTime();
         if (optime) {
-            beginFetchingOpTime = optime.value();
+            beginFetchingOpTime = optime.get();
         }
     }
 
@@ -1455,8 +1446,8 @@ void InitialSyncer::_lastOplogEntryFetcherCallbackForStopTimestamp(
 
         // Release the _mutex to write to disk.
         auto opCtx = makeOpCtx();
-        _replicationProcess->getConsistencyMarkers()->setMinValid(opCtx.get(),
-                                                                  resultOpTimeAndWallTime.opTime);
+        _replicationProcess->getConsistencyMarkers()->setMinValid(
+            opCtx.get(), resultOpTimeAndWallTime.opTime, true);
 
         stdx::lock_guard<Latch> lock(_mutex);
         _initialSyncState->stopTimestamp = resultOpTimeAndWallTime.opTime.getTimestamp();
@@ -2205,10 +2196,9 @@ void InitialSyncer::Stats::append(BSONObjBuilder* builder) const {
     builder->appendNumber("maxFailedInitialSyncAttempts",
                           static_cast<long long>(maxFailedInitialSyncAttempts));
 
-    auto e = exec.lock();
     if (initialSyncStart != Date_t()) {
         builder->appendDate("initialSyncStart", initialSyncStart);
-        auto elapsedDurationEnd = e ? e->now() : Date_t::now();
+        auto elapsedDurationEnd = Date_t::now();
         if (initialSyncEnd != Date_t()) {
             builder->appendDate("initialSyncEnd", initialSyncEnd);
             elapsedDurationEnd = initialSyncEnd;

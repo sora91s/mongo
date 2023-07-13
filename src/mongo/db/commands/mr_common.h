@@ -51,10 +51,10 @@ struct OutputOptions {
 
 OutputOptions parseOutputOptions(const std::string& dbname, const BSONObj& cmdObj);
 
-Status checkAuthForMapReduce(const BasicCommand* command,
-                             OperationContext* opCtx,
-                             const DatabaseName& dbName,
-                             const BSONObj& cmdObj);
+void addPrivilegesRequiredForMapReduce(const BasicCommand* commandTemplate,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out);
 
 /**
  * Returns true if the provided mapReduce command has an 'out' parameter.

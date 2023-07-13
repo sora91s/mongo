@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/net/ssl_parameters_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo {
 namespace {
@@ -75,27 +73,25 @@ std::once_flag warnForSSLMode;
 }  // namespace
 
 void SSLModeServerParameter::append(OperationContext*,
-                                    BSONObjBuilder* builder,
-                                    StringData fieldName,
-                                    const boost::optional<TenantId>&) {
+                                    BSONObjBuilder& builder,
+                                    const std::string& fieldName) {
     std::call_once(warnForSSLMode, [] {
         LOGV2_WARNING(
             23803, "Use of deprecated server parameter 'sslMode', please use 'tlsMode' instead.");
     });
 
-    builder->append(fieldName, SSLParams::sslModeFormat(sslGlobalParams.sslMode.load()));
+    builder.append(fieldName, SSLParams::sslModeFormat(sslGlobalParams.sslMode.load()));
 }
 
 void TLSModeServerParameter::append(OperationContext*,
-                                    BSONObjBuilder* builder,
-                                    StringData fieldName,
-                                    const boost::optional<TenantId>&) {
-    builder->append(
+                                    BSONObjBuilder& builder,
+                                    const std::string& fieldName) {
+    builder.append(
         fieldName,
         SSLParams::tlsModeFormat(static_cast<SSLParams::SSLModes>(sslGlobalParams.sslMode.load())));
 }
 
-Status SSLModeServerParameter::setFromString(StringData strMode, const boost::optional<TenantId>&) {
+Status SSLModeServerParameter::setFromString(const std::string& strMode) {
     std::call_once(warnForSSLMode, [] {
         LOGV2_WARNING(
             23804, "Use of deprecated server parameter 'sslMode', please use 'tlsMode' instead.");
@@ -110,7 +106,7 @@ Status SSLModeServerParameter::setFromString(StringData strMode, const boost::op
     return Status::OK();
 }
 
-Status TLSModeServerParameter::setFromString(StringData strMode, const boost::optional<TenantId>&) {
+Status TLSModeServerParameter::setFromString(const std::string& strMode) {
     auto swNewMode = checkTLSModeTransition(
         SSLParams::tlsModeFormat, SSLParams::tlsModeParse, "tlsMode", strMode);
     if (!swNewMode.isOK()) {
@@ -121,17 +117,16 @@ Status TLSModeServerParameter::setFromString(StringData strMode, const boost::op
 }
 
 void TLSCATrustsSetParameter::append(OperationContext*,
-                                     BSONObjBuilder* b,
-                                     StringData name,
-                                     const boost::optional<TenantId>&) {
+                                     BSONObjBuilder& b,
+                                     const std::string& name) {
     if (!sslGlobalParams.tlsCATrusts) {
-        b->appendNull(name);
+        b.appendNull(name);
         return;
     }
 
     BSONArrayBuilder trusts;
 
-    for (const auto& cait : sslGlobalParams.tlsCATrusts.value()) {
+    for (const auto& cait : sslGlobalParams.tlsCATrusts.get()) {
         BSONArrayBuilder roles;
 
         for (const auto& rolename : cait.second) {
@@ -148,7 +143,7 @@ void TLSCATrustsSetParameter::append(OperationContext*,
         trusts.append(ca.obj());
     }
 
-    b->append(name, trusts.arr());
+    b.append(name, trusts.arr());
 }
 
 /**
@@ -177,8 +172,7 @@ void TLSCATrustsSetParameter::append(OperationContext*,
  *   { role: "read", db: "" }      // May grant 'read' role on any DB.
  *   { role: "", db: "" }          // May grant any role on any DB.
  */
-Status TLSCATrustsSetParameter::set(const BSONElement& element,
-                                    const boost::optional<TenantId>&) try {
+Status TLSCATrustsSetParameter::set(const BSONElement& element) try {
     if ((element.type() != Object) || !element.Obj().couldBeArray()) {
         return {ErrorCodes::BadValue, "Value must be an array"};
     }
@@ -189,7 +183,7 @@ Status TLSCATrustsSetParameter::set(const BSONElement& element,
             return {ErrorCodes::BadValue, "Value must be an array of trust definitions"};
         }
 
-        IDLParserContext ctx("tlsCATrusts");
+        IDLParserErrorContext ctx("tlsCATrusts");
         auto trust = TLSCATrust::parse(ctx, trustElement.Obj());
 
         if (trusts.find(trust.getSha256()) != trusts.end()) {
@@ -207,17 +201,15 @@ Status TLSCATrustsSetParameter::set(const BSONElement& element,
     return exceptionToStatus();
 }
 
-Status TLSCATrustsSetParameter::setFromString(StringData json,
-                                              const boost::optional<TenantId>&) try {
-    return set(BSON("" << fromjson(json)).firstElement(), boost::none);
+Status TLSCATrustsSetParameter::setFromString(const std::string& json) try {
+    return set(BSON("" << fromjson(json)).firstElement());
 } catch (...) {
     return exceptionToStatus();
 }
 
 }  // namespace mongo
 
-mongo::Status mongo::validateOpensslCipherConfig(const std::string&,
-                                                 const boost::optional<TenantId>&) {
+mongo::Status mongo::validateOpensslCipherConfig(const std::string&) {
     if (sslGlobalParams.sslCipherConfig != kSSLCipherConfigDefault) {
         return {ErrorCodes::BadValue,
                 "opensslCipherConfig setParameter is incompatible with net.tls.tlsCipherConfig"};
@@ -232,8 +224,7 @@ mongo::Status mongo::validateOpensslCipherConfig(const std::string&,
     return Status::OK();
 }
 
-mongo::Status mongo::validateDisableNonTLSConnectionLogging(const bool&,
-                                                            const boost::optional<TenantId>&) {
+mongo::Status mongo::validateDisableNonTLSConnectionLogging(const bool&) {
     if (sslGlobalParams.disableNonSSLConnectionLoggingSet) {
         return {ErrorCodes::BadValue,
                 "Error parsing command line: Multiple occurrences of option "

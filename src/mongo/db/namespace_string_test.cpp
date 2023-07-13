@@ -27,20 +27,14 @@
  *    it in the license file.
  */
 
-#include <boost/optional.hpp>
-
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/multitenancy_gen.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/idl/server_parameter_test_util.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
 namespace {
-
-using namespace fmt::literals;
 
 TEST(NamespaceStringTest, Oplog) {
     ASSERT(!NamespaceString::oplog("a"));
@@ -166,7 +160,7 @@ TEST(NamespaceStringTest, MakeDropPendingNamespace) {
                       repl::OpTime(Timestamp(Seconds(1234567), 8U), 9LL)));
 
     std::string collName(NamespaceString::MaxNsCollectionLen, 't');
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test", collName);
+    NamespaceString nss("test", collName);
     ASSERT_EQUALS(NamespaceString{"test.system.drop.1234567i8t9." + collName},
                   nss.makeDropPendingNamespace(repl::OpTime(Timestamp(Seconds(1234567), 8U), 9LL)));
 }
@@ -253,37 +247,37 @@ TEST(NamespaceStringTest, nsToDatabase1) {
 }
 
 TEST(NamespaceStringTest, NamespaceStringParse1) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("a.b");
+    NamespaceString ns("a.b");
     ASSERT_EQUALS(std::string("a"), ns.db());
     ASSERT_EQUALS(std::string("b"), ns.coll());
 }
 
 TEST(NamespaceStringTest, NamespaceStringParse2) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("a.b.c");
+    NamespaceString ns("a.b.c");
     ASSERT_EQUALS(std::string("a"), ns.db());
     ASSERT_EQUALS(std::string("b.c"), ns.coll());
 }
 
 TEST(NamespaceStringTest, NamespaceStringParse3) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("abc");
+    NamespaceString ns("abc");
     ASSERT_EQUALS(std::string("abc"), ns.db());
     ASSERT_EQUALS(std::string(""), ns.coll());
 }
 
 TEST(NamespaceStringTest, NamespaceStringParse4) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("abc.");
+    NamespaceString ns("abc.");
     ASSERT_EQUALS(std::string("abc"), ns.db());
     ASSERT(ns.coll().empty());
 }
 
 TEST(NamespaceStringTest, NamespaceStringParse5) {
-    NamespaceString ns = NamespaceString::createNamespaceString_forTest("abc", "");
+    NamespaceString ns("abc", "");
     ASSERT_EQUALS(std::string("abc"), ns.db());
     ASSERT(ns.coll().empty());
 }
 
 TEST(NamespaceStringTest, makeListCollectionsNSIsCorrect) {
-    NamespaceString ns = NamespaceString::makeListCollectionsNSS(DatabaseName(boost::none, "DB"));
+    NamespaceString ns = NamespaceString::makeListCollectionsNSS("DB");
     ASSERT_EQUALS("DB", ns.db());
     ASSERT_EQUALS("$cmd.listCollections", ns.coll());
     ASSERT(ns.isValid());
@@ -300,96 +294,6 @@ TEST(NamespaceStringTest, EmptyNSStringReturnsEmptyDb) {
     NamespaceString nss{};
     ASSERT_TRUE(nss.isEmpty());
     ASSERT_EQ(nss.db(), StringData{});
-}
-
-TEST(NamespaceStringTest, NSSWithTenantId) {
-    TenantId tenantId(OID::gen());
-    std::string tenantNsStr = str::stream() << tenantId.toString() << "_foo.bar";
-
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest(tenantId, "foo.bar");
-    ASSERT_EQ(nss.ns(), "foo.bar");
-    ASSERT_EQ(nss.toString(), "foo.bar");
-    ASSERT_EQ(nss.toStringWithTenantId(), tenantNsStr);
-    ASSERT(nss.tenantId());
-    ASSERT_EQ(*nss.tenantId(), tenantId);
-
-    DatabaseName dbName(tenantId, "foo");
-    NamespaceString nss2 = NamespaceString::createNamespaceString_forTest(dbName, "bar");
-    ASSERT_EQ(nss2.ns(), "foo.bar");
-    ASSERT_EQ(nss2.toString(), "foo.bar");
-    ASSERT_EQ(nss2.toStringWithTenantId(), tenantNsStr);
-    ASSERT(nss2.tenantId());
-    ASSERT_EQ(*nss2.tenantId(), tenantId);
-
-    NamespaceString nss3("foo", "bar", tenantId);
-    ASSERT_EQ(nss3.ns(), "foo.bar");
-    ASSERT_EQ(nss3.toString(), "foo.bar");
-    ASSERT_EQ(nss3.toStringWithTenantId(), tenantNsStr);
-    ASSERT(nss3.tenantId());
-    ASSERT_EQ(*nss3.tenantId(), tenantId);
-
-    NamespaceString nss4(dbName);
-    ASSERT_EQ(nss4.ns(), "foo");
-    ASSERT_EQ(nss4.toString(), "foo");
-    ASSERT_EQ(nss4.toStringWithTenantId(), "{}_foo"_format(tenantId.toString()));
-    ASSERT(nss4.tenantId());
-    ASSERT_EQ(*nss4.tenantId(), tenantId);
-}
-
-TEST(NamespaceStringTest, NSSNoCollectionWithTenantId) {
-    TenantId tenantId(OID::gen());
-    std::string tenantNsStr = str::stream() << tenantId.toString() << "_foo";
-
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest(tenantId, "foo");
-    ASSERT_EQ(nss.ns(), "foo");
-    ASSERT_EQ(nss.toString(), "foo");
-    ASSERT_EQ(nss.toStringWithTenantId(), tenantNsStr);
-    ASSERT(nss.tenantId());
-    ASSERT_EQ(*nss.tenantId(), tenantId);
-
-    DatabaseName dbName(tenantId, "foo");
-    NamespaceString nss2 = NamespaceString::createNamespaceString_forTest(dbName, "");
-    ASSERT(nss2.tenantId());
-    ASSERT_EQ(*nss2.tenantId(), tenantId);
-
-    NamespaceString nss3("foo", "", tenantId);
-    ASSERT(nss3.tenantId());
-    ASSERT_EQ(*nss3.tenantId(), tenantId);
-}
-
-TEST(NamespaceStringTest, ParseNSSWithTenantId) {
-    RAIIServerParameterControllerForTest multitenancyController("multitenancySupport", true);
-
-    TenantId tenantId(OID::gen());
-    std::string tenantNsStr = str::stream() << tenantId.toString() << "_foo.bar";
-
-    NamespaceString nss =
-        NamespaceString::parseFromStringExpectTenantIdInMultitenancyMode(tenantNsStr);
-    ASSERT_EQ(nss.ns(), "foo.bar");
-    ASSERT_EQ(nss.toStringWithTenantId(), tenantNsStr);
-    ASSERT(nss.tenantId());
-    ASSERT_EQ(*nss.tenantId(), tenantId);
-}
-
-TEST(NamespaceStringTest, CompareNSSWithTenantId) {
-    TenantId tenantIdMin(OID("000000000000000000000000"));
-    TenantId tenantIdMax(OID::max());
-
-    ASSERT(NamespaceString(tenantIdMin, "foo.bar") == NamespaceString(tenantIdMin, "foo.bar"));
-
-    ASSERT(NamespaceString(tenantIdMin, "foo.bar") != NamespaceString(tenantIdMax, "foo.bar"));
-    ASSERT(NamespaceString(tenantIdMin, "foo.bar") != NamespaceString(tenantIdMin, "zoo.bar"));
-
-    ASSERT(NamespaceString(tenantIdMin, "foo.bar") < NamespaceString(tenantIdMax, "foo.bar"));
-    ASSERT(NamespaceString(tenantIdMin, "foo.bar") < NamespaceString(tenantIdMin, "zoo.bar"));
-    ASSERT(NamespaceString(tenantIdMin, "zoo.bar") < NamespaceString(tenantIdMax, "foo.bar"));
-
-    ASSERT(NamespaceString(tenantIdMax, "foo.bar") > NamespaceString(tenantIdMin, "foo.bar"));
-    ASSERT(NamespaceString(tenantIdMin, "zoo.bar") > NamespaceString(tenantIdMin, "foo.bar"));
-    ASSERT(NamespaceString(tenantIdMax, "foo.bar") > NamespaceString(tenantIdMin, "zoo.bar"));
-
-    ASSERT(NamespaceString(tenantIdMin, "foo.bar") <= NamespaceString(tenantIdMin, "foo.bar"));
-    ASSERT(NamespaceString(tenantIdMin, "foo.bar") >= NamespaceString(tenantIdMin, "foo.bar"));
 }
 
 }  // namespace

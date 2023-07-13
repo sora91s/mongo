@@ -38,9 +38,8 @@ namespace mongo {
 class InternalSchemaObjectMatchExpression final : public PathMatchExpression {
 public:
     static constexpr StringData kName = "$_internalSchemaObjectMatch"_sd;
-    static constexpr int kNumChildren = 1;
 
-    InternalSchemaObjectMatchExpression(boost::optional<StringData> path,
+    InternalSchemaObjectMatchExpression(StringData path,
                                         std::unique_ptr<MatchExpression> expr,
                                         clonable_ptr<ErrorAnnotation> annotation = nullptr);
 
@@ -50,7 +49,7 @@ public:
 
     void debugString(StringBuilder& debug, int indentationLevel = 0) const final;
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final;
+    BSONObj getSerializedRightHandSide() const final;
 
     bool equivalent(const MatchExpression* other) const final;
 
@@ -60,17 +59,17 @@ public:
 
     size_t numChildren() const final {
         invariant(_sub);
-        return kNumChildren;
+        return 1;
     }
 
     MatchExpression* getChild(size_t i) const final {
         // 'i' must be 0 since there's always exactly one child.
-        tassert(6400217, "Out-of-bounds access to child of MatchExpression.", i < kNumChildren);
+        invariant(i == 0);
         return _sub.get();
     }
 
     void resetChild(size_t i, MatchExpression* other) final override {
-        tassert(6329410, "Out-of-bounds access to child of MatchExpression.", i < kNumChildren);
+        tassert(6329410, "Out-of-bounds access to child of MatchExpression.", i < numChildren());
         _sub.reset(other);
     }
 

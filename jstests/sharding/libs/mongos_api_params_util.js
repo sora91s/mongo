@@ -8,18 +8,13 @@ let MongosAPIParametersUtil = (function() {
 
     load('jstests/replsets/rslib.js');
     load('jstests/sharding/libs/last_lts_mongos_commands.js');
-    load('jstests/sharding/libs/remove_shard_util.js');
     load('jstests/sharding/libs/sharded_transactions_helpers.js');
     load('jstests/libs/auto_retry_transaction_in_sharding.js');
-    load('jstests/libs/catalog_shard_util.js');
 
     // TODO SERVER-50144 Remove this and allow orphan checking.
     // This test calls removeShard which can leave docs in config.rangeDeletions in state "pending",
     // therefore preventing orphans from being cleaned up.
     TestData.skipCheckOrphans = true;
-
-    // Cannot run the filtering metadata check on tests that run refineCollectionShardKey.
-    TestData.skipCheckShardFilteringMetadata = true;
 
     function validateTestCase(testCase) {
         assert(testCase.skip || testCase.run,
@@ -57,8 +52,7 @@ let MongosAPIParametersUtil = (function() {
                                                     ["permittedInTxn", true],
                                                     ["permittedOnShardedCollection", true],
                                                     ["requiresShardedCollection", false],
-                                                    ["requiresCommittedReads", false],
-                                                    ["requiresCatalogShardEnabled", false]]) {
+                                                    ["requiresCommittedReads", false]]) {
             if (testCase.hasOwnProperty(propertyName)) {
                 assert(typeof testCase[propertyName] === "boolean",
                        `${propertyName} must be a boolean: ${tojson(testCase)}`);
@@ -68,7 +62,6 @@ let MongosAPIParametersUtil = (function() {
         }
 
         assert(testCase.shardCommandName ? typeof (testCase.shardCommandName) === "string" : true);
-        assert(testCase.shardPrimary ? typeof (testCase.shardPrimary) === "function" : true);
         assert(testCase.configServerCommandName
                    ? typeof (testCase.configServerCommandName) === "string"
                    : true);
@@ -83,14 +76,15 @@ let MongosAPIParametersUtil = (function() {
     function awaitRemoveShard(shardName) {
         assert.commandWorked(st.startBalancer());
         st.awaitBalancerRound();
-        removeShard(st, shardName);
-        assert.commandWorked(st.stopBalancer());
-    }
+        assert.soon(() => {
+            const res = st.s.adminCommand({removeShard: shardName});
+            jsTestLog(`removeShard result: ${tojson(res)}`);
+            if (!res.ok && res.code === ErrorCodes.ShardNotFound) {
+                return true;
+            }
 
-    function awaitTransitionToDedicatedConfigServer() {
-        assert.commandWorked(st.startBalancer());
-        st.awaitBalancerRound();
-        CatalogShardUtil.transitionToDedicatedConfigServer(st);
+            return 'completed' === res.state;
+        }, "removeShard never completed for shard " + shardName, 10 * 60 * 1000, 1000);
         assert.commandWorked(st.stopBalancer());
     }
 
@@ -133,12 +127,13 @@ let MongosAPIParametersUtil = (function() {
                             Object.assign(cmd, context.apiParameters)));
                     }, txnOptions);
 
-                    context.session = session;
+                    context.lsid = session.getSessionId();
+                    context.txnNum = session.getTxnNumber_forTesting();
                 },
                 command: (context) => ({
                     abortTransaction: 1,
-                    lsid: context.session.getSessionId(),
-                    txnNumber: context.session.getTxnNumber_forTesting(),
+                    lsid: context.lsid,
+                    txnNumber: context.txnNum,
                     autocommit: false
                 })
             }
@@ -150,32 +145,13 @@ let MongosAPIParametersUtil = (function() {
                 runsAgainstAdminDb: true,
                 configServerCommandName: "_configsvrAddShard",
                 shardCommandName: "_addShard",
-                shardPrimary: () => {
-                    return st.rs1.getPrimary();
-                },
                 permittedInTxn: false,
                 setUp: () => {
                     // Remove shard0 so we can add it back.
                     assert.commandWorked(st.s0.getDB("db").dropDatabase());
-                    awaitRemoveShard(st.shard1.shardName);
+                    awaitRemoveShard(st.shard0.shardName);
                 },
-                command: () => ({addShard: st.rs1.getURL()})
-            }
-        },
-        {
-            commandName: "transitionToCatalogShard",
-            run: {
-                inAPIVersion1: false,
-                runsAgainstAdminDb: true,
-                configServerCommandName: "_configsvrTransitionToCatalogShard",
-                permittedInTxn: false,
-                requiresCatalogShardEnabled: true,
-                setUp: () => {
-                    // Remove shard0 so we can add it back.
-                    assert.commandWorked(st.s0.getDB("db").dropDatabase());
-                    awaitTransitionToDedicatedConfigServer();
-                },
-                command: () => ({transitionToCatalogShard: 1})
+                command: () => ({addShard: st.rs0.getURL()})
             }
         },
         {
@@ -206,6 +182,10 @@ let MongosAPIParametersUtil = (function() {
         },
         {
             commandName: "authenticate",
+            skip: "executes locally on mongos (not sent to any remote node)"
+        },
+        {
+            commandName: "availableQueryOptions",
             skip: "executes locally on mongos (not sent to any remote node)"
         },
         {
@@ -275,12 +255,13 @@ let MongosAPIParametersUtil = (function() {
                             Object.assign(cmd, context.apiParameters)));
                     }, txnOptions);
 
-                    context.session = session;
+                    context.lsid = session.getSessionId();
+                    context.txnNum = session.getTxnNumber_forTesting();
                 },
                 command: (context) => ({
                     commitTransaction: 1,
-                    lsid: context.session.getSessionId(),
-                    txnNumber: context.session.getTxnNumber_forTesting(),
+                    lsid: context.lsid,
+                    txnNumber: context.txnNum,
                     autocommit: false
                 })
             }
@@ -619,6 +600,10 @@ let MongosAPIParametersUtil = (function() {
             commandName: "getDiagnosticData",
             skip: "executes locally on mongos (not sent to any remote node)"
         },
+        {
+            commandName: "getLastError",
+            skip: "executes locally on mongos (not sent to any remote node)"
+        },
         {commandName: "getLog", skip: "executes locally on mongos (not sent to any remote node)"},
         {
             commandName: "getMore",
@@ -654,7 +639,7 @@ let MongosAPIParametersUtil = (function() {
             commandName: "getShardVersion",
             skip: "executes locally on mongos (not sent to any remote node)"
         },
-        {commandName: "getnonce", skip: "removed in v6.3"},
+        {commandName: "getnonce", skip: "executes locally on mongos (not sent to any remote node)"},
         {
             commandName: "grantPrivilegesToRole",
             run: {
@@ -801,14 +786,10 @@ let MongosAPIParametersUtil = (function() {
                     context.thread.start();
                     const adminDb = st.s0.getDB("admin");
 
-                    jsTestLog(`Waiting for "find" on "${st.shard0.shardName}" ` +
+                    jsTestLog(`Waiting for "find" on "${st.rs0.name}" ` +
                               `with comment ${uuidStr} in currentOp`);
                     assert.soon(() => {
-                        const filter = {
-                            "command.find": "collection",
-                            "command.comment": uuidStr,
-                            shard: st.shard0.shardName
-                        };
+                        const filter = {"command.comment": uuidStr, shard: st.rs0.name};
                         const inprog = adminDb.currentOp(filter).inprog;
                         if (inprog.length === 1) {
                             jsTestLog(`Found it! findOpId ${inprog[0].opid}`);
@@ -932,10 +913,9 @@ let MongosAPIParametersUtil = (function() {
                 permittedInTxn: false,
                 requiresShardedCollection: true,
                 setUp: () => {
+                    // Collection is already split into chunks [MinKey, 10], (10, MaxKey].
                     assert.commandWorked(
                         st.s.adminCommand({split: "db.collection", middle: {_id: -5}}));
-                    assert.commandWorked(
-                        st.s.adminCommand({split: "db.collection", middle: {_id: 10}}));
                     // Now the chunks are: [MinKey, -5], (-5, 10], (10, MaxKey].
                 },
                 command: () => ({mergeChunks: "db.collection", bounds: [{_id: MinKey}, {_id: 10}]})
@@ -1046,29 +1026,12 @@ let MongosAPIParametersUtil = (function() {
                 runsAgainstAdminDb: true,
                 configServerCommandName: "_configsvrRemoveShard",
                 permittedInTxn: false,
-                command: () => ({removeShard: st.shard1.shardName}),
+                command: () => ({removeShard: st.shard0.shardName}),
                 cleanUp: () => {
                     // Wait for the shard to be removed completely before re-adding it.
-                    awaitRemoveShard(st.shard1.shardName);
+                    awaitRemoveShard(st.shard0.shardName);
                     assert.commandWorked(st.s0.getDB("admin").runCommand(
-                        {addShard: st.rs1.getURL(), name: st.shard1.shardName}));
-                }
-            }
-        },
-        {
-            commandName: "transitionToDedicatedConfigServer",
-            run: {
-                inAPIVersion1: false,
-                runsAgainstAdminDb: true,
-                configServerCommandName: "_configsvrTransitionToDedicatedConfigServer",
-                permittedInTxn: false,
-                requiresCatalogShardEnabled: true,
-                command: () => ({transitionToDedicatedConfigServer: 1}),
-                cleanUp: () => {
-                    // Wait for the shard to be removed completely before re-adding it.
-                    awaitTransitionToDedicatedConfigServer(st.shard0.shardName);
-                    assert.commandWorked(
-                        st.s0.getDB("admin").runCommand({transitionToCatalogShard: 1}));
+                        {addShard: st.rs0.getURL(), name: st.shard0.shardName}));
                 }
             }
         },
@@ -1255,10 +1218,6 @@ let MongosAPIParametersUtil = (function() {
             commandName: "setFreeMonitoring",
             skip: "explicitly fails for mongos, primary mongod only",
             conditional: true
-        },
-        {
-            commandName: "setProfilingFilterGlobally",
-            skip: "executes locally on mongos (not sent to any remote node)",
         },
         {
             commandName: "setParameter",
@@ -1458,8 +1417,6 @@ let MongosAPIParametersUtil = (function() {
         assert.commandWorked(st.rs0.getPrimary().adminCommand({serverStatus: 1}))
             .storageEngine.supportsCommittedReads;
 
-    const isCatalogShardEnabled = CatalogShardUtil.isEnabledIgnoringFCV(st);
-
     (() => {
         // Validate test cases for all commands. Ensure there is at least one test case for every
         // mongos command, and that the test cases are well formed.
@@ -1574,9 +1531,6 @@ let MongosAPIParametersUtil = (function() {
                     if (!supportsCommittedReads && runOrExplain.requiresCommittedReads)
                         continue;
 
-                    if (!isCatalogShardEnabled && runOrExplain.requiresCatalogShardEnabled)
-                        continue;
-
                     if (apiParameters.apiStrict && !runOrExplain.inAPIVersion1)
                         continue;
 
@@ -1592,20 +1546,40 @@ let MongosAPIParametersUtil = (function() {
         for (let i = 0; i < testInstances.length; ++i) {
             const {apiParameters, commandName, runOrExplain} = testInstances[i];
 
-            assert.commandWorked(
-                st.s.adminCommand({enableSharding: "db", primaryShard: st.shard0.shardName}));
+            // Creating a new db implicitly should succeed with 'apiStrict: true'.
+            assert.commandWorked(st.s.getDB("db").runCommand(
+                {create: 'collection', apiVersion: '1', apiStrict: true}));
 
             if (shardedCollection) {
+                jsTestLog("Sharded setup");
+                assert.commandWorked(st.s.getDB("db")["collection"].insert(
+                    {_id: 0}, {writeConcern: {w: "majority"}}));
+                assert.commandWorked(st.s.getDB("db")["collection"].insert(
+                    {_id: 20}, {writeConcern: {w: "majority"}}));
+
+                assert.commandWorked(st.s.adminCommand({enableSharding: "db"}));
+                st.ensurePrimaryShard("db", st.shard0.shardName);
                 assert.commandWorked(
                     st.s.adminCommand({shardCollection: "db.collection", key: {_id: 1}}));
+
+                // The chunk with _id 0 is on shard 0.
+                assert.commandWorked(
+                    st.s.adminCommand({split: "db.collection", middle: {_id: 10}}));
+                assert.commandWorked(st.s.adminCommand({
+                    moveChunk: "db.collection",
+                    find: {_id: 20},
+                    to: st.shard1.shardName,
+                    _waitForDelete: true
+                }));
+            } else {
+                jsTestLog("Unsharded setup");
+                assert.commandWorked(st.s.getDB("db")["collection"].insert(
+                    {_id: 0}, {writeConcern: {w: "majority"}}));
+                st.ensurePrimaryShard("db", st.shard0.shardName);
             }
 
-            assert.commandWorked(
-                st.s.getDB("db")["collection"].insert({_id: 0}, {writeConcern: {w: "majority"}}));
-
             const configPrimary = st.configRS.getPrimary();
-            const shardPrimary =
-                runOrExplain.shardPrimary ? runOrExplain.shardPrimary() : st.rs0.getPrimary();
+            const shardZeroPrimary = st.rs0.getPrimary();
             const context = {apiParameters: apiParameters};
 
             const commandDbName = runOrExplain.runsAgainstAdminDb ? "admin" : "db";
@@ -1629,7 +1603,7 @@ let MongosAPIParametersUtil = (function() {
                 Object.assign(Object.assign({}, commandBody), apiParameters);
 
             assert.commandWorked(configPrimary.adminCommand({clearLog: "global"}));
-            assert.commandWorked(shardPrimary.adminCommand({clearLog: "global"}));
+            assert.commandWorked(shardZeroPrimary.adminCommand({clearLog: "global"}));
             const message =
                 `[${i + 1} of ${testInstances.length}]: command ${tojson(commandWithAPIParams)}` +
                 ` ${shardedCollection ? "sharded" : "unsharded"},` +
@@ -1639,7 +1613,7 @@ let MongosAPIParametersUtil = (function() {
             flushRoutersAndRefreshShardMetadata(st, {ns: "db.collection"});
 
             jsTestLog(`Running ${message}`);
-            setLogVerbosity([configPrimary, st.rs0.getPrimary(), st.rs1.getPrimary()],
+            setLogVerbosity([configPrimary, shardZeroPrimary, st.rs1.getPrimary()],
                             {"command": {"verbosity": 2}});
 
             const res = context.db.runCommand(commandWithAPIParams);
@@ -1671,10 +1645,10 @@ let MongosAPIParametersUtil = (function() {
 
             if (shardCommandName) {
                 jsTestLog(`Check for ${shardCommandName} in shard server's log`);
-                checkPrimaryLog(shardPrimary, shardCommandName, apiParameters);
+                checkPrimaryLog(shardZeroPrimary, shardCommandName, apiParameters);
             }
 
-            setLogVerbosity([configPrimary, st.rs0.getPrimary(), st.rs1.getPrimary()],
+            setLogVerbosity([configPrimary, shardZeroPrimary, st.rs1.getPrimary()],
                             {"command": {"verbosity": 0}});
 
             st.s0.getDB("db").runCommand({dropDatabase: 1});

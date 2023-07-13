@@ -31,7 +31,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/server_parameter.h"
+#include "mongo/idl/server_parameter.h"
 #include "mongo/idl/server_parameter_with_storage_test_structs_gen.h"
 
 namespace mongo {
@@ -56,15 +56,10 @@ inline Status validateOdd(const std::int32_t& value) {
     return (value & 1) ? Status::OK() : Status(ErrorCodes::BadValue, "Must be odd");
 }
 
-inline Status validateOddSP(const std::int32_t& value, const boost::optional<TenantId>&) {
-    return validateOdd(value);
-}
-
 /**
  * Validates that the new expireAfterSeconds is non-negative.
  */
-inline Status validateNonNegativeExpireAfterSeconds(const ChangeStreamOptionsClusterParam& newVal,
-                                                    const boost::optional<TenantId>& tenantId) {
+inline Status validateNonNegativeExpireAfterSeconds(const ChangeStreamOptionsClusterParam& newVal) {
     if (newVal.getPreAndPostImages().getExpireAfterSeconds() < 0) {
         return Status(ErrorCodes::BadValue, "Should be non-negative value only");
     }

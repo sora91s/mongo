@@ -74,8 +74,7 @@ public:
                   std::unique_ptr<EExpression> foldExpr,
                   std::unique_ptr<EExpression> finalExpr,
                   PlanNodeId planNodeId,
-                  boost::optional<size_t> nestedArraysDepth,
-                  bool participateInTrialRunTracking = true);
+                  boost::optional<size_t> nestedArraysDepth);
 
     std::unique_ptr<PlanStage> clone() const final;
 

@@ -27,6 +27,9 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
+
+#include <iostream>
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +42,6 @@
 #include "mongo/scripting/mozjs/engine_gen.h"
 #include "mongo/scripting/mozjs/implscope.h"
 #include "mongo/scripting/mozjs/proxyscope.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace js {
 void DisableExtraThreads();
@@ -66,8 +66,7 @@ std::string ScriptEngine::getInterpreterVersionString() {
 
 namespace mozjs {
 
-MozJSScriptEngine::MozJSScriptEngine(bool disableLoadStored)
-    : ScriptEngine(disableLoadStored), _loadPath(boost::filesystem::current_path().string()) {
+MozJSScriptEngine::MozJSScriptEngine(bool disableLoadStored) : ScriptEngine(disableLoadStored) {
     uassert(ErrorCodes::JSInterpreterFailure, "Failed to JS_Init()", JS_Init());
     js::DisableExtraThreads();
 }
@@ -149,14 +148,6 @@ int MozJSScriptEngine::getJSHeapLimitMB() const {
 
 void MozJSScriptEngine::setJSHeapLimitMB(int limit) {
     gJSHeapLimitMB.store(limit);
-}
-
-std::string MozJSScriptEngine::getLoadPath() const {
-    return _loadPath;
-}
-
-void MozJSScriptEngine::setLoadPath(const std::string& loadPath) {
-    _loadPath = loadPath;
 }
 
 void MozJSScriptEngine::registerOperation(OperationContext* opCtx, MozJSImplScope* scope) {

@@ -167,8 +167,8 @@ std::unique_ptr<CommandInvocation> ClusterExplainCmd::parse(OperationContext* op
 
     // To enforce API versioning
     auto cmdObj = ExplainCommandRequest::parse(
-        IDLParserContext(ExplainCommandRequest::kCommandName,
-                         APIParameters::get(opCtx).getAPIStrict().value_or(false)),
+        IDLParserErrorContext(ExplainCommandRequest::kCommandName,
+                              APIParameters::get(opCtx).getAPIStrict().value_or(false)),
         request.body);
     std::string dbName = cmdObj.getDbName().toString();
     ExplainOptions::Verbosity verbosity = cmdObj.getVerbosity();
@@ -190,7 +190,6 @@ std::unique_ptr<CommandInvocation> ClusterExplainCmd::parse(OperationContext* op
             str::stream() << "Explain failed due to unknown command: " << cmdName,
             explainedCommand);
     auto innerRequest = std::make_unique<OpMsgRequest>(OpMsg{explainedObj});
-    innerRequest->validatedTenancyScope = request.validatedTenancyScope;
     auto innerInvocation = explainedCommand->parseForExplain(opCtx, *innerRequest, verbosity);
     return std::make_unique<Invocation>(
         this, request, std::move(verbosity), std::move(innerRequest), std::move(innerInvocation));

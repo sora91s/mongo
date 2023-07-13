@@ -12,9 +12,9 @@
 #endif
 
 #include <boost/cstdint.hpp>
+#include <boost/foreach.hpp>
 #include <boost/regex/pending/unicode_iterator.hpp>
 #include <boost/type_traits/make_unsigned.hpp>
-#include <iterator>
 #include <string>
 
 namespace boost { namespace spirit
@@ -61,10 +61,9 @@ namespace boost { namespace spirit
         insert_iter out_iter(result);
         utf8_output_iterator<insert_iter> utf8_iter(out_iter);
         typedef typename make_unsigned<Char>::type UChar;
-        for (Char const* ptr = str.data(),
-                       * end = ptr + str.size(); ptr < end; ++ptr)
+        BOOST_FOREACH(Char ch, str)
         {
-            *utf8_iter++ = (UChar)*ptr;
+            *utf8_iter++ = (UChar)ch;
         }
         return result;
     }

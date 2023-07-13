@@ -30,8 +30,9 @@
 #   Transactions: test recovery settings
 #
 
+import os, shutil
 from suite_subprocess import suite_subprocess
-import helper, wiredtiger, wttest
+import wiredtiger, wttest
 from wtscenario import make_scenarios
 
 class test_txn18(wttest.WiredTigerTestCase, suite_subprocess):
@@ -52,6 +53,20 @@ class test_txn18(wttest.WiredTigerTestCase, suite_subprocess):
         if self.value_format == '8t':
             return i % 256
         return i
+
+    def simulate_crash(self, olddir, newdir):
+        ''' Simulate a crash from olddir and restart in newdir. '''
+        # with the connection still open, copy files to new directory
+        shutil.rmtree(newdir, ignore_errors=True)
+        os.mkdir(newdir)
+        for fname in os.listdir(olddir):
+            fullname = os.path.join(olddir, fname)
+            # Skip lock file on Windows since it is locked
+            if os.path.isfile(fullname) and \
+                "WiredTiger.lock" not in fullname and \
+                "Tmplog" not in fullname and \
+                "Preplog" not in fullname:
+                shutil.copy(fullname, newdir)
 
     def test_recovery(self):
         ''' Run the recovery settings '''
@@ -81,8 +96,8 @@ class test_txn18(wttest.WiredTigerTestCase, suite_subprocess):
         olddir = "."
         newdir = "RESTART"
         errdir = "ERROR"
-        helper.copy_wiredtiger_home(self, olddir, errdir)
-        helper.copy_wiredtiger_home(self, olddir, newdir)
+        self.simulate_crash(olddir, errdir)
+        self.simulate_crash(olddir, newdir)
         # close the original connection
         self.close_conn()
         # Trying to open the error directory with recover=error should return an error.

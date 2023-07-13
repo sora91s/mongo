@@ -78,7 +78,7 @@ BSONObj createInternalX509AuthDocument(boost::optional<StringData> userName) {
     builder.append(saslCommandUserDBFieldName, "$external");
 
     if (userName) {
-        builder.append(saslCommandUserFieldName, userName.value());
+        builder.append(saslCommandUserFieldName, userName.get());
     }
 
     return builder.obj();

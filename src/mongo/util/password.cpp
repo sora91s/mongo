@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 
 #include "mongo/util/errno_util.h"
 #include "mongo/util/password_params_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 namespace mongo {
 
@@ -61,16 +59,14 @@ std::string askPassword() {
     if (isatty(stdinfd)) {
         int i = tcgetattr(stdinfd, &termio);
         if (i == -1) {
-            auto ec = lastSystemError();
-            std::cerr << "Cannot get terminal attributes " << errorMessage(ec) << std::endl;
+            std::cerr << "Cannot get terminal attributes " << errnoWithDescription() << std::endl;
             return std::string();
         }
         old = termio.c_lflag;
         termio.c_lflag &= ~ECHO;
         i = tcsetattr(stdinfd, TCSANOW, &termio);
         if (i == -1) {
-            auto ec = lastSystemError();
-            std::cerr << "Cannot set terminal attributes " << errorMessage(ec) << std::endl;
+            std::cerr << "Cannot set terminal attributes " << errnoWithDescription() << std::endl;
             return std::string();
         }
     }
@@ -81,38 +77,33 @@ std::string askPassword() {
         termio.c_lflag = old;
         int i = tcsetattr(stdinfd, TCSANOW, &termio);
         if (i == -1) {
-            auto ec = lastSystemError();
-            std::cerr << "Cannot set terminal attributes " << errorMessage(ec) << std::endl;
+            std::cerr << "Cannot set terminal attributes " << errnoWithDescription() << std::endl;
             return std::string();
         }
     }
 #else
     HANDLE stdinh = GetStdHandle(STD_INPUT_HANDLE);
     if (stdinh == INVALID_HANDLE_VALUE) {
-        auto ec = lastSystemError();
-        std::cerr << "Cannot get stdin handle " << errorMessage(ec) << "\n";
+        std::cerr << "Cannot get stdin handle " << GetLastError() << "\n";
         return std::string();
     }
 
     DWORD old;
     if (!GetConsoleMode(stdinh, &old)) {
-        auto ec = lastSystemError();
-        std::cerr << "Cannot get console mode " << errorMessage(ec) << "\n";
+        std::cerr << "Cannot get console mode " << GetLastError() << "\n";
         return std::string();
     }
 
     DWORD noecho = ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT;
     if (!SetConsoleMode(stdinh, noecho)) {
-        auto ec = lastSystemError();
-        std::cerr << "Cannot set console mode " << errorMessage(ec) << "\n";
+        std::cerr << "Cannot set console mode " << GetLastError() << "\n";
         return std::string();
     }
 
     getline(std::cin, password);
 
     if (!SetConsoleMode(stdinh, old)) {
-        auto ec = lastSystemError();
-        std::cerr << "Cannot set console mode " << errorMessage(ec) << "\n";
+        std::cerr << "Cannot set console mode " << GetLastError() << "\n";
         return std::string();
     }
 #endif

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -41,8 +42,9 @@
 #include "mongo/db/catalog/database_holder_impl.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/global_settings.h"
+#include "mongo/db/index/index_access_method_factory_impl.h"
 #include "mongo/db/index_builds_coordinator_mongod.h"
-#include "mongo/db/op_observer/op_observer_registry.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/s/collection_sharding_state_factory_shard.h"
@@ -55,28 +57,15 @@
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/periodic_runner_factory.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo {
 
 ServiceContextMongoDTest::ServiceContextMongoDTest(Options options)
-    : _journalListener(std::move(options._journalListener)),
-      _tempDir("service_context_d_test_fixture") {
-
-    if (options._forceDisableTableLogging) {
-        storageGlobalParams.forceDisableTableLogging = true;
-    }
+    : _tempDir("service_context_d_test_fixture") {
 
     if (options._useReplSettings) {
         repl::ReplSettings replSettings;
         replSettings.setOplogSizeBytes(10 * 1024 * 1024);
         replSettings.setReplSetString("rs0");
-        setGlobalReplSettings(replSettings);
-    } else {
-        repl::ReplSettings replSettings;
-        // The empty string "disables" replication.
-        replSettings.setReplSetString("");
         setGlobalReplSettings(replSettings);
     }
 
@@ -88,8 +77,9 @@ ServiceContextMongoDTest::ServiceContextMongoDTest(Options options)
         std::exchange(storageGlobalParams.repair, (options._repair == RepairAction::kRepair));
     _stashedServerParams.enableMajorityReadConcern = serverGlobalParams.enableMajorityReadConcern;
 
-    if (storageGlobalParams.engine == "devnull") {
-        // The devnull storage engine does not support majority read concern.
+    if (storageGlobalParams.engine == "ephemeralForTest" ||
+        storageGlobalParams.engine == "devnull") {
+        // The ephemeralForTest and devnull storage engines do not support majority read concern.
         LOGV2(4939201,
               "Disabling majority read concern as it isn't supported by the storage engine",
               "storageEngine"_attr = storageGlobalParams.engine);
@@ -100,11 +90,8 @@ ServiceContextMongoDTest::ServiceContextMongoDTest(Options options)
     if (options._useMockClock) {
         // Copied from dbtests.cpp. DBTests sets up a controlled mock clock while
         // ServiceContextMongoDTest uses the system clock. Tests moved from dbtests to unittests may
-        // depend on a deterministic clock. Additionally, if a test chooses to set a non-zero
-        // _autoAdvancingMockClockIncrement, the mock clock will automatically advance by that
-        // increment each time it is read.
-        auto fastClock = std::make_unique<AutoAdvancingClockSourceMock>(
-            options._autoAdvancingMockClockIncrement);
+        // depend on a deterministic clock.
+        auto fastClock = std::make_unique<ClockSourceMock>();
         // Timestamps are split into two 32-bit integers, seconds and "increments". Currently
         // (but maybe not for eternity), a Timestamp with a value of `0` seconds is always
         // considered "null" by `Timestamp::isNull`, regardless of its increment value. Ticking
@@ -113,8 +100,7 @@ ServiceContextMongoDTest::ServiceContextMongoDTest(Options options)
         fastClock->advance(Seconds(1));
         serviceContext->setFastClockSource(std::move(fastClock));
 
-        auto preciseClock = std::make_unique<AutoAdvancingClockSourceMock>(
-            options._autoAdvancingMockClockIncrement);
+        auto preciseClock = std::make_unique<ClockSourceMock>();
         // See above.
         preciseClock->advance(Seconds(1));
         serviceContext->setPreciseClockSource(std::move(preciseClock));
@@ -141,16 +127,13 @@ ServiceContextMongoDTest::ServiceContextMongoDTest(Options options)
     StorageControl::startStorageControls(serviceContext, true /*forTestOnly*/);
 
     DatabaseHolder::set(serviceContext, std::make_unique<DatabaseHolderImpl>());
+    IndexAccessMethodFactory::set(serviceContext, std::make_unique<IndexAccessMethodFactoryImpl>());
     Collection::Factory::set(serviceContext, std::make_unique<CollectionImpl::FactoryImpl>());
     IndexBuildsCoordinator::set(serviceContext, std::make_unique<IndexBuildsCoordinatorMongod>());
     CollectionShardingStateFactory::set(
         getServiceContext(),
         std::make_unique<CollectionShardingStateFactoryShard>(getServiceContext()));
     getServiceContext()->getStorageEngine()->notifyStartupComplete();
-
-    if (_journalListener) {
-        serviceContext->getStorageEngine()->setJournalListener(_journalListener.get());
-    }
 }
 
 ServiceContextMongoDTest::~ServiceContextMongoDTest() {
@@ -176,8 +159,6 @@ ServiceContextMongoDTest::~ServiceContextMongoDTest() {
     std::swap(storageGlobalParams.repair, _stashedStorageParams.repair);
     std::swap(serverGlobalParams.enableMajorityReadConcern,
               _stashedServerParams.enableMajorityReadConcern);
-
-    storageGlobalParams.reset();
 }
 
 void ServiceContextMongoDTest::tearDown() {

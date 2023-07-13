@@ -65,12 +65,10 @@ public:
     virtual bool includeByDefault() const = 0;
 
     /**
-     * Perform authorization checks required to show this status section.
+     * Adds the privileges that are required to view this section
      * TODO: Remove this empty default implementation and implement for every section.
      */
-    virtual Status checkAuthForOperation(OperationContext* opCtx) const {
-        return Status::OK();
-    }
+    virtual void addRequiredPrivileges(std::vector<Privilege>* out){};
 
     /**
      * actually generate the result
@@ -147,5 +145,4 @@ public:
 private:
     const OpCounters* _counters;
 };
-
 }  // namespace mongo

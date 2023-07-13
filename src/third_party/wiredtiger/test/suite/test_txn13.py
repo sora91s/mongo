@@ -31,6 +31,7 @@
 # able to write them.  Expect an error over 4Gb.
 #
 
+#import fnmatch, os, shutil, run, time
 from suite_subprocess import suite_subprocess
 from wtscenario import make_scenarios
 import wiredtiger, wttest

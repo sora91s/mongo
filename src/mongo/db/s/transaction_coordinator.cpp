@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTransaction
 
 #include "mongo/platform/basic.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/util/cancellation.h"
 #include "mongo/util/fail_point.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTransaction
-
-
 namespace mongo {
 namespace {
 
@@ -55,13 +53,10 @@ using TransactionCoordinatorDocument = txn::TransactionCoordinatorDocument;
 MONGO_FAIL_POINT_DEFINE(hangBeforeWaitingForParticipantListWriteConcern);
 MONGO_FAIL_POINT_DEFINE(hangBeforeWaitingForDecisionWriteConcern);
 
-ExecutorFuture<void> waitForMajorityWithHangFailpoint(
-    ServiceContext* service,
-    FailPoint& failpoint,
-    const std::string& failPointName,
-    repl::OpTime opTime,
-    const LogicalSessionId& lsid,
-    const TxnNumberAndRetryCounter& txnNumberAndRetryCounter) {
+ExecutorFuture<void> waitForMajorityWithHangFailpoint(ServiceContext* service,
+                                                      FailPoint& failpoint,
+                                                      const std::string& failPointName,
+                                                      repl::OpTime opTime) {
     auto executor = Grid::get(service)->getExecutorPool()->getFixedExecutor();
     auto waitForWC = [service, executor](repl::OpTime opTime) {
         return WaitForMajorityService::get(service)
@@ -71,11 +66,7 @@ ExecutorFuture<void> waitForMajorityWithHangFailpoint(
 
     if (auto sfp = failpoint.scoped(); MONGO_unlikely(sfp.isActive())) {
         const BSONObj& data = sfp.getData();
-        LOGV2(22445,
-              "Hit {failPointName} failpoint",
-              "failPointName"_attr = failPointName,
-              "lsid"_attr = lsid,
-              "txnNumberAndRetryCounter"_attr = txnNumberAndRetryCounter);
+        LOGV2(22445, "Hit {failPointName} failpoint", "failPointName"_attr = failPointName);
 
         // Run the hang failpoint asynchronously on a different thread to avoid self deadlocks.
         return ExecutorFuture<void>(executor).then(
@@ -156,7 +147,7 @@ TransactionCoordinator::TransactionCoordinator(
         .then([this] {
             return VectorClockMutable::get(_serviceContext)->waitForDurableTopologyTime();
         })
-        .thenRunOn(_scheduler->getExecutor())
+        .thenRunOn(Grid::get(_serviceContext)->getExecutorPool()->getFixedExecutor())
         .then([this] {
             // Persist the participants, unless they have been made durable already (which would
             // only be the case if this coordinator was created as part of step-up recovery).
@@ -186,11 +177,9 @@ TransactionCoordinator::TransactionCoordinator(
                 _serviceContext,
                 hangBeforeWaitingForParticipantListWriteConcern,
                 "hangBeforeWaitingForParticipantListWriteConcern",
-                std::move(opTime),
-                _lsid,
-                _txnNumberAndRetryCounter);
+                std::move(opTime));
         })
-        .thenRunOn(_scheduler->getExecutor())
+        .thenRunOn(Grid::get(_serviceContext)->getExecutorPool()->getFixedExecutor())
         .then([this, apiParams] {
             {
                 stdx::lock_guard<Latch> lg(_mutex);
@@ -301,9 +290,7 @@ TransactionCoordinator::TransactionCoordinator(
             return waitForMajorityWithHangFailpoint(_serviceContext,
                                                     hangBeforeWaitingForDecisionWriteConcern,
                                                     "hangBeforeWaitingForDecisionWriteConcern",
-                                                    std::move(opTime),
-                                                    _lsid,
-                                                    _txnNumberAndRetryCounter);
+                                                    std::move(opTime));
         })
         .then([this, apiParams] {
             {
@@ -362,7 +349,11 @@ TransactionCoordinator::TransactionCoordinator(
                     _serviceContext->getPreciseClockSource()->now());
             }
 
-            return txn::deleteCoordinatorDoc(*_scheduler, _lsid, _txnNumberAndRetryCounter);
+            return txn::deleteCoordinatorDoc(*_scheduler, _lsid, _txnNumberAndRetryCounter)
+                .then([this] {
+                    invariant(!_coordinatorDocRemovalPromise.getFuture().isReady());
+                    _coordinatorDocRemovalPromise.emplaceValue();
+                });
         })
         .getAsync([this, deadlineFuture = std::move(deadlineFuture)](Status s) mutable {
             // Interrupt this coordinator's scheduler hierarchy and join the deadline task's future
@@ -467,7 +458,7 @@ void TransactionCoordinator::_done(Status status) {
         (shouldLog(logv2::LogComponent::kTransaction, logv2::LogSeverity::Debug(1)) ||
          _transactionCoordinatorMetricsObserver->getSingleTransactionCoordinatorStats()
                  .getTwoPhaseCommitDuration(tickSource, tickSource->getTicks()) >
-             Milliseconds(serverGlobalParams.slowMS.load()))) {
+             Milliseconds(serverGlobalParams.slowMS))) {
         _logSlowTwoPhaseCommit(*_decision);
     }
 
@@ -475,6 +466,10 @@ void TransactionCoordinator::_done(Status status) {
 
     if (!_decisionPromise.getFuture().isReady()) {
         _decisionPromise.setError(status);
+    }
+
+    if (!_coordinatorDocRemovalPromise.getFuture().isReady()) {
+        _coordinatorDocRemovalPromise.setError(status);
     }
 
     if (!status.isOK()) {

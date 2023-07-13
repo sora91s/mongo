@@ -116,8 +116,7 @@ TEST_F(DocumentSourceFacetTest, ShouldSucceedWhenNamespaceIsCollectionless) {
     auto ctx = getExpCtx();
     auto spec = fromjson("{$facet: {a: [{$match: {}}]}}");
 
-    ctx->ns =
-        NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "unittests"));
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("unittests");
 
     ASSERT_TRUE(DocumentSourceFacet::createFromBson(spec.firstElement(), ctx).get());
 }

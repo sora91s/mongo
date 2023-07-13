@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/db/s/database_sharding_state.h"
 #include "mongo/s/request_types/get_database_version_gen.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -78,14 +76,13 @@ public:
             uassert(ErrorCodes::IllegalOperation,
                     str::stream() << definition()->getName() << " can only be run on shard servers",
                     serverGlobalParams.clusterRole == ClusterRole::ShardServer);
-
-            DatabaseName dbName(boost::none, _targetDb());
-            AutoGetDb autoDb(opCtx, dbName, MODE_IS);
-            const auto scopedDss =
-                DatabaseShardingState::assertDbLockedAndAcquireShared(opCtx, dbName);
-
             BSONObj versionObj;
-            if (const auto dbVersion = scopedDss->getDbVersion(opCtx)) {
+            AutoGetDb autoDb(opCtx, _targetDb(), MODE_IS);
+
+            const auto dss = DatabaseShardingState::get(opCtx, _targetDb());
+            auto dssLock = DatabaseShardingState::DSSLock::lockShared(opCtx, dss);
+
+            if (auto dbVersion = dss->getDbVersion(opCtx, dssLock)) {
                 versionObj = dbVersion->toBSON();
             }
             result->getBodyBuilder().append("dbVersion", versionObj);

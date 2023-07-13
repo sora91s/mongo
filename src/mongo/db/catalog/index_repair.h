@@ -44,7 +44,7 @@ namespace index_repair {
 StatusWith<int> moveRecordToLostAndFound(OperationContext* opCtx,
                                          const NamespaceString& ns,
                                          const NamespaceString& lostAndFoundNss,
-                                         const RecordId& dupRecord);
+                                         RecordId dupRecord);
 
 /**
  * If repair mode is enabled, tries the inserting missingIndexEntry into indexes. If the

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -60,9 +61,7 @@
 #include "mongo/util/static_immortal.h"
 #include "mongo/util/text.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
-
+using namespace std;
 namespace mongo {
 
 namespace {
@@ -103,7 +102,7 @@ void endProcessWithSignal(int signalNum) {
         RaiseException(STATUS_EXIT_ABRUPT, EXCEPTION_NONCONTINUABLE, 0, nullptr);
     } __except (sehExceptionFilter(GetExceptionCode(), GetExceptionInformation())) {
         // The exception filter exits the process
-        quickExit(ExitCode::abrupt);
+        quickExit(EXIT_ABRUPT);
     }
 }
 
@@ -181,7 +180,7 @@ class MallocFreeOStreamGuard {
 public:
     explicit MallocFreeOStreamGuard() : _lk(_streamMutex, stdx::defer_lock) {
         if (terminateDepth++) {
-            quickExit(ExitCode::abrupt);
+            quickExit(EXIT_ABRUPT);
         }
         _lk.lock();
     }
@@ -220,26 +219,14 @@ void printStackTraceNoRecursion() {
     } else {
         printStackTrace();
     }
-}
+}h
 
 // must hold MallocFreeOStreamGuard to call
 void printSignalAndBacktrace(int signalNum) {
+    std::cout << "printSignalAndBacktrace " << signalNum << std::endl;
     mallocFreeOStream << "Got signal: " << signalNum << " (" << strsignal(signalNum) << ").";
-    writeMallocFreeStreamToLog();
-    printStackTraceNoRecursion();
-}
-
-void dumpScopedDebugInfo(std::ostream& os) {
-    auto diagStack = scopedDebugInfoStack().getAll();
-    if (diagStack.empty())
-        return;
-    os << "ScopedDebugInfo: [";
-    StringData sep;
-    for (const auto& s : diagStack) {
-        os << sep << "(" << s << ")";
-        sep = ", "_sd;
-    }
-    os << "]\n";
+    // writeMallocFreeStreamToLog();
+    // printStackTraceNoRecursion();
 }
 
 // this will be called in certain c++ error cases, for example if there are two active
@@ -249,26 +236,22 @@ void myTerminate() {
     mallocFreeOStream << "terminate() called.";
     if (std::current_exception()) {
         mallocFreeOStream << " An exception is active; attempting to gather more information";
-        writeMallocFreeStreamToLog();
+        // writeMallocFreeStreamToLog();
         globalActiveExceptionWitness().describe(mallocFreeOStream);
     } else {
         mallocFreeOStream << " No exception is active";
     }
-    writeMallocFreeStreamToLog();
-    dumpScopedDebugInfo(mallocFreeOStream);
-    writeMallocFreeStreamToLog();
+    // writeMallocFreeStreamToLog();
     printStackTraceNoRecursion();
-    breakpoint();
-    endProcessWithSignal(SIGABRT);
+    // breakpoint();
+    // endProcessWithSignal(SIGABRT);
 }
 
 extern "C" void abruptQuit(int signalNum) {
     MallocFreeOStreamGuard lk{};
-    dumpScopedDebugInfo(mallocFreeOStream);
-    writeMallocFreeStreamToLog();
     printSignalAndBacktrace(signalNum);
-    breakpoint();
-    endProcessWithSignal(signalNum);
+    // breakpoint();
+    // endProcessWithSignal(signalNum);
 }
 
 #if defined(_WIN32)
@@ -297,6 +280,11 @@ extern "C" void abruptQuitAction(int signalNum, siginfo_t*, void*) {
     abruptQuit(signalNum);
 };
 
+extern "C" void printAlarmSignal(int signalNum, siginfo_t*, void*) {
+   std::cout << "pos-x Signal: " << signalNum << std::endl;
+}
+
+
 extern "C" void abruptQuitWithAddrSignal(int signalNum, siginfo_t* siginfo, void* ucontext_erased) {
     // For convenient debugger access.
     [[maybe_unused]] auto ucontext = static_cast<const ucontext_t*>(ucontext_erased);
@@ -309,11 +297,11 @@ extern "C" void abruptQuitWithAddrSignal(int signalNum, siginfo_t* siginfo, void
     // Writing out message to log separate from the stack trace so at least that much gets
     // logged. This is important because we may get here by jumping to an invalid address which
     // could cause unwinding the stack to break.
-    writeMallocFreeStreamToLog();
+    // writeMallocFreeStreamToLog();
 
     printSignalAndBacktrace(signalNum);
-    breakpoint();
-    endProcessWithSignal(signalNum);
+    // breakpoint();
+    // endProcessWithSignal(signalNum);
 }
 
 #endif
@@ -347,6 +335,7 @@ void setupSynchronousSignalHandlers() {
         {SIGBUS, &abruptQuitWithAddrSignal},
         {SIGILL, &abruptQuitWithAddrSignal},
         {SIGFPE, &abruptQuitWithAddrSignal},
+        {SIGALRM, &printAlarmSignal},
     };
     for (const auto& spec : kSignalSpecs) {
         struct sigaction sa;
@@ -379,7 +368,7 @@ void reportOutOfMemoryErrorAndExit() {
     mallocFreeOStream << "out of memory.";
     writeMallocFreeStreamToLog();
     printStackTraceNoRecursion();
-    quickExit(ExitCode::abrupt);
+    quickExit(EXIT_ABRUPT);
 }
 
 void clearSignalMask() {

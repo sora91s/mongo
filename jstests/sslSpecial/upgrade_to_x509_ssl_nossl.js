@@ -19,7 +19,9 @@ load("jstests/ssl/libs/ssl_helpers.js");
 // cluster authentication. Choosing the default value for wcMajorityJournalDefault in
 // ReplSetTest cannot be done automatically without the shell performing such authentication, so
 // in this test we must make the choice explicitly, based on the global test options.
-const wcMajorityJournalDefault = jsTestOptions().storageEngine != "inMemory";
+const wcMajorityJournalDefault = !jsTestOptions().noJournal &&
+    (jsTestOptions().storageEngine != "ephemeralForTest") &&
+    (jsTestOptions().storageEngine != "inMemory");
 
 const opts = {
     sslMode: "disabled",

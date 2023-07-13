@@ -9,7 +9,6 @@
 TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 (function() {
 'use strict';
@@ -27,9 +26,7 @@ var createUser = function(mongo) {
 };
 
 var addUsersToEachShard = function(st) {
-    // In catalog shard mode skip the first shard because it is also the config server and will
-    // already have a user made on it through mongos.
-    for (var i = TestData.catalogShard ? 1 : 0; i < numShards; i++) {
+    for (var i = 0; i < numShards; i++) {
         print("============ adding a user to shard " + i);
         var d = st["shard" + i];
         d.getDB("admin").createUser({user: username, pwd: password, roles: jsTest.adminUserRoles});

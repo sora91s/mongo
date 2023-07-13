@@ -30,23 +30,20 @@
 
 #include <algorithm>
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 #include "mongo/client/sdam/topology_description.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/logv2/log.h"
 #include "mongo/platform/random.h"
 #include "mongo/util/fail_point.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
-
 namespace mongo::sdam {
 MONGO_FAIL_POINT_DEFINE(sdamServerSelectorIgnoreLatencyWindow);
 
 ServerSelector::~ServerSelector() {}
 
-thread_local PseudoRandom SdamServerSelector::_random = PseudoRandom(SecureRandom().nextInt64());
-
-SdamServerSelector::SdamServerSelector(const SdamConfiguration& config) : _config(config) {}
+SdamServerSelector::SdamServerSelector(const SdamConfiguration& config)
+    : _config(config), _random(PseudoRandom(SecureRandom().nextInt64())) {}
 
 void SdamServerSelector::_getCandidateServers(std::vector<ServerDescriptionPtr>* result,
                                               const TopologyDescriptionPtr topologyDescription,
@@ -233,40 +230,35 @@ bool SdamServerSelector::_containsAllTags(ServerDescriptionPtr server, const BSO
 
 void SdamServerSelector::filterTags(std::vector<ServerDescriptionPtr>* servers,
                                     const TagSet& tagSet) {
-    const auto& tagSetList = tagSet.getTagBSON();
+    const auto& checkTags = tagSet.getTagBSON();
 
-    if (tagSetList.isEmpty()) {
+    if (checkTags.nFields() == 0)
         return;
-    }
 
-    for (const auto& tagSetElem : tagSetList) {
-        if (tagSetElem.type() != BSONType::Object) {
-            LOGV2_WARNING(4671202,
-                          "Invalid tag set specified for server selection; tag sets should be"
-                          " specified as a BSON object",
-                          "tag"_attr = tagSetElem);
-            continue;
+    const auto predicate = [&](const ServerDescriptionPtr& s) {
+        auto it = checkTags.begin();
+        while (it != checkTags.end()) {
+            if (it->isABSONObj()) {
+                const BSONObj& tags = it->Obj();
+                if (_containsAllTags(s, tags)) {
+                    // found a match -- don't remove the server
+                    return false;
+                }
+            } else {
+                LOGV2_WARNING(
+                    4671202,
+                    "Invalid tags specified for server selection; tags should be specified as "
+                    "bson Objects",
+                    "tag"_attr = *it);
+            }
+            ++it;
         }
 
-        const auto predicate = [&](const ServerDescriptionPtr& s) {
-            const bool shouldRemove = !_containsAllTags(s, tagSetElem.embeddedObject());
-            return shouldRemove;
-        };
+        // remove the server
+        return true;
+    };
 
-        auto it = std::remove_if(servers->begin(), servers->end(), predicate);
-        // If none of the server descriptions match the tag set, then continue on to check the next
-        // tag set in the list. Otherwise, if at least one of the server descriptions match the tag
-        // set criteria, then we've found our preferred host(s) to read from.
-        if (it != servers->begin()) {
-            servers->erase(it, servers->end());
-            return;
-        }
-    }
-
-    // Getting here means a non-empty tag set list was specified but none of the server descriptions
-    // matched any of the tag sets in the list. We've therefore failed to find any server
-    // description matching the read preference tag criteria.
-    servers->clear();
+    servers->erase(std::remove_if(servers->begin(), servers->end(), predicate), servers->end());
 }
 
 bool SdamServerSelector::recencyFilter(const ReadPreferenceSetting& readPref,

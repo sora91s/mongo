@@ -20,7 +20,6 @@
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 
-
 def generate(env, **kwargs):
 
     # Grab the existing decider functions out of the environment

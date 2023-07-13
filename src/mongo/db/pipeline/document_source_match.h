@@ -44,7 +44,7 @@ namespace mongo {
 class DocumentSourceMatch : public DocumentSource {
 public:
     virtual boost::intrusive_ptr<DocumentSource> clone(
-        const boost::intrusive_ptr<ExpressionContext>& newExpCtx) const {
+        const boost::intrusive_ptr<ExpressionContext>& newExpCtx = nullptr) const {
         // Raw new is needed to access non-public constructors.
         return new DocumentSourceMatch(*this, newExpCtx);
     }
@@ -138,11 +138,9 @@ public:
 
     DepsTracker::State getDependencies(DepsTracker* deps) const final;
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final;
-
     GetModPathsReturn getModifiedPaths() const final {
         // This stage does not modify or rename any paths.
-        return {GetModPathsReturn::Type::kFiniteSet, OrderedPathSet{}, {}};
+        return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>{}, {}};
     }
 
     /**
@@ -201,7 +199,7 @@ public:
      * z: "baz"}} and {$match: {a: "foo"}}.
      */
     std::pair<boost::intrusive_ptr<DocumentSourceMatch>, boost::intrusive_ptr<DocumentSourceMatch>>
-    splitSourceBy(const OrderedPathSet& fields, const StringMap<std::string>& renames) &&;
+    splitSourceBy(const std::set<std::string>& fields, const StringMap<std::string>& renames) &&;
 
     boost::optional<DistributedPlanLogic> distributedPlanLogic() final {
         return boost::none;
@@ -222,7 +220,7 @@ protected:
 
 private:
     std::pair<boost::intrusive_ptr<DocumentSourceMatch>, boost::intrusive_ptr<DocumentSourceMatch>>
-    splitSourceByFunc(const OrderedPathSet& fields,
+    splitSourceByFunc(const std::set<std::string>& fields,
                       const StringMap<std::string>& renames,
                       expression::ShouldSplitExprFunc func) &&;
 

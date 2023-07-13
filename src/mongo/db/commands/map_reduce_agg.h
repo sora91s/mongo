@@ -45,7 +45,6 @@ namespace mongo::map_reduce_agg {
  * Executes a mapReduce command against a replica set/standalone.
  */
 bool runAggregationMapReduce(OperationContext* opCtx,
-                             const DatabaseName& dbName,
                              const BSONObj& cmd,
                              BSONObjBuilder& result,
                              boost::optional<ExplainOptions::Verbosity> verbosity);

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -36,9 +37,7 @@
 #include "mongo/client/remote_command_targeter_factory_mock.h"
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/commands.h"
-#include "mongo/db/commands/set_cluster_parameter_invocation.h"
 #include "mongo/db/commands/set_feature_compatibility_version_gen.h"
-#include "mongo/db/multitenancy_gen.h"
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
@@ -47,11 +46,8 @@
 #include "mongo/db/s/config/config_server_test_fixture.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/s/type_shard_identity.h"
-#include "mongo/idl/cluster_server_parameter_common.h"
 #include "mongo/idl/cluster_server_parameter_gen.h"
-#include "mongo/idl/server_parameter_test_util.h"
-#include "mongo/logv2/log.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/config_server_version.h"
 #include "mongo/s/catalog/type_changelog.h"
 #include "mongo/s/catalog/type_config_version.h"
 #include "mongo/s/catalog/type_database_gen.h"
@@ -63,9 +59,6 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/version/releases.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -87,8 +80,8 @@ protected:
         setUpAndInitializeConfigDb();
 
         auto clusterIdLoader = ClusterIdentityLoader::get(operationContext());
-        ASSERT_OK(clusterIdLoader->loadClusterId(
-            operationContext(), catalogClient(), repl::ReadConcernLevel::kLocalReadConcern));
+        ASSERT_OK(clusterIdLoader->loadClusterId(operationContext(),
+                                                 repl::ReadConcernLevel::kLocalReadConcern));
         _clusterId = clusterIdLoader->getClusterId();
     }
 
@@ -148,7 +141,7 @@ protected:
         // (Generic FCV reference): This FCV reference should exist across LTS binary versions.
         SetFeatureCompatibilityVersion fcvCmd(multiversion::GenericFCV::kLatest);
         fcvCmd.setFromConfigServer(true);
-        fcvCmd.setDbName(DatabaseName::kAdmin);
+        fcvCmd.setDbName(NamespaceString::kAdminDb);
         const auto setFcvObj = fcvCmd.toBSON(BSON("writeConcern" << writeConcern));
 
         onCommandForAddShard([&, target, response](const RemoteCommandRequest& request) {
@@ -179,188 +172,65 @@ protected:
         });
     }
 
-    void expectClusterParametersPushRequest(
-        const HostAndPort& target,
-        const std::vector<boost::optional<TenantId>>& tenantsOnTarget = {boost::none},
-        const TenantIdMap<std::vector<BSONObj>>& localClusterParameters = {}) {
-        expectClusterParametersRequest(target, true, tenantsOnTarget, localClusterParameters);
-    }
+    void expectClusterParametersRequest(const HostAndPort& target) {
+        if (!gFeatureFlagClusterWideConfig.isEnabled(serverGlobalParams.featureCompatibility))
+            return;
+        auto clusterParameterDocs = uassertStatusOK(getConfigShard()->exhaustiveFindOnConfig(
+            operationContext(),
+            ReadPreferenceSetting(ReadPreference::PrimaryOnly),
+            repl::ReadConcernLevel::kLocalReadConcern,
+            NamespaceString::kClusterParametersNamespace,
+            BSONObj(),
+            BSONObj(),
+            boost::none));
 
-    void expectClusterParametersPullRequest(
-        const HostAndPort& target,
-        const std::vector<boost::optional<TenantId>>& tenantsOnTarget = {boost::none}) {
-        expectClusterParametersRequest(target, false, tenantsOnTarget, {});
-    }
+        auto shardsDocs = uassertStatusOK(getConfigShard()->exhaustiveFindOnConfig(
+            operationContext(),
+            ReadPreferenceSetting(ReadPreference::PrimaryOnly),
+            repl::ReadConcernLevel::kLocalReadConcern,
+            ShardType::ConfigNS,
+            BSONObj(),
+            BSONObj(),
+            boost::none));
 
-    void expectClusterParametersRequest(
-        const HostAndPort& target,
-        bool isPush,
-        const std::vector<boost::optional<TenantId>>& tenantsOnTarget,
-        const TenantIdMap<std::vector<BSONObj>>& localClusterParameters) {
-
-        std::vector<std::string> dbnamesOnTarget;
-        for (const auto& tenantId : tenantsOnTarget) {
-            dbnamesOnTarget.push_back(
-                DatabaseName(tenantId, DatabaseName::kConfig.db()).toStringWithTenantId());
-        }
-
-        if (gMultitenancySupport) {
-            // If in multitenancy mode, we expect to run a listDatabasesForAllTenants in order to
-            // get tenant list.
-            expectListDatabasesForAllTenants(target, tenantsOnTarget);
-        }
-
-        if (isPush) {
-            expectRemoveClusterParameterDocs(target, dbnamesOnTarget);
-            expectInsertClusterParameterDocs(target, localClusterParameters);
+        if (shardsDocs.docs.empty() && clusterParameterDocs.docs.empty()) {
+            expectFindClusterParameterDocs(target);
         } else {
-            expectFindClusterParameterDocs(target, dbnamesOnTarget);
+            expectRemoveClusterParameterDocs(target);
         }
     }
 
-    void checkLocalClusterParametersAfterPull(
-        const std::vector<boost::optional<TenantId>>& tenantsOnTarget = {boost::none}) {
-        DBDirectClient client(operationContext());
-        for (const auto& tenantId : tenantsOnTarget) {
-            FindCommandRequest findCmd(NamespaceString::makeClusterParametersNSS(tenantId));
-            auto cursor = client.find(std::move(findCmd));
-            std::vector<BSONObj> results;
-            while (cursor->more()) {
-                results.push_back(cursor->next());
-            }
-            ASSERT_EQ(results.size(), 1);
-            ASSERT_EQ(results[0]["_id"].String(), "testStrClusterParameter");
-            ASSERT_EQ(results[0]["strData"].String(),
-                      DatabaseName(tenantId, DatabaseName::kConfig.db()).toStringWithTenantId());
-        }
-    }
-
-    void expectListDatabasesForAllTenants(
-        const HostAndPort& target, const std::vector<boost::optional<TenantId>>& tenantsOnTarget) {
+    void expectRemoveClusterParameterDocs(const HostAndPort& target) {
         onCommandForAddShard([&](const RemoteCommandRequest& request) {
             ASSERT_EQ(request.target, target);
-            ASSERT_EQ(request.dbname, DatabaseName::kAdmin.db());
-            ASSERT_EQ(request.cmdObj["listDatabasesForAllTenants"].Int(), 1);
-            BSONArrayBuilder b;
-            for (const auto& tenantId : tenantsOnTarget) {
-                if (tenantId) {
-                    b.append(BSON("name"
-                                  << "config"
-                                  << "tenantId" << OID(tenantId->toString())));
-                } else {
-                    b.append(BSON("name"
-                                  << "config"));
-                }
-            }
-            return BSON("ok" << 1 << "databases" << b.done());
+            ASSERT_EQ(request.dbname, NamespaceString::kClusterParametersNamespace.db());
+            ASSERT_BSONOBJ_EQ(request.cmdObj,
+                              BSON("delete" << NamespaceString::kClusterParametersNamespace.coll()
+                                            << "bypassDocumentValidation" << false << "ordered"
+                                            << true << "deletes"
+                                            << BSON_ARRAY(BSON("q" << BSONObj() << "limit" << 0))
+                                            << "writeConcern"
+                                            << BSON("w"
+                                                    << "majority"
+                                                    << "wtimeout" << 60000)));
+            ASSERT_BSONOBJ_EQ(rpc::makeEmptyMetadata(), request.metadata);
+
+            return BSON("ok" << 1);
         });
     }
 
-    void expectRemoveClusterParameterDocs(const HostAndPort& target,
-                                          std::vector<std::string> dbnamesOnTarget) {
-        int n = dbnamesOnTarget.size();
-        while (n-- > 0) {
-            onCommandForAddShard([&](const RemoteCommandRequest& request) {
-                ASSERT_EQ(request.target, target);
-                auto it = std::find(dbnamesOnTarget.begin(), dbnamesOnTarget.end(), request.dbname);
-                ASSERT(it != dbnamesOnTarget.end());
-                dbnamesOnTarget.erase(it);
-                ASSERT_BSONOBJ_EQ(
-                    request.cmdObj,
-                    BSON("delete" << NamespaceString::kClusterParametersNamespace.coll()
-                                  << "bypassDocumentValidation" << false << "ordered" << true
-                                  << "deletes" << BSON_ARRAY(BSON("q" << BSONObj() << "limit" << 0))
-                                  << "writeConcern"
-                                  << BSON("w"
-                                          << "majority"
-                                          << "wtimeout" << 60000)));
-                ASSERT_BSONOBJ_EQ(rpc::makeEmptyMetadata(), request.metadata);
-
-                return BSON("ok" << 1);
-            });
-        }
-    }
-
-    void addLocalClusterParameters(TenantIdMap<std::vector<BSONObj>> localClusterParameters) {
-        for (const auto& [tenantId, params] : localClusterParameters) {
-            for (auto& param : params) {
-                SetClusterParameter setClusterParameterRequest(param);
-                setClusterParameterRequest.setDbName(
-                    DatabaseName(tenantId, DatabaseName::kAdmin.db()));
-                DBDirectClient client(operationContext());
-                ClusterParameterDBClientService dbService(client);
-                std::unique_ptr<ServerParameterService> parameterService =
-                    std::make_unique<ClusterParameterService>();
-                SetClusterParameterInvocation invocation{std::move(parameterService), dbService};
-                invocation.invoke(operationContext(),
-                                  setClusterParameterRequest,
-                                  boost::none,
-                                  ShardingCatalogClient::kLocalWriteConcern);
-            }
-        }
-    }
-
-    void expectInsertClusterParameterDocs(
-        const HostAndPort& target, TenantIdMap<std::vector<BSONObj>> localClusterParameters) {
-        int64_t n = std::accumulate(localClusterParameters.begin(),
-                                    localClusterParameters.end(),
-                                    0,
-                                    [](size_t accumulator, const auto& tenantParams) {
-                                        return accumulator + tenantParams.second.size();
-                                    });
-        while (n-- > 0) {
-            onCommandForAddShard([&](const RemoteCommandRequest& request) {
-                ASSERT_EQ(request.target, target);
-                int idx = request.dbname.find('_');
-                boost::optional<TenantId> tenantId = boost::none;
-                if (idx == OID::kOIDSize * 2) {
-                    // tenantId exists
-                    tenantId = TenantId(OID(request.dbname.substr(0, OID::kOIDSize * 2)));
-                }
-
-                // Check that the parameter and tenant match a parameter and tenant passed in.
-                auto it = localClusterParameters.find(tenantId);
-                ASSERT(it != localClusterParameters.end());
-
-                auto paramToSet = request.cmdObj["_shardsvrSetClusterParameter"].Obj();
-                auto itInner =
-                    std::find_if(it->second.begin(), it->second.end(), [&](const BSONObj& obj) {
-                        return obj.woCompare(paramToSet) == 0;
-                    });
-                ASSERT(itInner != it->second.end());
-                it->second.erase(itInner);
-
-                ASSERT_BSONOBJ_EQ(rpc::makeEmptyMetadata(), request.metadata);
-                return BSON("ok" << 1);
-            });
-        }
-    }
-
-    void expectFindClusterParameterDocs(const HostAndPort& target,
-                                        std::vector<std::string> dbnamesOnTarget) {
-        int n = dbnamesOnTarget.size();
-        while (n-- > 0) {
-            onCommandForAddShard([&](const RemoteCommandRequest& request) {
-                ASSERT_EQ(request.target, target);
-                auto it = std::find(dbnamesOnTarget.begin(), dbnamesOnTarget.end(), request.dbname);
-                ASSERT(it != dbnamesOnTarget.end());
-                dbnamesOnTarget.erase(it);
-                ASSERT_BSONOBJ_EQ(request.cmdObj,
-                                  BSON("find" << NamespaceString::kClusterParametersNamespace.coll()
-                                              << "maxTimeMS" << 30000 << "readConcern"
-                                              << BSON("level"
-                                                      << "majority")));
-                auto cursorRes =
-                    CursorResponse(NamespaceString::createNamespaceString_forTest(
-                                       DatabaseName(request.dbname),
-                                       NamespaceString::kClusterParametersNamespace.coll()),
-                                   0,
-                                   {BSON("_id"
-                                         << "testStrClusterParameter"
-                                         << "strData" << request.dbname)});
-                return cursorRes.toBSON(CursorResponse::ResponseType::InitialResponse);
-            });
-        }
+    void expectFindClusterParameterDocs(const HostAndPort& target) {
+        onCommandForAddShard([&](const RemoteCommandRequest& request) {
+            ASSERT_EQ(request.target, target);
+            ASSERT_EQ(request.dbname, NamespaceString::kClusterParametersNamespace.db());
+            ASSERT_BSONOBJ_EQ(request.cmdObj,
+                              BSON("find" << NamespaceString::kClusterParametersNamespace.coll()
+                                          << "maxTimeMS" << 30000 << "readConcern"
+                                          << BSON("level"
+                                                  << "majority")));
+            auto cursorRes = CursorResponse(NamespaceString::kClusterParametersNamespace, 0, {});
+            return cursorRes.toBSON(CursorResponse::ResponseType::InitialResponse);
+        });
     }
 
     /**
@@ -372,11 +242,10 @@ protected:
         using namespace add_shard_util;
         // Create the expected upsert shardIdentity command for this shardType.
         auto upsertCmdObj = createShardIdentityUpsertForAddShard(
-            createAddShardCmd(operationContext(), expectedShardName),
-            ShardingCatalogClient::kMajorityWriteConcern);
+            createAddShardCmd(operationContext(), expectedShardName));
 
         const auto opMsgRequest =
-            OpMsgRequest::fromDBAndBody(DatabaseName::kAdmin.db(), upsertCmdObj);
+            OpMsgRequest::fromDBAndBody(NamespaceString::kAdminDb, upsertCmdObj);
         expectUpdatesReturnSuccess(expectedHost,
                                    NamespaceString(NamespaceString::kServerConfigurationNamespace),
                                    UpdateOp::parse(opMsgRequest));
@@ -388,11 +257,10 @@ protected:
         using namespace add_shard_util;
         // Create the expected upsert shardIdentity command for this shardType.
         auto upsertCmdObj = createShardIdentityUpsertForAddShard(
-            createAddShardCmd(operationContext(), expectedShardName),
-            ShardingCatalogClient::kMajorityWriteConcern);
+            createAddShardCmd(operationContext(), expectedShardName));
 
         const auto opMsgRequest =
-            OpMsgRequest::fromDBAndBody(DatabaseName::kAdmin.db(), upsertCmdObj);
+            OpMsgRequest::fromDBAndBody(NamespaceString::kAdminDb, upsertCmdObj);
         expectUpdatesReturnFailure(expectedHost,
                                    NamespaceString(NamespaceString::kServerConfigurationNamespace),
                                    UpdateOp::parse(opMsgRequest),
@@ -415,11 +283,11 @@ protected:
             const auto addShardOpMsgRequest =
                 OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj);
 
-            auto addShardCmd =
-                AddShard::parse(IDLParserContext(AddShard::kCommandName), addShardOpMsgRequest);
+            auto addShardCmd = AddShard::parse(IDLParserErrorContext(AddShard::kCommandName),
+                                               addShardOpMsgRequest);
 
-            const auto& updateOpField = add_shard_util::createShardIdentityUpsertForAddShard(
-                addShardCmd, ShardingCatalogClient::kMajorityWriteConcern);
+            const auto& updateOpField =
+                add_shard_util::createShardIdentityUpsertForAddShard(addShardCmd);
 
             const auto updateOpMsgRequest =
                 OpMsgRequest::fromDBAndBody(request.dbname, updateOpField);
@@ -500,6 +368,7 @@ protected:
 
         ASSERT_EQUALS(expectedShard.getName(), foundShard.getName());
         ASSERT_EQUALS(expectedShard.getHost(), foundShard.getHost());
+        ASSERT_EQUALS(expectedShard.getMaxSizeMB(), foundShard.getMaxSizeMB());
         ASSERT_EQUALS(expectedShard.getDraining(), foundShard.getDraining());
         ASSERT_EQUALS((int)expectedShard.getState(), (int)foundShard.getState());
         ASSERT_TRUE(foundShard.getTags().empty());
@@ -526,7 +395,7 @@ protected:
             operationContext(),
             ReadPreferenceSetting{ReadPreference::PrimaryOnly},
             repl::ReadConcernLevel::kLocalReadConcern,
-            NamespaceString::createNamespaceString_forTest("config.changelog"),
+            NamespaceString("config.changelog"),
             BSON("what"
                  << "addShard"
                  << "details.name" << addedShard.getName()),
@@ -570,8 +439,7 @@ TEST_F(AddShardTest, CreateShardIdentityUpsertForAddShard) {
                      << "majority"
                      << "wtimeout" << 60000));
     auto addShardCmd = add_shard_util::createAddShardCmd(operationContext(), shardName);
-    auto actualBSON = add_shard_util::createShardIdentityUpsertForAddShard(
-        addShardCmd, ShardingCatalogClient::kMajorityWriteConcern);
+    auto actualBSON = add_shard_util::createShardIdentityUpsertForAddShard(addShardCmd);
     ASSERT_BSONOBJ_EQ(expectedBSON, actualBSON);
 }
 
@@ -591,6 +459,7 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
     ShardType expectedShard;
     expectedShard.setName(expectedShardName);
     expectedShard.setHost("StandaloneHost:12345");
+    expectedShard.setMaxSizeMB(100);
     expectedShard.setState(ShardType::ShardState::kShardAware);
 
     DatabaseType discoveredDB1(
@@ -609,7 +478,7 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
                           ->addShard(opCtx.get(),
                                      &expectedShardName,
                                      assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                     false));
+                                     100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -626,8 +495,7 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
                              BSON("name" << discoveredDB1.getName() << "sizeOnDisk" << 2000),
                              BSON("name" << discoveredDB2.getName() << "sizeOnDisk" << 5000)});
 
-    expectCollectionDrop(
-        shardTarget, NamespaceString::createNamespaceString_forTest("config", "system.sessions"));
+    expectCollectionDrop(shardTarget, NamespaceString("config", "system.sessions"));
 
     // The shard receives the _addShard command
     expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
@@ -635,288 +503,9 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
     // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
     expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
 
-    // The shard receives a find to pull all cluster parameters from the new shard into this shard.
-    expectClusterParametersPullRequest(shardTarget);
-
-    // The shard receives the setFeatureCompatibilityVersion command.
-    expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1), expectWriteConcern.toBSON());
-
-    // Wait for the addShard to complete before checking the config database
-    future.timed_get(kLongFutureTimeout);
-
-    // Ensure that the shard document was properly added to config.shards.
-    assertShardExists(expectedShard);
-
-    // Ensure that the databases detected from the shard were properly added to config.database.
-    assertDatabaseExists(discoveredDB1);
-    assertDatabaseExists(discoveredDB2);
-
-    assertChangeWasLogged(expectedShard);
-
-    checkLocalClusterParametersAfterPull();
-}
-
-TEST_F(AddShardTest, StandaloneBasicPushSuccess) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        std::make_unique<RemoteCommandTargeterMock>());
-    HostAndPort shardTarget("StandaloneHost:12345");
-    targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
-    targeter->setFindHostReturnValue(shardTarget);
-
-    targeterFactory()->addTargeterToReturn(ConnectionString(shardTarget), std::move(targeter));
-
-    // Add some cluster parameters to push to the new shard.
-    const TenantIdMap<std::vector<BSONObj>>& localClusterParameters = {
-        {boost::none,
-         {BSON("testIntClusterParameter" << BSON("intData" << 5)),
-          BSON("testStrClusterParameter" << BSON("strData"
-                                                 << "abc"))}}};
-    addLocalClusterParameters(localClusterParameters);
-
-    std::string expectedShardName = "StandaloneShard";
-
-    // The shard doc inserted into the config.shards collection on the config server.
-    ShardType expectedShard;
-    expectedShard.setName(expectedShardName);
-    expectedShard.setHost("StandaloneHost:12345");
-    expectedShard.setState(ShardType::ShardState::kShardAware);
-
-    DatabaseType discoveredDB1(
-        "TestDB1", ShardId("StandaloneShard"), DatabaseVersion(UUID::gen(), Timestamp(1, 1)));
-    DatabaseType discoveredDB2(
-        "TestDB2", ShardId("StandaloneShard"), DatabaseVersion(UUID::gen(), Timestamp(1, 1)));
-
-    auto expectWriteConcern = ShardingCatalogClient::kMajorityWriteConcern;
-
-    auto future = launchAsync([this, expectedShardName, expectWriteConcern] {
-        ThreadClient tc(getServiceContext());
-        auto opCtx = Client::getCurrent()->makeOperationContext();
-        opCtx->setWriteConcern(expectWriteConcern);
-        auto shardName =
-            assertGet(ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(),
-                                     &expectedShardName,
-                                     assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                     false));
-        ASSERT_EQUALS(expectedShardName, shardName);
-    });
-
-    BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "maxWireVersion"
-                                        << WireVersion::LATEST_WIRE_VERSION);
-    expectIsMaster(shardTarget, commandResponse);
-
-    // Get databases list from new shard
-    expectListDatabases(
-        shardTarget,
-        std::vector<BSONObj>{BSON("name"
-                                  << "local"
-                                  << "sizeOnDisk" << 1000),
-                             BSON("name" << discoveredDB1.getName() << "sizeOnDisk" << 2000),
-                             BSON("name" << discoveredDB2.getName() << "sizeOnDisk" << 5000)});
-
-    expectCollectionDrop(
-        shardTarget, NamespaceString::createNamespaceString_forTest("config", "system.sessions"));
-
-    // The shard receives the _addShard command
-    expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
-
-    // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
-    expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
-
-    // The shard receives a remove to clear its cluster parameters, then inserts to push cluster
-    // parameters.
-    expectClusterParametersPushRequest(shardTarget, {boost::none}, localClusterParameters);
-
-    // The shard receives the setFeatureCompatibilityVersion command.
-    expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1), expectWriteConcern.toBSON());
-
-    // Wait for the addShard to complete before checking the config database
-    future.timed_get(kLongFutureTimeout);
-
-    // Ensure that the shard document was properly added to config.shards.
-    assertShardExists(expectedShard);
-
-    // Ensure that the databases detected from the shard were properly added to config.database.
-    assertDatabaseExists(discoveredDB1);
-    assertDatabaseExists(discoveredDB2);
-
-    assertChangeWasLogged(expectedShard);
-}
-
-TEST_F(AddShardTest, StandaloneMultitenantPullSuccess) {
-    gMultitenancySupport = true;
-    ScopeGuard guard([] { gMultitenancySupport = false; });
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        std::make_unique<RemoteCommandTargeterMock>());
-    HostAndPort shardTarget("StandaloneHost:12345");
-    targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
-    targeter->setFindHostReturnValue(shardTarget);
-
-    targeterFactory()->addTargeterToReturn(ConnectionString(shardTarget), std::move(targeter));
-
-
-    std::string expectedShardName = "StandaloneShard";
-
-    // The shard doc inserted into the config.shards collection on the config server.
-    ShardType expectedShard;
-    expectedShard.setName(expectedShardName);
-    expectedShard.setHost("StandaloneHost:12345");
-    expectedShard.setState(ShardType::ShardState::kShardAware);
-
-    DatabaseType discoveredDB1(
-        "TestDB1", ShardId("StandaloneShard"), DatabaseVersion(UUID::gen(), Timestamp(1, 1)));
-    DatabaseType discoveredDB2(
-        "TestDB2", ShardId("StandaloneShard"), DatabaseVersion(UUID::gen(), Timestamp(1, 1)));
-
-    auto expectWriteConcern = ShardingCatalogClient::kMajorityWriteConcern;
-
-    auto future = launchAsync([this, expectedShardName, expectWriteConcern] {
-        ThreadClient tc(getServiceContext());
-        auto opCtx = Client::getCurrent()->makeOperationContext();
-        opCtx->setWriteConcern(expectWriteConcern);
-        auto shardName =
-            assertGet(ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(),
-                                     &expectedShardName,
-                                     assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                     false));
-        ASSERT_EQUALS(expectedShardName, shardName);
-    });
-
-    BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "maxWireVersion"
-                                        << WireVersion::LATEST_WIRE_VERSION);
-    expectIsMaster(shardTarget, commandResponse);
-
-    // Get databases list from new shard
-    expectListDatabases(
-        shardTarget,
-        std::vector<BSONObj>{BSON("name"
-                                  << "local"
-                                  << "sizeOnDisk" << 1000),
-                             BSON("name" << discoveredDB1.getName() << "sizeOnDisk" << 2000),
-                             BSON("name" << discoveredDB2.getName() << "sizeOnDisk" << 5000)});
-
-    expectCollectionDrop(
-        shardTarget, NamespaceString::createNamespaceString_forTest("config", "system.sessions"));
-
-    // The shard receives the _addShard command
-    expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
-
-    // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
-    expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
-
-    std::vector<boost::optional<TenantId>> tenantsOnTarget = {
-        boost::none,
-        TenantId(OID("123456789012345678901234")),
-        TenantId(OID("123456789012345678901235"))};
-
-    // The shard receives a listDatabases to enumerate all tenants, then a find per tenant to pull
-    // all cluster parameters. We supply a set of tenants which will be returned when finding all
-    // tenants.
-    expectClusterParametersPullRequest(shardTarget, tenantsOnTarget);
-
-    // The shard receives the setFeatureCompatibilityVersion command.
-    expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1), expectWriteConcern.toBSON());
-
-    // Wait for the addShard to complete before checking the config database
-    future.timed_get(kLongFutureTimeout);
-
-    // Ensure that the shard document was properly added to config.shards.
-    assertShardExists(expectedShard);
-
-    // Ensure that the databases detected from the shard were properly added to config.database.
-    assertDatabaseExists(discoveredDB1);
-    assertDatabaseExists(discoveredDB2);
-
-    assertChangeWasLogged(expectedShard);
-
-    checkLocalClusterParametersAfterPull(tenantsOnTarget);
-}
-
-TEST_F(AddShardTest, StandaloneMultitenantPushSuccess) {
-    gMultitenancySupport = true;
-    ScopeGuard guard([] { gMultitenancySupport = false; });
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        std::make_unique<RemoteCommandTargeterMock>());
-    HostAndPort shardTarget("StandaloneHost:12345");
-    targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
-    targeter->setFindHostReturnValue(shardTarget);
-
-    targeterFactory()->addTargeterToReturn(ConnectionString(shardTarget), std::move(targeter));
-
-    // Add cluster params for multiple tenants to push to the new shard.
-    const TenantIdMap<std::vector<BSONObj>>& localClusterParameters = {
-        {boost::none,
-         {BSON("testIntClusterParameter" << BSON("intData" << 5)),
-          BSON("testStrClusterParameter" << BSON("strData"
-                                                 << "abc"))}},
-        {TenantId(OID("123456789012345678901234")),
-         {BSON("testIntClusterParameter" << BSON("intData" << 8)),
-          BSON("testStrClusterParameter" << BSON("strData"
-                                                 << "def")),
-          BSON("testBoolClusterParameter" << BSON("boolData" << true))}},
-        {TenantId(OID("123456789012345678901235")),
-         {BSON("testIntClusterParameter" << BSON("intData" << 10))}}};
-    addLocalClusterParameters(localClusterParameters);
-
-    std::string expectedShardName = "StandaloneShard";
-
-    // The shard doc inserted into the config.shards collection on the config server.
-    ShardType expectedShard;
-    expectedShard.setName(expectedShardName);
-    expectedShard.setHost("StandaloneHost:12345");
-    expectedShard.setState(ShardType::ShardState::kShardAware);
-
-    DatabaseType discoveredDB1(
-        "TestDB1", ShardId("StandaloneShard"), DatabaseVersion(UUID::gen(), Timestamp(1, 1)));
-    DatabaseType discoveredDB2(
-        "TestDB2", ShardId("StandaloneShard"), DatabaseVersion(UUID::gen(), Timestamp(1, 1)));
-
-    auto expectWriteConcern = ShardingCatalogClient::kMajorityWriteConcern;
-
-    auto future = launchAsync([this, expectedShardName, expectWriteConcern] {
-        ThreadClient tc(getServiceContext());
-        auto opCtx = Client::getCurrent()->makeOperationContext();
-        opCtx->setWriteConcern(expectWriteConcern);
-        auto shardName =
-            assertGet(ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(),
-                                     &expectedShardName,
-                                     assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                     false));
-        ASSERT_EQUALS(expectedShardName, shardName);
-    });
-
-    BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "maxWireVersion"
-                                        << WireVersion::LATEST_WIRE_VERSION);
-    expectIsMaster(shardTarget, commandResponse);
-
-    // Get databases list from new shard
-    expectListDatabases(
-        shardTarget,
-        std::vector<BSONObj>{BSON("name"
-                                  << "local"
-                                  << "sizeOnDisk" << 1000),
-                             BSON("name" << discoveredDB1.getName() << "sizeOnDisk" << 2000),
-                             BSON("name" << discoveredDB2.getName() << "sizeOnDisk" << 5000)});
-
-    expectCollectionDrop(
-        shardTarget, NamespaceString::createNamespaceString_forTest("config", "system.sessions"));
-
-    // The shard receives the _addShard command
-    expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
-
-    // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
-    expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
-
-    // The shard receives a listDatabases to enumerate all tenants, then a remove per tenant to
-    // clear its cluster parameters, then inserts to push all tenants' cluster parameters. We supply
-    // a set of tenants which will be returned when finding all tenants.
-    expectClusterParametersPushRequest(shardTarget,
-                                       {boost::none,
-                                        TenantId(OID("123456789012345678901234")),
-                                        TenantId(OID("123456789012345678901235"))},
-                                       localClusterParameters);
+    // The shard receives a delete op to clear any leftover clusterParameters doc or a find to get
+    // all cluster parameters in the replica set that is being promoted to a sharded cluster.
+    expectClusterParametersRequest(shardTarget);
 
     // The shard receives the setFeatureCompatibilityVersion command.
     expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1), expectWriteConcern.toBSON());
@@ -946,12 +535,13 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
     ShardType existingShard;
     existingShard.setName("shard0005");
     existingShard.setHost("existingHost:12345");
+    existingShard.setMaxSizeMB(100);
     existingShard.setState(ShardType::ShardState::kShardAware);
 
     // Add a pre-existing shard so when generating a name for the new shard it will have to go
     // higher than the existing one.
     ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
-                                                    NamespaceString::kConfigsvrShardsNamespace,
+                                                    ShardType::ConfigNS,
                                                     existingShard.toBSON(),
                                                     ShardingCatalogClient::kMajorityWriteConcern));
     assertShardExists(existingShard);
@@ -962,6 +552,7 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
     ShardType expectedShard;
     expectedShard.setName(expectedShardName);
     expectedShard.setHost(shardTarget.toString());
+    expectedShard.setMaxSizeMB(100);
     expectedShard.setState(ShardType::ShardState::kShardAware);
 
     DatabaseType discoveredDB1(
@@ -974,7 +565,7 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto shardName =
             assertGet(ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), nullptr, ConnectionString(shardTarget), false));
+                          ->addShard(opCtx.get(), nullptr, ConnectionString(shardTarget), 100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -991,8 +582,7 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
                              BSON("name" << discoveredDB1.getName() << "sizeOnDisk" << 2000),
                              BSON("name" << discoveredDB2.getName() << "sizeOnDisk" << 5000)});
 
-    expectCollectionDrop(
-        shardTarget, NamespaceString::createNamespaceString_forTest("config", "system.sessions"));
+    expectCollectionDrop(shardTarget, NamespaceString("config", "system.sessions"));
 
     // The shard receives the _addShard command
     expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
@@ -1000,8 +590,9 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
     // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
     expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
 
-    // The shard receives a find to pull all cluster parameters.
-    expectClusterParametersPushRequest(shardTarget);
+    // The shard receives a delete op to clear any leftover clusterParameters doc or a find to get
+    // all cluster parameters in the replica set that is being promoted to a sharded cluster.
+    expectClusterParametersRequest(shardTarget);
 
     // The shard receives the setFeatureCompatibilityVersion command
     expectSetFeatureCompatibilityVersion(
@@ -1032,7 +623,7 @@ TEST_F(AddShardTest, AddSCCCConnectionStringAsShard) {
         auto opCtx = Client::getCurrent()->makeOperationContext();
         const std::string shardName("StandaloneShard");
         auto status = ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &shardName, invalidConn, false);
+                          ->addShard(opCtx.get(), &shardName, invalidConn, 100);
         ASSERT_EQUALS(ErrorCodes::BadValue, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "Invalid connection string");
     });
@@ -1052,7 +643,7 @@ TEST_F(AddShardTest, EmptyShardName) {
                           ->addShard(opCtx.get(),
                                      &expectedShardName,
                                      assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                     false);
+                                     100);
         ASSERT_EQUALS(ErrorCodes::BadValue, status);
         ASSERT_EQUALS("shard name cannot be empty", status.getStatus().reason());
     });
@@ -1076,7 +667,7 @@ TEST_F(AddShardTest, UnreachableHost) {
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status =
             ShardingCatalogManager::get(opCtx.get())
-                ->addShard(opCtx.get(), &expectedShardName, ConnectionString(shardTarget), false);
+                ->addShard(opCtx.get(), &expectedShardName, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "host unreachable");
     });
@@ -1103,7 +694,7 @@ TEST_F(AddShardTest, AddMongosAsShard) {
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status =
             ShardingCatalogManager::get(opCtx.get())
-                ->addShard(opCtx.get(), &expectedShardName, ConnectionString(shardTarget), false);
+                ->addShard(opCtx.get(), &expectedShardName, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(ErrorCodes::IllegalOperation, status);
     });
 
@@ -1130,7 +721,7 @@ TEST_F(AddShardTest, AddReplicaSetShardAsStandalone) {
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status =
             ShardingCatalogManager::get(opCtx.get())
-                ->addShard(opCtx.get(), &expectedShardName, ConnectionString(shardTarget), false);
+                ->addShard(opCtx.get(), &expectedShardName, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "use replica set url format");
     });
@@ -1160,7 +751,7 @@ TEST_F(AddShardTest, AddStandaloneHostShardAsReplicaSet) {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status = ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &expectedShardName, connString, false);
+                          ->addShard(opCtx.get(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "host did not return a set name");
     });
@@ -1189,7 +780,7 @@ TEST_F(AddShardTest, ReplicaSetMistmatchedReplicaSetName) {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status = ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &expectedShardName, connString, false);
+                          ->addShard(opCtx.get(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "does not match the actual set name");
     });
@@ -1219,7 +810,7 @@ TEST_F(AddShardTest, ShardIsCSRSConfigServer) {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status = ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &expectedShardName, connString, false);
+                          ->addShard(opCtx.get(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(),
                                "as a shard since it is a config server");
@@ -1251,7 +842,7 @@ TEST_F(AddShardTest, ReplicaSetMissingHostsProvidedInSeedList) {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status = ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &expectedShardName, connString, false);
+                          ->addShard(opCtx.get(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(),
                                "host2:12345 does not belong to replica set");
@@ -1285,7 +876,7 @@ TEST_F(AddShardTest, AddShardWithNameConfigFails) {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status = ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &expectedShardName, connString, false);
+                          ->addShard(opCtx.get(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::BadValue, status);
         ASSERT_EQUALS(status.getStatus().reason(),
                       "use of shard replica set with name 'config' is not allowed");
@@ -1330,7 +921,7 @@ TEST_F(AddShardTest, ShardContainsExistingDatabase) {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto status = ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &expectedShardName, connString, false);
+                          ->addShard(opCtx.get(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(
             status.getStatus().reason(),
@@ -1367,6 +958,7 @@ TEST_F(AddShardTest, SuccessfullyAddReplicaSet) {
     ShardType expectedShard;
     expectedShard.setName(expectedShardName);
     expectedShard.setHost(connString.toString());
+    expectedShard.setMaxSizeMB(100);
     expectedShard.setState(ShardType::ShardState::kShardAware);
 
     DatabaseType discoveredDB(
@@ -1376,80 +968,7 @@ TEST_F(AddShardTest, SuccessfullyAddReplicaSet) {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto shardName = assertGet(ShardingCatalogManager::get(opCtx.get())
-                                       ->addShard(opCtx.get(), nullptr, connString, false));
-        ASSERT_EQUALS(expectedShardName, shardName);
-    });
-
-    BSONArrayBuilder hosts;
-    hosts.append("host1:12345");
-    hosts.append("host2:12345");
-    BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "setName"
-                                        << "mySet"
-                                        << "hosts" << hosts.arr() << "maxWireVersion"
-                                        << WireVersion::LATEST_WIRE_VERSION);
-    expectIsMaster(shardTarget, commandResponse);
-
-    // Get databases list from new shard
-    expectListDatabases(shardTarget, std::vector<BSONObj>{BSON("name" << discoveredDB.getName())});
-
-    expectCollectionDrop(
-        shardTarget, NamespaceString::createNamespaceString_forTest("config", "system.sessions"));
-
-    // The shard receives the _addShard command
-    expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
-
-    // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
-    expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
-
-    // The shard receives a find to pull all cluster parameters.
-    expectClusterParametersPullRequest(shardTarget);
-
-    // The shard receives the setFeatureCompatibilityVersion command.
-    expectSetFeatureCompatibilityVersion(
-        shardTarget, BSON("ok" << 1), operationContext()->getWriteConcern().toBSON());
-
-    // Wait for the addShard to complete before checking the config database
-    future.timed_get(kLongFutureTimeout);
-
-    // Ensure that the shard document was properly added to config.shards.
-    assertShardExists(expectedShard);
-
-    // Ensure that the databases detected from the shard were properly added to config.database.
-    assertDatabaseExists(discoveredDB);
-
-    assertChangeWasLogged(expectedShard);
-
-    checkLocalClusterParametersAfterPull();
-}
-
-TEST_F(AddShardTest, SuccessfullyAddConfigShard) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        std::make_unique<RemoteCommandTargeterMock>());
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagCatalogShard", true);
-    ConnectionString connString =
-        assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345"));
-    targeter->setConnectionStringReturnValue(connString);
-    HostAndPort shardTarget = connString.getServers().front();
-    targeter->setFindHostReturnValue(shardTarget);
-    targeterFactory()->addTargeterToReturn(connString, std::move(targeter));
-
-    std::string expectedShardName = "mySet";
-
-    // The shard doc inserted into the config.shards collection on the config server.
-    ShardType expectedShard;
-    expectedShard.setName(expectedShardName);
-    expectedShard.setHost(connString.toString());
-    expectedShard.setState(ShardType::ShardState::kShardAware);
-
-    DatabaseType discoveredDB(
-        "shardDB", ShardId(expectedShardName), DatabaseVersion(UUID::gen(), Timestamp(1, 1)));
-
-    auto future = launchAsync([this, &expectedShardName, &connString] {
-        ThreadClient tc(getServiceContext());
-        auto opCtx = Client::getCurrent()->makeOperationContext();
-        auto shardName =
-            assertGet(ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), nullptr, connString, true /* isConfigShard */));
+                                       ->addShard(opCtx.get(), nullptr, connString, 100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -1467,7 +986,19 @@ TEST_F(AddShardTest, SuccessfullyAddConfigShard) {
 
     expectCollectionDrop(shardTarget, NamespaceString("config", "system.sessions"));
 
-    // Should not run _addShard command, touch user_writes_critical_sections, setParameter, setFCV
+    // The shard receives the _addShard command
+    expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
+
+    // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
+    expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
+
+    // The shard receives a delete op to clear any leftover clusterParameters doc or a find to get
+    // all cluster parameters in the replica set that is being promoted to a sharded cluster.
+    expectClusterParametersRequest(shardTarget);
+
+    // The shard receives the setFeatureCompatibilityVersion command.
+    expectSetFeatureCompatibilityVersion(
+        shardTarget, BSON("ok" << 1), operationContext()->getWriteConcern().toBSON());
 
     // Wait for the addShard to complete before checking the config database
     future.timed_get(kLongFutureTimeout);
@@ -1499,6 +1030,7 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
     ShardType expectedShard;
     expectedShard.setName(expectedShardName);
     expectedShard.setHost(fullConnString.toString());
+    expectedShard.setMaxSizeMB(100);
     expectedShard.setState(ShardType::ShardState::kShardAware);
 
     DatabaseType discoveredDB(
@@ -1508,7 +1040,7 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto shardName = assertGet(ShardingCatalogManager::get(opCtx.get())
-                                       ->addShard(opCtx.get(), nullptr, seedString, false));
+                                       ->addShard(opCtx.get(), nullptr, seedString, 100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -1524,8 +1056,7 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
     // Get databases list from new shard
     expectListDatabases(shardTarget, std::vector<BSONObj>{BSON("name" << discoveredDB.getName())});
 
-    expectCollectionDrop(
-        shardTarget, NamespaceString::createNamespaceString_forTest("config", "system.sessions"));
+    expectCollectionDrop(shardTarget, NamespaceString("config", "system.sessions"));
 
     // The shard receives the _addShard command
     expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
@@ -1533,8 +1064,9 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
     // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
     expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
 
-    // The shard receives a find to pull all cluster parameters.
-    expectClusterParametersPullRequest(shardTarget);
+    // The shard receives a delete op to clear any leftover clusterParameters doc or a find to get
+    // all cluster parameters in the replica set that is being promoted to a sharded cluster.
+    expectClusterParametersRequest(shardTarget);
 
     // The shard receives the setFeatureCompatibilityVersion command.
     expectSetFeatureCompatibilityVersion(
@@ -1553,8 +1085,6 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
     // discovered additional hosts.
     expectedShard.setHost(seedString.toString());
     assertChangeWasLogged(expectedShard);
-
-    checkLocalClusterParametersAfterPull();
 }
 
 TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
@@ -1573,6 +1103,7 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
     ShardType expectedShard;
     expectedShard.setName(expectedShardName);
     expectedShard.setHost("StandaloneHost:12345");
+    expectedShard.setMaxSizeMB(100);
     expectedShard.setState(ShardType::ShardState::kShardAware);
 
     DatabaseType discoveredDB1(
@@ -1593,7 +1124,7 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
         auto opCtx = Client::getCurrent()->makeOperationContext();
         auto shardName = assertGet(
             ShardingCatalogManager::get(opCtx.get())
-                ->addShard(opCtx.get(), &expectedShardName, ConnectionString(shardTarget), false));
+                ->addShard(opCtx.get(), &expectedShardName, ConnectionString(shardTarget), 100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -1610,8 +1141,7 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
                              BSON("name" << discoveredDB1.getName() << "sizeOnDisk" << 2000),
                              BSON("name" << discoveredDB2.getName() << "sizeOnDisk" << 5000)});
 
-    expectCollectionDrop(
-        shardTarget, NamespaceString::createNamespaceString_forTest("config", "system.sessions"));
+    expectCollectionDrop(shardTarget, NamespaceString("config", "system.sessions"));
 
     // The shard receives the _addShard command
     expectAddShardCmdReturnSuccess(shardTarget, expectedShardName);
@@ -1619,8 +1149,9 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
     // The shard receives a delete op to clear any leftover user_writes_critical_sections doc.
     expectRemoveUserWritesCriticalSectionsDocs(shardTarget);
 
-    // The shard receives a find to pull all cluster parameters.
-    expectClusterParametersPullRequest(shardTarget);
+    // The shard receives a delete op to clear any leftover clusterParameters doc or a find to get
+    // all cluster parameters in the replica set that is being promoted to a sharded cluster.
+    expectClusterParametersRequest(shardTarget);
 
     // The shard receives the setFeatureCompatibilityVersion command.
     expectSetFeatureCompatibilityVersion(
@@ -1645,8 +1176,6 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
                        ErrorCodes::NamespaceNotFound);
 
     assertChangeWasLogged(expectedShard);
-
-    // We can't check local cluster parameter collection here since the update to it hangs.
 }
 
 // Tests both that trying to add a shard with the same host as an existing shard but with different
@@ -1673,11 +1202,12 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     ShardType existingShard;
     existingShard.setName(existingShardName);
     existingShard.setHost(shardTarget.toString());
+    existingShard.setMaxSizeMB(100);
     existingShard.setState(ShardType::ShardState::kShardAware);
 
     // Make sure the shard already exists.
     ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
-                                                    NamespaceString::kConfigsvrShardsNamespace,
+                                                    ShardType::ConfigNS,
                                                     existingShard.toBSON(),
                                                     ShardingCatalogClient::kMajorityWriteConcern));
     assertShardExists(existingShard);
@@ -1687,15 +1217,30 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future1 = launchAsync([&] {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
-        ASSERT_EQUALS(
-            ErrorCodes::IllegalOperation,
-            ShardingCatalogManager::get(opCtx.get())
-                ->addShard(opCtx.get(), &differentName, ConnectionString(shardTarget), false));
+        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
+                      ShardingCatalogManager::get(opCtx.get())
+                          ->addShard(opCtx.get(),
+                                     &differentName,
+                                     ConnectionString(shardTarget),
+                                     existingShard.getMaxSizeMB()));
     });
     future1.timed_get(kLongFutureTimeout);
 
     // Ensure that the shard document was unchanged.
     assertShardExists(existingShard);
+
+    // Adding the same standalone host with a different maxSize should fail.
+    auto future2 = launchAsync([&] {
+        ThreadClient tc(getServiceContext());
+        auto opCtx = Client::getCurrent()->makeOperationContext();
+        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
+                      ShardingCatalogManager::get(opCtx.get())
+                          ->addShard(opCtx.get(),
+                                     nullptr,
+                                     ConnectionString(shardTarget),
+                                     existingShard.getMaxSizeMB() + 100));
+    });
+    future2.timed_get(kLongFutureTimeout);
 
     // Adding the same standalone host but as part of a replica set should fail.
     // Ensures that even if the user changed the standalone shard to a single-node replica set, you
@@ -1709,7 +1254,7 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
                           ->addShard(opCtx.get(),
                                      nullptr,
                                      ConnectionString::forReplicaSet("mySet", {shardTarget}),
-                                     false));
+                                     existingShard.getMaxSizeMB()));
     });
     future3.timed_get(kLongFutureTimeout);
 
@@ -1720,9 +1265,11 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future4 = launchAsync([&] {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
-        auto shardName = assertGet(
-            ShardingCatalogManager::get(opCtx.get())
-                ->addShard(opCtx.get(), &existingShardName, ConnectionString(shardTarget), false));
+        auto shardName = assertGet(ShardingCatalogManager::get(opCtx.get())
+                                       ->addShard(opCtx.get(),
+                                                  &existingShardName,
+                                                  ConnectionString(shardTarget),
+                                                  existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future4.timed_get(kLongFutureTimeout);
@@ -1735,9 +1282,11 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future5 = launchAsync([&] {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
-        auto shardName =
-            assertGet(ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), nullptr, ConnectionString(shardTarget), false));
+        auto shardName = assertGet(ShardingCatalogManager::get(opCtx.get())
+                                       ->addShard(opCtx.get(),
+                                                  nullptr,
+                                                  ConnectionString(shardTarget),
+                                                  existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future5.timed_get(kLongFutureTimeout);
@@ -1762,37 +1311,39 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     ShardType existingShard;
     existingShard.setName(existingShardName);
     existingShard.setHost(connString.toString());
+    existingShard.setMaxSizeMB(100);
     existingShard.setState(ShardType::ShardState::kShardAware);
 
     // Make sure the shard already exists.
     ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
-                                                    NamespaceString::kConfigsvrShardsNamespace,
+                                                    ShardType::ConfigNS,
                                                     existingShard.toBSON(),
                                                     ShardingCatalogClient::kMajorityWriteConcern));
     assertShardExists(existingShard);
+
     // Adding the same connection string with a different shard name should fail.
     std::string differentName = "anotherShardName";
     auto future1 = launchAsync([&] {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &differentName, connString, false));
+        ASSERT_EQUALS(
+            ErrorCodes::IllegalOperation,
+            ShardingCatalogManager::get(opCtx.get())
+                ->addShard(opCtx.get(), &differentName, connString, existingShard.getMaxSizeMB()));
     });
     future1.timed_get(kLongFutureTimeout);
 
     // Ensure that the shard document was unchanged.
     assertShardExists(existingShard);
 
-    // Adding a different connection string with the same shard name should fail.
-    ConnectionString otherHostConnString2 =
-        assertGet(ConnectionString::parse("mySet1/host2:12345"));
+    // Adding the same connection string with a different maxSize should fail.
     auto future2 = launchAsync([&] {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &existingShardName, otherHostConnString2, false));
+        ASSERT_EQUALS(
+            ErrorCodes::IllegalOperation,
+            ShardingCatalogManager::get(opCtx.get())
+                ->addShard(opCtx.get(), nullptr, connString, existingShard.getMaxSizeMB() + 100));
     });
     future2.timed_get(kLongFutureTimeout);
 
@@ -1809,7 +1360,10 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
         auto opCtx = Client::getCurrent()->makeOperationContext();
         ASSERT_EQUALS(ErrorCodes::IllegalOperation,
                       ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), nullptr, ConnectionString(shardTarget), false));
+                          ->addShard(opCtx.get(),
+                                     nullptr,
+                                     ConnectionString(shardTarget),
+                                     existingShard.getMaxSizeMB()));
     });
     future3.timed_get(kLongFutureTimeout);
 
@@ -1829,7 +1383,7 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
                                      nullptr,
                                      ConnectionString::forReplicaSet(differentSetName,
                                                                      connString.getServers()),
-                                     false));
+                                     existingShard.getMaxSizeMB()));
     });
     future4.timed_get(kLongFutureTimeout);
 
@@ -1840,9 +1394,10 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future5 = launchAsync([&] {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
-        auto shardName =
-            assertGet(ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &existingShardName, connString, false));
+        auto shardName = assertGet(
+            ShardingCatalogManager::get(opCtx.get())
+                ->addShard(
+                    opCtx.get(), &existingShardName, connString, existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future5.timed_get(kLongFutureTimeout);
@@ -1852,8 +1407,9 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future6 = launchAsync([&] {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
-        auto shardName = assertGet(ShardingCatalogManager::get(opCtx.get())
-                                       ->addShard(opCtx.get(), nullptr, connString, false));
+        auto shardName = assertGet(
+            ShardingCatalogManager::get(opCtx.get())
+                ->addShard(opCtx.get(), nullptr, connString, existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future6.timed_get(kLongFutureTimeout);
@@ -1862,7 +1418,7 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     assertShardExists(existingShard);
 
     // Adding the same replica set but different host membership (but otherwise the same options)
-    // should fail.
+    // should succeed
     auto otherHost = connString.getServers().back();
     ConnectionString otherHostConnString = assertGet(ConnectionString::parse("mySet/host2:12345"));
     {
@@ -1876,9 +1432,11 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future7 = launchAsync([&] {
         ThreadClient tc(getServiceContext());
         auto opCtx = Client::getCurrent()->makeOperationContext();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), nullptr, otherHostConnString, false));
+        auto shardName = assertGet(
+            ShardingCatalogManager::get(opCtx.get())
+                ->addShard(
+                    opCtx.get(), nullptr, otherHostConnString, existingShard.getMaxSizeMB()));
+        ASSERT_EQUALS(existingShardName, shardName);
     });
     future7.timed_get(kLongFutureTimeout);
 
@@ -1886,77 +1444,5 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     assertShardExists(existingShard);
 }
 
-// Tests both that trying to add a shard with a different replica set as an existing shard but with
-// overlapping hosts fails, and that adding a shard with the same replica set as an existing shard
-// with overlapping hosts succeeds.
-TEST_F(AddShardTest, AddShardWithOverlappingHosts) {
-    std::unique_ptr<RemoteCommandTargeterMock> replsetTargeter(
-        std::make_unique<RemoteCommandTargeterMock>());
-    ConnectionString connString =
-        assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345,host3:12345"));
-    replsetTargeter->setConnectionStringReturnValue(connString);
-    HostAndPort shardTarget = connString.getServers().front();
-    replsetTargeter->setFindHostReturnValue(shardTarget);
-    targeterFactory()->addTargeterToReturn(connString, std::move(replsetTargeter));
-
-    std::string existingShardName = "myShard";
-    ShardType existingShard;
-    existingShard.setName(existingShardName);
-    existingShard.setHost(connString.toString());
-    existingShard.setState(ShardType::ShardState::kShardAware);
-
-    // Make sure the shard already exists.
-    ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
-                                                    NamespaceString::kConfigsvrShardsNamespace,
-                                                    existingShard.toBSON(),
-                                                    ShardingCatalogClient::kMajorityWriteConcern));
-    assertShardExists(existingShard);
-
-    // Adding a shard with a different replica set name but with some common hosts should fail.
-    auto otherHost = connString.getServers().front();
-    ConnectionString otherHostConnString =
-        assertGet(ConnectionString::parse("mySet1/host1:12345,host2:12345,host4:12345"));
-    {
-        // Add a targeter for the different seed string this addShard request will use.
-        std::unique_ptr<RemoteCommandTargeterMock> otherHostTargeter(
-            std::make_unique<RemoteCommandTargeterMock>());
-        otherHostTargeter->setConnectionStringReturnValue(otherHostConnString);
-        otherHostTargeter->setFindHostReturnValue(otherHost);
-        targeterFactory()->addTargeterToReturn(otherHostConnString, std::move(otherHostTargeter));
-    }
-    auto future1 = launchAsync([&] {
-        ThreadClient tc(getServiceContext());
-        auto opCtx = Client::getCurrent()->makeOperationContext();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), nullptr, otherHostConnString, false));
-    });
-    future1.timed_get(kLongFutureTimeout);
-    // Ensure that the shard document was unchanged.
-    assertShardExists(existingShard);
-
-    // Adding a shard with the same replica set name and some common hosts should pass.
-    ConnectionString otherHostConnString1 =
-        assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345,host4:12345"));
-    {
-        // Add a targeter for the different seed string this addShard request will use.
-        std::unique_ptr<RemoteCommandTargeterMock> otherHostTargeter(
-            std::make_unique<RemoteCommandTargeterMock>());
-        otherHostTargeter->setConnectionStringReturnValue(otherHostConnString1);
-        otherHostTargeter->setFindHostReturnValue(otherHost);
-        targeterFactory()->addTargeterToReturn(otherHostConnString1, std::move(otherHostTargeter));
-    }
-    auto future2 = launchAsync([&] {
-        ThreadClient tc(getServiceContext());
-        auto opCtx = Client::getCurrent()->makeOperationContext();
-        auto shardName =
-            assertGet(ShardingCatalogManager::get(opCtx.get())
-                          ->addShard(opCtx.get(), &existingShardName, otherHostConnString1, false));
-        ASSERT_EQUALS(existingShardName, shardName);
-    });
-    future2.timed_get(kLongFutureTimeout);
-    // Ensure that the shard document was unchanged.
-    assertShardExists(existingShard);
-}
 }  // namespace
 }  // namespace mongo

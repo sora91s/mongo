@@ -34,7 +34,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 
 namespace mongo {
-
+void initMyShutDownProgress();
 /**
  * Represents an error returned from a mongod or a mongos when it is in quiesce mode. The
  * error information defined here includes the remaining time the node has left

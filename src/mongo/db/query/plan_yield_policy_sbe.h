@@ -31,7 +31,6 @@
 
 #include "mongo/db/exec/sbe/stages/stages.h"
 #include "mongo/db/query/plan_yield_policy.h"
-#include "mongo/db/storage/storage_parameters_gen.h"
 
 namespace mongo {
 
@@ -42,10 +41,11 @@ public:
                        int yieldFrequency,
                        Milliseconds yieldPeriod,
                        const Yieldable* yieldable,
-                       std::unique_ptr<YieldPolicyCallbacks> callbacks)
+                       std::unique_ptr<YieldPolicyCallbacks> callbacks,
+                       bool useExperimentalCommitTxnBehavior)
         : PlanYieldPolicy(
               policy, clockSource, yieldFrequency, yieldPeriod, yieldable, std::move(callbacks)),
-          _useExperimentalCommitTxnBehavior(gYieldingSupportForSBE) {
+          _useExperimentalCommitTxnBehavior(useExperimentalCommitTxnBehavior) {
         uassert(4822879,
                 "WRITE_CONFLICT_RETRY_ONLY yield policy is not supported in SBE",
                 policy != YieldPolicy::WRITE_CONFLICT_RETRY_ONLY);

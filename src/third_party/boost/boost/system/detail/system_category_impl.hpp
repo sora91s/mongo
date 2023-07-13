@@ -11,9 +11,10 @@
 //  See library home page at http://www.boost.org/libs/system
 
 #include <boost/system/detail/system_category.hpp>
-#include <boost/system/detail/system_category_message.hpp>
 #include <boost/system/detail/error_condition.hpp>
+#include <boost/system/detail/generic_category.hpp>
 #include <boost/system/api_config.hpp>
+#include <boost/config.hpp>
 
 #if !defined(BOOST_POSIX_API) && !defined(BOOST_WINDOWS_API)
 #  error BOOST_POSIX_API or BOOST_WINDOWS_API must be defined
@@ -23,6 +24,7 @@
 
 #if defined(BOOST_WINDOWS_API)
 
+#include <boost/system/detail/system_category_message_win32.hpp>
 #include <boost/system/detail/system_category_condition_win32.hpp>
 
 inline boost::system::error_condition boost::system::detail::system_error_category::default_error_condition( int ev ) const BOOST_NOEXCEPT
@@ -35,27 +37,47 @@ inline boost::system::error_condition boost::system::detail::system_error_catego
     }
     else
     {
-        return error_condition( boost::system::detail::generic_value_tag( e2 ) );
+        return error_condition( e2, generic_category() );
     }
 }
 
-#else // #if defined(BOOST_WINDOWS_API)
-
-inline boost::system::error_condition boost::system::detail::system_error_category::default_error_condition( int ev ) const BOOST_NOEXCEPT
-{
-    return error_condition( boost::system::detail::generic_value_tag( ev ) );
-}
-
-#endif // #if defined(BOOST_WINDOWS_API)
-
 inline std::string boost::system::detail::system_error_category::message( int ev ) const
 {
-    return system_error_category_message( ev );
+    return system_category_message_win32( ev );
 }
 
 inline char const * boost::system::detail::system_error_category::message( int ev, char * buffer, std::size_t len ) const BOOST_NOEXCEPT
 {
-    return system_error_category_message( ev, buffer, len );
+    return system_category_message_win32( ev, buffer, len );
 }
+
+#else // #if defined(BOOST_WINDOWS_API)
+
+#include <boost/system/detail/generic_category_message.hpp>
+#include <boost/system/detail/is_generic_value.hpp>
+
+inline boost::system::error_condition boost::system::detail::system_error_category::default_error_condition( int ev ) const BOOST_NOEXCEPT
+{
+    if( is_generic_value( ev ) )
+    {
+        return error_condition( ev, generic_category() );
+    }
+    else
+    {
+        return error_condition( ev, *this );
+    }
+}
+
+inline std::string boost::system::detail::system_error_category::message( int ev ) const
+{
+    return generic_error_category_message( ev );
+}
+
+inline char const * boost::system::detail::system_error_category::message( int ev, char * buffer, std::size_t len ) const BOOST_NOEXCEPT
+{
+    return generic_error_category_message( ev, buffer, len );
+}
+
+#endif // #if defined(BOOST_WINDOWS_API)
 
 #endif // #ifndef BOOST_SYSTEM_DETAIL_SYSTEM_CATEGORY_IMPL_HPP_INCLUDED

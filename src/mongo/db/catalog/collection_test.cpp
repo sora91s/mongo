@@ -27,24 +27,22 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
+#include <memory>
+
 #include "mongo/bson/oid.h"
 #include "mongo/db/catalog/capped_utils.h"
 #include "mongo/db/catalog/catalog_test_fixture.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_mock.h"
 #include "mongo/db/catalog/collection_validation.h"
-#include "mongo/db/catalog/collection_write_path.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
-#include "mongo/db/index/index_access_method.h"
 #include "mongo/db/repl/storage_interface_impl.h"
-#include "mongo/db/update/document_diff_applier.h"
-#include "mongo/db/update/document_diff_calculator.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point.h"
-
-namespace mongo {
-namespace {
 
 #define ASSERT_ID_EQ(EXPR, ID)                        \
     [](boost::optional<Record> record, RecordId id) { \
@@ -52,8 +50,15 @@ namespace {
         ASSERT_EQ(record->id, id);                    \
     }((EXPR), (ID));
 
+namespace {
+
+using namespace mongo;
+
 class CollectionTest : public CatalogTestFixture {
 protected:
+    // TODO (SERVER-65194): Use wiredTiger.
+    CollectionTest() : CatalogTestFixture(Options{}.engine("ephemeralForTest")) {}
+
     void makeCapped(NamespaceString nss, long long cappedSize = 8192);
     void makeTimeseries(NamespaceString nss);
     void makeCollectionForMultikey(NamespaceString nss, StringData indexName);
@@ -73,24 +78,24 @@ void CollectionTest::makeTimeseries(NamespaceString nss) {
 }
 
 TEST_F(CollectionTest, CappedNotifierKillAndIsDead) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     makeCapped(nss);
 
     AutoGetCollectionForRead acfr(operationContext(), nss);
     const CollectionPtr& col = acfr.getCollection();
-    auto notifier = col->getRecordStore()->getCappedInsertNotifier();
+    auto notifier = col->getCappedInsertNotifier();
     ASSERT_FALSE(notifier->isDead());
     notifier->kill();
     ASSERT(notifier->isDead());
 }
 
 TEST_F(CollectionTest, CappedNotifierTimeouts) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     makeCapped(nss);
 
     AutoGetCollectionForRead acfr(operationContext(), nss);
     const CollectionPtr& col = acfr.getCollection();
-    auto notifier = col->getRecordStore()->getCappedInsertNotifier();
+    auto notifier = col->getCappedInsertNotifier();
     ASSERT_EQ(notifier->getVersion(), 0u);
 
     auto before = Date_t::now();
@@ -101,12 +106,12 @@ TEST_F(CollectionTest, CappedNotifierTimeouts) {
 }
 
 TEST_F(CollectionTest, CappedNotifierWaitAfterNotifyIsImmediate) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     makeCapped(nss);
 
     AutoGetCollectionForRead acfr(operationContext(), nss);
     const CollectionPtr& col = acfr.getCollection();
-    auto notifier = col->getRecordStore()->getCappedInsertNotifier();
+    auto notifier = col->getCappedInsertNotifier();
 
     auto prevVersion = notifier->getVersion();
     notifier->notifyAll();
@@ -120,12 +125,12 @@ TEST_F(CollectionTest, CappedNotifierWaitAfterNotifyIsImmediate) {
 }
 
 TEST_F(CollectionTest, CappedNotifierWaitUntilAsynchronousNotifyAll) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     makeCapped(nss);
 
     AutoGetCollectionForRead acfr(operationContext(), nss);
     const CollectionPtr& col = acfr.getCollection();
-    auto notifier = col->getRecordStore()->getCappedInsertNotifier();
+    auto notifier = col->getCappedInsertNotifier();
     auto prevVersion = notifier->getVersion();
     auto thisVersion = prevVersion + 1;
 
@@ -145,12 +150,12 @@ TEST_F(CollectionTest, CappedNotifierWaitUntilAsynchronousNotifyAll) {
 }
 
 TEST_F(CollectionTest, CappedNotifierWaitUntilAsynchronousKill) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     makeCapped(nss);
 
     AutoGetCollectionForRead acfr(operationContext(), nss);
     const CollectionPtr& col = acfr.getCollection();
-    auto notifier = col->getRecordStore()->getCappedInsertNotifier();
+    auto notifier = col->getCappedInsertNotifier();
     auto prevVersion = notifier->getVersion();
 
     auto before = Date_t::now();
@@ -169,50 +174,50 @@ TEST_F(CollectionTest, CappedNotifierWaitUntilAsynchronousKill) {
 }
 
 TEST_F(CollectionTest, HaveCappedWaiters) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     makeCapped(nss);
 
     AutoGetCollectionForRead acfr(operationContext(), nss);
     const CollectionPtr& col = acfr.getCollection();
-    ASSERT(!col->getRecordStore()->haveCappedWaiters());
+    ASSERT_FALSE(col->getCappedCallback()->haveCappedWaiters());
     {
-        auto notifier = col->getRecordStore()->getCappedInsertNotifier();
-        ASSERT(col->getRecordStore()->haveCappedWaiters());
+        auto notifier = col->getCappedInsertNotifier();
+        ASSERT(col->getCappedCallback()->haveCappedWaiters());
     }
-    ASSERT(!col->getRecordStore()->haveCappedWaiters());
+    ASSERT_FALSE(col->getCappedCallback()->haveCappedWaiters());
 }
 
 TEST_F(CollectionTest, NotifyCappedWaitersIfNeeded) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     makeCapped(nss);
 
     AutoGetCollectionForRead acfr(operationContext(), nss);
     const CollectionPtr& col = acfr.getCollection();
-    col->getRecordStore()->notifyCappedWaitersIfNeeded();
+    col->getCappedCallback()->notifyCappedWaitersIfNeeded();
     {
-        auto notifier = col->getRecordStore()->getCappedInsertNotifier();
+        auto notifier = col->getCappedInsertNotifier();
         ASSERT_EQ(notifier->getVersion(), 0u);
-        col->getRecordStore()->notifyCappedWaitersIfNeeded();
+        col->getCappedCallback()->notifyCappedWaitersIfNeeded();
         ASSERT_EQ(notifier->getVersion(), 1u);
     }
 }
 
 TEST_F(CollectionTest, AsynchronouslyNotifyCappedWaitersIfNeeded) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     makeCapped(nss);
 
     AutoGetCollectionForRead acfr(operationContext(), nss);
     const CollectionPtr& col = acfr.getCollection();
-    auto notifier = col->getRecordStore()->getCappedInsertNotifier();
+    auto notifier = col->getCappedInsertNotifier();
     auto prevVersion = notifier->getVersion();
     auto thisVersion = prevVersion + 1;
 
     auto before = Date_t::now();
     notifier->waitUntil(prevVersion, before + Milliseconds(25));
-    stdx::thread thread([before, prevVersion, notifier] {
+    stdx::thread thread([before, prevVersion, &col] {
         auto after = Date_t::now();
         ASSERT_GTE(after - before, Milliseconds(25));
-        notifier->notifyAll();
+        col->getCappedCallback()->notifyCappedWaitersIfNeeded();
     });
     notifier->waitUntil(prevVersion, before + Seconds(25));
     auto after = Date_t::now();
@@ -242,116 +247,8 @@ void CollectionTest::makeCollectionForMultikey(NamespaceString nss, StringData i
     }
 }
 
-TEST_F(CollectionTest, VerifyIndexIsUpdated) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
-    auto indexName = "myindex"_sd;
-    makeCollectionForMultikey(nss, indexName);
-
-    auto opCtx = operationContext();
-    AutoGetCollection autoColl(opCtx, nss, MODE_IX);
-    const auto& coll = autoColl.getCollection();
-
-    auto oldDoc = BSON("_id" << 1 << "a" << 1);
-    {
-        WriteUnitOfWork wuow(opCtx);
-        ASSERT_OK(
-            collection_internal::insertDocument(opCtx, coll, InsertStatement(oldDoc), nullptr));
-        wuow.commit();
-    }
-    auto idxCatalog = coll->getIndexCatalog();
-    auto idIndex = idxCatalog->findIdIndex(opCtx);
-    auto userIdx = idxCatalog->findIndexByName(opCtx, indexName);
-    auto oldRecordId = idIndex->getEntry()->accessMethod()->asSortedData()->findSingle(
-        opCtx, coll, BSON("_id" << 1));
-    auto oldIndexRecordID = userIdx->getEntry()->accessMethod()->asSortedData()->findSingle(
-        opCtx, coll, BSON("a" << 1));
-    ASSERT_TRUE(!oldRecordId.isNull());
-    ASSERT_EQ(oldRecordId, oldIndexRecordID);
-    {
-        Snapshotted<BSONObj> result;
-        ASSERT_TRUE(coll->findDoc(opCtx, oldRecordId, &result));
-        ASSERT_BSONOBJ_EQ(oldDoc, result.value());
-    }
-
-    auto newDoc = BSON("_id" << 1 << "a" << 5);
-    {
-        WriteUnitOfWork wuow(opCtx);
-        Snapshotted<BSONObj> oldSnap(opCtx->recoveryUnit()->getSnapshotId(), oldDoc);
-        CollectionUpdateArgs args{oldDoc};
-        collection_internal::updateDocument(opCtx,
-                                            coll,
-                                            oldRecordId,
-                                            oldSnap,
-                                            newDoc,
-                                            collection_internal::kUpdateAllIndexes,
-                                            nullptr,
-                                            &args);
-        wuow.commit();
-    }
-    auto indexRecordId = userIdx->getEntry()->accessMethod()->asSortedData()->findSingle(
-        opCtx, coll, BSON("a" << 1));
-    ASSERT_TRUE(indexRecordId.isNull());
-    indexRecordId = userIdx->getEntry()->accessMethod()->asSortedData()->findSingle(
-        opCtx, coll, BSON("a" << 5));
-    ASSERT_EQ(indexRecordId, oldRecordId);
-}
-
-TEST_F(CollectionTest, VerifyIndexIsUpdatedWithDamages) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
-    auto indexName = "myindex"_sd;
-    makeCollectionForMultikey(nss, indexName);
-
-    auto opCtx = operationContext();
-    AutoGetCollection autoColl(opCtx, nss, MODE_IX);
-    const auto& coll = autoColl.getCollection();
-
-    auto oldDoc = BSON("_id" << 1 << "a" << 1 << "b"
-                             << "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
-    {
-        WriteUnitOfWork wuow(opCtx);
-        ASSERT_OK(
-            collection_internal::insertDocument(opCtx, coll, InsertStatement(oldDoc), nullptr));
-        wuow.commit();
-    }
-    auto idxCatalog = coll->getIndexCatalog();
-    auto idIndex = idxCatalog->findIdIndex(opCtx);
-    auto userIdx = idxCatalog->findIndexByName(opCtx, indexName);
-    auto oldRecordId = idIndex->getEntry()->accessMethod()->asSortedData()->findSingle(
-        opCtx, coll, BSON("_id" << 1));
-    ASSERT_TRUE(!oldRecordId.isNull());
-
-    auto newDoc = BSON("_id" << 1 << "a" << 5 << "b" << 32);
-    auto diff = doc_diff::computeOplogDiff(oldDoc, newDoc, 0, nullptr);
-    ASSERT(diff);
-    auto damagesOutput = doc_diff::computeDamages(oldDoc, diff->diff, false);
-    {
-        WriteUnitOfWork wuow(opCtx);
-        Snapshotted<BSONObj> oldSnap(opCtx->recoveryUnit()->getSnapshotId(), oldDoc);
-        CollectionUpdateArgs args{oldDoc};
-        auto newDocStatus =
-            collection_internal::updateDocumentWithDamages(opCtx,
-                                                           coll,
-                                                           oldRecordId,
-                                                           oldSnap,
-                                                           damagesOutput.damageSource.get(),
-                                                           damagesOutput.damages,
-                                                           collection_internal::kUpdateAllIndexes,
-                                                           nullptr,
-                                                           &args);
-        ASSERT_OK(newDocStatus);
-        ASSERT_BSONOBJ_EQ(newDoc, newDocStatus.getValue());
-        wuow.commit();
-    }
-    auto indexRecordId = userIdx->getEntry()->accessMethod()->asSortedData()->findSingle(
-        opCtx, coll, BSON("a" << 1));
-    ASSERT_TRUE(indexRecordId.isNull());
-    indexRecordId = userIdx->getEntry()->accessMethod()->asSortedData()->findSingle(
-        opCtx, coll, BSON("a" << 5));
-    ASSERT_EQ(indexRecordId, oldRecordId);
-}
-
 TEST_F(CollectionTest, SetIndexIsMultikey) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     auto indexName = "myindex"_sd;
     makeCollectionForMultikey(nss, indexName);
 
@@ -373,7 +270,7 @@ TEST_F(CollectionTest, SetIndexIsMultikey) {
 }
 
 TEST_F(CollectionTest, SetIndexIsMultikeyRemovesUncommittedChangesOnRollback) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     auto indexName = "myindex"_sd;
     makeCollectionForMultikey(nss, indexName);
 
@@ -384,7 +281,7 @@ TEST_F(CollectionTest, SetIndexIsMultikeyRemovesUncommittedChangesOnRollback) {
     MultikeyPaths paths = {{0}};
 
     {
-        FailPointEnableBlock failPoint("WTWriteConflictException");
+        FailPointEnableBlock failPoint("EFTAlwaysThrowWCEOnWrite");
         WriteUnitOfWork wuow(opCtx);
         ASSERT_THROWS(coll->setIndexIsMultikey(opCtx, indexName, paths), WriteConflictException);
     }
@@ -398,7 +295,7 @@ TEST_F(CollectionTest, SetIndexIsMultikeyRemovesUncommittedChangesOnRollback) {
 }
 
 TEST_F(CollectionTest, ForceSetIndexIsMultikey) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     auto indexName = "myindex"_sd;
     makeCollectionForMultikey(nss, indexName);
 
@@ -421,7 +318,7 @@ TEST_F(CollectionTest, ForceSetIndexIsMultikey) {
 }
 
 TEST_F(CollectionTest, ForceSetIndexIsMultikeyRemovesUncommittedChangesOnRollback) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     auto indexName = "myindex"_sd;
     makeCollectionForMultikey(nss, indexName);
 
@@ -432,7 +329,7 @@ TEST_F(CollectionTest, ForceSetIndexIsMultikeyRemovesUncommittedChangesOnRollbac
     MultikeyPaths paths = {{0}};
 
     {
-        FailPointEnableBlock failPoint("WTWriteConflictException");
+        FailPointEnableBlock failPoint("EFTAlwaysThrowWCEOnWrite");
         WriteUnitOfWork wuow(opCtx);
         auto desc = coll->getIndexCatalog()->findIndexByName(opCtx, indexName);
         ASSERT_THROWS(coll->forceSetIndexIsMultikey(opCtx, desc, true, paths),
@@ -448,7 +345,7 @@ TEST_F(CollectionTest, ForceSetIndexIsMultikeyRemovesUncommittedChangesOnRollbac
 }
 
 TEST_F(CollectionTest, CheckTimeseriesBucketDocsForMixedSchemaData) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.system.buckets.ts");
+    NamespaceString nss("test.system.buckets.ts");
     makeTimeseries(nss);
 
     auto opCtx = operationContext();
@@ -473,11 +370,11 @@ TEST_F(CollectionTest, CheckTimeseriesBucketDocsForMixedSchemaData) {
             R"({ "control" : { "min" : { "x" : { "y" : 1 } },
                                "max" : { "x" : { "y" : [ 1, 2 ] } } } })"),
         // Insert -> {x: 1}, {x: {y: 10}}, {x: true}
-        ::mongo::fromjson(R"({ "control" : { "min" : { "x" : 1 },
+        ::mongo::fromjson(R"({ "control" : { "min" : { "x" : 1 }, 
                                              "max" : { "x" : true } } })"),
         // Insert -> {x: {y: 1}}, {x: {y: 2}}, {x: {y: null}}
         ::mongo::fromjson(
-            R"({ "control" : { "min" : { "x" : { "y" : null } },
+            R"({ "control" : { "min" : { "x" : { "y" : null } }, 
                                "max" : { "x" : { "y" : 2 } } } })"),
         // Insert -> {x: {y: true}}, {x: {y: false}}, {x: {y: null}}
         ::mongo::fromjson(
@@ -567,18 +464,38 @@ TEST_F(CollectionTest, CheckTimeseriesBucketDocsForMixedSchemaData) {
     }
 }
 
+TEST_F(CatalogTestFixture, CollectionPtrNoYieldTag) {
+    CollectionMock mock(NamespaceString("test.t"));
+
+    CollectionPtr coll(&mock, CollectionPtr::NoYieldTag{});
+    ASSERT_TRUE(coll);
+    ASSERT_EQ(coll.get(), &mock);
+
+    // Yield should be a no-op
+    coll.yield();
+    ASSERT_TRUE(coll);
+    ASSERT_EQ(coll.get(), &mock);
+
+    // Restore should also be a no-op
+    coll.restore();
+    ASSERT_TRUE(coll);
+    ASSERT_EQ(coll.get(), &mock);
+
+    coll.reset();
+    ASSERT_FALSE(coll);
+}
+
 TEST_F(CatalogTestFixture, CollectionPtrYieldable) {
-    CollectionMock beforeYield(NamespaceString::createNamespaceString_forTest("test.t"));
-    CollectionMock afterYield(NamespaceString::createNamespaceString_forTest("test.t"));
+    CollectionMock beforeYield(NamespaceString("test.t"));
+    CollectionMock afterYield(NamespaceString("test.t"));
 
     int numRestoreCalls = 0;
 
-    CollectionPtr coll(&beforeYield);
-    coll.makeYieldable(operationContext(),
-                       [&afterYield, &numRestoreCalls](OperationContext*, UUID) {
-                           ++numRestoreCalls;
-                           return &afterYield;
-                       });
+    CollectionPtr coll(
+        operationContext(), &beforeYield, [&afterYield, &numRestoreCalls](OperationContext*, UUID) {
+            ++numRestoreCalls;
+            return &afterYield;
+        });
 
     ASSERT_TRUE(coll);
     ASSERT_EQ(coll.get(), &beforeYield);
@@ -612,7 +529,7 @@ TEST_F(CatalogTestFixture, CollectionPtrYieldable) {
 }
 
 TEST_F(CatalogTestFixture, IsNotCapped) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     CollectionOptions options;
     ASSERT_OK(storageInterface()->createCollection(operationContext(), nss, options));
 
@@ -623,7 +540,7 @@ TEST_F(CatalogTestFixture, IsNotCapped) {
 
 TEST_F(CatalogTestFixture, CappedDeleteRecord) {
     // Insert a document into a capped collection that has a maximum document size of 1.
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     CollectionOptions options;
     options.capped = true;
     options.cappedMaxDocs = 1;
@@ -641,8 +558,7 @@ TEST_F(CatalogTestFixture, CappedDeleteRecord) {
 
     {
         WriteUnitOfWork wuow(operationContext());
-        ASSERT_OK(collection_internal::insertDocument(
-            operationContext(), coll, InsertStatement(firstDoc), nullptr));
+        ASSERT_OK(coll->insertDocument(operationContext(), InsertStatement(firstDoc), nullptr));
         wuow.commit();
     }
 
@@ -651,8 +567,7 @@ TEST_F(CatalogTestFixture, CappedDeleteRecord) {
     // Inserting the second document will remove the first one.
     {
         WriteUnitOfWork wuow(operationContext());
-        ASSERT_OK(collection_internal::insertDocument(
-            operationContext(), coll, InsertStatement(secondDoc), nullptr));
+        ASSERT_OK(coll->insertDocument(operationContext(), InsertStatement(secondDoc), nullptr));
         wuow.commit();
     }
 
@@ -667,7 +582,7 @@ TEST_F(CatalogTestFixture, CappedDeleteRecord) {
 
 TEST_F(CatalogTestFixture, CappedDeleteMultipleRecords) {
     // Insert multiple records at once, requiring multiple deletes.
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     CollectionOptions options;
     options.capped = true;
     options.cappedMaxDocs = 10;
@@ -687,8 +602,7 @@ TEST_F(CatalogTestFixture, CappedDeleteMultipleRecords) {
         WriteUnitOfWork wuow(operationContext());
         for (int i = 0; i < nToInsertFirst; i++) {
             BSONObj doc = BSON("_id" << i);
-            ASSERT_OK(collection_internal::insertDocument(
-                operationContext(), coll, InsertStatement(doc), nullptr));
+            ASSERT_OK(coll->insertDocument(operationContext(), InsertStatement(doc), nullptr));
         }
         wuow.commit();
     }
@@ -699,8 +613,7 @@ TEST_F(CatalogTestFixture, CappedDeleteMultipleRecords) {
         WriteUnitOfWork wuow(operationContext());
         for (int i = nToInsertFirst; i < nToInsertFirst + nToInsertSecond; i++) {
             BSONObj doc = BSON("_id" << i);
-            ASSERT_OK(collection_internal::insertDocument(
-                operationContext(), coll, InsertStatement(doc), nullptr));
+            ASSERT_OK(coll->insertDocument(operationContext(), InsertStatement(doc), nullptr));
         }
         wuow.commit();
     }
@@ -719,7 +632,7 @@ TEST_F(CatalogTestFixture, CappedDeleteMultipleRecords) {
 }
 
 TEST_F(CatalogTestFixture, CappedVisibilityEmptyInitialState) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     CollectionOptions options;
     options.capped = true;
     ASSERT_OK(storageInterface()->createCollection(operationContext(), nss, options));
@@ -780,7 +693,7 @@ TEST_F(CatalogTestFixture, CappedVisibilityEmptyInitialState) {
 }
 
 TEST_F(CatalogTestFixture, CappedVisibilityNonEmptyInitialState) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     CollectionOptions options;
     options.capped = true;
     ASSERT_OK(storageInterface()->createCollection(operationContext(), nss, options));
@@ -861,7 +774,7 @@ TEST_F(CatalogTestFixture, CappedVisibilityNonEmptyInitialState) {
 }
 
 TEST_F(CollectionTest, CappedCursorRollover) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     CollectionOptions options;
     options.capped = true;
     options.cappedMaxDocs = 5;
@@ -880,8 +793,7 @@ TEST_F(CollectionTest, CappedCursorRollover) {
         WriteUnitOfWork wuow(operationContext());
         for (int i = 0; i < numToInsertFirst; ++i) {
             const BSONObj doc = BSON("_id" << i);
-            ASSERT_OK(collection_internal::insertDocument(
-                operationContext(), coll, InsertStatement(doc), nullptr));
+            ASSERT_OK(coll->insertDocument(operationContext(), InsertStatement(doc), nullptr));
         }
         wuow.commit();
     }
@@ -899,19 +811,18 @@ TEST_F(CollectionTest, CappedCursorRollover) {
         WriteUnitOfWork wuow(operationContext());
         for (int i = numToInsertFirst; i < numToInsertFirst + 10; ++i) {
             const BSONObj doc = BSON("_id" << i);
-            ASSERT_OK(collection_internal::insertDocument(
-                operationContext(), coll, InsertStatement(doc), nullptr));
+            ASSERT_OK(coll->insertDocument(operationContext(), InsertStatement(doc), nullptr));
         }
         wuow.commit();
     }
 
     // Cursor should now be dead.
-    ASSERT_FALSE(cursor->restore(false));
+    ASSERT_FALSE(cursor->restore());
     ASSERT(!cursor->next());
 }
 
 TEST_F(CatalogTestFixture, CappedCursorYieldFirst) {
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test.t");
+    NamespaceString nss("test.t");
     CollectionOptions options;
     options.capped = true;
     ASSERT_OK(storageInterface()->createCollection(operationContext(), nss, options));
@@ -947,4 +858,3 @@ TEST_F(CatalogTestFixture, CappedCursorYieldFirst) {
 }
 
 }  // namespace
-}  // namespace mongo

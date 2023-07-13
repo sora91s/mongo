@@ -41,7 +41,7 @@
 
 namespace mongo {
 
-const NamespaceString CollectionType::ConfigNS(NamespaceString::kConfigsvrCollectionsNamespace);
+const NamespaceString CollectionType::ConfigNS("config.collections");
 
 CollectionType::CollectionType(NamespaceString nss,
                                OID epoch,
@@ -59,7 +59,7 @@ CollectionType::CollectionType(NamespaceString nss,
 }
 
 CollectionType::CollectionType(const BSONObj& obj) {
-    CollectionType::parseProtected(IDLParserContext("CollectionType"), obj);
+    CollectionType::parseProtected(IDLParserErrorContext("CollectionType"), obj);
     invariant(getTimestamp() != Timestamp(0, 0));
     uassert(ErrorCodes::BadValue,
             str::stream() << "Invalid namespace " << getNss(),

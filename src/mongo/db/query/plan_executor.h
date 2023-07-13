@@ -56,15 +56,6 @@ class RecordId;
 extern const OperationContext::Decoration<repl::OpTime> clientsLastKnownCommittedOpTime;
 
 /**
- * If a plan yielded because it encountered a sharding critical section,
- * 'planExecutorShardingCriticalSectionFuture' will be set to a future that becomes ready when the
- * critical section ends. This future can be waited on to hold off resuming the plan execution while
- * the critical section is still active.
- */
-extern const OperationContext::Decoration<boost::optional<SharedSemiFuture<void>>>
-    planExecutorShardingCriticalSectionFuture;
-
-/**
  * A PlanExecutor is the abstraction that knows how to crank a tree of stages into execution.
  * The executor is usually part of a larger abstraction that is interacting with the cache
  * and/or the query optimizer.
@@ -295,15 +286,6 @@ public:
      */
     virtual long long executeDelete() = 0;
 
-    /**
-     * If this plan executor has already executed a batched delete operation, returns the
-     * 'BatchedDeleteStats' describing the outcome of the batched delete. Illegal to call if either
-     * 1) the PlanExecutor is not a delete PlanExecutor that executed a batched delete, or 2) the
-     * PlanExecutor has not yet been executed either with 'executeDelete()' or by calling
-     * 'getNext()' until end-of-stream.
-     */
-    virtual BatchedDeleteStats getBatchedDeleteStats() = 0;
-
     //
     // Concurrency-related methods.
     //
@@ -384,35 +366,6 @@ public:
     virtual boost::optional<StringData> getExecutorType() const {
         return boost::none;
     }
-
-    /**
-     * Describes the query framework which an executor used.
-     */
-    enum class QueryFramework {
-        // Null value.
-        kUnknown,
-        // The entirety of this plan was executed in the classic execution engine.
-        kClassicOnly,
-        // This plan was executed using classic document source and any find pushdown was executed
-        // in the classic execution engine.
-        kClassicHybrid,
-        // The entirety of this plan was exectued in SBE via stage builders.
-        kSBEOnly,
-        // A portion of this plan was executed in SBE via stage builders.
-        kSBEHybrid,
-        // The entirely of this plan was executed using CQF. Hybrid CQF plans are not possible.
-        kCQF
-    };
-
-    /**
-     * Returns the query framework that this executor used.
-     */
-    virtual QueryFramework getQueryFramework() const = 0;
-
-    /**
-     * Sets whether the executor needs to return owned data.
-     */
-    virtual void setReturnOwnedData(bool returnOwnedData){};
 };
 
 }  // namespace mongo

@@ -29,7 +29,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include <MurmurHash3.h>
+#include <third_party/murmurhash3/MurmurHash3.h>
 
 #include "mongo/base/init.h"
 #include "mongo/db/bson/dotted_path_support.h"
@@ -41,6 +41,10 @@
 #include "mongo/util/str.h"
 
 namespace mongo {
+
+void initMyFtsIndexFormat() {
+    
+}
 
 namespace fts {
 
@@ -115,7 +119,8 @@ void FTSIndexFormat::getKeys(SharedBufferFragmentBuilder& pooledBufferBuilder,
                              KeyStringSet* keys,
                              KeyString::Version keyStringVersion,
                              Ordering ordering,
-                             const boost::optional<RecordId>& id) {
+                             boost::optional<RecordId> id) {
+    int extraSize = 0;
     vector<BSONElement> extrasBefore;
     vector<BSONElement> extrasAfter;
 
@@ -123,12 +128,14 @@ void FTSIndexFormat::getKeys(SharedBufferFragmentBuilder& pooledBufferBuilder,
     for (unsigned i = 0; i < spec.numExtraBefore(); i++) {
         auto indexedElement = extractNonFTSKeyElement(obj, spec.extraBefore(i));
         extrasBefore.push_back(indexedElement);
+        extraSize += indexedElement.size();
     }
 
     // Compute the non FTS key elements for the suffix.
     for (unsigned i = 0; i < spec.numExtraAfter(); i++) {
         auto indexedElement = extractNonFTSKeyElement(obj, spec.extraAfter(i));
         extrasAfter.push_back(indexedElement);
+        extraSize += indexedElement.size();
     }
 
     TermFrequencyMap term_freqs;

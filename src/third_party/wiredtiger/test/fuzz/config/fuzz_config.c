@@ -27,6 +27,8 @@
  */
 #include "fuzz_util.h"
 
+#include <assert.h>
+
 int LLVMFuzzerTestOneInput(const uint8_t *, size_t);
 
 /*
@@ -48,7 +50,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     if (!fuzzutil_sliced_input_init(&input, data, size, separator, sizeof(separator), 2))
         return (0);
 
-    testutil_assert(input.num_slices == 2);
+    assert(input.num_slices == 2);
     key = fuzzutil_slice_to_cstring(input.slices[0], input.sizes[0]);
     if (key == NULL)
         testutil_die(ENOMEM, "Failed to allocate key");

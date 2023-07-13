@@ -2,8 +2,10 @@
  * Verifies that the _id index can be created on a timeseries collection.
  *
  * @tags: [
- *   # We need a timeseries collection.
- *   requires_timeseries,
+ *   requires_fcv_52,
+ *   does_not_support_stepdowns,
+ *   does_not_support_transactions,
+ *   requires_getmore,
  * ]
  */
 (function() {

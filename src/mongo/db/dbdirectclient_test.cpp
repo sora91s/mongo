@@ -34,7 +34,7 @@
 namespace mongo {
 namespace {
 
-const NamespaceString kNs = NamespaceString::createNamespaceString_forTest("a.b");
+const NamespaceString kNs("a.b");
 
 class DBDirectClientTest : public ServiceContextMongoDTest {
 protected:
@@ -75,7 +75,7 @@ TEST_F(DBDirectClientTest, InsertDuplicateDocumentDoesNotThrow) {
     insertOp.setDocuments({BSON("_id" << 1), BSON("_id" << 1)});
     auto insertReply = client.insert(insertOp);
     ASSERT_EQ(insertReply.getN(), 1);
-    auto writeErrors = insertReply.getWriteErrors().value();
+    auto writeErrors = insertReply.getWriteErrors().get();
     ASSERT_EQ(writeErrors.size(), 1);
     ASSERT_EQ(writeErrors[0].getStatus(), ErrorCodes::DuplicateKey);
 }
@@ -111,7 +111,7 @@ TEST_F(DBDirectClientTest, UpdateDuplicateImmutableFieldDoesNotThrow) {
     auto updateReply = client.update(updateOp);
     ASSERT_EQ(updateReply.getN(), 0);
     ASSERT_EQ(updateReply.getNModified(), 0);
-    auto writeErrors = updateReply.getWriteErrors().value();
+    auto writeErrors = updateReply.getWriteErrors().get();
     ASSERT_EQ(writeErrors.size(), 1);
     ASSERT_EQ(writeErrors[0].getStatus(), ErrorCodes::ImmutableField);
 }
@@ -152,7 +152,7 @@ TEST_F(DBDirectClientTest, DeleteDocumentIncorrectHintDoesNotThrow) {
     }()});
     auto deleteReply = client.remove(deleteOp);
     ASSERT_EQ(deleteReply.getN(), 0);
-    auto writeErrors = deleteReply.getWriteErrors().value();
+    auto writeErrors = deleteReply.getWriteErrors().get();
     ASSERT_EQ(writeErrors.size(), 1);
     ASSERT_EQ(writeErrors[0].getStatus(), ErrorCodes::BadValue);
 }
@@ -171,9 +171,9 @@ TEST_F(DBDirectClientTest, ExhaustQuery) {
     ASSERT_FALSE(insertReply.getWriteErrors());
 
     // The query should work even though exhaust mode is requested.
-    FindCommandRequest findCmd{kNs};
-    findCmd.setBatchSize(2);
-    auto cursor = client.find(std::move(findCmd), ReadPreferenceSetting{}, ExhaustMode::kOn);
+    int batchSize = 2;
+    auto cursor = client.query_DEPRECATED(
+        kNs, BSONObj{}, Query{}, 0 /*limit*/, 0 /*skip*/, nullptr, QueryOption_Exhaust, batchSize);
     ASSERT_EQ(cursor->itcount(), numDocs);
 }
 

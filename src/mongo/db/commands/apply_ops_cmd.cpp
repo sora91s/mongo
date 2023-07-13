@@ -39,6 +39,7 @@
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/oplog_application_checks.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/jsobj.h"
@@ -199,18 +200,19 @@ public:
     }
 
     std::string help() const override {
-        return "internal command to apply oplog entries\n{ applyOps : [ ] }";
+        return "internal (sharding)\n{ applyOps : [ ] , preCondition : [ { ns : ... , q : ... , "
+               "res : ... } ] }";
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
+                                 const std::string& dbname,
                                  const BSONObj& cmdObj) const override {
         OplogApplicationValidity validity = validateApplyOpsCommand(cmdObj);
-        return OplogApplicationChecks::checkAuthForOperation(opCtx, dbName, cmdObj, validity);
+        return OplogApplicationChecks::checkAuthForCommand(opCtx, dbname, cmdObj, validity);
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         validateApplyOpsCommand(cmdObj);
@@ -260,7 +262,7 @@ public:
             opCtx);
 
         auto applyOpsStatus = CommandHelpers::appendCommandStatusNoThrow(
-            result, repl::applyOps(opCtx, dbName, cmdObj, oplogApplicationMode, &result));
+            result, repl::applyOps(opCtx, dbname, cmdObj, oplogApplicationMode, &result));
 
         return applyOpsStatus;
     }

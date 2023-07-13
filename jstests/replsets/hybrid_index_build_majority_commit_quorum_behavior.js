@@ -5,7 +5,6 @@
 (function() {
 
 "use strict";
-load("jstests/libs/fail_point_util.js");
 load("jstests/replsets/rslib.js");
 load('jstests/noPassthrough/libs/index_build.js');
 
@@ -54,6 +53,14 @@ function sanityChecks() {
     IndexBuildTest.assertIndexes(primaryColl, 2, ['_id_'], ['x_1']);
 }
 
+function pauseIndexBuild(conn, failpoint) {
+    assert.commandWorked(conn.adminCommand({configureFailPoint: failpoint, mode: 'alwaysOn'}));
+}
+
+function resumeIndexBuild(conn, failpoint) {
+    assert.commandWorked(conn.adminCommand({configureFailPoint: failpoint, mode: 'off'}));
+}
+
 function createIndex(dbName, collName, indexName) {
     jsTestLog("Create index '" + indexName + "'.");
     assert.commandWorked(db.getSiblingDB(dbName).runCommand({
@@ -64,24 +71,23 @@ function createIndex(dbName, collName, indexName) {
 }
 
 // Make secondary index build to hang after collection scan phase.
-const insertDumpFailPoint =
-    configureFailPoint(secondary, "hangAfterIndexBuildDumpsInsertsFromBulk");
+pauseIndexBuild(secondary, "hangAfterIndexBuildDumpsInsertsFromBulk");
 // Start the index build on primary in parallel shell.
 const joinCreateIndexThread =
     startParallelShell(funWithArgs(createIndex, dbName, collName, indexName), primary.port);
 
 jsTestLog("Waiting for Collection scan phase to complete");
-insertDumpFailPoint.wait();
+checkLog.contains(secondary, "Hanging after dumping inserts from bulk builder");
 sanityChecks();
-const firstDrainFailPoint = configureFailPoint(secondary, "hangAfterIndexBuildFirstDrain");
-insertDumpFailPoint.off();
+pauseIndexBuild(secondary, "hangAfterIndexBuildFirstDrain");
+resumeIndexBuild(secondary, "hangAfterIndexBuildDumpsInsertsFromBulk");
 
 jsTestLog("Waiting for first drain phase to complete");
-firstDrainFailPoint.wait();
+checkLog.contains(secondary, "Hanging after index build first drain");
 sanityChecks();
 // Make secondary to resume index build. This should allow secondary to vote
 // and make primary to commit index build.
-firstDrainFailPoint.off();
+resumeIndexBuild(secondary, "hangAfterIndexBuildFirstDrain");
 
 jsTestLog("Wait for create index thread to join");
 joinCreateIndexThread();

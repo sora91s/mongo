@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -34,20 +35,16 @@
 
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/concurrency/exception_util.h"
-#include "mongo/db/concurrency/lock_state.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/repl/noop_writer.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/repl_server_parameters_gen.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/testing_proctor.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 namespace mongo {
 namespace repl {
@@ -136,10 +133,7 @@ Status NoopWriter::startWritingPeriodicNoops(OpTime lastKnownOpTime) {
     invariant(!_noopRunner);
     _noopRunner =
         std::make_unique<PeriodicNoopRunner>(_writeInterval, [this](OperationContext* opCtx) {
-            // Noop writes are critical for the cluster stability, so we mark it as having Immediate
-            // priority. As a result it will skip both flow control and waiting for ticket
-            // acquisition.
-            SetAdmissionPriorityForLock priority(opCtx, AdmissionContext::Priority::kImmediate);
+            opCtx->setShouldParticipateInFlowControl(false);
             _writeNoop(opCtx);
         });
     return Status::OK();

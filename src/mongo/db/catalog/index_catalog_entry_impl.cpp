@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
 
 #include "mongo/platform/basic.h"
 
@@ -38,13 +39,13 @@
 #include "mongo/base/init.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/multi_key_path_tracker.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
@@ -52,12 +53,9 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/durable_catalog.h"
 #include "mongo/db/timeseries/timeseries_index_schema_conversion_functions.h"
-#include "mongo/db/transaction/transaction_participant.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
-
 
 namespace mongo {
 MONGO_FAIL_POINT_DEFINE(skipUpdateIndexMultikey);
@@ -72,6 +70,7 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* const opCtx,
     : _ident(ident),
       _descriptor(std::move(descriptor)),
       _catalogId(collection->getCatalogId()),
+      _ordering(Ordering::make(_descriptor->keyPattern())),
       _isReady(false),
       _isFrozen(isFrozen),
       _shouldValidateDocument(false),
@@ -89,6 +88,7 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* const opCtx,
         timeseries::doesBucketsIndexIncludeMeasurement(
             opCtx, collection->ns(), *collection->getTimeseriesOptions(), _descriptor->infoObj());
 
+    auto nss = DurableCatalog::get(opCtx)->getEntry(_catalogId).nss;
     const BSONObj& collation = _descriptor->collation();
     if (!collation.isEmpty()) {
         auto statusWithCollator =
@@ -104,7 +104,7 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* const opCtx,
         const BSONObj& filter = _descriptor->partialFilterExpression();
 
         _expCtxForFilter = make_intrusive<ExpressionContext>(
-            opCtx, CollatorInterface::cloneCollator(_collator.get()), collection->ns());
+            opCtx, CollatorInterface::cloneCollator(_collator.get()), nss);
 
         // Parsing the partial filter expression is not expected to fail here since the
         // expression would have been successfully parsed upstream during index creation.
@@ -116,26 +116,23 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* const opCtx,
         LOGV2_DEBUG(20350,
                     2,
                     "have filter expression for {namespace} {indexName} {filter}",
-                    "namespace"_attr = collection->ns(),
+                    "namespace"_attr = nss,
                     "indexName"_attr = _descriptor->indexName(),
                     "filter"_attr = redact(filter));
     }
 }
 
-void IndexCatalogEntryImpl::setAccessMethod(std::unique_ptr<IndexAccessMethod> accessMethod) {
+void IndexCatalogEntryImpl::init(std::unique_ptr<IndexAccessMethod> accessMethod) {
     invariant(!_accessMethod);
     _accessMethod = std::move(accessMethod);
-    CollectionQueryInfo::computeUpdateIndexData(this, _accessMethod.get(), &_indexedPaths);
 }
 
 bool IndexCatalogEntryImpl::isReady(OperationContext* opCtx) const {
     // For multi-document transactions, we can open a snapshot prior to checking the
     // minimumSnapshotVersion on a collection.  This means we are unprotected from reading
     // out-of-sync index catalog entries.  To fix this, we uassert if we detect that the
-    // in-memory catalog is out-of-sync with the on-disk catalog. This check is not necessary when
-    // point-in-time catalog lookups are enabled as the snapshot is always in sync.
-    if (opCtx->inMultiDocumentTransaction() &&
-        !feature_flags::gPointInTimeCatalogLookups.isEnabledAndIgnoreFCV()) {
+    // in-memory catalog is out-of-sync with the on-disk catalog.
+    if (opCtx->inMultiDocumentTransaction()) {
         if (!isPresentInMySnapshot(opCtx) || isReadyInMySnapshot(opCtx) != _isReady) {
             uasserted(ErrorCodes::SnapshotUnavailable,
                       str::stream() << "Unable to read from a snapshot due to pending collection"
@@ -173,17 +170,13 @@ MultikeyPaths IndexCatalogEntryImpl::getMultikeyPaths(OperationContext* opCtx,
 // ---
 
 void IndexCatalogEntryImpl::setMinimumVisibleSnapshot(Timestamp newMinimumVisibleSnapshot) {
-    if (!_minVisibleSnapshot || (newMinimumVisibleSnapshot > _minVisibleSnapshot.value())) {
+    if (!_minVisibleSnapshot || (newMinimumVisibleSnapshot > _minVisibleSnapshot.get())) {
         _minVisibleSnapshot = newMinimumVisibleSnapshot;
     }
 }
 
 void IndexCatalogEntryImpl::setIsReady(bool newIsReady) {
     _isReady = newIsReady;
-}
-
-void IndexCatalogEntryImpl::setIsFrozen(bool newIsFrozen) {
-    _isFrozen = newIsFrozen;
 }
 
 void IndexCatalogEntryImpl::setMultikey(OperationContext* opCtx,
@@ -377,17 +370,7 @@ Status IndexCatalogEntryImpl::_setMultikeyInMultiDocumentTransaction(
 }
 
 std::shared_ptr<Ident> IndexCatalogEntryImpl::getSharedIdent() const {
-    return _accessMethod ? _accessMethod->getSharedIdent() : nullptr;
-}
-
-const Ordering& IndexCatalogEntryImpl::ordering() const {
-    return _descriptor->ordering();
-}
-
-void IndexCatalogEntryImpl::setIdent(std::shared_ptr<Ident> newIdent) {
-    if (!_accessMethod)
-        return;
-    _accessMethod->setIdent(std::move(newIdent));
+    return {shared_from_this(), _accessMethod->getIdentPtr()};  // aliasing constructor
 }
 
 // ----

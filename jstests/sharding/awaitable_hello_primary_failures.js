@@ -1,8 +1,6 @@
 /**
  * Test to assert that the RSM behaves correctly when contacting the primary node fails in various
  * ways.
- *
- * @tags: [temporary_catalog_shard_incompatible]
  */
 
 // Checking UUID consistency and orphans involves talking to a shard node, which in this test is
@@ -10,7 +8,6 @@
 TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 (function() {
 "use strict";

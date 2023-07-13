@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/db/matcher/expression_geo.h"
 
@@ -36,9 +37,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/platform/basic.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 
@@ -79,12 +77,6 @@ Status GeoExpression::parseQuery(const BSONObj& obj) {
 
     while (geoIt.more()) {
         BSONElement elt = geoIt.next();
-        // $geoWithin doesn't accept multiple shapes.
-        if (geoContainer && queryElt.fieldNameStringData() == "$geoWithin"_sd) {
-            return Status(ErrorCodes::BadValue,
-                          str::stream() << "$geoWithin doesn't accept multiple shapes "
-                                        << queryElt.toString());
-        }
         if (elt.fieldNameStringData() == "$uniqueDocs") {
             // Deprecated "$uniqueDocs" field
             LOGV2_WARNING(23847, "Deprecated $uniqueDocs option", "query"_attr = redact(obj));
@@ -242,9 +234,7 @@ Status GeoNearExpression::parseNewQuery(const BSONObj& obj) {
     }
 
     // Returns true if 'x' is a valid numeric value, that is, a non-negative finite number.
-    auto isValidNumericValue = [](double x) -> bool {
-        return x >= 0.0 && std::isfinite(x);
-    };
+    auto isValidNumericValue = [](double x) -> bool { return x >= 0.0 && std::isfinite(x); };
 
     // Iterate over the argument.
     BSONObjIterator it(e.embeddedObject());
@@ -349,7 +339,7 @@ Status GeoNearExpression::parseFrom(const BSONObj& obj) {
 /**
  * Takes ownership of the passed-in GeoExpression.
  */
-GeoMatchExpression::GeoMatchExpression(boost::optional<StringData> path,
+GeoMatchExpression::GeoMatchExpression(StringData path,
                                        const GeoExpression* query,
                                        const BSONObj& rawObj,
                                        clonable_ptr<ErrorAnnotation> annotation)
@@ -361,7 +351,7 @@ GeoMatchExpression::GeoMatchExpression(boost::optional<StringData> path,
 /**
  * Takes shared ownership of the passed-in GeoExpression.
  */
-GeoMatchExpression::GeoMatchExpression(boost::optional<StringData> path,
+GeoMatchExpression::GeoMatchExpression(StringData path,
                                        std::shared_ptr<const GeoExpression> query,
                                        const BSONObj& rawObj,
                                        clonable_ptr<ErrorAnnotation> annotation)
@@ -436,7 +426,7 @@ void GeoMatchExpression::debugString(StringBuilder& debug, int indentationLevel)
     _debugAddSpace(debug, indentationLevel);
 
     BSONObjBuilder builder;
-    serialize(&builder, {});
+    serialize(&builder, true);
     debug << "GEO raw = " << builder.obj().toString();
 
     MatchExpression::TagData* td = getTag();
@@ -447,10 +437,8 @@ void GeoMatchExpression::debugString(StringBuilder& debug, int indentationLevel)
     debug << "\n";
 }
 
-BSONObj GeoMatchExpression::getSerializedRightHandSide(SerializationOptions opts) const {
+BSONObj GeoMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder subobj;
-    // TODO SERVER-73672 looks like we'll need to traverse '_rawObj' if 'replacementForLiteralArgs'
-    // is set.
     subobj.appendElements(_rawObj);
     return subobj.obj();
 }
@@ -481,12 +469,12 @@ std::unique_ptr<MatchExpression> GeoMatchExpression::shallowClone() const {
 // Parse-only geo expressions: geoNear (formerly known as near).
 //
 
-GeoNearMatchExpression::GeoNearMatchExpression(boost::optional<StringData> path,
+GeoNearMatchExpression::GeoNearMatchExpression(StringData path,
                                                const GeoNearExpression* query,
                                                const BSONObj& rawObj)
     : LeafMatchExpression(GEO_NEAR, path), _rawObj(rawObj), _query(query) {}
 
-GeoNearMatchExpression::GeoNearMatchExpression(boost::optional<StringData> path,
+GeoNearMatchExpression::GeoNearMatchExpression(StringData path,
                                                std::shared_ptr<const GeoNearExpression> query,
                                                const BSONObj& rawObj)
     : LeafMatchExpression(GEO_NEAR, path), _rawObj(rawObj), _query(query) {}
@@ -507,9 +495,7 @@ void GeoNearMatchExpression::debugString(StringBuilder& debug, int indentationLe
     debug << "\n";
 }
 
-BSONObj GeoNearMatchExpression::getSerializedRightHandSide(SerializationOptions opts) const {
-    // TODO SERVER-73672 looks like we'll need to traverse '_rawObj' if 'replacementForLiteralArgs'
-    // is set.
+BSONObj GeoNearMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder objBuilder;
     objBuilder.appendElements(_rawObj);
     return objBuilder.obj();

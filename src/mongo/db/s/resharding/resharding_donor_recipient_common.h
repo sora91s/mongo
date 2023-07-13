@@ -77,10 +77,6 @@ void processReshardingFieldsForCollection(OperationContext* opCtx,
 
 void clearFilteringMetadata(OperationContext* opCtx, bool scheduleAsyncRefresh);
 
-void clearFilteringMetadata(OperationContext* opCtx,
-                            stdx::unordered_set<NamespaceString> namespacesToRefresh,
-                            bool scheduleAsyncRefresh);
-
 void refreshShardVersion(OperationContext* opCtx, const NamespaceString& nss);
 
 }  // namespace resharding

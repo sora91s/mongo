@@ -5,6 +5,7 @@
  * the same tenantId as the aborted migration, and expects this second migration to go through.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -13,19 +14,20 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    runTenantMigrationCommand,
-    tryAbortMigrationAsync
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/uuid_util.js");
-load("jstests/replsets/rslib.js");  // 'createRstArgs'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
+
+const kTenantIdPrefix = "testTenantId";
+let testNum = 0;
 
 function makeTenantId() {
-    return ObjectId().str;
+    return kTenantIdPrefix + testNum++;
 }
 
 const tenantMigrationTest =
@@ -77,11 +79,11 @@ const tenantMigrationTest =
 
     fp.wait();
 
-    const donorRstArgs = createRstArgs(tenantMigrationTest.getDonorRst());
-    const tryAbortThread = new Thread(tryAbortMigrationAsync,
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(tenantMigrationTest.getDonorRst());
+    const tryAbortThread = new Thread(TenantMigrationUtil.tryAbortMigrationAsync,
                                       {migrationIdString: migrationId1, tenantId: tenantId},
                                       donorRstArgs,
-                                      runTenantMigrationCommand);
+                                      TenantMigrationUtil.runTenantMigrationCommand);
     tryAbortThread.start();
 
     // Wait for donorAbortMigration command to start.
@@ -114,3 +116,4 @@ const tenantMigrationTest =
 })();
 
 tenantMigrationTest.stop();
+})();

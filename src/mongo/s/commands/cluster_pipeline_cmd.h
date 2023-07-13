@@ -74,8 +74,7 @@ public:
         const OpMsgRequest& opMsgRequest,
         boost::optional<ExplainOptions::Verbosity> explainVerbosity) override {
         const auto aggregationRequest =
-            Impl::parseAggregationRequest(opCtx,
-                                          opMsgRequest,
+            Impl::parseAggregationRequest(opMsgRequest,
                                           explainVerbosity,
                                           APIParameters::get(opCtx).getAPIStrict().value_or(false));
 
@@ -155,7 +154,6 @@ public:
         void explain(OperationContext* opCtx,
                      ExplainOptions::Verbosity verbosity,
                      rpc::ReplyBuilderInterface* result) override {
-            Impl::checkCanExplainHere(opCtx);
             auto bodyBuilder = result->getBodyBuilder();
             _runAggCommand(opCtx, _dbName, _request.body, &bodyBuilder);
         }
@@ -184,20 +182,12 @@ public:
         return AllowedOnSecondary::kAlways;
     }
 
-    ReadWriteType getReadWriteType() const override {
-        return ReadWriteType::kRead;
-    }
-
     bool adminOnly() const override {
         return false;
     }
 
     const AuthorizationContract* getAuthorizationContract() const final {
         return &::mongo::AggregateCommandRequest::kAuthorizationContract;
-    }
-
-    bool allowedInTransactions() const final {
-        return true;
     }
 };
 

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -45,9 +46,6 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/net/hostandport.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace {
 
@@ -189,13 +187,13 @@ TEST_F(RemoteCommandRetrySchedulerTest, MakeSingleShotRetryPolicy) {
 }
 
 TEST_F(RemoteCommandRetrySchedulerTest, MakeRetryPolicy) {
-    auto policy = RemoteCommandRetryScheduler::makeRetryPolicy<ErrorCategory::WriteConcernError>(
+    auto policy = RemoteCommandRetryScheduler::makeRetryPolicy<ErrorCategory::Interruption>(
         5U, Milliseconds(100));
     ASSERT_EQUALS(5U, policy->getMaximumAttempts());
     ASSERT_EQUALS(Milliseconds(100), policy->getMaximumResponseElapsedTotal());
     for (int i = 0; i < int(ErrorCodes::MaxError); ++i) {
         auto error = ErrorCodes::Error(i);
-        if (ErrorCodes::isA<ErrorCategory::WriteConcernError>(error)) {
+        if (ErrorCodes::isA<ErrorCategory::Interruption>(error)) {
             ASSERT_TRUE(policy->shouldRetryOnError(error));
             continue;
         }
@@ -204,11 +202,8 @@ TEST_F(RemoteCommandRetrySchedulerTest, MakeRetryPolicy) {
 }
 
 TEST_F(RemoteCommandRetrySchedulerTest, InvalidConstruction) {
-    auto callback = [](const executor::TaskExecutor::RemoteCommandCallbackArgs&) {
-    };
-    auto makeRetryPolicy = [] {
-        return RemoteCommandRetryScheduler::makeNoRetryPolicy();
-    };
+    auto callback = [](const executor::TaskExecutor::RemoteCommandCallbackArgs&) {};
+    auto makeRetryPolicy = [] { return RemoteCommandRetryScheduler::makeNoRetryPolicy(); };
     auto request = makeRemoteCommandRequest();
 
     // Null executor.
@@ -297,8 +292,7 @@ TEST_F(RemoteCommandRetrySchedulerTest, InvalidConstruction) {
 }
 
 TEST_F(RemoteCommandRetrySchedulerTest, StartupFailsWhenExecutorIsShutDown) {
-    auto callback = [](const executor::TaskExecutor::RemoteCommandCallbackArgs&) {
-    };
+    auto callback = [](const executor::TaskExecutor::RemoteCommandCallbackArgs&) {};
     auto policy = RemoteCommandRetryScheduler::makeNoRetryPolicy();
     auto request = makeRemoteCommandRequest();
 
@@ -312,8 +306,7 @@ TEST_F(RemoteCommandRetrySchedulerTest, StartupFailsWhenExecutorIsShutDown) {
 }
 
 TEST_F(RemoteCommandRetrySchedulerTest, StartupFailsWhenSchedulerIsShutDown) {
-    auto callback = [](const executor::TaskExecutor::RemoteCommandCallbackArgs&) {
-    };
+    auto callback = [](const executor::TaskExecutor::RemoteCommandCallbackArgs&) {};
     auto policy = RemoteCommandRetryScheduler::makeNoRetryPolicy();
     auto request = makeRemoteCommandRequest();
 

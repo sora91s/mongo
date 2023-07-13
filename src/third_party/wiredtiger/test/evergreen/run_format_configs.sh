@@ -26,12 +26,11 @@ failure=0
 for config in $(find ../../../test/format/failure_configs/ -name "CONFIG.*" | sort)
 do
 	echo -e "\nTesting CONFIG $config ...\n"
-	if (./t -1 -c $config -h WT_TEST); then
+	if (./t -c $config); then
 		let "success++"
 	else
 		let "failure++"
-		[ -f WT_TEST/CONFIG ] && cat WT_TEST/CONFIG
-		mv WT_TEST WT_TEST_$(basename $config)
+		[ -f RUNDIR/CONFIG ] && cat RUNDIR/CONFIG
 	fi
 done
 

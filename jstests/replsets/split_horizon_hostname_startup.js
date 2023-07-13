@@ -1,7 +1,7 @@
 /**
  * IPs cannot be used as hostnames for split horizon configurations; replSetInitiate will not work
  * correctly. If previously configured using IP, mongod will still be allowed to start
- * @tags: [ requires_persistence ]
+ * @tags: [ incompatible_with_eft, requires_persistence ]
  */
 
 (function() {

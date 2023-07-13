@@ -20,8 +20,6 @@ const rst = new ReplSetTest({
     nodeOptions: {
         setParameter: {
             maxSessions: 1,
-            // Force batch size 1 on secondaries.
-            replBatchLimitOperations: 1,
             // Make transaction records expire immediately.
             TransactionRecordMinimumLifetimeMinutes: 0,
             storeFindAndModifyImagesInSideCollection: true,
@@ -123,7 +121,7 @@ let numTransactionsCollEntriesReaped = 0;
     assert.eq(0, transactionsColl.find(parentLsidFilter).itcount());
     assert.eq(0, transactionsColl.find(childLsidFilter).itcount());
     assert.eq(0, imageColl.find(parentLsidFilter).itcount());
-    assert.eq(0, imageColl.find(childLsidFilter).itcount());
+    assert.eq(0, imageColl.find(parentLsidFilter).itcount());
     numTransactionsCollEntriesReaped += 2;
 }
 

@@ -122,12 +122,12 @@ struct DayOfWeek {
  * This is a simple dayOf operation templated by the Op parameter.
  */
 template <typename Op>
-FastTuple<bool, value::TypeTags, value::Value> genericDayOfOp(value::TypeTags timezoneDBTag,
-                                                              value::Value timezoneDBValue,
-                                                              value::TypeTags dateTag,
-                                                              value::Value dateValue,
-                                                              value::TypeTags timezoneTag,
-                                                              value::Value timezoneValue) {
+std::tuple<bool, value::TypeTags, value::Value> genericDayOfOp(value::TypeTags timezoneDBTag,
+                                                               value::Value timezoneDBValue,
+                                                               value::TypeTags dateTag,
+                                                               value::Value dateValue,
+                                                               value::TypeTags timezoneTag,
+                                                               value::Value timezoneValue) {
     // Get date.
     if (dateTag != value::TypeTags::Date && dateTag != value::TypeTags::Timestamp &&
         dateTag != value::TypeTags::ObjectId && dateTag != value::TypeTags::bsonObjectId) {
@@ -149,10 +149,10 @@ FastTuple<bool, value::TypeTags, value::Value> genericDayOfOp(value::TypeTags ti
     int32_t result;
     Op::doOperation(date, timezone, result);
 
-    return {false, value::TypeTags::NumberInt32, value::bitcastFrom<int32_t>(result)};
+    return {false, value::TypeTags::NumberInt32, value::bitcastTo<int32_t>(result)};
 }
 
-FastTuple<bool, value::TypeTags, value::Value> ByteCode::genericDayOfYear(
+std::tuple<bool, value::TypeTags, value::Value> ByteCode::genericDayOfYear(
     value::TypeTags timezoneDBTag,
     value::Value timezoneDBValue,
     value::TypeTags dateTag,
@@ -163,7 +163,7 @@ FastTuple<bool, value::TypeTags, value::Value> ByteCode::genericDayOfYear(
         timezoneDBTag, timezoneDBValue, dateTag, dateValue, timezoneTag, timezoneValue);
 }
 
-FastTuple<bool, value::TypeTags, value::Value> ByteCode::genericDayOfMonth(
+std::tuple<bool, value::TypeTags, value::Value> ByteCode::genericDayOfMonth(
     value::TypeTags timezoneDBTag,
     value::Value timezoneDBValue,
     value::TypeTags dateTag,
@@ -174,7 +174,7 @@ FastTuple<bool, value::TypeTags, value::Value> ByteCode::genericDayOfMonth(
         timezoneDBTag, timezoneDBValue, dateTag, dateValue, timezoneTag, timezoneValue);
 }
 
-FastTuple<bool, value::TypeTags, value::Value> ByteCode::genericDayOfWeek(
+std::tuple<bool, value::TypeTags, value::Value> ByteCode::genericDayOfWeek(
     value::TypeTags timezoneDBTag,
     value::Value timezoneDBValue,
     value::TypeTags dateTag,

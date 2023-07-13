@@ -3,12 +3,15 @@ test_kind: fsm_workload_test
 selector:
   roots:
   - jstests/concurrency/fsm_workloads/**/*.js
-  - src/mongo/db/modules/*/jstests/concurrency/fsm_workloads/*.js
   exclude_files:
   # SERVER-13116 distinct isn't sharding aware
   - jstests/concurrency/fsm_workloads/distinct.js
   - jstests/concurrency/fsm_workloads/distinct_noindex.js
   - jstests/concurrency/fsm_workloads/distinct_projection.js
+
+  # SERVER-17397 Drops of sharded namespaces may not fully succeed
+  - jstests/concurrency/fsm_workloads/create_database.js
+  - jstests/concurrency/fsm_workloads/map_reduce_drop.js
 
   # SERVER-14669 Multi-removes that use $where miscount removed documents
   - jstests/concurrency/fsm_workloads/remove_where.js
@@ -156,6 +159,9 @@ selector:
   - jstests/concurrency/fsm_workloads/snapshot_read_kill_op_only.js
   - jstests/concurrency/fsm_workloads/snapshot_read_kill_operations.js
 
+  # SERVER-44160 Modify cleanupOrphaned to wait for overlapping ranges to finish
+  - jstests/concurrency/fsm_workloads/cleanupOrphanedWhileMigrating.js
+
   # Time-series collections are not supported on mongos.
   - jstests/concurrency/fsm_workloads/create_timeseries_collection.js
 
@@ -178,21 +184,21 @@ executor:
     tests: true
   config:
     shell_options:
+      eval: >-
+        load("jstests/libs/override_methods/mongos_manual_intervention_actions.js");
       global_vars:
         TestData:
           runningWithConfigStepdowns: true
           runningWithShardStepdowns: true
-          useActionPermittedFile: true
-          runningWithBalancer: true
+          useStepdownPermittedFile: true
   hooks:
   - class: ContinuousStepdown
     config_stepdown: true
     shard_stepdown: true
-    use_action_permitted_file: true
+    use_stepdown_permitted_file: true
+    wait_for_mongos_retarget: true
   - class: CheckReplDBHash
   - class: CheckOrphansDeleted
-  - class: CheckRoutingTableConsistency
-  - class: CheckShardFilteringMetadata
   - class: ValidateCollections # Validation can interfere with other operations, so this goes last.
   - class: CleanupConcurrencyWorkloads
   fixture:

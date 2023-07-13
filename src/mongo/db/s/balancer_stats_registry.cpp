@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
 #include "mongo/db/s/balancer_stats_registry.h"
 
 #include "mongo/db/catalog_raii.h"
@@ -38,8 +40,6 @@
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/sharding_feature_flags_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 namespace mongo {
 namespace {
@@ -80,6 +80,10 @@ void BalancerStatsRegistry::onStepUpComplete(OperationContext* opCtx, long long 
     dassert(_state.load() == State::kSecondary);
     _state.store(State::kPrimaryIdle);
 
+    if (!feature_flags::gOrphanTracking.isEnabled(serverGlobalParams.featureCompatibility)) {
+        // If future flag is disabled do not initialize the registry
+        return;
+    }
     initializeAsync(opCtx);
 }
 
@@ -117,7 +121,6 @@ void BalancerStatsRegistry::initializeAsync(OperationContext* opCtx) {
                 // config.rangeDeletions
                 AutoGetCollection rangeDeletionLock(
                     opCtx, NamespaceString::kRangeDeletionNamespace, MODE_S);
-
                 // Load current ophans count from disk
                 _loadOrphansCount(opCtx);
                 LOGV2_DEBUG(6419602, 2, "Completed BalancerStatsRegistry initialization");

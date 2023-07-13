@@ -4,7 +4,6 @@
  * @tags: [
  *   requires_sharding,
  *   uses_change_streams,
- *   temporary_catalog_shard_incompatible,
  * ]
  */
 (function() {
@@ -13,7 +12,6 @@
 // Skip cross-cluster consistency checks, since this test prematurely shuts down a shard.
 TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 // Create a two-shard cluster so that we can stop one shard to test connection interruptions.
 const st = new ShardingTest({
@@ -96,8 +94,8 @@ assert.soon(() => {
 
 // Issue a "find" query to retrieve the first few documents, leaving the cursor open.
 const findCursor = coll.find({}).sort({_id: 1}).batchSize(2);
-assert.docEq({_id: -10}, findCursor.next());
-assert.docEq({_id: -9}, findCursor.next());
+assert.docEq(findCursor.next(), {_id: -10});
+assert.docEq(findCursor.next(), {_id: -9});
 assert.eq(findCursor.objsLeftInBatch(), 0);
 
 // Open a non-$changeStream agg cursor. Set the batchSize to 0, since otherwise the aggregation will

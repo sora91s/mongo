@@ -30,70 +30,60 @@
 #pragma once
 
 #include "mongo/db/catalog/drop_collection.h"
+#include "mongo/db/s/collection_sharding_runtime.h"
 #include "mongo/db/s/drop_collection_coordinator_document_gen.h"
 #include "mongo/db/s/sharding_ddl_coordinator.h"
-
 namespace mongo {
 
-class DropCollectionCoordinator final
-    : public RecoverableShardingDDLCoordinator<DropCollectionCoordinatorDocument,
-                                               DropCollectionCoordinatorPhaseEnum> {
+class DropCollectionCoordinator final : public ShardingDDLCoordinator {
 public:
     using StateDoc = DropCollectionCoordinatorDocument;
     using Phase = DropCollectionCoordinatorPhaseEnum;
 
-    DropCollectionCoordinator(ShardingDDLCoordinatorService* service, const BSONObj& initialState)
-        : RecoverableShardingDDLCoordinator(service, "DropCollectionCoordinator", initialState),
-          _critSecReason(BSON("command"
-                              << "dropCollection"
-                              << "ns" << originalNss().toString())) {}
-
+    DropCollectionCoordinator(ShardingDDLCoordinatorService* service, const BSONObj& initialState);
     ~DropCollectionCoordinator() = default;
 
-    void checkIfOptionsConflict(const BSONObj& doc) const final {}
+    void checkIfOptionsConflict(const BSONObj& doc) const override {}
+
+    boost::optional<BSONObj> reportForCurrentOp(
+        MongoProcessInterface::CurrentOpConnectionsMode connMode,
+        MongoProcessInterface::CurrentOpSessionsMode sessionMode) noexcept override;
 
     /**
      * Locally drops a collection, cleans its CollectionShardingRuntime metadata and refreshes the
      * catalog cache.
-     * The oplog entry associated with the drop collection will be generated with the fromMigrate
-     * flag.
      */
-    static void dropCollectionLocally(OperationContext* opCtx,
-                                      const NamespaceString& nss,
-                                      bool fromMigrate);
+    static DropReply dropCollectionLocally(OperationContext* opCtx, const NamespaceString& nss);
 
 private:
-    const BSONObj _critSecReason;
-
-    StringData serializePhase(const Phase& phase) const override {
-        return DropCollectionCoordinatorPhase_serializer(phase);
-    }
-
-    bool _mustAlwaysMakeProgress() override {
-        return !_isPre70Compatible() && _doc.getPhase() > Phase::kUnset;
-    }
-
-    // TODO SERVER-73627: Remove once 7.0 becomes last LTS.
-    bool _isPre70Compatible() const {
-        return operationType() == DDLCoordinatorTypeEnum::kDropCollectionPre70Compatible;
+    ShardingDDLCoordinatorMetadata const& metadata() const override {
+        return _doc.getShardingDDLCoordinatorMetadata();
     }
 
     ExecutorFuture<void> _runImpl(std::shared_ptr<executor::ScopedTaskExecutor> executor,
                                   const CancellationToken& token) noexcept override;
 
-    // TODO SERVER-73627: inline this function once 7.0 becomes last LTS since it should be only
-    // called once.
-    void _saveCollInfo(OperationContext* opCtx);
+    template <typename Func>
+    auto _executePhase(const Phase& newPhase, Func&& func) {
+        return [=] {
+            const auto& currPhase = _doc.getPhase();
 
-    void _checkPreconditionsAndSaveArgumentsOnDoc();
+            if (currPhase > newPhase) {
+                // Do not execute this phase if we already reached a subsequent one.
+                return;
+            }
+            if (currPhase < newPhase) {
+                // Persist the new phase if this is the first time we are executing it.
+                _enterPhase(newPhase);
+            }
+            return func();
+        };
+    }
 
-    void _freezeMigrations(std::shared_ptr<executor::ScopedTaskExecutor> executor);
+    void _enterPhase(Phase newPhase);
 
-    void _enterCriticalSection(std::shared_ptr<executor::ScopedTaskExecutor> executor);
-
-    void _commitDropCollection(std::shared_ptr<executor::ScopedTaskExecutor> executor);
-
-    void _exitCriticalSection(std::shared_ptr<executor::ScopedTaskExecutor> executor);
+    mutable Mutex _docMutex = MONGO_MAKE_LATCH("DropCollectionCoordinator::_docMutex");
+    DropCollectionCoordinatorDocument _doc;
 };
 
 }  // namespace mongo

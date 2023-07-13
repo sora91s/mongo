@@ -32,11 +32,13 @@
 #include "mongo/db/pipeline/expression_test_api_version.h"
 
 namespace mongo {
-
+void initMyExpressionTestApiVersion() {
+    
+}
 REGISTER_TEST_EXPRESSION(_testApiVersion,
-                         ExpressionTestApiVersion::parse,
                          AllowedWithApiStrict::kConditionally,
-                         AllowedWithClientType::kAny);
+                         AllowedWithClientType::kAny,
+                         ExpressionTestApiVersion::parse);
 
 ExpressionTestApiVersion::ExpressionTestApiVersion(ExpressionContext* const expCtx,
                                                    bool unstable,
@@ -89,7 +91,7 @@ boost::intrusive_ptr<Expression> ExpressionTestApiVersion::parse(ExpressionConte
     return new ExpressionTestApiVersion(expCtx, unstableField, deprecatedField);
 }
 
-Value ExpressionTestApiVersion::serialize(SerializationOptions options) const {
+Value ExpressionTestApiVersion::serialize(bool explain) const {
     return Value(Document{{"$_testApiVersion",
                            Document{{"unstable", _unstable ? Value(_unstable) : Value()},
                                     {"deprecated", _deprecated ? Value(_deprecated) : Value()}}}});
@@ -98,5 +100,7 @@ Value ExpressionTestApiVersion::serialize(SerializationOptions options) const {
 Value ExpressionTestApiVersion::evaluate(const Document& root, Variables* variables) const {
     return Value(1);
 }
+
+void ExpressionTestApiVersion::_doAddDependencies(DepsTracker* deps) const {}
 
 }  // namespace mongo

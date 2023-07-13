@@ -45,7 +45,8 @@
 namespace mongo {
 namespace {
 
-using UpdateArrayNodeTest = UpdateTestFixture;
+using UpdateArrayNodeTest = UpdateNodeTest;
+using mongo::mutablebson::Element;
 using unittest::assertGet;
 
 TEST_F(UpdateArrayNodeTest, ApplyCreatePathFails) {
@@ -121,7 +122,8 @@ TEST_F(UpdateArrayNodeTest, UpdateIsAppliedToAllMatchingElements) {
     ASSERT_EQUALS(fromjson("{a: [2, 1, 2]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [2, 1, 2]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [2, 1, 2]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [2, 1, 2]}}}"));
     ASSERT_EQUALS("{a.0, a.2}", getModifiedPaths());
 }
 
@@ -171,7 +173,8 @@ TEST_F(UpdateArrayNodeTest, UpdateForEmptyIdentifierIsAppliedToAllArrayElements)
     ASSERT_EQUALS(fromjson("{a: [1, 1, 1]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1, 1, 1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1, 1, 1]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [1, 1, 1]}}}"));
     ASSERT_EQUALS("{a.0, a.1, a.2}", getModifiedPaths());
 }
 
@@ -220,7 +223,8 @@ TEST_F(UpdateArrayNodeTest, ApplyMultipleUpdatesToArrayElement) {
     ASSERT_EQUALS(fromjson("{a: [{b: 1, c: 1, d: 1}]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, s0: {u: {b: 1, c: 1, d: 1}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.0.b': 1, 'a.0.c': 1, 'a.0.d': 1}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, s0: {u: {b: 1, c: 1, d: 1}}}}}"));
     ASSERT_EQUALS("{a.0.b, a.0.c, a.0.d}", getModifiedPaths());
 }
 
@@ -260,7 +264,8 @@ TEST_F(UpdateArrayNodeTest, ApplyMultipleUpdatesToArrayElementsUsingMergedChildr
     ASSERT_EQUALS(fromjson("{a: [{b: 1, c: 1}, {b: 1, c: 1}]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [{b: 1, c: 1}, {b: 1, c: 1}]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [{b: 1, c: 1}, {b: 1, c: 1}]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [{b: 1, c: 1}, {b: 1, c: 1}]}}}"));
     ASSERT_EQUALS("{a.0.b, a.0.c, a.1.b, a.1.c}", getModifiedPaths());
 }
 
@@ -309,7 +314,8 @@ TEST_F(UpdateArrayNodeTest, ApplyMultipleUpdatesToArrayElementsWithoutMergedChil
     ASSERT_EQUALS(fromjson("{a: [{b: 2, c: 2, d: 1}, {b: 1, c: 2, d: 2}]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [{b: 2, c: 2, d: 1}, {b: 1, c: 2, d: 2}]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [{b: 2, c: 2, d: 1}, {b: 1, c: 2, d: 2}]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [{b: 2, c: 2, d: 1}, {b: 1, c: 2, d: 2}]}}}"));
     ASSERT_EQUALS("{a.0.b, a.0.c, a.1.c, a.1.d}", getModifiedPaths());
 }
 
@@ -340,7 +346,8 @@ TEST_F(UpdateArrayNodeTest, ApplyMultipleUpdatesToArrayElementWithEmptyIdentifie
     ASSERT_EQUALS(fromjson("{a: [{b: 1, c: 1}]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, s0: {u: {b: 1, c: 1}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.0.b': 1, 'a.0.c': 1}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, s0: {u: {b: 1, c: 1}}}}}"));
     ASSERT_EQUALS("{a.0.b, a.0.c}", getModifiedPaths());
 }
 
@@ -387,6 +394,7 @@ TEST_F(UpdateArrayNodeTest, ApplyNestedArrayUpdates) {
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
     assertOplogEntry(
+        fromjson("{$set: {'a.0.b.0.c': 1, 'a.0.b.0.d': 1}}"),
         fromjson("{$v: 2, diff: {sa: {a: true, s0: {sb: {a: true, s0: {u: {c: 1, d: 1}}}}}}}"));
     ASSERT_EQUALS("{a.0.b.0.c, a.0.b.0.d}", getModifiedPaths());
 }
@@ -586,6 +594,7 @@ TEST_F(UpdateArrayNodeTest, NoArrayElementAffectsIndexes) {
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
     assertOplogEntry(
+        fromjson("{$set: {a: [{c: 0, b: 0}, {c: 0, b: 0}, {c: 0, b: 0}]}}"),
         fromjson("{$v: 2, diff: {u: {a: [{c: 0, b: 0}, {c: 0, b: 0}, {c: 0, b: 0}]}}}"));
     ASSERT_EQUALS("{a.0.b, a.1.b, a.2.b}", getModifiedPaths());
 }
@@ -614,7 +623,8 @@ TEST_F(UpdateArrayNodeTest, WhenOneElementIsMatchedLogElementUpdateDirectly) {
     ASSERT_EQUALS(fromjson("{a: [{c: 1}, {c: 0, b: 0}, {c: 1}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, s1: {i: {b: 0}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.1.b': 0}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, s1: {i: {b: 0}}}}}"));
     ASSERT_EQUALS("{a.1.b}", getModifiedPaths());
 }
 
@@ -642,7 +652,8 @@ TEST_F(UpdateArrayNodeTest, WhenOneElementIsModifiedLogElement) {
     ASSERT_EQUALS(fromjson("{a: [{c: 0, b: 0}, {c: 0, b: 0}, {c: 1}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, u1: {c: 0, b: 0}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.1': {c: 0, b: 0}}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, u1: {c: 0, b: 0}}}}"));
     ASSERT_EQUALS("{a.0.b, a.1.b}", getModifiedPaths());
 }
 
@@ -696,7 +707,8 @@ TEST_F(UpdateArrayNodeTest, ApplyPositionalInsideArrayUpdate) {
     ASSERT_EQUALS(fromjson("{a: [{b: [0, 1], c: 0}]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, s0: {sb: {a: true, u1: 1}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.0.b.1': 1}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, s0: {sb: {a: true, u1: 1}}}}}"));
     ASSERT_EQUALS("{a.0.b.1}", getModifiedPaths());
 }
 

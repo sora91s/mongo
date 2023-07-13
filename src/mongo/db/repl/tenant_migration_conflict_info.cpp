@@ -34,23 +34,26 @@
 #include "mongo/base/init.h"
 
 namespace mongo {
+    
+void initMyTenantMigrationConFlictInfo() {
+    
+}
 
 namespace {
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(TenantMigrationConflictInfo);
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(NonRetryableTenantMigrationConflictInfo);
 
-constexpr StringData kMigrationIdFieldName = "migrationId"_sd;
+constexpr StringData kTenantIdFieldName = "tenantId"_sd;
 
 }  // namespace
 
 void TenantMigrationConflictInfoBase::serialize(BSONObjBuilder* bob) const {
-    _migrationId.appendToBuilder(bob, kMigrationIdFieldName);
+    bob->append(kTenantIdFieldName, _tenantId);
 }
 
 std::shared_ptr<const ErrorExtraInfo> TenantMigrationConflictInfoBase::parse(const BSONObj& obj) {
-    auto uuid = uassertStatusOK(UUID::parse(obj[kMigrationIdFieldName]));
-    return std::make_shared<TenantMigrationConflictInfoBase>(std::move(uuid));
+    return std::make_shared<TenantMigrationConflictInfoBase>(obj[kTenantIdFieldName].String());
 }
 
 }  // namespace mongo

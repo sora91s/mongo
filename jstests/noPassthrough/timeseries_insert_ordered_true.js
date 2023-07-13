@@ -4,7 +4,6 @@
 (function() {
 'use strict';
 
-load('jstests/core/timeseries/libs/timeseries.js');
 load('jstests/libs/fail_point_util.js');
 
 const conn = MongoRunner.runMongod();
@@ -40,31 +39,24 @@ jsTestLog('Checking insert result: ' + tojson(res));
 assert.eq(res.nInserted, 1);
 assert.eq(res.getWriteErrors().length, 1);
 assert.eq(res.getWriteErrors()[0].index, 1);
-assert.docEq(docs[3], res.getWriteErrors()[0].getOperation());
+assert.docEq(res.getWriteErrors()[0].getOperation(), docs[3]);
 
 // The document that successfully inserted should go into a new bucket due to the failed insert on
 // the existing bucket.
-assert.docEq(docs.slice(0, 3), coll.find().sort({_id: 1}).toArray());
-// If we allow bucket reopening, we will save out on opening another bucket.
-let expectedBucketCount = (TimeseriesTest.timeseriesScalabilityImprovementsEnabled(testDB)) ? 2 : 3;
+assert.docEq(coll.find().sort({_id: 1}).toArray(), docs.slice(0, 3));
 assert.eq(bucketsColl.count(),
-          expectedBucketCount,
-          'Expected ' + expectedBucketCount +
-              ' buckets but found: ' + tojson(bucketsColl.find().toArray()));
+          3,
+          'Expected two buckets but found: ' + tojson(bucketsColl.find().toArray()));
 
 fp1.off();
 fp2.off();
 
 // The documents should go into two new buckets due to the failed insert on the existing bucket.
 assert.commandWorked(coll.insert(docs.slice(3), {ordered: true}));
-assert.docEq(docs, coll.find().sort({_id: 1}).toArray());
-// If we allow bucket reopening, we will save out on opening new buckets. Resulting in one bucket
-// per unique meta field.
-expectedBucketCount = (TimeseriesTest.timeseriesScalabilityImprovementsEnabled(testDB)) ? 3 : 5;
+assert.docEq(coll.find().sort({_id: 1}).toArray(), docs);
 assert.eq(bucketsColl.count(),
-          expectedBucketCount,
-          'Expected ' + expectedBucketCount +
-              ' buckets but found: ' + tojson(bucketsColl.find().toArray()));
+          5,
+          'Expected four buckets but found: ' + tojson(bucketsColl.find().toArray()));
 
 MongoRunner.stopMongod(conn);
 })();

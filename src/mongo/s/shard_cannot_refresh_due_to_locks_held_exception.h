@@ -33,6 +33,7 @@
 #include "mongo/db/namespace_string.h"
 
 namespace mongo {
+void initMyShardCannotRefreshDueToLocksHeldInfo();
 
 class ShardCannotRefreshDueToLocksHeldInfo final : public ErrorExtraInfo {
 public:

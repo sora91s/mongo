@@ -37,8 +37,8 @@
 #include <processthreadsapi.h>
 #include <synchapi.h>
 #else
-#include <cstdio>
 #include <poll.h>
+#include <stdio.h>
 #endif
 
 #include "mongo/util/errno_util.h"
@@ -67,51 +67,41 @@ public:
 
         // Close our end of stdin immediately to signal child we have no data.
         HANDLE dummy = nullptr;
-        if (!CreatePipe(&dummy, &_startup.hStdInput, &sa, kExecBufferSizeBytes)) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream()
-                          << "Unable to create stdin pipe for subprocess: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Unable to create stdin pipe for subprocess: "
+                              << errnoWithDescription(),
+                CreatePipe(&dummy, &_startup.hStdInput, &sa, kExecBufferSizeBytes));
         CloseHandle(dummy);
 
-        if (!CreatePipe(&_stdout, &_startup.hStdOutput, &sa, kExecBufferSizeBytes)) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream()
-                          << "Unable to create stdout pipe for subprocess: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Unable to create stdout pipe for subprocess: "
+                              << errnoWithDescription(),
+                CreatePipe(&_stdout, &_startup.hStdOutput, &sa, kExecBufferSizeBytes));
 
-        if (!CreatePipe(&_stderr, &_startup.hStdError, &sa, kExecBufferSizeBytes)) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream()
-                          << "Unable to create stderr pipe for subprocess: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Unable to create stderr pipe for subprocess: "
+                              << errnoWithDescription(),
+                CreatePipe(&_stderr, &_startup.hStdError, &sa, kExecBufferSizeBytes));
 
         DWORD mode = PIPE_NOWAIT;
-        if (!SetNamedPipeHandleState(_stdout, &mode, nullptr, nullptr)) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream()
-                          << "Unable to set non-blocking for subprocess: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Unable to set non-blocking for subprocess: "
+                              << errnoWithDescription(),
+                SetNamedPipeHandleState(_stdout, &mode, nullptr, nullptr));
 
         auto wideCmd = toWideString(cmd.c_str());
-        if (!CreateProcessW(nullptr,
-                            const_cast<wchar_t*>(wideCmd.c_str()),
-                            &sa,
-                            &sa,
-                            true,
-                            CREATE_NO_WINDOW,
-                            nullptr,
-                            nullptr,
-                            &_startup,
-                            &_process)) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream() << "Unable to launch command: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Unable to launch command: " << errnoWithDescription(),
+                CreateProcessW(nullptr,
+                               const_cast<wchar_t*>(wideCmd.c_str()),
+                               &sa,
+                               &sa,
+                               true,
+                               CREATE_NO_WINDOW,
+                               nullptr,
+                               nullptr,
+                               &_startup,
+                               &_process));
     }
 
     int close() {
@@ -119,19 +109,15 @@ public:
             return _exitcode;
         }
 
-        if (!GetExitCodeProcess(_process.hProcess, &_exitcode)) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream()
-                          << "Failed retreiving exit code from subprocess: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Failed retreiving exit code from subprocess: "
+                              << errnoWithDescription(),
+                GetExitCodeProcess(_process.hProcess, &_exitcode));
 
         if (_exitcode == STILL_ACTIVE) {
-            if (!TerminateProcess(_process.hProcess, 1)) {
-                auto ec = lastSystemError();
-                uasserted(ErrorCodes::OperationFailed,
-                          str::stream() << "Failed terminating subprocess: " << errorMessage(ec));
-            }
+            uassert(ErrorCodes::OperationFailed,
+                    str::stream() << "Failed terminating subprocess: " << errnoWithDescription(),
+                    TerminateProcess(_process.hProcess, 1));
             _exitcode = 1;
         }
 
@@ -143,12 +129,10 @@ public:
             return true;
         }
 
-        if (!GetExitCodeProcess(_process.hProcess, &_exitcode)) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream()
-                          << "Failed retreiving status of subprocess: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Failed retreiving status of subprocess: "
+                              << errnoWithDescription(),
+                GetExitCodeProcess(_process.hProcess, &_exitcode));
 
         return _exitcode != STILL_ACTIVE;
     }
@@ -160,7 +144,7 @@ public:
         } else if (ret == WAIT_TIMEOUT) {
             return {ErrorCodes::OperationFailed, "Timeout expired"};
         } else {
-            return {ErrorCodes::OperationFailed, errorMessage(lastSystemError())};
+            return {ErrorCodes::OperationFailed, errnoWithDescription()};
         }
     }
 
@@ -172,11 +156,9 @@ public:
 
         char buf[kExecBufferSizeBytes];
         DWORD read = 0;
-        if (!ReadFile(_stdout, buf, std::min<size_t>(sizeof(buf), len), &read, nullptr)) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream() << "Failed reading from subprocess: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Failed reading from subprocess: " << errnoWithDescription(),
+                ReadFile(_stdout, buf, std::min<size_t>(sizeof(buf), len), &read, nullptr));
 
         if (read == 0) {
             CloseHandle(_stdout);
@@ -225,11 +207,9 @@ class ProcessStream {
 public:
     ProcessStream(const std::string& cmd) {
         _fp = ::popen(cmd.c_str(), "r");
-        if (!_fp) {
-            auto ec = lastSystemError();
-            uasserted(ErrorCodes::OperationFailed,
-                      str::stream() << "Unable to launch command: " << errorMessage(ec));
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Unable to launch command: " << errnoWithDescription(),
+                _fp);
         _fd = fileno(_fp);
     }
 
@@ -254,7 +234,7 @@ public:
 
         auto ret = poll(&fds, 1, durationCount<Milliseconds>(duration));
         if (ret < 0) {
-            return {ErrorCodes::OperationFailed, errorMessage(lastSystemError())};
+            return {ErrorCodes::OperationFailed, errnoWithDescription()};
         } else if (ret == 0) {
             return {ErrorCodes::OperationFailed, "Timeout expired"};
         } else {

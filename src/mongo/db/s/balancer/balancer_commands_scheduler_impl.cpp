@@ -27,23 +27,23 @@
  *    it in the license file.
  */
 
-#include "mongo/db/s/balancer/balancer_commands_scheduler_impl.h"
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
+#include "mongo/db/s/balancer/balancer_commands_scheduler_impl.h"
 #include "mongo/db/client.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/s/sharding_util.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/migration_secondary_throttle_options.h"
 #include "mongo/s/request_types/shardsvr_join_migrations_request_gen.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/fail_point.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 namespace mongo {
+
 namespace {
 
 MONGO_FAIL_POINT_DEFINE(pauseSubmissionsFailPoint);
@@ -52,13 +52,13 @@ MONGO_FAIL_POINT_DEFINE(deferredCleanupCompletedCheckpoint);
 void waitForQuiescedCluster(OperationContext* opCtx) {
     const auto executor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
     ShardsvrJoinMigrations joinShardOnMigrationsRequest;
-    joinShardOnMigrationsRequest.setDbName(DatabaseName::kAdmin);
+    joinShardOnMigrationsRequest.setDbName(NamespaceString::kAdminDb);
 
     auto unquiescedShardIds = Grid::get(opCtx)->shardRegistry()->getAllShardIds(opCtx);
 
     const auto responses =
         sharding_util::sendCommandToShards(opCtx,
-                                           DatabaseName::kAdmin.toString(),
+                                           NamespaceString::kAdminDb.toString(),
                                            joinShardOnMigrationsRequest.toBSON({}),
                                            unquiescedShardIds,
                                            executor,
@@ -98,7 +98,7 @@ Status persistRecoveryInfo(OperationContext* opCtx, const CommandInfo& command) 
     recoveryDocument.emplace_back(migrationType.toBSON());
 
     auto reply = dbClient.insertAcknowledged(
-        MigrationType::ConfigNS, recoveryDocument, true, WriteConcernOptions::Majority);
+        MigrationType::ConfigNS.ns(), recoveryDocument, true, WriteConcernOptions::Majority);
     auto insertStatus = getStatusFromWriteCommandReply(reply);
     if (insertStatus != ErrorCodes::DuplicateKey) {
         return insertStatus;
@@ -153,7 +153,7 @@ std::vector<RequestData> rebuildRequestsFromRecoveryInfo(
     DBDirectClient dbClient(opCtx);
     try {
         FindCommandRequest findRequest{MigrationType::ConfigNS};
-        dbClient.find(std::move(findRequest), documentProcessor);
+        dbClient.find(std::move(findRequest), ReadPreferenceSetting{}, documentProcessor);
     } catch (const DBException& e) {
         LOGV2_ERROR(5847215, "Failed to fetch requests to recover", "error"_attr = redact(e));
     }
@@ -165,7 +165,7 @@ void deletePersistedRecoveryInfo(DBDirectClient& dbClient, const CommandInfo& co
     const auto& migrationCommand = checked_cast<const MoveChunkCommandInfo&>(command);
     auto recoveryDocId = migrationCommand.getRecoveryDocumentIdentifier();
     try {
-        dbClient.remove(MigrationType::ConfigNS, recoveryDocId, false /*removeMany*/);
+        dbClient.remove(MigrationType::ConfigNS.ns(), recoveryDocId, false /*removeMany*/);
     } catch (const DBException& e) {
         LOGV2_ERROR(5847214, "Failed to remove recovery info", "error"_attr = redact(e));
     }
@@ -184,7 +184,15 @@ const std::string DataSizeCommandInfo::kKeyPattern = "keyPattern";
 const std::string DataSizeCommandInfo::kMinValue = "min";
 const std::string DataSizeCommandInfo::kMaxValue = "max";
 const std::string DataSizeCommandInfo::kEstimatedValue = "estimate";
-const std::string DataSizeCommandInfo::kMaxSizeValue = "maxSize";
+
+const std::string SplitChunkCommandInfo::kCommandName = "splitChunk";
+const std::string SplitChunkCommandInfo::kShardName = "from";
+const std::string SplitChunkCommandInfo::kKeyPattern = "keyPattern";
+const std::string SplitChunkCommandInfo::kLowerBound = "min";
+const std::string SplitChunkCommandInfo::kUpperBound = "max";
+const std::string SplitChunkCommandInfo::kEpoch = "epoch";
+const std::string SplitChunkCommandInfo::kTimestamp = "timestamp";
+const std::string SplitChunkCommandInfo::kSplitKeys = "splitKeys";
 
 BalancerCommandsSchedulerImpl::BalancerCommandsSchedulerImpl() {}
 
@@ -301,22 +309,63 @@ SemiFuture<void> BalancerCommandsSchedulerImpl::requestMergeChunks(OperationCont
         .semi();
 }
 
+SemiFuture<AutoSplitVectorResponse> BalancerCommandsSchedulerImpl::requestAutoSplitVector(
+    OperationContext* opCtx,
+    const NamespaceString& nss,
+    const ShardId& shardId,
+    const BSONObj& keyPattern,
+    const BSONObj& minKey,
+    const BSONObj& maxKey,
+    int64_t maxChunkSizeBytes) {
+    auto commandInfo = std::make_shared<AutoSplitVectorCommandInfo>(
+        nss, shardId, keyPattern, minKey, maxKey, maxChunkSizeBytes);
+    return _buildAndEnqueueNewRequest(opCtx, std::move(commandInfo))
+        .then([](const executor::RemoteCommandResponse& remoteResponse)
+                  -> StatusWith<AutoSplitVectorResponse> {
+            auto responseStatus = processRemoteResponse(remoteResponse);
+            if (!responseStatus.isOK()) {
+                return responseStatus;
+            }
+            return AutoSplitVectorResponse::parse(IDLParserErrorContext("AutoSplitVectorResponse"),
+                                                  std::move(remoteResponse.data));
+        })
+        .semi();
+}
+
+SemiFuture<void> BalancerCommandsSchedulerImpl::requestSplitChunk(
+    OperationContext* opCtx,
+    const NamespaceString& nss,
+    const ShardId& shardId,
+    const ChunkVersion& collectionVersion,
+    const KeyPattern& keyPattern,
+    const BSONObj& minKey,
+    const BSONObj& maxKey,
+    const SplitPoints& splitPoints) {
+
+    auto commandInfo = std::make_shared<SplitChunkCommandInfo>(
+        nss, shardId, keyPattern.toBSON(), minKey, maxKey, collectionVersion, splitPoints);
+
+    return _buildAndEnqueueNewRequest(opCtx, std::move(commandInfo))
+        .then([](const executor::RemoteCommandResponse& remoteResponse) {
+            return processRemoteResponse(remoteResponse);
+        })
+        .semi();
+}
+
 SemiFuture<DataSizeResponse> BalancerCommandsSchedulerImpl::requestDataSize(
     OperationContext* opCtx,
     const NamespaceString& nss,
     const ShardId& shardId,
     const ChunkRange& chunkRange,
-    const ShardVersion& version,
+    const ChunkVersion& version,
     const KeyPattern& keyPattern,
-    bool estimatedValue,
-    int64_t maxSize) {
+    bool estimatedValue) {
     auto commandInfo = std::make_shared<DataSizeCommandInfo>(nss,
                                                              shardId,
                                                              keyPattern.toBSON(),
                                                              chunkRange.getMin(),
                                                              chunkRange.getMax(),
                                                              estimatedValue,
-                                                             maxSize,
                                                              version);
 
     return _buildAndEnqueueNewRequest(opCtx, std::move(commandInfo))
@@ -328,33 +377,7 @@ SemiFuture<DataSizeResponse> BalancerCommandsSchedulerImpl::requestDataSize(
             }
             long long sizeBytes = remoteResponse.data["size"].number();
             long long numObjects = remoteResponse.data["numObjects"].number();
-            bool maxSizeReached = remoteResponse.data["maxReached"].trueValue();
-            return DataSizeResponse(sizeBytes, numObjects, maxSizeReached);
-        })
-        .semi();
-}
-
-SemiFuture<NumMergedChunks> BalancerCommandsSchedulerImpl::requestMergeAllChunksOnShard(
-    OperationContext* opCtx, const NamespaceString& nss, const ShardId& shardId) {
-    auto commandInfo = std::make_shared<MergeAllChunksOnShardCommandInfo>(nss, shardId);
-    return _buildAndEnqueueNewRequest(opCtx, std::move(commandInfo))
-        .then([](const executor::RemoteCommandResponse& remoteResponse)
-                  -> StatusWith<NumMergedChunks> {
-            auto responseStatus = processRemoteResponse(remoteResponse);
-            if (!responseStatus.isOK()) {
-                return responseStatus;
-            }
-
-            try {
-                return MergeAllChunksOnShardResponse::parse(
-                           IDLParserContext{"MergeAllChunksOnShardResponse"}, remoteResponse.data)
-                    .getNumMergedChunks();
-            } catch (const DBException&) {
-                // TODO SERVER-74573 remove try-catch once 7.0 branches out
-                // It may happen in multiversion scenarios for the command not to return a
-                // MergeAllChunksOnShardResponse (in v6.3 the reply was empty)
-                return 0;
-            }
+            return DataSizeResponse(sizeBytes, numObjects);
         })
         .semi();
 }
@@ -399,43 +422,50 @@ CommandSubmissionResult BalancerCommandsSchedulerImpl::_submit(
     OperationContext* opCtx, const CommandSubmissionParameters& params) {
     LOGV2_DEBUG(
         5847203, 2, "Balancer command request submitted for execution", "reqId"_attr = params.id);
-    try {
-        const auto shardWithStatus =
-            Grid::get(opCtx)->shardRegistry()->getShard(opCtx, params.commandInfo->getTarget());
-        if (!shardWithStatus.isOK()) {
-            return CommandSubmissionResult(params.id, shardWithStatus.getStatus());
-        }
+    bool distLockTaken = false;
 
-        const auto shardHostWithStatus = shardWithStatus.getValue()->getTargeter()->findHost(
-            opCtx, ReadPreferenceSetting{ReadPreference::PrimaryOnly});
-        if (!shardHostWithStatus.isOK()) {
-            return CommandSubmissionResult(params.id, shardHostWithStatus.getStatus());
-        }
-
-        if (params.commandInfo->requiresRecoveryOnCrash()) {
-            auto writeStatus = persistRecoveryInfo(opCtx, *(params.commandInfo));
-            if (!writeStatus.isOK()) {
-                return CommandSubmissionResult(params.id, writeStatus);
-            }
-        }
-
-        const executor::RemoteCommandRequest remoteCommand =
-            executor::RemoteCommandRequest(shardHostWithStatus.getValue(),
-                                           params.commandInfo->getTargetDb(),
-                                           params.commandInfo->serialise(),
-                                           opCtx);
-        auto onRemoteResponseReceived =
-            [this,
-             requestId = params.id](const executor::TaskExecutor::RemoteCommandCallbackArgs& args) {
-                _applyCommandResponse(requestId, args.response);
-            };
-
-        auto swRemoteCommandHandle =
-            (*_executor)->scheduleRemoteCommand(remoteCommand, onRemoteResponseReceived);
-        return CommandSubmissionResult(params.id, swRemoteCommandHandle.getStatus());
-    } catch (const DBException& e) {
-        return CommandSubmissionResult(params.id, e.toStatus());
+    const auto shardWithStatus =
+        Grid::get(opCtx)->shardRegistry()->getShard(opCtx, params.commandInfo->getTarget());
+    if (!shardWithStatus.isOK()) {
+        return CommandSubmissionResult(params.id, distLockTaken, shardWithStatus.getStatus());
     }
+
+    const auto shardHostWithStatus = shardWithStatus.getValue()->getTargeter()->findHost(
+        opCtx, ReadPreferenceSetting{ReadPreference::PrimaryOnly});
+    if (!shardHostWithStatus.isOK()) {
+        return CommandSubmissionResult(params.id, distLockTaken, shardHostWithStatus.getStatus());
+    }
+
+    if (params.commandInfo->requiresRecoveryOnCrash()) {
+        auto writeStatus = persistRecoveryInfo(opCtx, *(params.commandInfo));
+        if (!writeStatus.isOK()) {
+            return CommandSubmissionResult(params.id, distLockTaken, writeStatus);
+        }
+    }
+
+    const executor::RemoteCommandRequest remoteCommand =
+        executor::RemoteCommandRequest(shardHostWithStatus.getValue(),
+                                       params.commandInfo->getTargetDb(),
+                                       params.commandInfo->serialise(),
+                                       opCtx);
+    auto onRemoteResponseReceived =
+        [this,
+         requestId = params.id](const executor::TaskExecutor::RemoteCommandCallbackArgs& args) {
+            _applyCommandResponse(requestId, args.response);
+        };
+
+    if (params.commandInfo->requiresDistributedLock()) {
+        Status lockAcquisitionResponse =
+            _distributedLocks.acquireFor(opCtx, params.commandInfo->getNameSpace());
+        if (!lockAcquisitionResponse.isOK()) {
+            return CommandSubmissionResult(params.id, distLockTaken, lockAcquisitionResponse);
+        }
+        distLockTaken = true;
+    }
+
+    auto swRemoteCommandHandle =
+        (*_executor)->scheduleRemoteCommand(remoteCommand, onRemoteResponseReceived);
+    return CommandSubmissionResult(params.id, distLockTaken, swRemoteCommandHandle.getStatus());
 }
 
 void BalancerCommandsSchedulerImpl::_applySubmissionResult(
@@ -479,14 +509,18 @@ void BalancerCommandsSchedulerImpl::_applyCommandResponse(
 
 void BalancerCommandsSchedulerImpl::_performDeferredCleanup(
     OperationContext* opCtx,
-    const stdx::unordered_map<UUID, RequestData, UUID::Hash>& requestsHoldingResources) {
+    const stdx::unordered_map<UUID, RequestData, UUID::Hash>& requestsHoldingResources,
+    bool includePersistedData) {
     if (requestsHoldingResources.empty()) {
         return;
     }
 
     DBDirectClient dbClient(opCtx);
     for (const auto& [_, request] : requestsHoldingResources) {
-        if (request.requiresRecoveryCleanupOnCompletion()) {
+        if (request.holdsDistributedLock()) {
+            _distributedLocks.releaseFor(opCtx, request.getNamespace());
+        }
+        if (includePersistedData && request.requiresRecoveryCleanupOnCompletion()) {
             deletePersistedRecoveryInfo(dbClient, request.getCommandInfo());
         }
     }
@@ -548,7 +582,8 @@ void BalancerCommandsSchedulerImpl::_workerThread() {
         // 2.a Free any resource acquired by already completed/aborted requests.
         {
             auto opCtxHolder = cc().makeOperationContext();
-            _performDeferredCleanup(opCtxHolder.get(), completedRequestsToCleanUp);
+            _performDeferredCleanup(
+                opCtxHolder.get(), completedRequestsToCleanUp, true /*includePersistedData*/);
             completedRequestsToCleanUp.clear();
         }
 
@@ -579,12 +614,18 @@ void BalancerCommandsSchedulerImpl::_workerThread() {
     (*_executor)->shutdown();
     (*_executor)->join();
 
+    stdx::unordered_map<UUID, RequestData, UUID::Hash> cancelledRequests;
     {
         stdx::unique_lock<Latch> ul(_mutex);
+        cancelledRequests.swap(_requests);
         _requests.clear();
         _recentlyCompletedRequestIds.clear();
         _executor.reset();
     }
+    auto opCtxHolder = cc().makeOperationContext();
+    // Ensure that the clean up won't delete any request recovery document (the commands will be
+    // reissued once the scheduler is restarted)
+    _performDeferredCleanup(opCtxHolder.get(), cancelledRequests, false /*includePersistedData*/);
 }
 
 

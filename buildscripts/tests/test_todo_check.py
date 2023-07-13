@@ -11,7 +11,7 @@ from typing import Iterable
 
 import buildscripts.todo_check as under_test
 
-# pylint: disable=invalid-name
+# pylint: disable=missing-docstring,invalid-name,unused-argument,no-self-use,protected-access
 
 
 def create_file_iterator(file_contents: str) -> Iterable[str]:

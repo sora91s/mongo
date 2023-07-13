@@ -37,7 +37,7 @@
 
 namespace mongo {
 
-ViewDefinition::ViewDefinition(const DatabaseName& dbName,
+ViewDefinition::ViewDefinition(StringData dbName,
                                StringData viewName,
                                StringData viewOnName,
                                const BSONObj& pipeline,

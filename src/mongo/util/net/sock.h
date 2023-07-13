@@ -29,11 +29,11 @@
 
 #pragma once
 
-#include <cstdio>
+#include <stdio.h>
 
 #ifndef _WIN32
 
-#include <cerrno>
+#include <errno.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -63,7 +63,7 @@ namespace mongo {
 class SSLManagerInterface;
 class SSLConnectionInterface;
 #endif
-class SSLPeerInfo;
+struct SSLPeerInfo;
 
 extern const int portSendFlags;
 extern const int portRecvFlags;

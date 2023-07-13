@@ -114,8 +114,6 @@ public:
         return DepsTracker::State::SEE_NEXT;
     }
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
-
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
 
     const char* getSourceName() const final {

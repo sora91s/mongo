@@ -4,11 +4,7 @@
  * Run serverStatus() while running a large number of queries which are expected to reach maxTimeMS
  * and time out.
  *
- * @tags: [
- *     catches_command_failures,
- *     # This test leaks cursors causing range deletions to hang waiting for ongoing queries
- *     assumes_balancer_off,
- * ]
+ * @tags: [catches_command_failures]
  */
 load('jstests/concurrency/fsm_workload_helpers/server_types.js');  // for isMongos
 

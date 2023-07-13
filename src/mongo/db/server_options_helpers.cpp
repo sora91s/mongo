@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
+
 #include "mongo/db/server_options_helpers.h"
 
 #ifdef _WIN32
@@ -46,6 +48,7 @@
 #include "mongo/bson/util/builder.h"
 #include "mongo/config.h"
 #include "mongo/db/server_options.h"
+#include "mongo/idl/server_parameter.h"
 #include "mongo/logv2/log.h"
 #include "mongo/logv2/log_component.h"
 #include "mongo/logv2/log_component_settings.h"
@@ -59,7 +62,8 @@
 #include "mongo/util/options_parser/startup_options.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
+using std::endl;
+using std::string;
 
 namespace mongo {
 
@@ -271,12 +275,12 @@ StatusWith<BSONObj> applySetParameterOptions(const std::map<std::string, std::st
             return Status(ErrorCodes::BadValue,
                           "Cannot use --setParameter to set \"{}\" at startup"_format(name));
         BSONObjBuilder sub(summaryBuilder.subobjStart(name));
-        sp->append(nullptr, &sub, "default", boost::none);
-        Status status = sp->setFromString(value, boost::none);
+        sp->append(nullptr, sub, "default");
+        Status status = sp->setFromString(value);
         if (!status.isOK())
             return Status(ErrorCodes::BadValue,
                           "Bad value for parameter \"{}\": {}"_format(name, status.reason()));
-        sp->append(nullptr, &sub, "value", boost::none);
+        sp->append(nullptr, sub, "value");
     }
     return summaryBuilder.obj();
 }
@@ -305,8 +309,7 @@ Status storeBaseOptions(const moe::Environment& params) {
         if (component == logv2::LogComponent::kDefault) {
             continue;
         }
-        const std::string dottedName =
-            "systemLog.component." + component.getDottedName() + ".verbosity";
+        const string dottedName = "systemLog.component." + component.getDottedName() + ".verbosity";
         if (params.count(dottedName)) {
             int verbosity = params[dottedName].as<int>();
             // Clear existing log level if log level is negative.
@@ -334,7 +337,7 @@ Status storeBaseOptions(const moe::Environment& params) {
     }
 
     if (params.count("systemLog.timeStampFormat")) {
-        std::string formatterName = params["systemLog.timeStampFormat"].as<std::string>();
+        std::string formatterName = params["systemLog.timeStampFormat"].as<string>();
         if (formatterName == "iso8601-utc") {
             serverGlobalParams.logTimestampFormat = logv2::LogTimestampFormat::kISO8601UTC;
             setDateFormatIsLocalTimezone(false);
@@ -381,7 +384,7 @@ Status storeBaseOptions(const moe::Environment& params) {
 
 #ifndef _WIN32
     if (params.count("systemLog.syslogFacility")) {
-        std::string facility = params["systemLog.syslogFacility"].as<std::string>();
+        std::string facility = params["systemLog.syslogFacility"].as<string>();
         bool set = false;
         // match facility string to facility value
         size_t facilitynamesLength = sizeof(facilitynames) / sizeof(facilitynames[0]);
@@ -408,7 +411,7 @@ Status storeBaseOptions(const moe::Environment& params) {
     }
 
     if (params.count("systemLog.logRotate")) {
-        std::string logRotateParam = params["systemLog.logRotate"].as<std::string>();
+        std::string logRotateParam = params["systemLog.logRotate"].as<string>();
         if (logRotateParam == "reopen") {
             serverGlobalParams.logRenameOnRotate = false;
 
@@ -429,12 +432,11 @@ Status storeBaseOptions(const moe::Environment& params) {
     }
 
     if (params.count("processManagement.pidFilePath")) {
-        serverGlobalParams.pidFile = params["processManagement.pidFilePath"].as<std::string>();
+        serverGlobalParams.pidFile = params["processManagement.pidFilePath"].as<string>();
     }
 
     if (params.count("processManagement.timeZoneInfo")) {
-        serverGlobalParams.timeZoneInfoPath =
-            params["processManagement.timeZoneInfo"].as<std::string>();
+        serverGlobalParams.timeZoneInfoPath = params["processManagement.timeZoneInfo"].as<string>();
     }
 
     if (params.count("setParameter")) {
@@ -448,12 +450,11 @@ Status storeBaseOptions(const moe::Environment& params) {
     }
 
     if (params.count("operationProfiling.slowOpThresholdMs")) {
-        serverGlobalParams.slowMS.store(params["operationProfiling.slowOpThresholdMs"].as<int>());
+        serverGlobalParams.slowMS = params["operationProfiling.slowOpThresholdMs"].as<int>();
     }
 
     if (params.count("operationProfiling.slowOpSampleRate")) {
-        serverGlobalParams.sampleRate.store(
-            params["operationProfiling.slowOpSampleRate"].as<double>());
+        serverGlobalParams.sampleRate = params["operationProfiling.slowOpSampleRate"].as<double>();
     }
 
     if (params.count("operationProfiling.filter")) {

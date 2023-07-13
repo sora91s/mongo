@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/fail_point.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -83,8 +81,7 @@ void assertNotStandaloneOrShardServer(OperationContext* opCtx, StringData cmdNam
 
     uassert(51301,
             str::stream() << "'" << cmdName << "' is not supported on shard nodes.",
-            serverGlobalParams.clusterRole == ClusterRole::None ||
-                serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
+            serverGlobalParams.clusterRole != ClusterRole::ShardServer);
 }
 
 auto makeResponse(const ReadWriteConcernDefaults::RWConcernDefaultAndTime& rwcDefault,

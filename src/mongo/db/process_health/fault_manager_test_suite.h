@@ -30,19 +30,17 @@
 
 #include <memory>
 
-#include "mongo/db/concurrency/locker_noop_client_observer.h"
 #include "mongo/db/process_health/fault_manager.h"
+
+#include "mongo/db/concurrency/locker_noop_client_observer.h"
 #include "mongo/db/process_health/health_observer_mock.h"
 #include "mongo/db/process_health/health_observer_registration.h"
 #include "mongo/executor/network_interface_factory.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/idl/server_parameter_test_util.h"
-#include "mongo/logv2/log.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/tick_source_mock.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 namespace mongo {
 
@@ -53,7 +51,7 @@ namespace process_health {
 
 namespace test {
 
-inline std::unique_ptr<FaultManagerConfig> getConfigWithDisabledPeriodicChecks() {
+static inline std::unique_ptr<FaultManagerConfig> getConfigWithDisabledPeriodicChecks() {
     auto config = std::make_unique<FaultManagerConfig>();
     config->disablePeriodicChecksForTests();
     return config;
@@ -68,21 +66,20 @@ public:
     FaultManagerTestImpl(ServiceContext* svcCtx,
                          std::shared_ptr<executor::TaskExecutor> taskExecutor,
                          std::unique_ptr<FaultManagerConfig> config)
-        : FaultManager(
-              svcCtx,
-              taskExecutor,
-              [&config]() -> std::unique_ptr<FaultManagerConfig> {
-                  if (config)
-                      return std::move(config);
-                  else
-                      return getConfigWithDisabledPeriodicChecks();
-              }(),
-              [](std::string cause) {
-                  // In tests, do not crash.
-                  LOGV2(5936606,
-                        "Fault manager progress monitor triggered the termination",
-                        "cause"_attr = cause);
-              }) {}
+        : FaultManager(svcCtx,
+                       taskExecutor,
+                       [&config]() -> std::unique_ptr<FaultManagerConfig> {
+                           if (config)
+                               return std::move(config);
+                           else
+                               return getConfigWithDisabledPeriodicChecks();
+                       }(),
+                       [](std::string cause) {
+                           // In tests, do not crash.
+                           LOGV2(5936606,
+                                 "Fault manager progress monitor triggered the termination",
+                                 "cause"_attr = cause);
+                       }) {}
 
     void healthCheckTest(HealthObserver* observer, CancellationToken token) {
         healthCheck(observer, token);
@@ -294,5 +291,3 @@ private:
 }  // namespace test
 }  // namespace process_health
 }  // namespace mongo
-
-#undef MONGO_LOGV2_DEFAULT_COMPONENT

@@ -31,7 +31,6 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/base/checked_cast.h"
-#include "mongo/bson/unordered_fields_bsonobj_comparator.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_algo.h"
 #include "mongo/db/matcher/expression_array.h"
@@ -41,7 +40,6 @@
 #include "mongo/db/matcher/expression_leaf.h"
 #include "mongo/db/matcher/expression_tree.h"
 #include "mongo/db/matcher/expression_type.h"
-#include "mongo/db/matcher/match_expression_dependencies.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_xor.h"
 #include "mongo/db/pipeline/dependencies.h"
 #include "mongo/db/query/collation/collation_index_key.h"
@@ -376,7 +374,7 @@ unique_ptr<MatchExpression> createNorOfNodes(std::vector<unique_ptr<MatchExpress
  */
 std::pair<unique_ptr<MatchExpression>, unique_ptr<MatchExpression>> splitMatchExpressionByFunction(
     unique_ptr<MatchExpression> expr,
-    const OrderedPathSet& fields,
+    const std::set<std::string>& fields,
     expression::ShouldSplitExprFunc shouldSplitOut) {
     if (shouldSplitOut(*expr, fields)) {
         // 'expr' satisfies our split condition and can be completely split out.
@@ -435,21 +433,19 @@ std::pair<unique_ptr<MatchExpression>, unique_ptr<MatchExpression>> splitMatchEx
             // We haven't satisfied the split condition, so 'expr' belongs in the remaining match.
             return {nullptr, std::move(expr)};
         }
-        default: {
-            MONGO_UNREACHABLE;
-        }
+        default: { MONGO_UNREACHABLE; }
     }
 }
 
 bool pathDependenciesAreExact(StringData key, const MatchExpression* expr) {
     DepsTracker columnDeps;
-    match_expression::addDependencies(expr, &columnDeps);
-    return !columnDeps.needWholeDocument && columnDeps.fields == OrderedPathSet{key.toString()};
+    expr->addDependencies(&columnDeps);
+    return !columnDeps.needWholeDocument && columnDeps.fields == std::set{key.toString()};
 }
 
-void addExpr(StringData path,
-             std::unique_ptr<MatchExpression> me,
-             StringMap<std::unique_ptr<MatchExpression>>& out) {
+bool tryAddExprHelper(StringData path,
+                      std::unique_ptr<MatchExpression> me,
+                      StringMap<std::unique_ptr<MatchExpression>>& out) {
     // In order for this to be correct, the dependencies of the filter by column must be exactly
     // this column.
     dassert(pathDependenciesAreExact(path, me.get()));
@@ -471,52 +467,38 @@ void addExpr(StringData path,
         auto andME = checked_cast<AndMatchExpression*>(entryForPath.get());
         andME->add(std::move(me));
     }
+    return true;
 }
 
-std::unique_ptr<MatchExpression> tryAddExpr(StringData path,
-                                            const MatchExpression* me,
-                                            StringMap<std::unique_ptr<MatchExpression>>& out) {
+bool tryAddExpr(StringData path,
+                const MatchExpression* me,
+                StringMap<std::unique_ptr<MatchExpression>>& out) {
     if (FieldRef(path).hasNumericPathComponents())
-        return me->shallowClone();
-
-    addExpr(path, me->shallowClone(), out);
-    return nullptr;
-}
-
-/**
- * Here we check whether the comparison can work with the given value. Objects and arrays are
- * generally not permitted. Objects can't work because the paths will be split apart in the columnar
- * index. We could do arrays of scalars since we would have all that information in the index, but
- * it proved complex to integrate due to the interface with the matcher. It expects to get a
- * BSONElement for the whole Array but we'd like to avoid materializing that.
- *
- * One exception to the above: We can support EQ with empty objects and empty arrays since those are
- * stored as values in CSI. Maybe could also support LT and LTE, but those don't seem as important
- * so are left for future work.
- */
-bool canCompareWith(const BSONElement& elem, bool isEQ) {
-    const auto type = elem.type();
-    if (type == BSONType::MinKey || type == BSONType::MaxKey) {
-        // MinKey and MaxKey have special semantics for comparison to objects.
         return false;
-    }
-    if (type == BSONType::Array || type == BSONType::Object) {
-        return isEQ && elem.Obj().isEmpty();
-    }
 
-    // We support all other types, except null, since it is equivalent to x==null || !exists(x).
-    return !elem.isNull();
+    return tryAddExprHelper(path, me->shallowClone(), out);
 }
 
-/**
- * Helper for the main public API. Returns the residual predicate and adds any columnar predicates
- * into 'out', if they can be pushed down on their own, or into 'pending' if they can be pushed down
- * only if there are fully supported predicates on the same path.
- */
-std::unique_ptr<MatchExpression> splitMatchExpressionForColumns(
-    const MatchExpression* me,
-    StringMap<std::unique_ptr<MatchExpression>>& out,
-    StringMap<std::unique_ptr<MatchExpression>>& pending) {
+bool splitMatchExpressionForColumns(const MatchExpression* me,
+                                    StringMap<std::unique_ptr<MatchExpression>>& out) {
+    auto canCompareWith = [](const BSONElement& elem, bool isEQ) {
+        // Here we check whether the comparison can work with the given value. Objects and arrays
+        // are generally not permitted. Objects can't work because the paths will be split apart in
+        // the columnar index. We could do arrays of scalars since we would have all that
+        // information in the index, but it proved complex to integrate due to the interface with
+        // the matcher. It expects to get a BSONElement for the whole Array but we'd like to avoid
+        // materializing that.
+        //
+        // One exception to the above: We can support EQ with empty objects and empty arrays since
+        // those are more obviously correct. Maybe could also support LT and LTE, but those don't
+        // seem as important so are left for future work.
+        if (elem.type() == BSONType::Array || elem.type() == BSONType::Object) {
+            return isEQ && elem.Obj().isEmpty();
+        }
+
+        // We support all other types, except null, since it is equivalent to x==null || !exists(x).
+        return !elem.isNull();
+    };
     switch (me->matchType()) {
         // These are always safe since they will never match documents missing their field, or where
         // the element is an object or array.
@@ -527,7 +509,6 @@ std::unique_ptr<MatchExpression> splitMatchExpressionForColumns(
         case MatchExpression::BITS_ANY_SET:
         case MatchExpression::BITS_ANY_CLEAR:
         case MatchExpression::EXISTS: {
-            // Note: {$exists: false} is represented as {$not: {$exists: true}}.
             auto sub = checked_cast<const PathMatchExpression*>(me);
             return tryAddExpr(sub->path(), me, out);
         }
@@ -539,58 +520,71 @@ std::unique_ptr<MatchExpression> splitMatchExpressionForColumns(
         case MatchExpression::GTE: {
             auto sub = checked_cast<const ComparisonMatchExpressionBase*>(me);
             if (!canCompareWith(sub->getData(), me->matchType() == MatchExpression::EQ))
-                return me->shallowClone();
+                return false;
             return tryAddExpr(sub->path(), me, out);
         }
 
+
         case MatchExpression::MATCH_IN: {
             auto sub = checked_cast<const InMatchExpression*>(me);
-            if (sub->hasNonScalarOrNonEmptyValues()) {
-                return me->shallowClone();
+            // Note that $in treats regexes specially and stores them separately than the rest of
+            // the 'equalities'. We actually don't need to look at them here since any regex should
+            // be OK. A regex could only match a string, symbol, or other regex, any of which would
+            // be present in the columnar storage.
+            for (auto&& elem : sub->getEqualities()) {
+                if (!canCompareWith(elem, true))
+                    return false;
             }
             return tryAddExpr(sub->path(), me, out);
         }
 
         case MatchExpression::TYPE_OPERATOR: {
             auto sub = checked_cast<const TypeMatchExpression*>(me);
-            tassert(6430600,
-                    "Not expecting to find EOO in a $type expression",
-                    !sub->typeSet().hasType(BSONType::EOO));
+            if (sub->typeSet().hasType(BSONType::EOO) || sub->typeSet().hasType(BSONType::Object) ||
+                sub->typeSet().hasType(BSONType::Array))
+                return false;
             return tryAddExpr(sub->path(), me, out);
         }
 
         case MatchExpression::AND: {
-            auto originalAnd = checked_cast<const AndMatchExpression*>(me);
-            std::vector<std::unique_ptr<MatchExpression>> newChildren;
-            for (size_t i = 0, end = originalAnd->numChildren(); i != end; ++i) {
-                if (auto residual =
-                        splitMatchExpressionForColumns(originalAnd->getChild(i), out, pending)) {
-                    newChildren.emplace_back(std::move(residual));
+            auto sub = checked_cast<const AndMatchExpression*>(me);
+            for (size_t i = 0, end = sub->numChildren(); i != end; i++) {
+                if (!splitMatchExpressionForColumns(sub->getChild(i), out)) {
+                    return false;
                 }
             }
-            if (newChildren.empty()) {
-                return nullptr;
-            }
-            return newChildren.size() == 1
-                ? std::move(newChildren[0])
-                : std::make_unique<AndMatchExpression>(std::move(newChildren));
+            return true;
         }
 
+
         case MatchExpression::NOT: {
-            // We can support negation of all supported operators, except AND. The unsupported ops
-            // would manifest as non-null residual.
-            auto sub = checked_cast<const NotMatchExpression*>(me)->getChild(0);
-            if (sub->matchType() == MatchExpression::AND) {
-                return me->shallowClone();
+            // {$ne: null} pattern is known to be important in cases like those in SERVER-27646 and
+            // SERVER-36465.
+            auto notExpr = checked_cast<const NotMatchExpression*>(me);
+            auto withinNot = notExpr->getChild(0);
+
+            // Oddly, we parse {$ne: null} to a NOT -> EQ, but we parse {$not: {$eq: null}} into a
+            // more complex NOT -> AND -> EQ. Let's support both.
+            auto tryAddNENull = [&](const MatchExpression* negatedPred) {
+                if (negatedPred->matchType() != MatchExpression::EQ) {
+                    return false;
+                }
+                auto eqPred = checked_cast<const EqualityMatchExpression*>(negatedPred);
+                if (eqPred->getData().isNull()) {
+                    return tryAddExpr(eqPred->path(), me, out);
+                }
+                return false;
+            };
+            if (tryAddNENull(withinNot)) {
+                // {$ne: null}. We had equality just under NOT.
+                return true;
+            } else if (withinNot->matchType() == MatchExpression::AND &&
+                       withinNot->numChildren() == 1 && tryAddNENull(withinNot->getChild(0))) {
+                // {$not: {$eq: null}}: NOT -> AND -> EQ.
+                return true;
             }
-            StringMap<std::unique_ptr<MatchExpression>> outSub;
-            StringMap<std::unique_ptr<MatchExpression>> pendingSub;
-            auto residual = splitMatchExpressionForColumns(sub, outSub, pendingSub);
-            if (residual || !pendingSub.empty()) {
-                return me->shallowClone();
-            }
-            uassert(7040600, "Should have exactly one path under $not", outSub.size() == 1);
-            return tryAddExpr(outSub.begin()->first /* path */, me, pending);
+            // May be other cases, but left as future work.
+            return false;
         }
 
         // We don't currently handle any of these cases, but some may be possible in the future.
@@ -633,7 +627,7 @@ std::unique_ptr<MatchExpression> splitMatchExpressionForColumns(
         case MatchExpression::SIZE:
         case MatchExpression::TEXT:
         case MatchExpression::WHERE:
-            return me->shallowClone();
+            return false;
     }
     MONGO_UNREACHABLE;
 }
@@ -775,10 +769,12 @@ bool isSubsetOf(const MatchExpression* lhs, const MatchExpression* rhs) {
     return false;
 }
 
+// Checks if 'expr' has any children which do not have renaming implemented.
 bool hasOnlyRenameableMatchExpressionChildren(const MatchExpression& expr) {
     if (expr.matchType() == MatchExpression::MatchType::EXPRESSION) {
         return true;
-    } else if (expr.getCategory() == MatchExpression::MatchCategory::kOther) {
+    } else if (expr.getCategory() == MatchExpression::MatchCategory::kArrayMatching ||
+               expr.getCategory() == MatchExpression::MatchCategory::kOther) {
         return false;
     } else if (expr.getCategory() == MatchExpression::MatchCategory::kLogical) {
         for (size_t i = 0; i < expr.numChildren(); i++) {
@@ -790,69 +786,7 @@ bool hasOnlyRenameableMatchExpressionChildren(const MatchExpression& expr) {
     return true;
 }
 
-bool containsDependency(const OrderedPathSet& testSet, const OrderedPathSet& prefixCandidates) {
-    if (testSet.empty()) {
-        return false;
-    }
-
-    PathComparator pathComparator;
-    auto i2 = testSet.begin();
-    for (const auto& p1 : prefixCandidates) {
-        while (pathComparator(*i2, p1)) {
-            ++i2;
-            if (i2 == testSet.end()) {
-                return false;
-            }
-        }
-        // At this point we know that p1 <= *i2, so it may be identical or a path prefix.
-        if (p1 == *i2 || isPathPrefixOf(p1, *i2)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool containsOverlappingPaths(const OrderedPathSet& testSet) {
-    // We will take advantage of the fact that paths with common ancestors are ordered together in
-    // our ordering. Thus if there are any paths that contain a common ancestor, they will be right
-    // next to each other - unless there are multiple pairs, in which case at least one pair will be
-    // right next to each other.
-    if (testSet.empty()) {
-        return false;
-    }
-    for (auto it = std::next(testSet.begin()); it != testSet.end(); ++it) {
-        if (isPathPrefixOf(*std::prev(it), *it)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool containsEmptyPaths(const OrderedPathSet& testSet) {
-    return std::any_of(testSet.begin(), testSet.end(), [](const auto& path) {
-        if (path.empty()) {
-            return true;
-        }
-
-        FieldRef fieldRef(path);
-
-        for (size_t i = 0; i < fieldRef.numParts(); ++i) {
-            if (fieldRef.getPart(i).empty()) {
-                return true;
-            }
-        }
-
-        // all non-empty
-        return false;
-    });
-}
-
-
-bool areIndependent(const OrderedPathSet& pathSet1, const OrderedPathSet& pathSet2) {
-    return !containsDependency(pathSet1, pathSet2) && !containsDependency(pathSet2, pathSet1);
-}
-
-bool isIndependentOf(const MatchExpression& expr, const OrderedPathSet& pathSet) {
+bool isIndependentOf(const MatchExpression& expr, const std::set<std::string>& pathSet) {
     // Any expression types that do not have renaming implemented cannot have their independence
     // evaluated here. See applyRenamesToExpression().
     if (!hasOnlyRenameableMatchExpressionChildren(expr)) {
@@ -860,92 +794,69 @@ bool isIndependentOf(const MatchExpression& expr, const OrderedPathSet& pathSet)
     }
 
     auto depsTracker = DepsTracker{};
-    match_expression::addDependencies(&expr, &depsTracker);
+    expr.addDependencies(&depsTracker);
     // Match expressions that generate random numbers can't be safely split out and pushed down.
-    if (depsTracker.needRandomGenerator || depsTracker.needWholeDocument) {
-        return false;
-    }
-    return areIndependent(pathSet, depsTracker.fields);
+    return !depsTracker.needRandomGenerator &&
+        std::none_of(
+            depsTracker.fields.begin(), depsTracker.fields.end(), [&pathSet](auto&& field) {
+                return pathSet.find(field) != pathSet.end() ||
+                    std::any_of(pathSet.begin(), pathSet.end(), [&field](auto&& path) {
+                           return expression::isPathPrefixOf(field, path) ||
+                               expression::isPathPrefixOf(path, field);
+                       });
+            });
 }
 
-bool isOnlyDependentOn(const MatchExpression& expr, const OrderedPathSet& pathSet) {
+bool isOnlyDependentOn(const MatchExpression& expr, const std::set<std::string>& pathSet) {
     // Any expression types that do not have renaming implemented cannot have their independence
     // evaluated here. See applyRenamesToExpression().
     if (!hasOnlyRenameableMatchExpressionChildren(expr)) {
         return false;
     }
 
-    // The approach below takes only O(n log n) time.
-
-    // Find the unique dependencies of pathSet.
-    auto pathsDeps =
-        DepsTracker::simplifyDependencies(pathSet, DepsTracker::TruncateToRootLevel::no);
-    auto pathsDepsCopy = OrderedPathSet(pathsDeps.begin(), pathsDeps.end());
-
-    // Now add the match expression's paths and see if the dependencies are the same.
-    auto exprDepsTracker = DepsTracker{};
-    match_expression::addDependencies(&expr, &exprDepsTracker);
+    auto depsTracker = DepsTracker{};
+    expr.addDependencies(&depsTracker);
     // Match expressions that generate random numbers can't be safely split out and pushed down.
-    if (exprDepsTracker.needRandomGenerator) {
-        return false;
-    }
-    pathsDepsCopy.insert(exprDepsTracker.fields.begin(), exprDepsTracker.fields.end());
-
-    return pathsDeps ==
-        DepsTracker::simplifyDependencies(pathsDepsCopy, DepsTracker::TruncateToRootLevel::no);
+    return !depsTracker.needRandomGenerator &&
+        std::all_of(depsTracker.fields.begin(), depsTracker.fields.end(), [&](auto&& field) {
+            return std::any_of(pathSet.begin(), pathSet.end(), [&](auto&& path) {
+                return path == field || isPathPrefixOf(path, field);
+            });
+        });
 }
 
 std::pair<unique_ptr<MatchExpression>, unique_ptr<MatchExpression>> splitMatchExpressionBy(
     unique_ptr<MatchExpression> expr,
-    const OrderedPathSet& fields,
+    const std::set<std::string>& fields,
     const StringMap<std::string>& renames,
     ShouldSplitExprFunc func /*= isIndependentOf */) {
-    auto splitExpr = splitMatchExpressionByFunction(expr->shallowClone(), fields, func);
+    auto splitExpr = splitMatchExpressionByFunction(std::move(expr), fields, func);
     if (splitExpr.first) {
-        // If we get attemptedButFailedRenames == true, then it means we could not apply renames
-        // though there's sub-path match. In such a case, returns the original expression as the
-        // residual expression so that the match is not mistakenly swapped with the previous stage.
-        // Otherwise, the unrenamed $match would be swapped with the previous stage.
-        //
-        // TODO SERVER-74298 Remove if clause and just call applyRenamesToExpression().
-        if (auto attemptedButFailedRenames =
-                applyRenamesToExpression(splitExpr.first.get(), renames);
-            attemptedButFailedRenames) {
-            return {nullptr, std::move(expr)};
-        }
+        applyRenamesToExpression(splitExpr.first.get(), renames);
     }
     return splitExpr;
 }
 
-// TODO SERVER-74298 Remove the return value.
-// As soon as we find the first attempted but failed rename, we cancel the match expression tree
-// traversal because the caller would return the original match expression.
-bool applyRenamesToExpression(MatchExpression* expr, const StringMap<std::string>& renames) {
+void applyRenamesToExpression(MatchExpression* expr, const StringMap<std::string>& renames) {
     if (expr->matchType() == MatchExpression::MatchType::EXPRESSION) {
         ExprMatchExpression* exprExpr = checked_cast<ExprMatchExpression*>(expr);
         exprExpr->applyRename(renames);
-        return false;
-    }
-
-    if (expr->getCategory() == MatchExpression::MatchCategory::kOther) {
-        return false;
+        return;
     }
 
     if (expr->getCategory() == MatchExpression::MatchCategory::kArrayMatching ||
-        expr->getCategory() == MatchExpression::MatchCategory::kLeaf) {
-        auto* pathExpr = checked_cast<PathMatchExpression*>(expr);
-        if (pathExpr->applyRename(renames)) {
-            return true;
-        }
+        expr->getCategory() == MatchExpression::MatchCategory::kOther) {
+        return;
+    }
+
+    if (expr->getCategory() == MatchExpression::MatchCategory::kLeaf) {
+        LeafMatchExpression* leafExpr = checked_cast<LeafMatchExpression*>(expr);
+        leafExpr->applyRename(renames);
     }
 
     for (size_t i = 0; i < expr->numChildren(); ++i) {
-        if (applyRenamesToExpression(expr->getChild(i), renames)) {
-            return true;
-        }
+        applyRenamesToExpression(expr->getChild(i), renames);
     }
-
-    return false;
 }
 
 void mapOver(MatchExpression* expr, NodeTraversalFunc func, std::string path) {
@@ -977,55 +888,13 @@ bool bidirectionalPathPrefixOf(StringData first, StringData second) {
         expression::isPathPrefixOf(second, first);
 }
 
-std::pair<StringMap<std::unique_ptr<MatchExpression>>, std::unique_ptr<MatchExpression>>
-splitMatchExpressionForColumns(const MatchExpression* me) {
-    StringMap<std::unique_ptr<MatchExpression>> out;
-    StringMap<std::unique_ptr<MatchExpression>> pending;
-    auto residualMatch = mongo::splitMatchExpressionForColumns(me, out, pending);
-
-    // Let's combine pending expressions with those in 'out', if possible.
-    for (auto pIt = pending.begin(); pIt != pending.end();) {
-        const auto& path = pIt->first;
-        auto oIt = out.find(path);
-        if (oIt != out.end()) {
-            auto expr = std::move(pIt->second);
-            // Do not create nested ANDs.
-            if (expr->matchType() == MatchExpression::AND) {
-                auto pendingAnd = checked_cast<AndMatchExpression*>(expr.get());
-                for (size_t i = 0, end = pendingAnd->numChildren(); i != end; ++i) {
-                    mongo::addExpr(path, pendingAnd->releaseChild(i), out);
-                }
-            } else {
-                mongo::addExpr(path, std::move(expr), out);
-            }
-
-            // Remove the path from the 'pending' map.
-            auto toErase = pIt;
-            ++pIt;
-            pending.erase(toErase);
-        } else {
-            ++pIt;
-        }
-    }
-
-    if (pending.empty()) {
-        return {std::move(out), std::move(residualMatch)};
-    }
-
-    // The unmatched pending predicates have to be done as residual.
-    std::vector<std::unique_ptr<MatchExpression>> unmatchedPending;
-    unmatchedPending.reserve(pending.size() + 1);
-    for (auto& p : pending) {
-        unmatchedPending.push_back(std::move(p.second));
-    }
-    if (residualMatch) {
-        unmatchedPending.push_back(std::move(residualMatch));
-    }
-
-    if (unmatchedPending.size() == 1) {
-        return {std::move(out), std::move(unmatchedPending[0])};
-    }
-    return {std::move(out), std::make_unique<AndMatchExpression>(std::move(unmatchedPending))};
+boost::optional<StringMap<std::unique_ptr<MatchExpression>>> splitMatchExpressionForColumns(
+    const MatchExpression* me) {
+    boost::optional<StringMap<std::unique_ptr<MatchExpression>>> out;
+    out.emplace();
+    if (!mongo::splitMatchExpressionForColumns(me, *out))
+        out = {};
+    return out;
 }
 
 std::string filterMapToString(const StringMap<std::unique_ptr<MatchExpression>>& filterMap) {

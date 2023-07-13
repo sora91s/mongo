@@ -47,7 +47,6 @@
 #include "mongo/db/exec/document_value/value.h"
 #include "mongo/db/exec/plan_stats.h"
 #include "mongo/db/exec/scoped_timer.h"
-#include "mongo/db/exec/scoped_timer_factory.h"
 #include "mongo/db/generic_cursor.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_algo.h"
@@ -99,18 +98,18 @@ class Document;
                                            true)
 
 /**
- * Like REGISTER_DOCUMENT_SOURCE, except the parser will only be registered when featureFlag is
- * enabled. We store featureFlag in the parserMap, so that it can be checked at runtime
- * to correctly enable/disable the parser.
+ * Like REGISTER_DOCUMENT_SOURCE, except the parser will only be enabled when FCV >= minVersion.
+ * We store minVersion in the parserMap, so that changing FCV at runtime correctly enables/disables
+ * the parser.
  */
-#define REGISTER_DOCUMENT_SOURCE_WITH_FEATURE_FLAG(                     \
-    key, liteParser, fullParser, allowedWithApiStrict, featureFlag)     \
+#define REGISTER_DOCUMENT_SOURCE_WITH_MIN_VERSION(                      \
+    key, liteParser, fullParser, allowedWithApiStrict, minVersion)      \
     REGISTER_DOCUMENT_SOURCE_CONDITIONALLY(key,                         \
                                            liteParser,                  \
                                            fullParser,                  \
                                            allowedWithApiStrict,        \
                                            AllowedWithClientType::kAny, \
-                                           featureFlag,                 \
+                                           minVersion,                  \
                                            true)
 
 /**
@@ -126,8 +125,8 @@ class Document;
                                            condition)
 
 /**
- * You can specify a condition, evaluated during startup,
- * that decides whether to register the parser.
+ * Like REGISTER_DOCUMENT_SOURCE_WITH_MIN_VERSION, except you can also specify a condition,
+ * evaluated during startup, that decides whether to register the parser.
  *
  * For example, you could check a feature flag, and register the parser only when it's enabled.
  *
@@ -137,25 +136,23 @@ class Document;
  *
  * This is the most general REGISTER_DOCUMENT_SOURCE* macro, which all others should delegate to.
  */
-#define REGISTER_DOCUMENT_SOURCE_CONDITIONALLY(                                                   \
-    key, liteParser, fullParser, allowedWithApiStrict, clientType, featureFlag, ...)              \
-    MONGO_INITIALIZER_GENERAL(addToDocSourceParserMap_##key,                                      \
-                              ("BeginDocumentSourceRegistration"),                                \
-                              ("EndDocumentSourceRegistration"))                                  \
-    (InitializerContext*) {                                                                       \
-        if (!__VA_ARGS__ ||                                                                       \
-            (boost::optional<FeatureFlag>(featureFlag) != boost::none &&                          \
-             !boost::optional<FeatureFlag>(featureFlag)->isEnabledAndIgnoreFCV())) {              \
-            DocumentSource::registerParser("$" #key, DocumentSource::parseDisabled, featureFlag); \
-            LiteParsedDocumentSource::registerParser("$" #key,                                    \
-                                                     LiteParsedDocumentSource::parseDisabled,     \
-                                                     allowedWithApiStrict,                        \
-                                                     clientType);                                 \
-            return;                                                                               \
-        }                                                                                         \
-        LiteParsedDocumentSource::registerParser(                                                 \
-            "$" #key, liteParser, allowedWithApiStrict, clientType);                              \
-        DocumentSource::registerParser("$" #key, fullParser, featureFlag);                        \
+#define REGISTER_DOCUMENT_SOURCE_CONDITIONALLY(                                                  \
+    key, liteParser, fullParser, allowedWithApiStrict, clientType, minVersion, ...)              \
+    MONGO_INITIALIZER_GENERAL(addToDocSourceParserMap_##key,                                     \
+                              ("BeginDocumentSourceRegistration"),                               \
+                              ("EndDocumentSourceRegistration"))                                 \
+    (InitializerContext*) {                                                                      \
+        if (!__VA_ARGS__) {                                                                      \
+            DocumentSource::registerParser("$" #key, DocumentSource::parseDisabled, minVersion); \
+            LiteParsedDocumentSource::registerParser("$" #key,                                   \
+                                                     LiteParsedDocumentSource::parseDisabled,    \
+                                                     allowedWithApiStrict,                       \
+                                                     clientType);                                \
+            return;                                                                              \
+        }                                                                                        \
+        LiteParsedDocumentSource::registerParser(                                                \
+            "$" #key, liteParser, allowedWithApiStrict, clientType);                             \
+        DocumentSource::registerParser("$" #key, fullParser, minVersion);                        \
     }
 
 /**
@@ -310,9 +307,7 @@ public:
         // 'DistributedPlanLogic' or until a following stage causes the given validation
         // function to return false. By default this will not allow swapping with any
         // following stages.
-        movePastFunctionType canMovePast = [](const DocumentSource&) {
-            return false;
-        };
+        movePastFunctionType canMovePast = [](const DocumentSource&) { return false; };
     };
 
     virtual ~DocumentSource() {}
@@ -324,8 +319,8 @@ public:
      * original's 'ExpressionContext'.
      */
     virtual boost::intrusive_ptr<DocumentSource> clone(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx) const {
-        tassert(7406001, "expCtx passed to clone must not be null", expCtx);
+        const boost::intrusive_ptr<ExpressionContext>& newExpCtx = nullptr) const {
+        auto expCtx = newExpCtx ? newExpCtx : pExpCtx;
         std::vector<Value> serializedDoc;
         serializeToArray(serializedDoc);
         tassert(5757900,
@@ -363,10 +358,11 @@ public:
 
         auto serviceCtx = pExpCtx->opCtx->getServiceContext();
         invariant(serviceCtx);
+        auto fcs = serviceCtx->getFastClockSource();
+        invariant(fcs);
 
-        auto timer = scoped_timer_factory::make(
-            serviceCtx, QueryExecTimerPrecision::kMillis, _commonStats.executionTime.get_ptr());
-
+        invariant(_commonStats.executionTimeMillis);
+        ScopedTimer timer(fcs, _commonStats.executionTimeMillis.get_ptr());
         ++_commonStats.works;
 
         GetNextResult next = doGetNext();
@@ -383,16 +379,6 @@ public:
      */
     virtual StageConstraints constraints(
         Pipeline::SplitState = Pipeline::SplitState::kUnsplit) const = 0;
-
-    /**
-     * If a stage's StageConstraints::PositionRequirement is kCustom, then it should also override
-     * this method, which will be called by the validation process.
-     */
-    virtual void validatePipelinePosition(bool alreadyOptimized,
-                                          Pipeline::SourceContainer::const_iterator pos,
-                                          const Pipeline::SourceContainer& container) const {
-        MONGO_UNIMPLEMENTED_TASSERT(7183905);
-    };
 
     /**
      * Informs the stage that it is no longer needed and can release its resources. After dispose()
@@ -466,14 +452,6 @@ public:
 
     virtual void reattachToOperationContext(OperationContext* opCtx) {}
 
-    /**
-     * Validate that all operation contexts associated with this document source, including any
-     * subpipelines, match the argument.
-     */
-    virtual bool validateOperationContext(const OperationContext* opCtx) const {
-        return getContext()->opCtx == opCtx;
-    }
-
     virtual bool usedDisk() {
         return false;
     };
@@ -503,9 +481,10 @@ public:
      * DO NOT call this method directly. Instead, use the REGISTER_DOCUMENT_SOURCE macro defined in
      * this file.
      */
-    static void registerParser(std::string name,
-                               Parser parser,
-                               boost::optional<FeatureFlag> featureFlag);
+    static void registerParser(
+        std::string name,
+        Parser parser,
+        boost::optional<multiversion::FeatureCompatibilityVersion> requiredMinVersion);
     /**
      * Convenience wrapper for the common case, when DocumentSource::Parser returns a list of one
      * DocumentSource.
@@ -513,9 +492,10 @@ public:
      * DO NOT call this method directly. Instead, use the REGISTER_DOCUMENT_SOURCE macro defined in
      * this file.
      */
-    static void registerParser(std::string name,
-                               SimpleParser simpleParser,
-                               boost::optional<FeatureFlag> featureFlag);
+    static void registerParser(
+        std::string name,
+        SimpleParser simpleParser,
+        boost::optional<multiversion::FeatureCompatibilityVersion> requiredMinVersion);
 
     /**
      * Returns true if the DocumentSource has a query.
@@ -621,7 +601,9 @@ public:
             kAllExcept,
         };
 
-        GetModPathsReturn(Type type, OrderedPathSet&& paths, StringMap<std::string>&& renames)
+        GetModPathsReturn(Type type,
+                          std::set<std::string>&& paths,
+                          StringMap<std::string>&& renames)
             : type(type), paths(std::move(paths)), renames(std::move(renames)) {}
 
         std::set<std::string> getNewNames() {
@@ -671,7 +653,7 @@ public:
         }
 
         Type type;
-        OrderedPathSet paths;
+        std::set<std::string> paths;
 
         // Stages may fill out 'renames' to contain information about path renames. Each entry in
         // 'renames' maps from the new name of the path (valid in documents flowing *out* of this
@@ -694,7 +676,7 @@ public:
      * See GetModPathsReturn above for the possible return values and what they mean.
      */
     virtual GetModPathsReturn getModifiedPaths() const {
-        return {GetModPathsReturn::Type::kNotSupported, OrderedPathSet{}, {}};
+        return {GetModPathsReturn::Type::kNotSupported, std::set<std::string>{}, {}};
     }
 
     /**
@@ -716,12 +698,6 @@ public:
     }
 
     /**
-     * Populate 'refs' with the variables referred to by this stage, including user and system
-     * variables but excluding $$ROOT. Note that field path references are not considered variables.
-     */
-    virtual void addVariableRefs(std::set<Variables::Id>* refs) const = 0;
-
-    /**
      * If this stage can be run in parallel across a distributed collection, returns boost::none.
      * Otherwise, returns a struct representing what needs to be done to merge each shard's pipeline
      * into a single stream of results. Must not mutate the existing source object; if different
@@ -738,7 +714,7 @@ public:
      * parallel since it will preserve the shard key.
      */
     virtual bool canRunInParallelBeforeWriteStage(
-        const OrderedPathSet& nameOfShardKeyFieldsUponEntryToStage) const {
+        const std::set<std::string>& nameOfShardKeyFieldsUponEntryToStage) const {
         return false;
     }
 

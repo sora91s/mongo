@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -41,13 +42,9 @@
 #include "mongo/db/matcher/expression_geo.h"
 #include "mongo/db/pipeline/document_source_sort.h"
 #include "mongo/db/pipeline/expression.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -451,7 +448,7 @@ bool DocumentSourceGeoNear::needsGeoNearPoint() const {
 }
 
 DepsTracker::State DocumentSourceGeoNear::getDependencies(DepsTracker* deps) const {
-    expression::addDependencies(_nearGeometry.get(), deps);
+    _nearGeometry->addDependencies(deps);
     // TODO (SERVER-35424): Implement better dependency tracking. For example, 'distanceField' is
     // produced by this stage, and we could inform the query system that it need not include it in
     // its response. For now, assume that we require the entire document as well as the appropriate
@@ -461,10 +458,6 @@ DepsTracker::State DocumentSourceGeoNear::getDependencies(DepsTracker* deps) con
 
     deps->needWholeDocument = true;
     return DepsTracker::State::EXHAUSTIVE_FIELDS;
-}
-
-void DocumentSourceGeoNear::addVariableRefs(std::set<Variables::Id>* refs) const {
-    expression::addVariableRefs(_nearGeometry.get(), refs);
 }
 
 DocumentSourceGeoNear::DocumentSourceGeoNear(const intrusive_ptr<ExpressionContext>& pExpCtx)

@@ -1,9 +1,7 @@
 /**
  * Tests prepared transaction commit support.
  *
- * The test runs commands that are not allowed with security token: prepareTransaction.
- * @tags: [
- *   not_allowed_with_security_token,uses_transactions, uses_prepare_transaction]
+ * @tags: [uses_transactions, uses_prepare_transaction]
  */
 
 load("jstests/core/txns/libs/prepare_helpers.js");

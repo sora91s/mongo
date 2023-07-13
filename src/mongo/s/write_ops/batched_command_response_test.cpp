@@ -29,7 +29,6 @@
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/ops/write_ops.h"
-#include "mongo/s/shard_version_factory.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/unittest/unittest.h"
@@ -68,17 +67,46 @@ TEST(BatchedCommandResponseTest, Basic) {
     ASSERT_BSONOBJ_EQ(origResponseObj, genResponseObj);
 }
 
-TEST(BatchedCommandResponseTest, StaleConfigInfo) {
+// TODO (SERVER-64449): Get rid of this entire test case
+TEST(BatchedCommandResponseTest, StaleErrorAsStaleShardVersionCompatibility) {
     OID epoch = OID::gen();
 
-    StaleConfigInfo staleInfo(
-        NamespaceString::createNamespaceString_forTest("TestDB.TestColl"),
-        ShardVersionFactory::make(ChunkVersion({epoch, Timestamp(100, 0)}, {1, 0}),
-                                  boost::optional<CollectionIndexes>(boost::none)),
-        ShardVersionFactory::make(ChunkVersion({epoch, Timestamp(100, 0)}, {2, 0}),
-                                  boost::optional<CollectionIndexes>(boost::none)),
-        ShardId("TestShard"));
+    StaleConfigInfo staleInfo(NamespaceString("TestDB.TestColl"),
+                              ChunkVersion(1, 0, epoch, Timestamp(100, 0)),
+                              ChunkVersion(2, 0, epoch, Timestamp(100, 0)),
+                              ShardId("TestShard"));
+    BSONObjBuilder builder;
+    staleInfo.serialize(&builder);
 
+    BSONArray writeErrorsArray(
+        BSON_ARRAY(BSON("index" << 0 << "code" << ErrorCodes::OBSOLETE_StaleShardVersion << "errmsg"
+                                << "OBSOLETE_StaleShardVersion error"
+                                << "errInfo" << builder.obj())
+                   << BSON("index" << 1 << "code" << ErrorCodes::InvalidNamespace << "errmsg"
+                                   << "index 1 failed too")));
+
+    BSONObj origResponseObj =
+        BSON("n" << 0 << "opTime" << mongo::Timestamp(1ULL) << "writeErrors" << writeErrorsArray
+                 << "retriedStmtIds" << BSON_ARRAY(1 << 3) << "ok" << 1.0);
+
+    std::string errMsg;
+    BatchedCommandResponse response;
+    ASSERT_TRUE(response.parseBSON(origResponseObj, &errMsg));
+    ASSERT_EQ(0, response.getErrDetailsAt(0).getIndex());
+    ASSERT_EQ(ErrorCodes::StaleConfig, response.getErrDetailsAt(0).getStatus().code());
+    auto extraInfo = response.getErrDetailsAt(0).getStatus().extraInfo<StaleConfigInfo>();
+    ASSERT_EQ(staleInfo.getVersionReceived(), extraInfo->getVersionReceived());
+    ASSERT_EQ(*staleInfo.getVersionWanted(), *extraInfo->getVersionWanted());
+    ASSERT_EQ(staleInfo.getShardId(), extraInfo->getShardId());
+}
+
+TEST(BatchedCommandResponseTest, StaleErrorAsStaleConfigCompatibility) {
+    OID epoch = OID::gen();
+
+    StaleConfigInfo staleInfo(NamespaceString("TestDB.TestColl"),
+                              ChunkVersion(1, 0, epoch, Timestamp(100, 0)),
+                              ChunkVersion(2, 0, epoch, Timestamp(100, 0)),
+                              ShardId("TestShard"));
     BSONObjBuilder builder(BSON("index" << 0 << "code" << ErrorCodes::StaleConfig << "errmsg"
                                         << "StaleConfig error"));
     staleInfo.serialize(&builder);
@@ -161,16 +189,13 @@ TEST(BatchedCommandResponseTest, TooManyBigErrors) {
 }
 
 TEST(BatchedCommandResponseTest, CompatibilityFromWriteErrorToBatchCommandResponse) {
-    CollectionGeneration gen(OID::gen(), Timestamp(2, 0));
-    const auto versionReceived = ShardVersionFactory::make(
-        ChunkVersion(gen, {1, 0}), boost::optional<CollectionIndexes>(boost::none));
+    ChunkVersion versionReceived(1, 0, OID::gen(), Timestamp(2, 0));
 
     write_ops::UpdateCommandReply reply;
     reply.getWriteCommandReplyBase().setN(1);
     reply.getWriteCommandReplyBase().setWriteErrors(std::vector<write_ops::WriteError>{
         write_ops::WriteError(1,
-                              Status(StaleConfigInfo(NamespaceString::createNamespaceString_forTest(
-                                                         "TestDB", "TestColl"),
+                              Status(StaleConfigInfo(NamespaceString("TestDB", "TestColl"),
                                                      versionReceived,
                                                      boost::none,
                                                      ShardId("TestShard")),

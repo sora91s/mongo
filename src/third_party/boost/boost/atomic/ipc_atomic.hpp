@@ -22,7 +22,6 @@
 #include <boost/atomic/detail/classify.hpp>
 #include <boost/atomic/detail/atomic_impl.hpp>
 #include <boost/atomic/detail/type_traits/is_trivially_copyable.hpp>
-#include <boost/atomic/detail/type_traits/is_nothrow_default_constructible.hpp>
 #include <boost/atomic/detail/header.hpp>
 
 #ifdef BOOST_HAS_PRAGMA_ONCE
@@ -50,13 +49,8 @@ public:
 #endif
 
 public:
-    BOOST_FORCEINLINE BOOST_ATOMIC_DETAIL_CONSTEXPR_UNION_INIT ipc_atomic() BOOST_NOEXCEPT_IF(atomics::detail::is_nothrow_default_constructible< value_type >::value) : base_type()
-    {
-    }
-
-    BOOST_FORCEINLINE BOOST_ATOMIC_DETAIL_CONSTEXPR_UNION_INIT ipc_atomic(value_arg_type v) BOOST_NOEXCEPT : base_type(v)
-    {
-    }
+    BOOST_DEFAULTED_FUNCTION(ipc_atomic() BOOST_ATOMIC_DETAIL_DEF_NOEXCEPT_DECL, BOOST_ATOMIC_DETAIL_DEF_NOEXCEPT_IMPL {})
+    BOOST_FORCEINLINE BOOST_ATOMIC_DETAIL_CONSTEXPR_UNION_INIT ipc_atomic(value_arg_type v) BOOST_NOEXCEPT : base_type(v) {}
 
     BOOST_FORCEINLINE value_type operator= (value_arg_type v) BOOST_NOEXCEPT
     {

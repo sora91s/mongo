@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/s/request_types/abort_reshard_collection_gen.h"
 #include "mongo/s/resharding/resharding_feature_flag_gen.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 namespace {
 
@@ -51,8 +49,8 @@ UUID retrieveReshardingUUID(OperationContext* opCtx, const NamespaceString& ns) 
     repl::ReadConcernArgs::get(opCtx) =
         repl::ReadConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
 
-    const auto collEntry =
-        ShardingCatalogManager::get(opCtx)->localCatalogClient()->getCollection(opCtx, ns);
+    const auto catalogClient = Grid::get(opCtx)->catalogClient();
+    const auto collEntry = catalogClient->getCollection(opCtx, ns);
 
     uassert(ErrorCodes::NoSuchReshardCollection,
             "Could not find resharding-related metadata that matches the given namespace",
@@ -78,10 +76,10 @@ void assertExistsReshardingDocument(OperationContext* opCtx, UUID reshardingUUID
 }
 
 auto assertGetReshardingMachine(OperationContext* opCtx, UUID reshardingUUID) {
-    auto machine = resharding::tryGetReshardingStateMachine<ReshardingCoordinatorService,
-                                                            ReshardingCoordinator,
-                                                            ReshardingCoordinatorDocument>(
-        opCtx, reshardingUUID);
+    auto machine = resharding::tryGetReshardingStateMachine<
+        ReshardingCoordinatorService,
+        ReshardingCoordinatorService::ReshardingCoordinator,
+        ReshardingCoordinatorDocument>(opCtx, reshardingUUID);
 
     uassert(ErrorCodes::NoSuchReshardCollection,
             "Could not find in-progress resharding operation to abort",
@@ -104,7 +102,7 @@ public:
                     resharding::gFeatureFlagResharding.isEnabled(
                         serverGlobalParams.featureCompatibility));
 
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
 
             uassert(ErrorCodes::IllegalOperation,
                     "_configsvrAbortReshardCollection can only be run on config servers",

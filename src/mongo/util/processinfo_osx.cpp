@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -45,9 +46,6 @@
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 namespace mongo {
 
@@ -184,11 +182,9 @@ void ProcessInfo::SystemInfo::collectSystemInfo() {
     memSize = getSysctlByName<NumberVal>("hw.memsize");
     memLimit = memSize;
     numCores = getSysctlByName<NumberVal>("hw.ncpu");  // includes hyperthreading cores
-    numPhysicalCores = getSysctlByName<NumberVal>("machdep.cpu.core_count");
-    numCpuSockets = getSysctlByName<NumberVal>("hw.packages");
     pageSize = static_cast<unsigned long long>(sysconf(_SC_PAGESIZE));
     cpuArch = getSysctlByName<std::string>("hw.machine");
-    hasNuma = false;
+    hasNuma = checkNumaEnabled();
 
     BSONObjBuilder bExtra;
     bExtra.append("versionString", getSysctlByName<std::string>("kern.version"));
@@ -198,10 +194,20 @@ void ProcessInfo::SystemInfo::collectSystemInfo() {
         "nfsAsync",
         static_cast<int>(getSysctlByName<NumberVal>("vfs.generic.nfs.client.allow_async")));
     bExtra.append("model", getSysctlByName<std::string>("hw.model"));
+    bExtra.append("physicalCores",
+                  static_cast<int>(getSysctlByName<NumberVal>("machdep.cpu.core_count")));
+    bExtra.append(
+        "cpuFrequencyMHz",
+        static_cast<int>((getSysctlByName<NumberVal>("hw.cpufrequency") / (1000 * 1000))));
     bExtra.append("cpuString", getSysctlByName<std::string>("machdep.cpu.brand_string"));
+    bExtra.append("cpuFeatures", getSysctlByName<std::string>("machdep.cpu.features"));
     bExtra.append("pageSize", static_cast<int>(getSysctlByName<NumberVal>("hw.pagesize")));
     bExtra.append("scheduler", getSysctlByName<std::string>("kern.sched"));
     _extraStats = bExtra.obj();
+}
+
+bool ProcessInfo::checkNumaEnabled() {
+    return false;
 }
 
 }  // namespace mongo

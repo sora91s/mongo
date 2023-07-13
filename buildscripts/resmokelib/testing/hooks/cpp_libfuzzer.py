@@ -6,7 +6,7 @@ from buildscripts.resmokelib import core
 from buildscripts.resmokelib.testing.hooks import interface
 
 
-class LibfuzzerHook(interface.Hook):
+class LibfuzzerHook(interface.Hook):  # pylint: disable=too-many-instance-attributes
     """Merges inputs after a fuzzer run."""
 
     DESCRIPTION = "Merges inputs after a fuzzer run"

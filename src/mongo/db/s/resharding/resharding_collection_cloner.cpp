@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
 
 #include "mongo/platform/basic.h"
 
@@ -38,8 +39,10 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/exec/document_value/document.h"
+#include "mongo/db/logical_session_id_helpers.h"
 #include "mongo/db/pipeline/aggregation_request_helper.h"
 #include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/document_source_replace_root.h"
@@ -53,7 +56,6 @@
 #include "mongo/db/s/resharding/resharding_server_parameters_gen.h"
 #include "mongo/db/s/resharding/resharding_util.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/session/logical_session_id_helpers.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/logv2/log.h"
@@ -61,15 +63,12 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
-
-
 namespace mongo {
 namespace {
 
 bool collectionHasSimpleCollation(OperationContext* opCtx, const NamespaceString& nss) {
     auto catalogCache = Grid::get(opCtx)->catalogCache();
-    auto [sourceChunkMgr, _] = uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, nss));
+    auto sourceChunkMgr = uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, nss));
 
     uassert(ErrorCodes::NamespaceNotSharded,
             str::stream() << "Expected collection " << nss << " to be sharded",
@@ -80,14 +79,14 @@ bool collectionHasSimpleCollation(OperationContext* opCtx, const NamespaceString
 
 }  // namespace
 
-ReshardingCollectionCloner::ReshardingCollectionCloner(ReshardingMetrics* metrics,
+ReshardingCollectionCloner::ReshardingCollectionCloner(std::unique_ptr<Env> env,
                                                        ShardKeyPattern newShardKeyPattern,
                                                        NamespaceString sourceNss,
                                                        const UUID& sourceUUID,
                                                        ShardId recipientShard,
                                                        Timestamp atClusterTime,
                                                        NamespaceString outputNss)
-    : _metrics(metrics),
+    : _env(std::move(env)),
       _newShardKeyPattern(std::move(newShardKeyPattern)),
       _sourceNss(std::move(sourceNss)),
       _sourceUUID(std::move(sourceUUID)),
@@ -109,9 +108,9 @@ std::unique_ptr<Pipeline, PipelineDeleter> ReshardingCollectionCloner::makePipel
     resolvedNamespaces[_sourceNss.coll()] = {_sourceNss, std::vector<BSONObj>{}};
 
     // Assume that the config.cache.chunks collection isn't a view either.
-    auto tempNss = resharding::constructTemporaryReshardingNss(_sourceNss.db(), _sourceUUID);
+    auto tempNss = constructTemporaryReshardingNss(_sourceNss.db(), _sourceUUID);
     auto tempCacheChunksNss =
-        NamespaceString(DatabaseName::kConfig, "cache.chunks." + tempNss.ns());
+        NamespaceString(NamespaceString::kConfigDb, "cache.chunks." + tempNss.ns());
     resolvedNamespaces[tempCacheChunksNss.coll()] = {tempCacheChunksNss, std::vector<BSONObj>{}};
 
     // sharded_agg_helpers::targetShardsAndAddMergeCursors() ignores the collation set on the
@@ -178,10 +177,7 @@ std::unique_ptr<Pipeline, PipelineDeleter> ReshardingCollectionCloner::_targetAg
     // to prevent them from killing the cursor when it is idle locally. Due to the cursor's merging
     // behavior across all donor shards, it is possible for the cursor to be active on one donor
     // shard while idle for a long period on another donor shard.
-    {
-        auto lk = stdx::lock_guard(*opCtx->getClient());
-        opCtx->setLogicalSessionId(makeLogicalSessionId(opCtx));
-    }
+    opCtx->setLogicalSessionId(makeLogicalSessionId(opCtx));
 
     AggregateCommandRequest request(_sourceNss, pipeline.serializeToBson());
     request.setCollectionUUID(_sourceUUID);
@@ -272,8 +268,8 @@ bool ReshardingCollectionCloner::doOneBatch(OperationContext* opCtx, Pipeline& p
     Timer latencyTimer;
     auto batch = resharding::data_copy::fillBatchForInsert(
         pipeline, resharding::gReshardingCollectionClonerBatchSizeInBytes.load());
-
-    _metrics->onCloningRemoteBatchRetrieval(duration_cast<Milliseconds>(latencyTimer.elapsed()));
+    _env->metrics()->onCollClonerFillBatchForInsert(
+        duration_cast<Milliseconds>(latencyTimer.elapsed()));
 
     if (batch.empty()) {
         return false;
@@ -285,16 +281,14 @@ bool ReshardingCollectionCloner::doOneBatch(OperationContext* opCtx, Pipeline& p
     // recovered.
     ScopedSetShardRole scopedSetShardRole(opCtx,
                                           _outputNss,
-                                          ShardVersion::IGNORED() /* shardVersion */,
+                                          ChunkVersion::IGNORED() /* shardVersion */,
                                           boost::none /* databaseVersion */);
 
-    Timer batchInsertTimer;
     int bytesInserted = resharding::data_copy::withOneStaleConfigRetry(
         opCtx, [&] { return resharding::data_copy::insertBatch(opCtx, _outputNss, batch); });
 
-    _metrics->onDocumentsProcessed(
-        batch.size(), bytesInserted, Milliseconds(batchInsertTimer.millis()));
-
+    _env->metrics()->onDocumentsCopied(batch.size(), bytesInserted);
+    _env->metrics()->gotInserts(batch.size());
     return true;
 }
 

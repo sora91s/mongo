@@ -39,42 +39,6 @@
 #include "mongo/db/views/view.h"
 
 namespace mongo {
-namespace auto_get_collection {
-enum class ViewMode { kViewsPermitted, kViewsForbidden };
-
-template <typename T>
-struct OptionsBase {
-    T viewMode(ViewMode viewMode) {
-        _viewMode = viewMode;
-        return std::move(*static_cast<T*>(this));
-    }
-
-    T deadline(Date_t deadline) {
-        _deadline = std::move(deadline);
-        return std::move(*static_cast<T*>(this));
-    }
-
-    T expectedUUID(boost::optional<UUID> expectedUUID) {
-        _expectedUUID = expectedUUID;
-        return std::move(*static_cast<T*>(this));
-    }
-
-    ViewMode _viewMode = ViewMode::kViewsForbidden;
-    Date_t _deadline = Date_t::max();
-    boost::optional<UUID> _expectedUUID;
-};
-
-struct Options : OptionsBase<Options> {};
-struct OptionsWithSecondaryCollections : OptionsBase<OptionsWithSecondaryCollections> {
-    OptionsWithSecondaryCollections secondaryNssOrUUIDs(
-        std::vector<NamespaceStringOrUUID> secondaryNssOrUUIDs) {
-        _secondaryNssOrUUIDs = std::move(secondaryNssOrUUIDs);
-        return std::move(*this);
-    }
-
-    std::vector<NamespaceStringOrUUID> _secondaryNssOrUUIDs;
-};
-}  // namespace auto_get_collection
 
 /**
  * RAII-style class, which acquires a lock on the specified database in the requested mode and
@@ -91,25 +55,19 @@ class AutoGetDb {
     AutoGetDb(const AutoGetDb&) = delete;
     AutoGetDb& operator=(const AutoGetDb&) = delete;
 
-    AutoGetDb(OperationContext* opCtx,
-              const DatabaseName& dbName,
-              LockMode mode,
-              Date_t deadline,
-              Lock::DBLockSkipOptions options);
-
 public:
+    /**
+     * Database locks are also acquired for any 'secondaryDbNames' database names provided. Only
+     * MODE_IS is supported when 'secondaryDbNames' are provided. It is safe to repeat 'dbName' in
+     * 'secondaryDbNames'.
+     */
     AutoGetDb(OperationContext* opCtx,
-              const DatabaseName& dbName,
+              StringData dbName,
               LockMode mode,
-              Date_t deadline = Date_t::max());
+              Date_t deadline = Date_t::max(),
+              const std::set<StringData>& secondaryDbNames = {});
 
     AutoGetDb(AutoGetDb&&) = default;
-
-    static AutoGetDb createForAutoGetCollection(
-        OperationContext* opCtx,
-        const NamespaceStringOrUUID& nsOrUUID,
-        LockMode modeColl,
-        const auto_get_collection::OptionsWithSecondaryCollections& options);
 
     /**
      * Returns the database, or nullptr if it didn't exist.
@@ -123,14 +81,8 @@ public:
      */
     Database* ensureDbExists(OperationContext* opCtx);
 
-    /**
-     * Returns the database reference, after attempting to refresh it if it was null. Does not
-     * create the database, so after this call the referece might still be null.
-     */
-    Database* refreshDbReferenceIfNull(OperationContext* opCtx);
-
 private:
-    DatabaseName _dbName;
+    std::string _dbName;
 
     // Special note! The primary DBLock must destruct last (be declared first) so that the global
     // and RSTL locks are not released until all the secondary DBLocks (without global and RSTL)
@@ -144,26 +96,7 @@ private:
     std::vector<Lock::DBLock> _secondaryDbLocks;
 };
 
-/**
- * Light wrapper around Lock::CollectionLock which allows acquiring the lock based on UUID rather
- * than namespace.
- *
- * The lock manager manages resources based on namespace and does not have a concept of UUIDs, so
- * there must be some additional concurrency checks around resolving the UUID to a namespace and
- * then subsequently acquiring the lock.
- */
-class CollectionNamespaceOrUUIDLock {
-public:
-    CollectionNamespaceOrUUIDLock(OperationContext* opCtx,
-                                  const NamespaceStringOrUUID& nsOrUUID,
-                                  LockMode mode,
-                                  Date_t deadline = Date_t::max());
-
-    CollectionNamespaceOrUUIDLock(CollectionNamespaceOrUUIDLock&& other) = default;
-
-private:
-    Lock::CollectionLock _lock;
-};
+enum class AutoGetCollectionViewMode { kViewsPermitted, kViewsForbidden };
 
 /**
  * RAII-style class, which acquires global, database, and collection locks according to the chart
@@ -186,8 +119,6 @@ class AutoGetCollection {
     AutoGetCollection& operator=(const AutoGetCollection&) = delete;
 
 public:
-    using Options = auto_get_collection::OptionsWithSecondaryCollections;
-
     /**
      * Collection locks are also acquired for any 'secondaryNssOrUUIDs' namespaces provided.
      * Collection locks are acquired in ascending ResourceId(RESOURCE_COLLECTION, nss) order to
@@ -198,24 +129,13 @@ public:
      * 'nsOrUUID' to be duplicated in 'secondaryNssOrUUIDs', or 'secondaryNssOrUUIDs' to contain
      * duplicates.
      */
-    AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceStringOrUUID& nsOrUUID,
-                      LockMode modeColl,
-                      Options options = {});
-
-    /**
-     * Special constructor when this class is instantiated from AutoGetCollectionForRead. Used to
-     * indicate that the intent is to perform reads only. We cannot use the LockMode to determine
-     * this as multi-document transactions use MODE_IX for reads.
-     */
-    struct ForReadTag {};
-    AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceStringOrUUID& nsOrUUID,
-                      LockMode modeColl,
-                      Options options,
-                      ForReadTag read);
-
-    AutoGetCollection(AutoGetCollection&&) = default;
+    AutoGetCollection(
+        OperationContext* opCtx,
+        const NamespaceStringOrUUID& nsOrUUID,
+        LockMode modeColl,
+        AutoGetCollectionViewMode viewMode = AutoGetCollectionViewMode::kViewsForbidden,
+        Date_t deadline = Date_t::max(),
+        const std::vector<NamespaceStringOrUUID>& secondaryNssOrUUIDs = {});
 
     explicit operator bool() const {
         return static_cast<bool>(getCollection());
@@ -236,14 +156,14 @@ public:
      * Returns the database, or nullptr if it didn't exist.
      */
     Database* getDb() const {
-        return _autoDb.getDb();
+        return _autoDb->getDb();
     }
 
     /**
      * Returns the database, creating it if it does not exist.
      */
     Database* ensureDbExists(OperationContext* opCtx) {
-        return _autoDb.ensureDbExists(opCtx);
+        return _autoDb->ensureDbExists(opCtx);
     }
 
     /**
@@ -279,17 +199,12 @@ public:
     Collection* getWritableCollection(OperationContext* opCtx);
 
 protected:
-    AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceStringOrUUID& nsOrUUID,
-                      LockMode modeColl,
-                      Options options,
-                      bool verifyWriteEligible);
     // Ordering matters, the _collLocks should destruct before the _autoGetDb releases the
     // rstl/global/database locks.
-    AutoGetDb _autoDb;
-    std::vector<CollectionNamespaceOrUUIDLock> _collLocks;
+    boost::optional<AutoGetDb> _autoDb;
+    std::vector<Lock::CollectionLock> _collLocks;
 
-    CollectionPtr _coll;
+    CollectionPtr _coll = nullptr;
     std::shared_ptr<const ViewDefinition> _view;
 
     // If the object was instantiated with a UUID, contains the resolved namespace, otherwise it is
@@ -324,16 +239,16 @@ public:
     using RestoreFromYieldFn =
         std::function<void(std::shared_ptr<const Collection>&, OperationContext*, UUID)>;
 
-    using Options = auto_get_collection::Options;
-
     /**
      * Used by AutoGetCollectionForReadLockFree where it provides implementation for restore after
      * yield.
      */
-    AutoGetCollectionLockFree(OperationContext* opCtx,
-                              const NamespaceStringOrUUID& nsOrUUID,
-                              RestoreFromYieldFn restoreFromYield,
-                              Options options = {});
+    AutoGetCollectionLockFree(
+        OperationContext* opCtx,
+        const NamespaceStringOrUUID& nsOrUUID,
+        RestoreFromYieldFn restoreFromYield,
+        AutoGetCollectionViewMode viewMode = AutoGetCollectionViewMode::kViewsForbidden,
+        Date_t deadline = Date_t::max());
 
     explicit operator bool() const {
         // Use the CollectionPtr because it is updated if it yields whereas _collection is not until
@@ -415,7 +330,7 @@ public:
         OperationContext* opCtx,
         const NamespaceStringOrUUID& nsOrUUID,
         LockMode modeColl,
-        auto_get_collection::ViewMode viewMode = auto_get_collection::ViewMode::kViewsForbidden,
+        AutoGetCollectionViewMode viewMode = AutoGetCollectionViewMode::kViewsForbidden,
         Date_t deadline = Date_t::max());
 
 private:
@@ -471,7 +386,7 @@ public:
 
     // Returns writable Collection, any previous Collection that has been returned may be
     // invalidated.
-    Collection* getWritableCollection(OperationContext* opCtx);
+    Collection* getWritableCollection();
 
 private:
     // If this class is instantiated with the constructors that take UUID or nss we need somewhere
@@ -482,6 +397,7 @@ private:
     const CollectionPtr* _collection = nullptr;
     CollectionPtr _storedCollection;
     Collection* _writableCollection = nullptr;
+    OperationContext* _opCtx = nullptr;
 
     // Indicates if this instance is managing Collection pointers through commit and rollback.
     bool _managed;
@@ -550,7 +466,7 @@ public:
      * Returns a pointer to the oplog collection or nullptr if the oplog collection didn't exist.
      */
     const CollectionPtr& getCollection() const {
-        return _oplog;
+        return *_oplog;
     }
 
 private:
@@ -558,40 +474,7 @@ private:
         _shouldNotConflictWithSecondaryBatchApplicationBlock;
     boost::optional<Lock::GlobalLock> _globalLock;
     LocalOplogInfo* _oplogInfo;
-    CollectionPtr _oplog;
-};
-
-/**
- * A RAII-style class to acquire lock to a particular tenant's change collection.
- *
- * A change collection can be accessed in the following modes:
- *   kWriteInOplogContext - perform writes to the change collection by taking the IX lock on a
- *                          tenant's change collection. The change collection is written along with
- *                          the oplog in the same 'WriteUnitOfWork' and assumes that the global IX
- *                          lock is already held.
- *   kWrite - takes the IX lock on a tenant's change collection to perform any writes.
- *   kRead  - takes the IS lock on a tenant's change collection to perform any reads.
- */
-class AutoGetChangeCollection {
-public:
-    enum class AccessMode { kWriteInOplogContext, kWrite, kRead };
-
-    AutoGetChangeCollection(OperationContext* opCtx,
-                            AccessMode mode,
-                            boost::optional<TenantId> tenantId,
-                            Date_t deadline = Date_t::max());
-
-    AutoGetChangeCollection(const AutoGetChangeCollection&) = delete;
-    AutoGetChangeCollection& operator=(const AutoGetChangeCollection&) = delete;
-
-    const Collection* operator->() const;
-    const CollectionPtr& operator*() const;
-    explicit operator bool() const;
-
-private:
-    boost::optional<AutoGetCollection> _coll;
-
-    boost::optional<AllowLockAcquisitionOnTimestampedUnitOfWork> _allowLockAcquisitionTsWuow;
+    const CollectionPtr* _oplog;
 };
 
 }  // namespace mongo

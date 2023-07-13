@@ -42,7 +42,7 @@ public:
     using ShardCollectionTypeBase::kEnterCriticalSectionCounterFieldName;
     using ShardCollectionTypeBase::kEpochFieldName;
     using ShardCollectionTypeBase::kKeyPatternFieldName;
-    using ShardCollectionTypeBase::kLastRefreshedCollectionMajorMinorVersionFieldName;
+    using ShardCollectionTypeBase::kLastRefreshedCollectionVersionFieldName;
     using ShardCollectionTypeBase::kNssFieldName;
     using ShardCollectionTypeBase::kRefreshingFieldName;
     using ShardCollectionTypeBase::kReshardingFieldsFieldName;
@@ -57,6 +57,7 @@ public:
     using ShardCollectionTypeBase::getEnterCriticalSectionCounter;
     using ShardCollectionTypeBase::getEpoch;
     using ShardCollectionTypeBase::getKeyPattern;
+    using ShardCollectionTypeBase::getLastRefreshedCollectionVersion;
     using ShardCollectionTypeBase::getMaxChunkSizeBytes;
     using ShardCollectionTypeBase::getNss;
     using ShardCollectionTypeBase::getRefreshing;
@@ -93,8 +94,6 @@ public:
         return getPre50CompatibleAllowMigrations().value_or(true);
     }
     void setAllowMigrations(bool allowMigrations);
-
-    boost::optional<ChunkVersion> getLastRefreshedCollectionPlacementVersion() const;
 };
 
 }  // namespace mongo

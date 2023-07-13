@@ -96,12 +96,7 @@ class test_truncate06(wttest.WiredTigerTestCase):
             for k in range(keynum1, keynum2 + 1):
                 cursor.set_key(k)
                 try:
-                    # In this test some or all the data is already deleted; skip those rows.
-                    err = cursor.search()
-                    if err == wiredtiger.WT_NOTFOUND:
-                        err = 0
-                    else:
-                        err = cursor.remove()
+                    err = cursor.remove()
                 except wiredtiger.WiredTigerError as e:
                     if wiredtiger.wiredtiger_strerror(wiredtiger.WT_ROLLBACK) in str(e):
                         err = wiredtiger.WT_ROLLBACK

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
@@ -38,9 +39,6 @@
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -65,27 +63,26 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(
-                     ResourcePattern::forExactNamespace(parseNs(dbName, cmdObj)),
-                     ActionType::getShardVersion)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forExactNamespace(NamespaceString(parseNs(dbname, cmdObj))),
+                ActionType::getShardVersion)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
-    NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) const override {
-        return NamespaceString(dbName.tenantId(), CommandHelpers::parseNsFullyQualified(cmdObj));
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsFullyQualified(cmdObj);
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
-        const NamespaceString nss(parseNs(dbName, cmdObj));
+        const NamespaceString nss(parseNs(dbname, cmdObj));
 
         uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
 
@@ -93,15 +90,10 @@ public:
             "configServer",
             Grid::get(opCtx)->shardRegistry()->getConfigServerConnectionString().toString());
 
-        AutoGetCollection autoColl(
-            opCtx,
-            nss,
-            MODE_IS,
-            AutoGetCollection::Options{}.viewMode(auto_get_collection::ViewMode::kViewsPermitted));
-        const auto scopedCsr =
-            CollectionShardingRuntime::assertCollectionLockedAndAcquireShared(opCtx, nss);
+        AutoGetCollection autoColl(opCtx, nss, MODE_IS, AutoGetCollectionViewMode::kViewsPermitted);
+        auto* const csr = CollectionShardingRuntime::get(opCtx, nss);
 
-        auto optMetadata = scopedCsr->getCurrentMetadataIfKnown();
+        const auto optMetadata = csr->getCurrentMetadataIfKnown();
         if (!optMetadata) {
             result.append("global", "UNKNOWN");
 
@@ -110,25 +102,23 @@ public:
             }
         } else {
             const auto& metadata = *optMetadata;
-            result.appendTimestamp("global", metadata.getShardPlacementVersion().toLong());
+            result.appendTimestamp("global", metadata.getShardVersion().toLong());
 
             if (cmdObj["fullMetadata"].trueValue()) {
                 BSONObjBuilder metadataBuilder(result.subobjStart("metadata"));
                 if (metadata.isSharded()) {
                     metadataBuilder.appendTimestamp("collVersion",
-                                                    metadata.getCollPlacementVersion().toLong());
-                    metadataBuilder.append("collVersionEpoch",
-                                           metadata.getCollPlacementVersion().epoch());
+                                                    metadata.getCollVersion().toLong());
+                    metadataBuilder.append("collVersionEpoch", metadata.getCollVersion().epoch());
                     metadataBuilder.append("collVersionTimestamp",
-                                           metadata.getCollPlacementVersion().getTimestamp());
+                                           metadata.getCollVersion().getTimestamp());
 
-                    metadataBuilder.appendTimestamp(
-                        "shardVersion", metadata.getShardPlacementVersionForLogging().toLong());
+                    metadataBuilder.appendTimestamp("shardVersion",
+                                                    metadata.getShardVersionForLogging().toLong());
                     metadataBuilder.append("shardVersionEpoch",
-                                           metadata.getShardPlacementVersionForLogging().epoch());
-                    metadataBuilder.append(
-                        "shardVersionTimestamp",
-                        metadata.getShardPlacementVersionForLogging().getTimestamp());
+                                           metadata.getShardVersionForLogging().epoch());
+                    metadataBuilder.append("shardVersionTimestamp",
+                                           metadata.getShardVersionForLogging().getTimestamp());
 
                     metadataBuilder.append("keyPattern", metadata.getShardKeyPattern().toBSON());
 
@@ -137,28 +127,6 @@ public:
                     chunksArr.doneFast();
                 }
                 metadataBuilder.doneFast();
-            }
-        }
-
-        if (scopedCsr->getCollectionIndexes(opCtx)) {
-            result.append("indexVersion", scopedCsr->getCollectionIndexes(opCtx)->indexVersion());
-
-            if (cmdObj["fullMetadata"].trueValue()) {
-                BSONArrayBuilder indexesArrBuilder;
-                bool exceedsSizeLimit = false;
-                scopedCsr->getIndexes(opCtx)->forEachIndex([&](const auto& index) {
-                    BSONObjBuilder indexB(index.toBSON());
-                    if (result.len() + indexesArrBuilder.len() + indexB.len() >
-                        BSONObjMaxUserSize) {
-                        exceedsSizeLimit = true;
-                    } else {
-                        indexesArrBuilder.append(indexB.done());
-                    }
-
-                    return !exceedsSizeLimit;
-                });
-
-                result.append("indexes", indexesArrBuilder.arr());
             }
         }
 

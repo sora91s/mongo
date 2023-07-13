@@ -29,11 +29,15 @@
 
 #pragma once
 
-#include "mongo/db/exec/sbe/makeobj_enums.h"
 #include "mongo/db/exec/sbe/stages/stages.h"
 #include "mongo/db/exec/sbe/values/value.h"
 
 namespace mongo::sbe {
+
+enum class MakeObjFieldBehavior { drop, keep };
+
+enum class MakeObjOutputType { object, bsonObject };
+
 /**
  * Base stage for creating a bsonObject or object.
  *
@@ -80,22 +84,6 @@ public:
                      boost::optional<FieldBehavior> fieldBehavior,
                      std::vector<std::string> fields,
                      std::vector<std::string> projectFields,
-                     value::SlotVector projectVars,
-                     bool forceNewObject,
-                     bool returnOldObject,
-                     PlanNodeId planNodeId,
-                     bool participateInTrialRunTracking = true);
-
-    /**
-     * A convenience constructor that takes a set instead of a vector for 'fields' and
-     * 'projectedFields'.
-     */
-    MakeObjStageBase(std::unique_ptr<PlanStage> input,
-                     value::SlotId objSlot,
-                     boost::optional<value::SlotId> rootSlot,
-                     boost::optional<FieldBehavior> fieldBehavior,
-                     OrderedPathSet fields,
-                     OrderedPathSet projectFields,
                      value::SlotVector projectVars,
                      bool forceNewObject,
                      bool returnOldObject,

@@ -2,10 +2,11 @@
  * Tests creating and using compound indexes on time-series metadata and measurement fields.
  *
  * @tags: [
- *   # This test makes assertions on listIndexes and on the order of the indexes returned.
- *   assumes_no_implicit_index_creation,
- *   # We need a timeseries collection.
- *   requires_timeseries,
+ *     does_not_support_stepdowns,
+ *     does_not_support_transactions,
+ *     requires_fcv_51,
+ *     requires_find_command,
+ *     requires_getmore,
  * ]
  */
 (function() {

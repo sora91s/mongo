@@ -66,8 +66,7 @@ pop_ops = op_multi_table(pop_ops, tables)
 nops_per_thread = icount // (populate_threads * table_count)
 pop_thread = Thread(pop_ops * nops_per_thread)
 pop_workload = Workload(context, populate_threads * pop_thread)
-ret = pop_workload.run(conn)
-assert ret == 0, ret
+pop_workload.run(conn)
 print('populate complete')
 
 # Log like file, requires that logging be enabled in the connection config.
@@ -146,8 +145,7 @@ workload.options.run_time=900
 workload.options.sample_rate=1
 workload.options.warmup=0
 workload.options.sample_interval_ms = 1000
-ret = workload.run(conn)
-assert ret == 0, ret
+workload.run(conn)
 
 latency_filename = context.args.home + "/latency.out"
 latency.workload_latency(workload, latency_filename)

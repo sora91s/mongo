@@ -53,21 +53,12 @@ struct ClusterPipelineCommandS {
         // Can always run on a mongos.
     }
 
-    static void checkCanExplainHere(OperationContext* opCtx) {
-        // Can always run on a mongos.
-    }
-
     static AggregateCommandRequest parseAggregationRequest(
-        OperationContext* opCtx,
         const OpMsgRequest& opMsgRequest,
         boost::optional<ExplainOptions::Verbosity> explainVerbosity,
         bool apiStrict) {
         return aggregation_request_helper::parseFromBSON(
-            opCtx,
-            DatabaseName(opMsgRequest.getValidatedTenantId(), opMsgRequest.getDatabase()),
-            opMsgRequest.body,
-            explainVerbosity,
-            apiStrict);
+            opMsgRequest.getDatabase().toString(), opMsgRequest.body, explainVerbosity, apiStrict);
     }
 };
 ClusterPipelineCommandBase<ClusterPipelineCommandS> clusterPipelineCmdS;

@@ -20,23 +20,25 @@
 #include <boost/assert.hpp>
 #include <cstdlib>
 
-namespace boost {
-namespace detail {
-
-inline const char* macro_value(const char* name, const char* value)
+namespace boost
 {
-    static const char* no_value = "[no value]";
-    static const char* not_defined = "[not defined]";
+  namespace detail
+  {
+    inline const char* macro_value(const char* name, const char* value)
+    {
+      static const char* no_value = "[no value]";
+      static const char* not_defined = "[not defined]";
 
-    BOOST_ASSERT_MSG(name, "name argument must not be a null pointer");
-    BOOST_ASSERT_MSG(value, "value argument must not be a null pointer");
+      BOOST_ASSERT_MSG(name, "name argument must not be a null pointer");
+      BOOST_ASSERT_MSG(value, "value argument must not be a null pointer");
 
-    return strcmp(name, value + 1) ? ((*value && *(value + 1)) ? (value + 1) : no_value) : not_defined; // name == value+1 so the macro is not defined
-}
-
-} // namespace detail
-} // namespace boost
+      return strcmp(name, value + 1)
+        ? ((*value && *(value+1)) ? (value+1) : no_value)
+        : not_defined; // name == value+1 so the macro is not defined
+    }
+  }  // detail
+}  // boost
 
 #define BOOST_MACRO_VALUE(X) boost::detail::macro_value(#X, BOOST_STRINGIZE(=X))
 
-#endif // BOOST_FILESYSTEM_MACRO_VALUE_HPP
+#endif  // BOOST_FILESYSTEM_MACRO_VALUE_HPP

@@ -37,7 +37,7 @@ if _IS_WINDOWS:
     _try_import("win32serviceutil")
 
 
-# pylint: disable=undefined-variable,unused-variable
+# pylint: disable=undefined-variable,unused-variable,too-many-instance-attributes
 class WindowsService(object):
     """Windows service control class."""
 
@@ -191,15 +191,15 @@ class PosixService(object):
         self.db_path = db_path
         self.pids = []
 
-    def create(self):
+    def create(self):  # pylint: disable=no-self-use
         """Simulate create service. Returns (code, output) tuple."""
         return 0, None
 
-    def update(self):
+    def update(self):  # pylint: disable=no-self-use
         """Simulate update service. Returns (code, output) tuple."""
         return 0, None
 
-    def delete(self):
+    def delete(self):  # pylint: disable=no-self-use
         """Simulate delete service. Returns (code, output) tuple."""
         return 0, None
 

@@ -3,6 +3,7 @@
  * reproduce the retryable writes oplog chain.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -10,8 +11,16 @@
  *   serverless,
  * ]
  */
+(function() {
+"use strict";
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+load("jstests/libs/retryable_writes_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
+
+if (!RetryableWritesUtil.storageEngineSupportsRetryableWrites(jsTest.options().storageEngine)) {
+    jsTestLog("Retryable writes are not supported, skipping test");
+    return;
+}
 
 const kGarbageCollectionDelayMS = 5 * 1000;
 const donorRst = new ReplSetTest({
@@ -23,6 +32,7 @@ const donorRst = new ReplSetTest({
             // up the test.
             tenantMigrationGarbageCollectionDelayMS: kGarbageCollectionDelayMS,
             ttlMonitorSleepSecs: 1,
+            storeFindAndModifyImagesInSideCollection: false,
         }
     }
 });
@@ -70,6 +80,44 @@ const collection = session.getDatabase(dbName)[collName];
 }
 
 {
+    // Assert an oplog entry representing a retryable write only projects fields defined in the
+    // view. In this case, only `prevOpTime` and `postImageOpTime` will be projected.
+    assert.commandWorked(collection.insert({_id: "retryableWrite2", count: 0}));
+    collection.findAndModify(
+        {query: {_id: "retryableWrite2"}, update: {$inc: {count: 1}}, new: true});
+
+    const resultOplogEntry = oplog.find({"o.count": 1}).next();
+    const postImageEntry = oplog.find({"op": "u", "o2._id": "retryableWrite2"}).next();
+
+    jsTestLog({
+        "oplog entry": resultOplogEntry,
+        "postImage": postImageEntry,
+        "view": migrationOplogView.exists()
+    });
+    assert(postImageEntry.hasOwnProperty("txnNumber"));
+    assert(postImageEntry.hasOwnProperty("prevOpTime"));
+    assert(postImageEntry.hasOwnProperty("stmtId"));
+    assert(postImageEntry.hasOwnProperty("postImageOpTime"));
+
+    // Ensure only the fields we expect are present in the postImage view entry.
+    const viewEntry = migrationOplogView.find({ts: postImageEntry["ts"]}).next();
+    jsTestLog({"postImage view entry": viewEntry});
+    // The following two fields are filtered out of the view.
+    assert(!viewEntry.hasOwnProperty("txnNumber"));
+    assert(!viewEntry.hasOwnProperty("stmtId"));
+    // Since `preImageOpTime` was not included in the original oplog entry, it will not be
+    // added to the view entry.
+    assert(!viewEntry.hasOwnProperty("preImageOpTime"));
+
+    assert(viewEntry.hasOwnProperty("ns"));
+    assert(viewEntry.hasOwnProperty("ts"));
+    assert(viewEntry.hasOwnProperty("prevOpTime"));
+    assert(viewEntry.hasOwnProperty("postImageOpTime"));
+    // `postImageOpTime` should point to the resulting oplog entry from the update.
+    assert.eq(viewEntry["postImageOpTime"]["ts"], resultOplogEntry["ts"]);
+}
+
+{
     // Assert that an oplog entry that belongs to a transaction will project its 'o.applyOps.ns'
     // field. This is used to filter transactions that belong to the tenant.
     const txnSession = rsConn.startSession();
@@ -107,3 +155,4 @@ const collection = session.getDatabase(dbName)[collName];
 
 donorRst.stopSet();
 tenantMigrationTest.stop();
+})();

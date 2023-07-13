@@ -49,6 +49,7 @@
 #include "mongo/db/query/query_test_service_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/dbtests/dbtests.h"
+#include "mongo/unittest/unittest.h"
 
 namespace mongo {
 namespace {
@@ -70,9 +71,8 @@ public:
     CheckResultsBase()
         : _queryServiceContext(std::make_unique<QueryTestServiceContext>()),
           _opCtx(_queryServiceContext->makeOperationContext()),
-          _ctx(new ExpressionContextForTest(
-              _opCtx.get(),
-              AggregateCommandRequest(NamespaceString::createNamespaceString_forTest(ns), {}))) {}
+          _ctx(new ExpressionContextForTest(_opCtx.get(),
+                                            AggregateCommandRequest(NamespaceString(ns), {}))) {}
 
     virtual ~CheckResultsBase() {}
 

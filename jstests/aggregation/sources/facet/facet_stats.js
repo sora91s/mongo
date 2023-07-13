@@ -6,8 +6,7 @@
 //  do_not_wrap_aggregations_in_facets,
 //  assumes_read_preference_unchanged,
 //  assumes_read_concern_unchanged,
-//  assumes_against_mongod_not_mongos,
-//  does_not_support_repeated_reads,
+//  assumes_against_mongod_not_mongos
 // ]
 
 (function() {

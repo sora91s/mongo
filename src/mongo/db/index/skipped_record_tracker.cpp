@@ -27,30 +27,28 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
 
 #include "mongo/db/index/skipped_record_tracker.h"
 
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/multi_key_path_tracker.h"
 #include "mongo/db/storage/execution_context.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
-
-
 namespace mongo {
 namespace {
 static constexpr StringData kRecordIdField = "recordId"_sd;
 }
 
-SkippedRecordTracker::SkippedRecordTracker(const IndexCatalogEntry* indexCatalogEntry)
+SkippedRecordTracker::SkippedRecordTracker(IndexCatalogEntry* indexCatalogEntry)
     : SkippedRecordTracker(nullptr, indexCatalogEntry, boost::none) {}
 
 SkippedRecordTracker::SkippedRecordTracker(OperationContext* opCtx,
-                                           const IndexCatalogEntry* indexCatalogEntry,
+                                           IndexCatalogEntry* indexCatalogEntry,
                                            boost::optional<StringData> ident)
     : _indexCatalogEntry(indexCatalogEntry) {
     if (!ident) {
@@ -61,7 +59,7 @@ SkippedRecordTracker::SkippedRecordTracker(OperationContext* opCtx,
     // lazily initialize table when we record the first document.
     _skippedRecordsTable =
         opCtx->getServiceContext()->getStorageEngine()->makeTemporaryRecordStoreFromExistingIdent(
-            opCtx, ident.value());
+            opCtx, ident.get());
 }
 
 void SkippedRecordTracker::keepTemporaryTable() {
@@ -135,9 +133,7 @@ Status SkippedRecordTracker::retrySkippedRecords(OperationContext* opCtx,
     {
         stdx::unique_lock<Client> lk(*opCtx->getClient());
         progress.set(
-            lk,
-            CurOp::get(opCtx)->setProgress_inlock(curopMessage, _skippedRecordCounter.load(), 1),
-            opCtx);
+            CurOp::get(opCtx)->setProgress_inlock(curopMessage, _skippedRecordCounter.load(), 1));
     }
 
     SharedBufferFragmentBuilder pooledBuilder(KeyString::HeapBuilder::kHeapAllocatorDefaultBytes);
@@ -204,7 +200,7 @@ Status SkippedRecordTracker::retrySkippedRecords(OperationContext* opCtx,
                     _multikeyPaths = *multikeyPaths;
                 }
 
-                MultikeyPathTracker::mergeMultikeyPaths(&_multikeyPaths.value(), *multikeyPaths);
+                MultikeyPathTracker::mergeMultikeyPaths(&_multikeyPaths.get(), *multikeyPaths);
             }
         }
 
@@ -215,17 +211,10 @@ Status SkippedRecordTracker::retrySkippedRecords(OperationContext* opCtx,
         wuow.commit();
         cursor->restore();
 
-        {
-            stdx::unique_lock<Client> lk(*opCtx->getClient());
-            progress.get(lk)->hit();
-        }
+        progress->hit();
         resolved++;
     }
-
-    {
-        stdx::unique_lock<Client> lk(*opCtx->getClient());
-        progress.get(lk)->finished();
-    }
+    progress->finished();
 
     int logLevel = (resolved > 0) ? 0 : 1;
     LOGV2_DEBUG(23883,

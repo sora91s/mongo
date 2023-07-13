@@ -3,12 +3,13 @@
  * without an _id index. On startup, mongod should automatically build any missing _id indexes.
  *
  * @tags: [
+ *   requires_journaling,
  *   requires_persistence
  * ]
  */
 (function() {
 
-load("jstests/libs/index_catalog_helpers.js");  // For IndexCatalogHelpers.
+load("jstests/libs/get_index_helpers.js");  // For GetIndexHelpers.
 
 // This test triggers an unclean shutdown, which may cause inaccurate fast counts.
 TestData.skipEnforceFastCountOnValidate = true;
@@ -29,7 +30,7 @@ let testColl = testDB.getCollection(collName);
 
 // Insert a single document and create the collection.
 testColl.insert({a: 1});
-let spec = IndexCatalogHelpers.findByKeyPattern(testColl.getIndexes(), {_id: 1});
+let spec = GetIndexHelpers.findByKeyPattern(testColl.getIndexes(), {_id: 1});
 assert.neq(null, spec, "_id index not found");
 assert.eq("_id_", spec.name, tojson(spec));
 
@@ -49,7 +50,7 @@ testColl = testDB.getCollection(collName);
 assert(testColl.exists());
 
 // The _id index should exist.
-spec = IndexCatalogHelpers.findByKeyPattern(testColl.getIndexes(), {_id: 1});
+spec = GetIndexHelpers.findByKeyPattern(testColl.getIndexes(), {_id: 1});
 assert.neq(null, spec, "_id index not found");
 assert.eq("_id_", spec.name, tojson(spec));
 

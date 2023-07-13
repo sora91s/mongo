@@ -36,9 +36,9 @@
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/exec/document_value/value.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
-#include "mongo/db/session/logical_session_id.h"
 #include "mongo/s/resharding/common_types_gen.h"
 #include "mongo/util/functional.h"
 
@@ -69,7 +69,6 @@ void ensureCollectionExists(OperationContext* opCtx,
 void ensureCollectionDropped(OperationContext* opCtx,
                              const NamespaceString& nss,
                              const boost::optional<UUID>& uuid = boost::none);
-
 /**
  * Removes documents from the oplog applier progress and transaction applier progress collections
  * that are associated with an in-progress resharding operation. Also drops all oplog buffer
@@ -170,8 +169,7 @@ auto withOneStaleConfigRetry(OperationContext* opCtx, Callable&& callable) {
     } catch (const ExceptionForCat<ErrorCategory::StaleShardVersionError>& ex) {
         if (auto sce = ex.extraInfo<StaleConfigInfo>()) {
             const auto refreshed =
-                onCollectionPlacementVersionMismatchNoExcept(
-                    opCtx, sce->getNss(), sce->getVersionReceived().placementVersion())
+                onShardVersionMismatchNoExcept(opCtx, sce->getNss(), sce->getVersionReceived())
                     .isOK();
 
             if (refreshed) {

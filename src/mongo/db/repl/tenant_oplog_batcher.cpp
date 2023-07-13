@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTenantMigration
 
 #include "mongo/platform/basic.h"
 
@@ -36,18 +37,14 @@
 #include "mongo/db/repl/oplog_batcher.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTenantMigration
-
-
 namespace mongo {
 namespace repl {
-TenantOplogBatcher::TenantOplogBatcher(const UUID& migrationUuid,
+TenantOplogBatcher::TenantOplogBatcher(const std::string& tenantId,
                                        RandomAccessOplogBuffer* oplogBuffer,
                                        std::shared_ptr<executor::TaskExecutor> executor,
                                        Timestamp resumeBatchingTs,
                                        OpTime beginApplyingAfterOpTime)
-    : AbstractAsyncComponent(executor.get(),
-                             std::string("TenantOplogBatcher_") + migrationUuid.toString()),
+    : AbstractAsyncComponent(executor.get(), std::string("TenantOplogBatcher_") + tenantId),
       _oplogBuffer(oplogBuffer),
       _executor(executor),
       _resumeBatchingTs(resumeBatchingTs),
@@ -73,7 +70,7 @@ void TenantOplogBatcher::_pushEntry(OperationContext* opCtx,
         }
         // All applyOps entries are expanded and the expansions put in the batch expansion array.
         // The original applyOps is kept in the batch ops array.
-        // This applies to multi-document transactions.
+        // This applies to both multi-document transactions and atomic applyOps.
         auto expansionsIndex = batch->expansions.size();
         auto& curExpansion = batch->expansions.emplace_back();
         auto lastOpInTransactionBson = op.getEntry().toBSON();
@@ -263,7 +260,7 @@ SemiFuture<TenantOplogBatch> TenantOplogBatcher::getNextBatch(BatchLimits limits
     return _scheduleNextBatch(lk, limits);
 }
 
-void TenantOplogBatcher::_doStartup_inlock() {
+Status TenantOplogBatcher::_doStartup_inlock() noexcept {
     LOGV2_DEBUG(
         4885604, 1, "Tenant Oplog Batcher starting up", "component"_attr = _getComponentName());
     if (!_resumeBatchingTs.isNull()) {
@@ -287,6 +284,7 @@ void TenantOplogBatcher::_doStartup_inlock() {
                     "Tenant Oplog Batcher will resume batching from after timestamp",
                     "timestamp"_attr = _resumeBatchingTs);
     }
+    return Status::OK();
 }
 
 void TenantOplogBatcher::_doShutdown_inlock() noexcept {

@@ -180,8 +180,6 @@ var IndexBuildTest = class {
         const indexMap = res.cursor.firstBatch.reduce((m, spec) => {
             if (spec.hasOwnProperty('buildUUID')) {
                 m[spec.spec.name] = spec;
-            } else if (options.includeIndexBuildInfo) {
-                m[spec.spec.name] = spec;
             } else {
                 m[spec.name] = spec;
             }
@@ -195,8 +193,6 @@ var IndexBuildTest = class {
             const spec = indexMap[name];
             assert(!spec.hasOwnProperty('buildUUID'),
                    'unexpected buildUUID field in ' + name + ' index spec: ' + tojson(spec));
-            assert(!spec.hasOwnProperty('indexBuildInfo'),
-                   'unexpected indexBuildInfo field in ' + name + ' index spec: ' + tojson(spec));
         }
 
         // Check indexes that are not ready.
@@ -210,13 +206,6 @@ var IndexBuildTest = class {
                        'expected spec field in ' + name + ': ' + tojson(spec));
                 assert(spec.hasOwnProperty('buildUUID'),
                        'expected buildUUID field in ' + name + ': ' + tojson(spec));
-            } else if (options.includeIndexBuildInfo) {
-                assert(spec.hasOwnProperty('spec'),
-                       'expected spec field in ' + name + ': ' + tojson(spec));
-                assert(spec.hasOwnProperty('indexBuildInfo'),
-                       'expected indexBuildInfo field in ' + name + ': ' + tojson(spec));
-                assert(spec.indexBuildInfo.hasOwnProperty('buildUUID'),
-                       'expected indexBuildInfo.buildUUID field in ' + name + ': ' + tojson(spec));
             } else {
                 assert(!spec.hasOwnProperty('buildUUID'),
                        'unexpected buildUUID field in ' + name + ' index spec: ' + tojson(spec));
@@ -240,33 +229,6 @@ var IndexBuildTest = class {
     static resumeIndexBuilds(conn) {
         assert.commandWorked(
             conn.adminCommand({configureFailPoint: 'hangAfterStartingIndexBuild', mode: 'off'}));
-    }
-
-    /**
-     * Restarts the node in standalone mode to build the index in a rolling fashion.
-     */
-    static buildIndexOnNodeAsStandalone(rst, node, port, dbName, collName, indexSpec, indexName) {
-        jsTestLog('Restarting as standalone: ' + node.host);
-        rst.stop(node, /*signal=*/ null, /*opts=*/ null, {forRestart: true, waitpid: true});
-        const standalone = MongoRunner.runMongod({
-            restart: true,
-            dbpath: node.dbpath,
-            port: port,
-            setParameter: {
-                disableLogicalSessionCacheRefresh: true,
-                ttlMonitorEnabled: false,
-            },
-        });
-
-        jsTestLog('Building index on standalone: ' + standalone.host);
-        const standaloneDB = standalone.getDB(dbName);
-        const standaloneColl = standaloneDB.getCollection(collName);
-        assert.commandWorked(standaloneColl.createIndex(indexSpec, {name: indexName}));
-
-        jsTestLog('Restarting as replica set node: ' + node.host);
-        MongoRunner.stopMongod(standalone);
-        rst.restart(node);
-        rst.awaitReplication();
     }
 };
 
@@ -385,8 +347,8 @@ const ResumableIndexBuildTest = class {
     }
 
     /**
-     * Runs createIndexFn in a parellel shell to create indexes, modifying the collection with the
-     * side writes table.
+     * Runs createIndexFn in a parellel shell to create indexes, inserting the documents specified
+     * by sideWrites into the side writes table.
      *
      * 'createIndexFn' should take three parameters: collection name, index specifications, and
      *   index names.
@@ -394,10 +356,6 @@ const ResumableIndexBuildTest = class {
      * 'indexNames' should follow the exact same format as 'indexSpecs'. For example, if indexSpecs
      *   is [[{a: 1}, {b: 1}], [{c: 1}]], a valid indexNames would look like
      *   [["index_1", "index_2"], ["index_3"]].
-     *
-     * 'sideWrites' can be an array specifying documents to be inserted into the side writes table,
-     * or a function that performs any series of operations (inserts, deletes, or updates) with the
-     * side writes table
      *
      * If {hangBeforeBuildingIndex: true}, returns with the hangBeforeBuildingIndex failpoint
      * enabled and the index builds hanging at this point.
@@ -442,11 +400,7 @@ const ResumableIndexBuildTest = class {
             });
         }
 
-        if (Array.isArray(sideWrites)) {
-            assert.commandWorked(coll.insert(sideWrites));
-        } else {
-            sideWrites(coll);
-        }
+        assert.commandWorked(coll.insert(sideWrites));
 
         // Before building the index, wait for the the last op to be committed so that establishing
         // the majority read cursor does not race with step down.

@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include "mongo/db/s/range_arithmetic.h"
+#include "mongo/db/range_arithmetic.h"
 #include "mongo/s/chunk_manager.h"
 
 namespace mongo {
@@ -83,33 +83,30 @@ public:
     void throwIfReshardingInProgress(NamespaceString const& nss) const;
 
     /**
-     * Returns the current shard's placement version for the collection or UNSHARDED if it is not
-     * sharded.
+     * Returns the current shard version for the collection or UNSHARDED if it is not sharded.
      *
      * Will throw ShardInvalidatedForTargeting if _thisShardId is marked as stale by
      * the CollectionMetadata's current chunk manager.
      */
-    ChunkVersion getShardPlacementVersion() const {
+    ChunkVersion getShardVersion() const {
         return (isSharded() ? _cm->getVersion(_thisShardId) : ChunkVersion::UNSHARDED());
     }
 
     /**
-     * Returns the current shard's placement version for the collection or UNSHARDED if it is not
-     * sharded.
+     * Returns the current shard version for the collection or UNSHARDED if it is not sharded.
      *
      * Will not throw an exception if _thisShardId is marked as stale by the CollectionMetadata's
      * current chunk manager. Only use this function when logging the returned ChunkVersion. If the
-     * caller must execute logic based on the returned ChunkVersion, use getShardPlacementVersion()
-     * instead.
+     * caller must execute logic based on the returned ChunkVersion, use getShardVersion() instead.
      */
-    ChunkVersion getShardPlacementVersionForLogging() const {
+    ChunkVersion getShardVersionForLogging() const {
         return (isSharded() ? _cm->getVersionForLogging(_thisShardId) : ChunkVersion::UNSHARDED());
     }
 
     /**
-     * Returns the current collection placement version or UNSHARDED if it is not sharded.
+     * Returns the current collection version or UNSHARDED if it is not sharded.
      */
-    ChunkVersion getCollPlacementVersion() const {
+    ChunkVersion getCollVersion() const {
         return (isSharded() ? _cm->getVersion() : ChunkVersion::UNSHARDED());
     }
 
@@ -165,13 +162,7 @@ public:
     BSONObj extractDocumentKey(const BSONObj& doc) const;
 
     /**
-     * Static version of the function above. Only use this for internal sharding operations where
-     * shard key pattern is fixed and cannot change.
-     */
-    static BSONObj extractDocumentKey(const ShardKeyPattern* shardKeyPattern, const BSONObj& doc);
-
-    /**
-     * String output of the collection and shard placement versions.
+     * String output of the collection and shard versions.
      */
     std::string toStringBasic() const;
 

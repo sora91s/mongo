@@ -59,7 +59,6 @@ public:
     ThreadPool::Limits getThreadPoolLimits() const override {
         ThreadPool::Limits limits;
         limits.maxThreads = repl::maxTenantMigrationDonorServiceThreadPoolSize;
-        limits.minThreads = repl::minTenantMigrationDonorServiceThreadPoolSize;
         return limits;
     }
 
@@ -101,7 +100,12 @@ public:
             MongoProcessInterface::CurrentOpConnectionsMode connMode,
             MongoProcessInterface::CurrentOpSessionsMode sessionMode) noexcept override;
 
-        void checkIfOptionsConflict(const BSONObj& stateDoc) const final;
+        /**
+         * To be called on the instance returned by PrimaryOnlyService::getOrCreate. Returns an
+         * error if the options this Instance was created with are incompatible with the options
+         * given in 'stateDoc'.
+         */
+        Status checkIfOptionsConflict(const TenantMigrationDonorDocument& stateDoc);
 
         /**
          * Returns the latest durable migration state, or boost::none if no state document has been
@@ -118,11 +122,11 @@ public:
         }
 
         /**
-         * Returns a Future that will be resolved when the instance has been durably marked garbage
-         * collectable.
+         * Returns a Future that will be resolved when all work associated with this Instance has
+         * completed running.
          */
-        SharedSemiFuture<void> getForgetMigrationDurableFuture() const {
-            return _forgetMigrationDurablePromise.getFuture();
+        SharedSemiFuture<void> getCompletionFuture() const {
+            return _completionPromise.getFuture();
         }
 
         /**
@@ -174,21 +178,16 @@ public:
 
         ExecutorFuture<void> _enterDataSyncState(
             const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
-            const CancellationToken& abortToken);
+            const CancellationToken& token);
 
         ExecutorFuture<void> _waitForRecipientToBecomeConsistentAndEnterBlockingState(
             const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
             std::shared_ptr<RemoteCommandTargeter> recipientTargeterRS,
-            const CancellationToken& abortToken);
-
-        ExecutorFuture<void> _waitUntilStartMigrationDonorTimestampIsCheckpointed(
-            const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
-            const CancellationToken& abortToken);
+            const CancellationToken& token);
 
         ExecutorFuture<void> _waitForRecipientToReachBlockTimestampAndEnterCommittedState(
             const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
             std::shared_ptr<RemoteCommandTargeter> recipientTargeterRS,
-            const CancellationToken& abortToken,
             const CancellationToken& token);
 
         ExecutorFuture<void> _handleErrorOrEnterAbortedState(
@@ -200,10 +199,6 @@ public:
         ExecutorFuture<void> _waitForForgetMigrationThenMarkMigrationGarbageCollectable(
             const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
             std::shared_ptr<RemoteCommandTargeter> recipientTargeterRS,
-            const CancellationToken& token);
-
-        ExecutorFuture<void> _waitForGarbageCollectionDelayThenDeleteStateDoc(
-            const std::shared_ptr<executor::ScopedTaskExecutor>& executor,
             const CancellationToken& token);
 
         /**
@@ -232,14 +227,6 @@ public:
             const CancellationToken& token);
 
         /**
-         * Deletes the state document. Does not return the opTime for the delete, since it's not
-         * necessary to wait for this delete to be majority committed (this is the last step in the
-         * chain, and if the delete rolls back, the new primary will re-do the delete).
-         */
-        ExecutorFuture<void> _removeStateDoc(std::shared_ptr<executor::ScopedTaskExecutor> executor,
-                                             const CancellationToken& token);
-
-        /**
          * Sets the "expireAt" time for the state document to be garbage collected, and returns the
          * the opTime for the write.
          */
@@ -252,6 +239,15 @@ public:
         ExecutorFuture<void> _waitForMajorityWriteConcern(
             std::shared_ptr<executor::ScopedTaskExecutor> executor,
             repl::OpTime opTime,
+            const CancellationToken& token);
+
+        /**
+         * Sends the given command to the recipient replica set.
+         */
+        ExecutorFuture<void> _sendCommandToRecipient(
+            std::shared_ptr<executor::ScopedTaskExecutor> executor,
+            std::shared_ptr<RemoteCommandTargeter> recipientTargeterRS,
+            const BSONObj& cmdObj,
             const CancellationToken& token);
 
         /**
@@ -276,16 +272,17 @@ public:
             return recipientCmdThreadPoolLimits;
         }
 
-        /**
-         * Validate if the value of _tenantIds is correct for the given _protocol.
-         */
-        void validateTenantIdsForProtocol();
-
         /*
          * Initializes _abortMigrationSource and returns a token from it. The source will be
          * immediately canceled if an abort has already been requested.
          */
         CancellationToken _initAbortMigrationSource(const CancellationToken& token);
+
+        /*
+         * Returns false if the protocol is FCV incompatible. Also, resets the 'protocol' field in
+         * the _stateDoc to boost::none for FCV < 5.2.
+         */
+        bool _checkifProtocolRemainsFCVCompatible();
 
         ServiceContext* const _serviceContext;
         const TenantMigrationDonorService* const _donorService;
@@ -297,7 +294,6 @@ public:
         // This data is provided in the initial state doc and never changes.  We keep copies to
         // avoid having to obtain the mutex to access them.
         const std::string _tenantId;
-        const std::vector<TenantId> _tenantIds;
         const MigrationProtocolEnum _protocol;
         const std::string _recipientConnectionString;
         const ReadPreferenceSetting _readPreference;
@@ -331,8 +327,8 @@ public:
         // Promise that is resolved when the donor receives the donorForgetMigration command.
         SharedPromise<void> _receiveDonorForgetMigrationPromise;
 
-        // Promise that is resolved when the instance has been durably marked garbage collectable.
-        SharedPromise<void> _forgetMigrationDurablePromise;
+        // Promise that is resolved when the chain of work kicked off by run() has completed.
+        SharedPromise<void> _completionPromise;
 
         // Promise that is resolved when the donor has majority-committed the write to commit or
         // abort.
@@ -346,6 +342,10 @@ public:
         // interrupting the instance, e.g. receiving donorAbortMigration. Initialized in
         // _initAbortMigrationSource().
         boost::optional<CancellationSource> _abortMigrationSource;
+
+        // Value is set at the beginning of run() method. Mainly used to determine if the 'protocol'
+        // field needs to be added to recipient migration commands and state document.
+        bool _isAtLeastFCV52AtStart = false;
     };
 
 private:

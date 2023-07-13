@@ -29,6 +29,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/optional/optional_io.hpp>
 #include <deque>
 #include <functional>
 #include <memory>

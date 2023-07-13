@@ -50,10 +50,10 @@ class CurrentOpCommand final : public CurrentOpCommandBase {
 public:
     CurrentOpCommand() = default;
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj& cmdObj) const final {
-        AuthorizationSession* authzSession = AuthorizationSession::get(opCtx->getClient());
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbName,
+                               const BSONObj& cmdObj) const final {
+        AuthorizationSession* authzSession = AuthorizationSession::get(client);
         if (authzSession->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
                                                            ActionType::inprog)) {
             return Status::OK();
@@ -64,10 +64,6 @@ public:
         }
 
         return Status(ErrorCodes::Unauthorized, "Unauthorized");
-    }
-
-    bool allowedWithSecurityToken() const final {
-        return true;
     }
 
     virtual StatusWith<CursorResponse> runAggregation(
@@ -96,8 +92,7 @@ public:
         CommandHelpers::appendSimpleCommandStatus(bodyBuilder, true);
         bodyBuilder.doneFast();
 
-        return CursorResponse::parseFromBSON(
-            replyBuilder.releaseBody(), nullptr, request.getNamespace().tenantId());
+        return CursorResponse::parseFromBSON(replyBuilder.releaseBody());
     }
 
     virtual void appendToResponse(BSONObjBuilder* result) const final {

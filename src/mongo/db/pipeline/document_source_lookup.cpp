@@ -26,11 +26,11 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/db/pipeline/document_source_lookup.h"
 
 #include "mongo/base/init.h"
-#include "mongo/db/catalog_shard_feature_flag_gen.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/exec/document_value/value.h"
 #include "mongo/db/jsobj.h"
@@ -43,19 +43,13 @@
 #include "mongo/db/pipeline/document_source_sort.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
-#include "mongo/db/pipeline/sort_reorder_helpers.h"
 #include "mongo/db/pipeline/variable_validation.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/query/query_knobs_gen.h"
-#include "mongo/db/stats/counters.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/logv2/log.h"
 #include "mongo/platform/overflow_arithmetic.h"
 #include "mongo/util/fail_point.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 namespace {
@@ -94,8 +88,7 @@ void lookupPipeValidator(const Pipeline& pipeline) {
 // {from: {db: "config", coll: "cache.chunks.*"}, ...} or
 // {from: {db: "local", coll: "oplog.rs"}, ...} or
 // {from: {db: "local", coll: "tenantMigration.oplogView"}, ...} .
-NamespaceString parseLookupFromAndResolveNamespace(const BSONElement& elem,
-                                                   const DatabaseName& defaultDb) {
+NamespaceString parseLookupFromAndResolveNamespace(const BSONElement& elem, StringData defaultDb) {
     // The object syntax only works for 'cache.chunks.*', 'local.oplog.rs', and
     // 'local.tenantMigration.oplogViewwhich' which are not user namespaces so object type is
     // omitted from the error message below.
@@ -109,11 +102,8 @@ NamespaceString parseLookupFromAndResolveNamespace(const BSONElement& elem,
     }
 
     // Valdate the db and coll names.
-    auto spec = NamespaceSpec::parse(
-        IDLParserContext{elem.fieldNameStringData(), false /* apiStrict */, defaultDb.tenantId()},
-        elem.embeddedObject());
-    // TODO SERVER-62491 Use system tenantId to construct nss if running in serverless.
-    auto nss = NamespaceString(spec.getDb().value_or(DatabaseName()), spec.getColl().value_or(""));
+    auto spec = NamespaceSpec::parse({elem.fieldNameStringData()}, elem.embeddedObject());
+    auto nss = NamespaceString(spec.getDb().value_or(""), spec.getColl().value_or(""));
     uassert(
         ErrorCodes::FailedToParse,
         str::stream() << "$lookup with syntax {from: {db:<>, coll:<>},..} is not supported for db: "
@@ -122,6 +112,33 @@ NamespaceString parseLookupFromAndResolveNamespace(const BSONElement& elem,
             nss == NamespaceString::kTenantMigrationOplogView ||
             nss == NamespaceString::kConfigsvrCollectionsNamespace);
     return nss;
+}
+
+/**
+ * Checks if a sort stage's pattern is suitable to push the stage before $lookup. The sort stage
+ * must not share the same prefix with any field created or modified by the lookup stage.
+ */
+bool checkModifiedPathsSortReorder(const SortPattern& sortPattern,
+                                   const DocumentSource::GetModPathsReturn& modPaths) {
+    for (const auto& sortKey : sortPattern) {
+        if (!sortKey.fieldPath.has_value()) {
+            return false;
+        }
+        if (sortKey.fieldPath->getPathLength() < 1) {
+            return false;
+        }
+        auto sortField = sortKey.fieldPath->getFieldName(0);
+        auto it = std::find_if(
+            modPaths.paths.begin(), modPaths.paths.end(), [&sortField](const auto& modPath) {
+                // Finds if the shorter path is a prefix field of or the same as the longer one.
+                return sortField == modPath || expression::isPathPrefixOf(sortField, modPath) ||
+                    expression::isPathPrefixOf(modPath, sortField);
+            });
+        if (it != modPaths.paths.end()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace
@@ -136,10 +153,6 @@ DocumentSourceLookUp::DocumentSourceLookUp(
       _as(std::move(as)),
       _variables(expCtx->variables),
       _variablesParseState(expCtx->variablesParseState.copyWith(_variables.useIdGenerator())) {
-    if (!_fromNs.isOnInternalDb()) {
-        globalOpCounters.gotNestedAggregate();
-    }
-
     const auto& resolvedNamespace = expCtx->getResolvedNamespace(_fromNs);
     _resolvedNs = resolvedNamespace.ns;
     _resolvedPipeline = resolvedNamespace.pipeline;
@@ -147,7 +160,7 @@ DocumentSourceLookUp::DocumentSourceLookUp(
     _fromExpCtx = expCtx->copyForSubPipeline(resolvedNamespace.ns, resolvedNamespace.uuid);
     _fromExpCtx->inLookup = true;
     if (fromCollator) {
-        _fromExpCtx->setCollator(std::move(fromCollator.value()));
+        _fromExpCtx->setCollator(std::move(fromCollator.get()));
         _hasExplicitCollation = true;
     }
 }
@@ -232,7 +245,10 @@ DocumentSourceLookUp::DocumentSourceLookUp(
 
 DocumentSourceLookUp::DocumentSourceLookUp(const DocumentSourceLookUp& original,
                                            const boost::intrusive_ptr<ExpressionContext>& newExpCtx)
-    : DocumentSource(kStageName, newExpCtx),
+    : DocumentSource(
+          kStageName,
+          newExpCtx ? newExpCtx
+                    : original.pExpCtx->copyWith(original.pExpCtx->ns, original.pExpCtx->uuid)),
       _fromNs(original._fromNs),
       _resolvedNs(original._resolvedNs),
       _as(original._as),
@@ -252,10 +268,10 @@ DocumentSourceLookUp::DocumentSourceLookUp(const DocumentSourceLookUp& original,
         _cache.emplace(internalDocumentSourceCursorBatchSizeBytes.load());
     }
     if (original._matchSrc) {
-        _matchSrc = static_cast<DocumentSourceMatch*>(original._matchSrc->clone(pExpCtx).get());
+        _matchSrc = static_cast<DocumentSourceMatch*>(original._matchSrc->clone().get());
     }
     if (original._unwindSrc) {
-        _unwindSrc = static_cast<DocumentSourceUnwind*>(original._unwindSrc->clone(pExpCtx).get());
+        _unwindSrc = static_cast<DocumentSourceUnwind*>(original._unwindSrc->clone().get());
     }
 }
 
@@ -293,9 +309,9 @@ std::unique_ptr<DocumentSourceLookUp::LiteParsed> DocumentSourceLookUp::LitePars
     NamespaceString fromNss;
     if (!fromElement) {
         validateLookupCollectionlessPipeline(pipelineElem);
-        fromNss = NamespaceString::makeCollectionlessAggregateNSS(nss.dbName());
+        fromNss = NamespaceString::makeCollectionlessAggregateNSS(nss.db());
     } else {
-        fromNss = parseLookupFromAndResolveNamespace(fromElement, nss.dbName());
+        fromNss = parseLookupFromAndResolveNamespace(fromElement, nss.db());
     }
     uassert(ErrorCodes::InvalidNamespace,
             str::stream() << "invalid $lookup namespace: " << fromNss.ns(),
@@ -349,7 +365,9 @@ const char* DocumentSourceLookUp::getSourceName() const {
 }
 
 bool DocumentSourceLookUp::foreignShardedLookupAllowed() const {
-    return !pExpCtx->opCtx->inMultiDocumentTransaction();
+    return feature_flags::gFeatureFlagShardedLookup.isEnabled(
+               serverGlobalParams.featureCompatibility) &&
+        !pExpCtx->opCtx->inMultiDocumentTransaction();
 }
 
 void DocumentSourceLookUp::determineSbeCompatibility() {
@@ -383,12 +401,7 @@ StageConstraints DocumentSourceLookUp::constraints(Pipeline::SplitState pipeStat
         // This stage will only be on the shards pipeline if $lookup on sharded foreign collections
         // is allowed.
         hostRequirement = HostTypeRequirement::kAnyShard;
-    } else if (_fromNs == NamespaceString::kConfigsvrCollectionsNamespace &&
-               // If the catalog shard feature flag is enabled, the config server should have the
-               // components necessary to handle a merge. Config servers are upgraded first and
-               // downgraded last, so if any server is running the latest binary, we can assume the
-               // conifg servers are too.
-               !gFeatureFlagCatalogShard.isEnabledAndIgnoreFCV()) {
+    } else if (_fromNs == NamespaceString::kConfigsvrCollectionsNamespace) {
         // This is an unsharded collection, but the primary shard would be the config server, and
         // the config servers are not prepared to take queries. Instead, we'll merge on any of the
         // other shards.
@@ -457,9 +470,14 @@ DocumentSource::GetNextResult DocumentSourceLookUp::doGetNext() {
         // throw a custom exception.
         if (auto staleInfo = ex.extraInfo<StaleConfigInfo>(); staleInfo &&
             staleInfo->getVersionWanted() &&
-            staleInfo->getVersionWanted() != ShardVersion::UNSHARDED()) {
+            staleInfo->getVersionWanted() != ChunkVersion::UNSHARDED()) {
             uassert(3904800,
                     "Cannot run $lookup with a sharded foreign collection in a transaction",
+                    !feature_flags::gFeatureFlagShardedLookup.isEnabled(
+                        serverGlobalParams.featureCompatibility) ||
+                        !pExpCtx->opCtx->inMultiDocumentTransaction());
+            uassert(51069,
+                    "Cannot run $lookup with sharded foreign collection",
                     foreignShardedLookupAllowed());
         }
         throw;
@@ -483,10 +501,6 @@ DocumentSource::GetNextResult DocumentSourceLookUp::doGetNext() {
     }
 
     accumulatePipelinePlanSummaryStats(*pipeline, _stats.planSummaryStats);
-
-    // Check if pipeline uses disk.
-    _stats.planSummaryStats.usedDisk = _stats.planSummaryStats.usedDisk || pipeline->usedDisk();
-
     MutableDocument output(std::move(inputDoc));
     output.setNestedField(_as, Value(std::move(results)));
     return output.freeze();
@@ -654,7 +668,7 @@ void DocumentSourceLookUp::addCacheStageAndOptimize(Pipeline& pipeline) {
 }
 
 DocumentSource::GetModPathsReturn DocumentSourceLookUp::getModifiedPaths() const {
-    OrderedPathSet modifiedPaths{_as.fullPath()};
+    std::set<std::string> modifiedPaths{_as.fullPath()};
     if (_unwindSrc) {
         auto pathsModifiedByUnwind = _unwindSrc->getModifiedPaths();
         invariant(pathsModifiedByUnwind.type == GetModPathsReturn::Type::kFiniteSet);
@@ -672,12 +686,16 @@ Pipeline::SourceContainer::iterator DocumentSourceLookUp::doOptimizeAt(
         return container->end();
     }
 
-    // If the following stage is $sort and there is no internal $unwind, consider pushing it ahead
-    // of $lookup.
-    if (!_unwindSrc) {
-        itr = tryReorderingWithSort(itr, container);
-        if (*itr != this) {
-            return itr;
+    // If the following stage is $sort, consider pushing it ahead of $lookup.
+    if (auto sortPtr = dynamic_cast<DocumentSourceSort*>(std::next(itr)->get())) {
+        // TODO (SERVER-55417): Conditionally reorder $sort and $lookup depending on whether the
+        // query planner allows for an index-provided sort.
+        if (!_unwindSrc &&
+            checkModifiedPathsSortReorder(sortPtr->getSortKeyPattern(), getModifiedPaths())) {
+            // We have a sort not on as field following this stage. Reorder sort and current doc.
+            std::swap(*itr, *std::next(itr));
+
+            return itr == container->begin() ? itr : std::prev(itr);
         }
     }
 
@@ -915,14 +933,6 @@ DocumentSource::GetNextResult DocumentSourceLookUp::unwindResult() {
     // Note we may return early from this loop if our source stage is exhausted or if the unwind
     // source was asked to return empty arrays and we get a document without a match.
     while (!_pipeline || !_nextValue) {
-        // Accumulate stats from the pipeline for the previous input, if applicable. This is to
-        // avoid missing the accumulation of stats on an early exit (below) if the input (i.e., left
-        // side of the lookup) is done.
-        if (_pipeline) {
-            accumulatePipelinePlanSummaryStats(*_pipeline, _stats.planSummaryStats);
-            _pipeline->dispose(pExpCtx->opCtx);
-        }
-
         auto nextInput = pSource->getNext();
         if (!nextInput.isAdvanced()) {
             return nextInput;
@@ -939,6 +949,11 @@ DocumentSource::GetNextResult DocumentSourceLookUp::unwindResult() {
                 makeMatchStageFromInput(*_input, *_localField, _foreignField->fullPath(), filter);
             // We've already allocated space for the trailing $match stage in '_resolvedPipeline'.
             _resolvedPipeline[*_fieldMatchPipelineIdx] = matchStage;
+        }
+
+        if (_pipeline) {
+            accumulatePipelinePlanSummaryStats(*_pipeline, _stats.planSummaryStats);
+            _pipeline->dispose(pExpCtx->opCtx);
         }
 
         _pipeline = buildPipeline(*_input);
@@ -1015,11 +1030,9 @@ void DocumentSourceLookUp::serializeToArray(
     std::vector<Value>& array, boost::optional<ExplainOptions::Verbosity> explain) const {
 
     // Support alternative $lookup from config.cache.chunks* namespaces.
-    //
-    // Do not include the tenantId in serialized 'from' namespace.
     auto fromValue = (pExpCtx->ns.db() == _fromNs.db())
         ? Value(_fromNs.coll())
-        : Value(Document{{"db", _fromNs.dbName().db()}, {"coll", _fromNs.coll()}});
+        : Value(Document{{"db", _fromNs.db()}, {"coll", _fromNs.coll()}});
 
     MutableDocument output(
         Document{{getSourceName(), Document{{"from", fromValue}, {"as", _as.fullPath()}}}});
@@ -1037,7 +1050,7 @@ void DocumentSourceLookUp::serializeToArray(
     }
     if (!hasLocalFieldForeignFieldJoin() || pipeline.size() > 0) {
         MutableDocument exprList;
-        for (const auto& letVar : _letVariables) {
+        for (auto letVar : _letVariables) {
             exprList.addField(letVar.name,
                               letVar.expression->serialize(static_cast<bool>(explain)));
         }
@@ -1059,7 +1072,7 @@ void DocumentSourceLookUp::serializeToArray(
                           << (indexPath ? Value(indexPath->fullPath()) : Value())));
         }
 
-        if (explain.value() >= ExplainOptions::Verbosity::kExecStats) {
+        if (explain.get() >= ExplainOptions::Verbosity::kExecStats) {
             appendSpecificExecStats(output);
         }
 
@@ -1091,9 +1104,20 @@ DepsTracker::State DocumentSourceLookUp::getDependencies(DepsTracker* deps) cons
             source->getDependencies(&subDeps);
         }
 
-        // Add the 'let' dependencies to the tracker.
+        // Add the 'let' dependencies to the tracker. Because the caller is only interested in
+        // references to external variables, filter out any subpipeline references to 'let'
+        // variables declared by this $lookup.
         for (auto&& letVar : _letVariables) {
-            expression::addDependencies(letVar.expression.get(), deps);
+            letVar.expression->addDependencies(deps);
+            subDeps.vars.erase(letVar.id);
+        }
+
+        // Add sub-pipeline variable dependencies. Do not add field dependencies, since these refer
+        // to the fields from the foreign collection rather than the local collection.
+        // Similarly, do not add SEARCH_META as a dependency, since it is scoped to one pipeline.
+        for (auto&& varId : subDeps.vars) {
+            if (varId != Variables::kSearchMetaId)
+                deps->vars.insert(varId);
         }
     }
 
@@ -1105,27 +1129,6 @@ DepsTracker::State DocumentSourceLookUp::getDependencies(DepsTracker* deps) cons
     // they are only operating on the "as" field which will be generated by this stage.
 
     return DepsTracker::State::SEE_NEXT;
-}
-
-void DocumentSourceLookUp::addVariableRefs(std::set<Variables::Id>* refs) const {
-    // Do not add SEARCH_META as a reference, since it is scoped to one pipeline.
-    if (hasPipeline()) {
-        std::set<Variables::Id> subPipeRefs;
-        _resolvedIntrospectionPipeline->addVariableRefs(&subPipeRefs);
-        for (auto&& varId : subPipeRefs) {
-            if (varId != Variables::kSearchMetaId)
-                refs->insert(varId);
-        }
-    }
-
-    // Add the 'let' variable references. Because the caller is only interested in references to
-    // external variables, filter out any subpipeline references to 'let' variables declared by this
-    // $lookup. This step must happen after gathering the sub-pipeline variable references as they
-    // may refer to let variables.
-    for (auto&& letVar : _letVariables) {
-        expression::addVariableRefs(letVar.expression.get(), refs);
-        refs->erase(letVar.id);
-    }
 }
 
 boost::optional<DocumentSource::DistributedPlanLogic> DocumentSourceLookUp::distributedPlanLogic() {
@@ -1172,21 +1175,6 @@ void DocumentSourceLookUp::reattachToOperationContext(OperationContext* opCtx) {
     }
 }
 
-bool DocumentSourceLookUp::validateOperationContext(const OperationContext* opCtx) const {
-    if (getContext()->opCtx != opCtx || (_fromExpCtx && _fromExpCtx->opCtx != opCtx)) {
-        return false;
-    }
-
-    if (_pipeline) {
-        const auto& sources = _pipeline->getSources();
-        return std::all_of(sources.begin(), sources.end(), [opCtx](const auto& s) {
-            return s->validateOperationContext(opCtx);
-        });
-    }
-
-    return true;
-}
-
 boost::intrusive_ptr<DocumentSource> DocumentSourceLookUp::createFromBson(
     BSONElement elem, const boost::intrusive_ptr<ExpressionContext>& pExpCtx) {
     uassert(ErrorCodes::FailedToParse,
@@ -1225,7 +1213,7 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceLookUp::createFromBson(
         }
 
         if (argName == kFromField) {
-            fromNs = parseLookupFromAndResolveNamespace(argument, pExpCtx->ns.dbName());
+            fromNs = parseLookupFromAndResolveNamespace(argument, pExpCtx->ns.db());
             continue;
         }
 
@@ -1258,7 +1246,7 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceLookUp::createFromBson(
 
     if (fromNs.ns().empty()) {
         validateLookupCollectionlessPipeline(pipeline);
-        fromNs = NamespaceString::makeCollectionlessAggregateNSS(pExpCtx->ns.dbName());
+        fromNs = NamespaceString::makeCollectionlessAggregateNSS(pExpCtx->ns.db());
     }
     uassert(ErrorCodes::FailedToParse, "must specify 'as' field for a $lookup", !as.empty());
 

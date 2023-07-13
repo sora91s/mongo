@@ -64,20 +64,21 @@ var Explainable = (function() {
         };
 
         this.help = function() {
-            print("Explainable operations");
-            print("\t.aggregate(...) - explain an aggregation operation");
-            print("\t.count(...) - explain a count operation");
-            print("\t.distinct(...) - explain a distinct operation");
-            print("\t.find(...) - get an explainable query");
-            print("\t.findAndModify(...) - explain a findAndModify operation");
-            print("\t.mapReduce(...) - explain a mapReduce operation");
-            print("\t.remove(...) - explain a remove operation");
-            print("\t.update(...) - explain an update operation");
-            print("Explainable collection methods");
-            print("\t.getCollection()");
-            print("\t.getVerbosity()");
-            print("\t.setVerbosity(verbosity)");
-            return __magicNoPrint;
+            var res = ""
+            res += "Explainable operations\n";
+            res += "\t.aggregate(...) - explain an aggregation operation\n";
+            res += "\t.count(...) - explain a count operation\n";
+            res += "\t.distinct(...) - explain a distinct operation\n";
+            res += "\t.find(...) - get an explainable query\n";
+            res += "\t.findAndModify(...) - explain a findAndModify operation\n";
+            res += "\t.mapReduce(...) - explain a mapReduce operation\n";
+            res += "\t.remove(...) - explain a remove operation\n";
+            res += "\t.update(...) - explain an update operation\n";
+            res += "Explainable collection methods\n";
+            res += "\t.getCollection()\n";
+            res += "\t.getVerbosity()\n";
+            res += "\t.setVerbosity(verbosity)\n";
+            return res;
         };
 
         //
@@ -85,7 +86,7 @@ var Explainable = (function() {
         //
 
         this.toString = function() {
-            return "Explainable(" + this._collection.getFullName() + ")";
+            return this._collection.getFullName();
         };
 
         this.shellPrint = function() {

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -39,6 +40,7 @@
 #include "mongo/db/catalog/list_indexes.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/curop_failpoint_helpers.h"
 #include "mongo/db/cursor_manager.h"
@@ -58,9 +60,6 @@
 #include "mongo/db/timeseries/timeseries_index_schema_conversion_functions.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/uuid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -97,10 +96,7 @@ static std::set<StringData> allowedFieldNames = {
     ListIndexesReplyItem::kUniqueFieldName,
     ListIndexesReplyItem::kVFieldName,
     ListIndexesReplyItem::kWeightsFieldName,
-    ListIndexesReplyItem::kWildcardProjectionFieldName,
-    ListIndexesReplyItem::kColumnstoreProjectionFieldName,
-    ListIndexesReplyItem::kColumnstoreCompressorFieldName,
-};
+    ListIndexesReplyItem::kWildcardProjectionFieldName};
 
 /**
  * Returns index specs, with resolved namespace, from the catalog for this listIndexes request.
@@ -113,9 +109,9 @@ IndexSpecsWithNamespaceString getIndexSpecsWithNamespaceString(OperationContext*
     bool buildUUID = cmd.getIncludeBuildUUIDs().value_or(false);
     bool indexBuildInfo = cmd.getIncludeIndexBuildInfo().value_or(false);
     invariant(!(buildUUID && indexBuildInfo));
-    ListIndexesInclude additionalInclude = buildUUID ? ListIndexesInclude::BuildUUID
-        : indexBuildInfo                             ? ListIndexesInclude::IndexBuildInfo
-                                                     : ListIndexesInclude::Nothing;
+    ListIndexesInclude additionalInclude = buildUUID
+        ? ListIndexesInclude::BuildUUID
+        : indexBuildInfo ? ListIndexesInclude::IndexBuildInfo : ListIndexesInclude::Nothing;
 
     // Since time-series collections don't have UUIDs, we skip the time-series lookup
     // if the target collection is specified as a UUID.
@@ -217,10 +213,6 @@ public:
         return "list indexes for a collection";
     }
 
-    bool allowedWithSecurityToken() const final {
-        return true;
-    }
-
     class Invocation final : public InvocationBaseGen {
     public:
         using InvocationBaseGen::InvocationBaseGen;
@@ -236,7 +228,7 @@ public:
                 return NamespaceString(request().getDbName(), "");
             }
             invariant(nss.nss());
-            return nss.nss().value();
+            return nss.nss().get();
         }
 
         void doCheckAuthorization(OperationContext* opCtx) const final {
@@ -333,7 +325,7 @@ public:
 
                 try {
                     firstBatch.push_back(ListIndexesReplyItem::parse(
-                        IDLParserContext("ListIndexesReplyItem"), nextDoc));
+                        IDLParserErrorContext("ListIndexesReplyItem"), nextDoc));
                 } catch (const DBException& exc) {
                     LOGV2_ERROR(5254500,
                                 "Could not parse catalog entry while replying to listIndexes",
@@ -360,7 +352,7 @@ public:
                 opCtx,
                 {std::move(exec),
                  nss,
-                 AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserName(),
+                 AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
                  APIParameters::get(opCtx),
                  opCtx->getWriteConcern(),
                  repl::ReadConcernArgs::get(opCtx),

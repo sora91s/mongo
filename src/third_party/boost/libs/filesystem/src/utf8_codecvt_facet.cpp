@@ -5,17 +5,10 @@
 
 #include "platform_config.hpp"
 
-#include <boost/filesystem/config.hpp>
-
 #define BOOST_UTF8_BEGIN_NAMESPACE \
-    namespace boost { \
-    namespace filesystem { \
-    namespace detail {
+     namespace boost { namespace filesystem { namespace detail {
 
-#define BOOST_UTF8_END_NAMESPACE \
-    } \
-    } \
-    }
+#define BOOST_UTF8_END_NAMESPACE }}}
 #define BOOST_UTF8_DECL BOOST_FILESYSTEM_DECL
 
 #include <boost/detail/utf8_codecvt_facet.ipp>

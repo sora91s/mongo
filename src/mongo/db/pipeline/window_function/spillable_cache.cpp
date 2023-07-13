@@ -53,12 +53,15 @@ void SpillableCache::verifyInCache(int id) {
 void SpillableCache::addDocument(Document input) {
     _memTracker.update(input.getApproximateSize());
     _memCache.emplace_back(std::move(input));
-    if (!_memTracker.withinMemoryLimit() && _expCtx->allowDiskUse) {
+    if (_memTracker.currentMemoryBytes() >=
+            static_cast<long long>(_memTracker.base->_maxAllowedMemoryUsageBytes) &&
+        _expCtx->allowDiskUse) {
         spillToDisk();
     }
     uassert(5643011,
             "Exceeded max memory. Set 'allowDiskUse: true' to spill to disk",
-            _memTracker.withinMemoryLimit());
+            _memTracker.currentMemoryBytes() <
+                static_cast<long long>(_memTracker.base->_maxAllowedMemoryUsageBytes));
     ++_nextIndex;
 }
 Document SpillableCache::getDocumentById(int id) {

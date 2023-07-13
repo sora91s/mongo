@@ -83,10 +83,8 @@ explain = db.runCommand({
 assert.commandWorked(explain, tojson(explain));
 assert.eq(explain.queryPlanner.winningPlan.stage, "SHARD_WRITE");
 assert.eq(explain.queryPlanner.winningPlan.shards.length, 2);
-const stageShard0 = explain.queryPlanner.winningPlan.shards[0].winningPlan.stage;
-const stageShard1 = explain.queryPlanner.winningPlan.shards[1].winningPlan.stage;
-assert(stageShard0 === "DELETE" || stageShard0 === "BATCHED_DELETE");
-assert(stageShard1 === "DELETE" || stageShard1 === "BATCHED_DELETE");
+assert.eq(explain.queryPlanner.winningPlan.shards[0].winningPlan.stage, "DELETE");
+assert.eq(explain.queryPlanner.winningPlan.shards[1].winningPlan.stage, "DELETE");
 // Check that the deletes didn't actually happen.
 assert.eq(3, collSharded.count({b: 1}));
 

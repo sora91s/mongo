@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -37,7 +38,6 @@
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
-#include "mongo/db/database_name.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -50,9 +50,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/flush_database_cache_updates_gen.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 namespace {
 
@@ -61,13 +58,14 @@ namespace {
  * the entry key already exists, it's not updated.
  */
 Status insertDatabaseEntryForBackwardCompatibility(OperationContext* opCtx,
-                                                   const DatabaseName& dbName) {
-    invariant(dbName == DatabaseName::kAdmin || dbName == DatabaseName::kConfig);
+                                                   const StringData& dbName) {
+    invariant(dbName == NamespaceString::kAdminDb || dbName == NamespaceString::kConfigDb);
 
     DBDirectClient client(opCtx);
     auto commandResponse = client.runCommand([&] {
         auto dbMetadata =
             DatabaseType(dbName.toString(), ShardId::kConfigServerId, DatabaseVersion::makeFixed());
+        dbMetadata.setSharded(true);
 
         write_ops::InsertCommandRequest insertOp(NamespaceString::kShardConfigDatabasesNamespace);
         insertOp.setDocuments({dbMetadata.toBSON()});
@@ -141,9 +139,9 @@ public:
 
             uassert(ErrorCodes::IllegalOperation,
                     "Can't call _flushDatabaseCacheUpdates if in read-only mode",
-                    !opCtx->readOnly());
+                    !storageGlobalParams.readOnly);
 
-            if (_dbName() == DatabaseName::kAdmin || _dbName() == DatabaseName::kConfig) {
+            if (_dbName() == NamespaceString::kAdminDb || _dbName() == NamespaceString::kConfigDb) {
                 // The admin and config databases have fixed metadata that does not need to be
                 // refreshed.
 
@@ -173,10 +171,10 @@ public:
                 // inclusive of the commit (and new writes to the committed chunk) that hasn't yet
                 // propagated back to this shard. This ensures the read your own writes causal
                 // consistency guarantee.
-                const auto scopedDss =
-                    DatabaseShardingState::assertDbLockedAndAcquireShared(opCtx, ns().dbName());
-                criticalSectionSignal =
-                    scopedDss->getCriticalSectionSignal(ShardingMigrationCriticalSection::kWrite);
+                const auto dss = DatabaseShardingState::get(opCtx, _dbName());
+                auto dssLock = DatabaseShardingState::DSSLock::lockShared(opCtx, dss);
+                criticalSectionSignal = dss->getCriticalSectionSignal(
+                    ShardingMigrationCriticalSection::kWrite, dssLock);
             }
 
             if (criticalSectionSignal)

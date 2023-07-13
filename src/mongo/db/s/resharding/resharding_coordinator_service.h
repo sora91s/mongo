@@ -33,13 +33,11 @@
 #include "mongo/db/repl/primary_only_service.h"
 #include "mongo/db/s/resharding/coordinator_document_gen.h"
 #include "mongo/db/s/resharding/resharding_coordinator_observer.h"
-#include "mongo/db/s/resharding/resharding_metrics.h"
-#include "mongo/db/service_context.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/platform/mutex.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_tags.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/util/future.h"
 
 namespace mongo {
@@ -50,40 +48,31 @@ CollectionType createTempReshardingCollectionType(
     OperationContext* opCtx,
     const ReshardingCoordinatorDocument& coordinatorDoc,
     const ChunkVersion& chunkVersion,
-    const BSONObj& collation,
-    boost::optional<CollectionIndexes> indexVersion);
+    const BSONObj& collation);
 
 void cleanupSourceConfigCollections(OperationContext* opCtx,
                                     const ReshardingCoordinatorDocument& coordinatorDoc);
 
 void writeDecisionPersistedState(OperationContext* opCtx,
-                                 ReshardingMetrics* metrics,
                                  const ReshardingCoordinatorDocument& coordinatorDoc,
                                  OID newCollectionEpoch,
-                                 Timestamp newCollectionTimestamp,
-                                 boost::optional<CollectionIndexes> indexVersion);
+                                 Timestamp newCollectionTimestamp);
 
 void updateTagsDocsForTempNss(OperationContext* opCtx,
                               const ReshardingCoordinatorDocument& coordinatorDoc);
 
 void insertCoordDocAndChangeOrigCollEntry(OperationContext* opCtx,
-                                          ReshardingMetrics* metrics,
                                           const ReshardingCoordinatorDocument& coordinatorDoc);
 
 void writeParticipantShardsAndTempCollInfo(OperationContext* opCtx,
-                                           ReshardingMetrics* metrics,
                                            const ReshardingCoordinatorDocument& coordinatorDoc,
                                            std::vector<ChunkType> initialChunks,
-                                           std::vector<BSONObj> zones,
-                                           boost::optional<CollectionIndexes> indexVersion);
+                                           std::vector<BSONObj> zones);
 
-void writeStateTransitionAndCatalogUpdatesThenBumpCollectionPlacementVersions(
-    OperationContext* opCtx,
-    ReshardingMetrics* metrics,
-    const ReshardingCoordinatorDocument& coordinatorDoc);
+void writeStateTransitionAndCatalogUpdatesThenBumpShardVersions(
+    OperationContext* opCtx, const ReshardingCoordinatorDocument& coordinatorDoc);
 
 void removeCoordinatorDocAndReshardingFields(OperationContext* opCtx,
-                                             ReshardingMetrics* metrics,
                                              const ReshardingCoordinatorDocument& coordinatorDoc,
                                              boost::optional<Status> abortReason = boost::none);
 }  // namespace resharding
@@ -102,13 +91,6 @@ public:
         OperationContext* opCtx, const ReshardingCoordinatorDocument& coordinatorDoc) = 0;
 
     ChunkVersion calculateChunkVersionForInitialChunks(OperationContext* opCtx);
-
-    boost::optional<CollectionIndexes> getCatalogIndexVersion(OperationContext* opCtx,
-                                                              const NamespaceString& nss,
-                                                              const UUID& uuid);
-
-    boost::optional<CollectionIndexes> getCatalogIndexVersionForCommit(OperationContext* opCtx,
-                                                                       const NamespaceString& nss);
 
     virtual void sendCommandToShards(OperationContext* opCtx,
                                      StringData dbName,
@@ -204,17 +186,15 @@ private:
     CancellationSource _commitMonitorCancellationSource;
 };
 
-class ReshardingCoordinator;
-
 class ReshardingCoordinatorService : public repl::PrimaryOnlyService {
 public:
     static constexpr StringData kServiceName = "ReshardingCoordinatorService"_sd;
 
     explicit ReshardingCoordinatorService(ServiceContext* serviceContext)
-        : PrimaryOnlyService(serviceContext), _serviceContext(serviceContext) {}
+        : PrimaryOnlyService(serviceContext) {}
     ~ReshardingCoordinatorService() = default;
 
-    friend ReshardingCoordinator;
+    class ReshardingCoordinator;
 
     StringData getServiceName() const override {
         return kServiceName;
@@ -230,7 +210,7 @@ public:
     void checkIfConflictsWithOtherInstances(
         OperationContext* opCtx,
         BSONObj initialState,
-        const std::vector<const PrimaryOnlyService::Instance*>& existingInstances) override;
+        const std::vector<const PrimaryOnlyService::Instance*>& existingInstances) override{};
 
     std::shared_ptr<PrimaryOnlyService::Instance> constructInstance(BSONObj initialState) override;
 
@@ -250,18 +230,15 @@ public:
 private:
     ExecutorFuture<void> _rebuildService(std::shared_ptr<executor::ScopedTaskExecutor> executor,
                                          const CancellationToken& token) override;
-
-    ServiceContext* _serviceContext;
 };
 
-class ReshardingCoordinator final
-    : public repl::PrimaryOnlyService::TypedInstance<ReshardingCoordinator> {
+class ReshardingCoordinatorService::ReshardingCoordinator final
+    : public PrimaryOnlyService::TypedInstance<ReshardingCoordinator> {
 public:
     explicit ReshardingCoordinator(
-        ReshardingCoordinatorService* coordinatorService,
+        const ReshardingCoordinatorService* coordinatorService,
         const ReshardingCoordinatorDocument& coordinatorDoc,
-        std::shared_ptr<ReshardingCoordinatorExternalState> externalState,
-        ServiceContext* serviceContext);
+        std::shared_ptr<ReshardingCoordinatorExternalState> externalState);
     ~ReshardingCoordinator() = default;
 
     SemiFuture<void> run(std::shared_ptr<executor::ScopedTaskExecutor> executor,
@@ -319,8 +296,6 @@ public:
 
     std::shared_ptr<ReshardingCoordinatorObserver> getObserver();
 
-    void checkIfOptionsConflict(const BSONObj& stateDoc) const final {}
-
 private:
     struct ChunksAndZones {
         std::vector<ChunkType> initialChunks;
@@ -370,19 +345,6 @@ private:
      */
     ExecutorFuture<void> _onAbortCoordinatorAndParticipants(
         const std::shared_ptr<executor::ScopedTaskExecutor>& executor, const Status& status);
-
-    /**
-     * Checks if the new shard key is same as the existing one in order to return early and avoid
-     * redundant work.
-     */
-    ExecutorFuture<bool> _isReshardingOpRedundant(
-        const std::shared_ptr<executor::ScopedTaskExecutor>& executor);
-
-    /**
-     * Runs resharding operation to completion from _initializeCoordinator().
-     */
-    ExecutorFuture<void> _runReshardingOp(
-        const std::shared_ptr<executor::ScopedTaskExecutor>& executor);
 
     /**
      * Does the following writes:
@@ -541,14 +503,10 @@ private:
     // The unique key for a given resharding operation. InstanceID is an alias for BSONObj. The
     // value of this is the UUID that will be used as the collection UUID for the new sharded
     // collection. The object looks like: {_id: 'reshardingUUID'}
-    const repl::PrimaryOnlyService::InstanceID _id;
+    const InstanceID _id;
 
     // The primary-only service instance corresponding to the coordinator instance. Not owned.
-    ReshardingCoordinatorService* const _coordinatorService;
-
-    ServiceContext* _serviceContext;
-
-    std::shared_ptr<ReshardingMetrics> _metrics;
+    const ReshardingCoordinatorService* const _coordinatorService;
 
     // The in-memory representation of the immutable portion of the document in
     // config.reshardingOperations.

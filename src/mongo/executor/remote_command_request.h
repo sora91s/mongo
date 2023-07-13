@@ -33,9 +33,7 @@
 #include <string>
 
 #include "mongo/base/error_codes.h"
-#include "mongo/db/auth/validated_tenancy_scope.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/executor/hedge_options_util.h"
 #include "mongo/rpc/metadata.h"
 #include "mongo/transport/transport_layer.h"
 #include "mongo/util/concepts.h"
@@ -46,16 +44,12 @@ namespace mongo {
 namespace executor {
 
 struct RemoteCommandRequestBase {
-    struct Options {
-        Options() = default;
-        // Allow implicit conversion from HedgeOptions
-        Options(HedgeOptions opts) : hedgeOptions{opts} {}
-
-        void resetHedgeOptions();
-
-        HedgeOptions hedgeOptions = {};
-        bool fireAndForget = false;
+    struct HedgeOptions {
+        size_t count = 0;
+        int maxTimeMSForHedgedReads = 0;
     };
+
+    enum FireAndForgetMode { kOn, kOff };
 
     // Indicates that there is no timeout for the request to complete
     static constexpr Milliseconds kNoTimeout{-1};
@@ -70,7 +64,8 @@ struct RemoteCommandRequestBase {
                              const BSONObj& metadataObj,
                              OperationContext* opCtx,
                              Milliseconds timeoutMillis,
-                             Options options);
+                             boost::optional<HedgeOptions> hedgeOptions,
+                             FireAndForgetMode fireAndForgetMode);
 
     // Internal id of this request. Not interpreted and used for tracing purposes only.
     RequestId id;
@@ -78,7 +73,7 @@ struct RemoteCommandRequestBase {
     std::string dbname;
     BSONObj metadata{rpc::makeEmptyMetadata()};
     BSONObj cmdObj;
-    boost::optional<auth::ValidatedTenancyScope> validatedTenancyScope;
+    BSONObj securityToken;
 
     // OperationContext is added to each request to allow OP_Command metadata attachment access to
     // the Client object. The OperationContext is only accessed on the thread that calls
@@ -89,9 +84,11 @@ struct RemoteCommandRequestBase {
     // metadata attachment (i.e., replication).
     OperationContext* opCtx{nullptr};
 
-    Options options;
+    boost::optional<HedgeOptions> hedgeOptions;
 
     boost::optional<UUID> operationKey;
+
+    FireAndForgetMode fireAndForgetMode = FireAndForgetMode::kOff;
 
     // When false, the network interface will refrain from enforcing the 'timeout' for this request,
     // but will still pass the timeout on as maxTimeMSOpOnly.
@@ -145,7 +142,8 @@ struct RemoteCommandRequestImpl : RemoteCommandRequestBase {
                              const BSONObj& metadataObj,
                              OperationContext* opCtx,
                              Milliseconds timeoutMillis = kNoTimeout,
-                             Options options = {});
+                             boost::optional<HedgeOptions> hedgeOptions = boost::none,
+                             FireAndForgetMode fireAndForgetMode = FireAndForgetMode::kOff);
 
     RemoteCommandRequestImpl(const Target& theTarget,
                              const std::string& theDbName,
@@ -153,16 +151,24 @@ struct RemoteCommandRequestImpl : RemoteCommandRequestBase {
                              const BSONObj& metadataObj,
                              OperationContext* opCtx,
                              Milliseconds timeoutMillis = kNoTimeout,
-                             Options options = {});
+                             boost::optional<HedgeOptions> hedgeOptions = boost::none,
+                             FireAndForgetMode fireAndForgetMode = FireAndForgetMode::kOff);
 
     RemoteCommandRequestImpl(const Target& theTarget,
                              const std::string& theDbName,
                              const BSONObj& theCmdObj,
                              const BSONObj& metadataObj,
                              OperationContext* opCtx,
-                             Options options)
-        : RemoteCommandRequestImpl(
-              theTarget, theDbName, theCmdObj, metadataObj, opCtx, kNoTimeout, options) {}
+                             boost::optional<HedgeOptions> hedgeOptions,
+                             FireAndForgetMode fireAndForgetMode = FireAndForgetMode::kOff)
+        : RemoteCommandRequestImpl(theTarget,
+                                   theDbName,
+                                   theCmdObj,
+                                   metadataObj,
+                                   opCtx,
+                                   kNoTimeout,
+                                   hedgeOptions,
+                                   fireAndForgetMode) {}
 
 
     RemoteCommandRequestImpl(const Target& theTarget,
@@ -170,14 +176,16 @@ struct RemoteCommandRequestImpl : RemoteCommandRequestBase {
                              const BSONObj& theCmdObj,
                              OperationContext* opCtx,
                              Milliseconds timeoutMillis = kNoTimeout,
-                             Options options = {})
+                             boost::optional<HedgeOptions> hedgeOptions = boost::none,
+                             FireAndForgetMode fireAndForgetMode = FireAndForgetMode::kOff)
         : RemoteCommandRequestImpl(theTarget,
                                    theDbName,
                                    theCmdObj,
                                    rpc::makeEmptyMetadata(),
                                    opCtx,
                                    timeoutMillis,
-                                   options) {}
+                                   hedgeOptions,
+                                   fireAndForgetMode) {}
 
     std::string toString() const;
 

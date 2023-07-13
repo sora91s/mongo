@@ -3,9 +3,8 @@
  *
  *
  * @tags: [
- *   # TimeseriesAggTests doesn't handle stepdowns.
  *   does_not_support_stepdowns,
- *   # We need a timeseries collection.
+ *   does_not_support_transactions,
  *   requires_timeseries,
  * ]
  */

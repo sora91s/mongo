@@ -34,20 +34,10 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_collection.h"
-#include "mongo/s/client/shard.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
 
 namespace mongo {
-
-// TODO (SERVER-74481): Define these functions in the nested `sharding_ddl_util` namespace when the
-// IDL compiler will support the use case.
-void sharding_ddl_util_serializeErrorStatusToBSON(const Status& status,
-                                                  StringData fieldName,
-                                                  BSONObjBuilder* bsonBuilder);
-Status sharding_ddl_util_deserializeErrorStatusFromBSON(const BSONElement& bsonElem);
-
 namespace sharding_ddl_util {
 
 /**
@@ -78,7 +68,6 @@ void removeTagsMetadataFromConfig(OperationContext* opCtx,
  * Erase tags metadata from config server for the given namespace.
  */
 void removeTagsMetadataFromConfig_notIdempotent(OperationContext* opCtx,
-                                                Shard* configShard,
                                                 const NamespaceString& nss,
                                                 const WriteConcernOptions& writeConcern);
 
@@ -93,22 +82,13 @@ void removeCollAndChunksMetadataFromConfig(OperationContext* opCtx,
 
 /**
  * Erase collection metadata from config server and invalidate the locally cached one.
- * In particular remove the collection, chunks and index metadata associated with the given
- * namespace.
+ * In particular remove the collection and chunks metadata associated with the given namespace.
  *
  * Returns true if the collection existed before being removed.
  */
 bool removeCollAndChunksMetadataFromConfig_notIdempotent(OperationContext* opCtx,
-                                                         ShardingCatalogClient* catalogClient,
                                                          const NamespaceString& nss,
                                                          const WriteConcernOptions& writeConcern);
-
-/**
- * Delete the config query analyzer document for the given collection, if it exists.
- */
-void removeQueryAnalyzerMetadataFromConfig(OperationContext* opCtx,
-                                           const NamespaceString& nss,
-                                           const boost::optional<UUID>& uuid);
 
 /**
  * Rename sharded collection metadata as part of a renameCollection operation.
@@ -119,8 +99,6 @@ void removeQueryAnalyzerMetadataFromConfig(OperationContext* opCtx,
  * This function is idempotent and can just be invoked by the CSRS.
  */
 void shardedRenameMetadata(OperationContext* opCtx,
-                           Shard* configShard,
-                           ShardingCatalogClient* catalogClient,
                            CollectionType& fromCollType,
                            const NamespaceString& toNss,
                            const WriteConcernOptions& writeConcern);
@@ -188,12 +166,6 @@ void resumeMigrations(OperationContext* opCtx,
                       const NamespaceString& nss,
                       const boost::optional<UUID>& expectedCollectionUUID);
 
-/**
- * Calls to the config server primary to get the collection document for the given nss.
- * Returns the value of the allowMigrations flag on the collection document.
- */
-bool checkAllowMigrations(OperationContext* opCtx, const NamespaceString& nss);
-
 /*
  * Returns the UUID of the collection (if exists) using the catalog. It does not provide any locking
  * guarantees after the call.
@@ -224,8 +196,7 @@ void sendDropCollectionParticipantCommandToShards(OperationContext* opCtx,
                                                   const NamespaceString& nss,
                                                   const std::vector<ShardId>& shardIds,
                                                   std::shared_ptr<executor::TaskExecutor> executor,
-                                                  const OperationSessionInfo& osi,
-                                                  bool fromMigrate);
+                                                  const OperationSessionInfo& osi);
 
 BSONObj getCriticalSectionReasonForRename(const NamespaceString& from, const NamespaceString& to);
 

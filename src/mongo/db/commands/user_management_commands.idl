@@ -29,7 +29,7 @@ global:
     cpp_namespace: "mongo"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/db/auth/auth_types.idl"
     - "mongo/db/auth/address_restriction.idl"
     - "mongo/db/auth/user_management_commands_parser.idl"
@@ -39,7 +39,6 @@ structs:
     dropAllUsersFromDatabaseReply:
         description: "Response for dropAllUsersFromDatabase command"
         strict: false
-        is_command_reply: true
         fields:
             n:
                 description: "Number of users dropped from database"
@@ -49,7 +48,6 @@ structs:
     dropAllRolesFromDatabaseReply:
         description: "Response for dropAllRolesFromDatabase command"
         strict: false
-        is_command_reply: true
         fields:
             n:
                 description: "Number of roles dropped from database"
@@ -59,7 +57,6 @@ structs:
     usersInfoReply:
         description: "Reply from usersInfo command"
         strict: false
-        is_command_reply: true
         fields:
             users:
                 description: "Users descriptions"
@@ -68,7 +65,6 @@ structs:
     rolesInfoReply:
         description: "Reply from rolesInfo command"
         strict: false
-        is_command_reply: true
         fields:
             roles:
                 description: "Users descriptions"
@@ -82,7 +78,6 @@ structs:
     GetUserCacheGenerationReply:
         description: "Reply from _getUserCacheGeneration command"
         strict: false
-        is_command_reply: true
         fields:
             cacheGeneration:
                 description: "Cache generation"
@@ -132,6 +127,12 @@ commands:
             mechanisms:
                 description: "List of valid authentication mechanisms for the user"
                 type: array<string>
+                optional: true
+            "$tenant":
+                # Only available with enableTestCommands and multitenancySupport
+                description: "Associate this user with a specific tenant"
+                type: tenant_id
+                cpp_name: tenantOverride
                 optional: true
 
     updateUser:

@@ -46,14 +46,12 @@ std::string toString(ReplicaSetMonitorProtocol protocol) {
 }
 
 void RSMProtocolServerParameter::append(OperationContext*,
-                                        BSONObjBuilder* builder,
-                                        StringData name,
-                                        const boost::optional<TenantId>&) {
-    builder->append(name, toString(gReplicaSetMonitorProtocol));
+                                        BSONObjBuilder& builder,
+                                        const std::string& name) {
+    builder.append(name, toString(gReplicaSetMonitorProtocol));
 }
 
-Status RSMProtocolServerParameter::setFromString(StringData protocolStr,
-                                                 const boost::optional<TenantId>&) {
+Status RSMProtocolServerParameter::setFromString(const std::string& protocolStr) {
     if (protocolStr == toString(ReplicaSetMonitorProtocol::kStreamable)) {
         gReplicaSetMonitorProtocol = ReplicaSetMonitorProtocol::kStreamable;
     } else if (protocolStr == toString(ReplicaSetMonitorProtocol::kSdam)) {

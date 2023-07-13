@@ -15,5 +15,4 @@ env.Library(
     source=env.File([
         'format.cc',
         'os.cc',
-    ], 'dist/src'),
-)
+    ], 'dist/src'))

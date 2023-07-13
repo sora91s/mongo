@@ -3,11 +3,9 @@
  * @tags: [
  *   assumes_unsharded_collection,
  *   requires_non_retryable_writes,
- *   requires_fcv_62,
+ *   requires_fcv_60,
  *   # This test could produce unexpected explain output if additional indexes are created.
  *   assumes_no_implicit_index_creation,
- *   # TODO SERVER-67506: Dotted path equality to null matches non-object array elements in CQF.
- *   cqf_incompatible,
  * ]
  */
 (function() {
@@ -15,7 +13,6 @@
 
 load("jstests/aggregation/extras/utils.js");  // For arrayEq().
 load("jstests/libs/analyze_plan.js");         // For getAggPlanStages() and getPlanStages().
-load("jstests/libs/clustered_collections/clustered_collection_util.js");
 
 const coll = db.cover_null_queries;
 coll.drop();
@@ -140,15 +137,6 @@ function validateGroupCountAggCmdOutputAndPlan({filter, expectedStages, expected
     });
 }
 
-function getExpectedStagesIndexScanAndFetch(extraStages) {
-    const clustered = ClusteredCollectionUtil.areAllCollectionsClustered(db.getMongo());
-    const result = clustered ? {"CLUSTERED_IXSCAN": 1} : {"FETCH": 1, "IXSCAN": 1};
-    for (const stage in extraStages) {
-        result[stage] = extraStages[stage];
-    }
-    return result;
-}
-
 assert.commandWorked(coll.createIndex({a: 1, _id: 1}));
 
 // Verify count({a: null}) can be covered by an index. In the simplest case we can use two count
@@ -270,7 +258,7 @@ validateFindCmdOutputAndPlan({
     filter: {a: null},
     projection: {a: 0, b: 0},
     expectedOutput: [{_id: 3}, {_id: 4}, {_id: 6}, {_id: 7}],
-    expectedStages: {"IXSCAN": 1, "FETCH": 1, "PROJECTION_SIMPLE": 1},
+    expectedStages: {"IXSCAN": 1, "FETCH": 1, "PROJECTION_DEFAULT": 1},
 });
 
 // Verify find({a: null}, {_id: 1, b: 1}) is not covered by an index so we still have a FETCH stage.
@@ -341,18 +329,18 @@ validateFindCmdOutputAndPlan({
 validateSimpleCountCmdOutputAndPlan({
     filter: {a: null, _id: 3},
     expectedCount: 1,
-    expectedStages: getExpectedStagesIndexScanAndFetch({"OR": 0, "COUNT_SCAN": 0}),
+    expectedStages: {"FETCH": 1, "IXSCAN": 1, "OR": 0, "COUNT_SCAN": 0}
 });
 validateCountAggCmdOutputAndPlan({
     filter: {a: null, _id: 3},
     expectedCount: 1,
-    expectedStages: getExpectedStagesIndexScanAndFetch({"OR": 0, "COUNT_SCAN": 0}),
+    expectedStages: {"FETCH": 1, "IXSCAN": 1, "OR": 0, "COUNT_SCAN": 0},
 });
 validateFindCmdOutputAndPlan({
     filter: {a: null, _id: 3},
     projection: {_id: 1},
     expectedOutput: [{_id: 3}],
-    expectedStages: getExpectedStagesIndexScanAndFetch({"PROJECTION_SIMPLE": 1}),
+    expectedStages: {"IXSCAN": 1, "FETCH": 1, "PROJECTION_SIMPLE": 1},
 });
 
 // Verify that if the index is multikey and the query searches for null and empty array values, then

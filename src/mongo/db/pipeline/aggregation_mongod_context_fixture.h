@@ -46,8 +46,7 @@ namespace mongo {
 class AggregationMongoDContextFixture : public ServiceContextMongoDTest {
 public:
     AggregationMongoDContextFixture()
-        : AggregationMongoDContextFixture(
-              NamespaceString::createNamespaceString_forTest("unittests.pipeline_test")) {}
+        : AggregationMongoDContextFixture(NamespaceString("unittests.pipeline_test")) {}
 
     AggregationMongoDContextFixture(NamespaceString nss)
         : _expCtx(new ExpressionContextForTest(_opCtx.get(), nss)) {

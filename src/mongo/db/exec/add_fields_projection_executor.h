@@ -94,9 +94,9 @@ public:
      */
     void parse(const BSONObj& spec);
 
-    Document serializeTransformation(boost::optional<ExplainOptions::Verbosity> explain,
-                                     SerializationOptions options = {}) const final {
-        return _root->serialize(explain, options);
+    Document serializeTransformation(
+        boost::optional<ExplainOptions::Verbosity> explain) const final {
+        return _root->serialize(explain);
     }
 
     /**
@@ -111,12 +111,8 @@ public:
         return DepsTracker::State::SEE_NEXT;
     }
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {
-        _root->addVariableRefs(refs);
-    }
-
     DocumentSource::GetModPathsReturn getModifiedPaths() const final {
-        OrderedPathSet computedPaths;
+        std::set<std::string> computedPaths;
         StringMap<std::string> renamedPaths;
         _root->reportComputedPaths(&computedPaths, &renamedPaths);
         return {DocumentSource::GetModPathsReturn::Type::kFiniteSet,

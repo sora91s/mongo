@@ -67,7 +67,7 @@ public:
     /**
      * Returns toBSON().toString()
      */
-    std::string toString() const {
+    const std::string toString() const {
         return toBSON().toString();
     }
 

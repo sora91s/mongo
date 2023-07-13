@@ -12,8 +12,6 @@
 #ifndef BOOST_TEST_UTILS_ALGORITHM_HPP
 #define BOOST_TEST_UTILS_ALGORITHM_HPP
 
-#include <boost/test/detail/config.hpp>
-
 // STL
 #include <utility>
 #include <algorithm> // std::find

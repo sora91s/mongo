@@ -142,9 +142,7 @@ public:
         }
 
         Action(const RemoteCommandResponse& commandResponse) {
-            _actionFunc = [=](const BSONObj& request) {
-                return commandResponse;
-            };
+            _actionFunc = [=](const BSONObj& request) { return commandResponse; };
         }
 
         RemoteCommandResponse operator()(const BSONObj& request) {

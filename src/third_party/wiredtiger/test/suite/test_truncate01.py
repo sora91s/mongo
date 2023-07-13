@@ -52,17 +52,15 @@ class test_truncate_arguments(wttest.WiredTigerTestCase):
     # either cursor specified, expect errors.
     def test_truncate_bad_args(self):
         uri = self.type + self.name
-        ds = SimpleDataSet(self, uri, 100)
-        ds.populate()
-
+        SimpleDataSet(self, uri, 100).populate()
         msg = '/either a URI or start/stop cursors/'
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: ds.truncate(None, None, None, None), msg)
-        cursor = ds.open_cursor(uri, None)
+            lambda: self.session.truncate(None, None, None, None), msg)
+        cursor = self.session.open_cursor(uri, None)
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: ds.truncate(uri, cursor, None, None), msg)
+            lambda: self.session.truncate(uri, cursor, None, None), msg)
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: ds.truncate(uri, None, cursor, None), msg)
+            lambda: self.session.truncate(uri, None, cursor, None), msg)
 
     # Test truncation of cursors where no key is set, expect errors.
     def test_truncate_cursor_notset(self):
@@ -76,9 +74,9 @@ class test_truncate_arguments(wttest.WiredTigerTestCase):
         c2 = self.session.open_cursor(uri, None)
         c2.set_key(ds.key(10))
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: ds.truncate(None, c1, c2, None), msg)
+            lambda: self.session.truncate(None, c1, c2, None), msg)
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: ds.truncate(None, c2, c1, None), msg)
+            lambda: self.session.truncate(None, c2, c1, None), msg)
         c1.close()
         c2.close()
 
@@ -95,17 +93,14 @@ class test_truncate_uri(wttest.WiredTigerTestCase):
         uri = self.type + self.name
 
         # A simple, one-file file or table object.
-        ds = SimpleDataSet(self, uri, 100)
-        ds.populate()
-
-        ds.truncate(uri, None, None, None)
+        SimpleDataSet(self, uri, 100).populate()
+        self.session.truncate(uri, None, None, None)
         confirm_empty(self, uri)
         self.dropUntilSuccess(self.session, uri)
 
         if self.type == "table:":
-            cds = ComplexDataSet(self, uri, 100)
-            cds.populate()
-            cds.truncate(uri, None, None, None)
+            ComplexDataSet(self, uri, 100).populate()
+            self.session.truncate(uri, None, None, None)
             confirm_empty(self, uri)
             self.dropUntilSuccess(self.session, uri)
 
@@ -136,10 +131,10 @@ class test_truncate_cursor_order(wttest.WiredTigerTestCase):
         c2.set_key(ds.key(10))
         msg = '/the start cursor position is after the stop cursor position/'
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: ds.truncate(None, c1, c2, None), msg)
+            lambda: self.session.truncate(None, c1, c2, None), msg)
         c1.set_key(ds.key(10))
         c2.set_key(ds.key(20))
-        ds.truncate(None, c1, c2, None)
+        self.session.truncate(None, c1, c2, None)
 
 # Test truncation of cursors past the end of the object.
 class test_truncate_cursor_end(wttest.WiredTigerTestCase):
@@ -167,7 +162,7 @@ class test_truncate_cursor_end(wttest.WiredTigerTestCase):
         c1.set_key(ds.key(1000))
         c2 = self.session.open_cursor(uri, None)
         c2.set_key(ds.key(2000))
-        ds.truncate(None, c1, c2, None)
+        self.session.truncate(None, c1, c2, None)
         self.assertEqual(c1.close(), 0)
         self.assertEqual(c2.close(), 0)
         self.dropUntilSuccess(self.session, uri)
@@ -179,7 +174,7 @@ class test_truncate_cursor_end(wttest.WiredTigerTestCase):
             c1.set_key(ds.key(1000))
             c2 = self.session.open_cursor(uri, None)
             c2.set_key(ds.key(2000))
-            ds.truncate(None, c1, c2, None)
+            self.session.truncate(None, c1, c2, None)
             self.assertEqual(c1.close(), 0)
             self.assertEqual(c2.close(), 0)
             self.dropUntilSuccess(self.session, uri)
@@ -217,40 +212,6 @@ class test_truncate_empty(wttest.WiredTigerTestCase):
             ',key_format=' + self.keyfmt + ',value_format=S')
         self.assertEqual(self.session.truncate(uri, None, None, None), 0)
 
-# Test truncation timestamp handling.
-class test_truncate_timestamp(wttest.WiredTigerTestCase):
-    name = 'test_truncate'
-    conn_config = 'log=(enabled=true)'
-
-    scenarios = make_scenarios([
-        ('file', dict(type='file:')),
-        ('table', dict(type='table:'))
-    ])
-
-    # Test truncation without a timestamp, expect errors.
-    @wttest.prevent(["timestamp"])  # prevent the use of hooks that manage timestamps
-    def test_truncate_no_ts(self):
-        uri = self.type + self.name
-        msg = '/truncate operations may not yet be included/'
-
-        ds = SimpleDataSet(self, uri, 100, config='log=(enabled=false)')
-        ds.populate()
-
-        self.session.begin_transaction("no_timestamp=true")
-        self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: ds.truncate(uri, None, None, None), msg)
-
-    # Test truncation of a logged object without a timestamp, expect success.
-    @wttest.prevent(["timestamp"])  # prevent the use of hooks that manage timestamps
-    def test_truncate_log_no_ts(self):
-        uri = self.type + self.name
-
-        ds = SimpleDataSet(self, uri, 100, config='log=(enabled=true)')
-        ds.populate()
-
-        self.session.begin_transaction("no_timestamp=true")
-        ds.truncate(uri, None, None, None)
-
 # Test session.truncate.
 class test_truncate_cursor(wttest.WiredTigerTestCase):
     name = 'test_truncate'
@@ -287,7 +248,7 @@ class test_truncate_cursor(wttest.WiredTigerTestCase):
     def cursorKey(self, ds, uri, key):
         if key == -1:
             return None
-        cursor = ds.open_cursor(uri, None)
+        cursor = self.session.open_cursor(uri, None)
         cursor.set_key(ds.key(key))
         return cursor
 
@@ -296,7 +257,7 @@ class test_truncate_cursor(wttest.WiredTigerTestCase):
         self.pr('truncateRangeAndCheck: ' + str(begin) + ',' + str(end))
         cur1 = self.cursorKey(ds, uri, begin)
         cur2 = self.cursorKey(ds, uri, end)
-        ds.truncate(None, cur1, cur2, None)
+        self.session.truncate(None, cur1, cur2, None)
         if not cur1:
             begin = 1
         else:
@@ -312,7 +273,7 @@ class test_truncate_cursor(wttest.WiredTigerTestCase):
             return
 
         # Check the expected values against the object.
-        cursor = ds.open_cursor(uri, None)
+        cursor = self.session.open_cursor(uri, None)
         for i in range(begin, end + 1):
             expected[ds.key(i)] = [0]
         for k, v in expected.items():
@@ -514,7 +475,7 @@ class test_truncate_cursor(wttest.WiredTigerTestCase):
 
             # Build a dictionary of what the object should look like for
             # later comparison
-            cursor = ds.open_cursor()
+            cursor = self.session.open_cursor(uri, None)
             expected = {}
             for i in range(1, self.nentries + 1):
                 expected[ds.key(i)] = ds.comparable_value(i)

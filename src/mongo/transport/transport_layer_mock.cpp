@@ -42,7 +42,7 @@
 namespace mongo {
 namespace transport {
 
-std::shared_ptr<Session> TransportLayerMock::createSession() {
+SessionHandle TransportLayerMock::createSession() {
     auto session = createSessionHook ? createSessionHook(this) : MockSession::create(this);
     Session::Id sessionId = session->id();
 
@@ -51,7 +51,7 @@ std::shared_ptr<Session> TransportLayerMock::createSession() {
     return _sessions[sessionId].session;
 }
 
-std::shared_ptr<Session> TransportLayerMock::get(Session::Id id) {
+SessionHandle TransportLayerMock::get(Session::Id id) {
     if (!owns(id))
         return nullptr;
 
@@ -62,7 +62,7 @@ bool TransportLayerMock::owns(Session::Id id) {
     return _sessions.count(id) > 0;
 }
 
-StatusWith<std::shared_ptr<Session>> TransportLayerMock::connect(
+StatusWith<SessionHandle> TransportLayerMock::connect(
     HostAndPort peer,
     ConnectSSLMode sslMode,
     Milliseconds timeout,
@@ -70,12 +70,11 @@ StatusWith<std::shared_ptr<Session>> TransportLayerMock::connect(
     MONGO_UNREACHABLE;
 }
 
-Future<std::shared_ptr<Session>> TransportLayerMock::asyncConnect(
+Future<SessionHandle> TransportLayerMock::asyncConnect(
     HostAndPort peer,
     ConnectSSLMode sslMode,
     const ReactorHandle& reactor,
     Milliseconds timeout,
-    std::shared_ptr<ConnectionMetrics> connectionMetrics,
     std::shared_ptr<const SSLConnectionContext> transientSSLContext) {
     MONGO_UNREACHABLE;
 }

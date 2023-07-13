@@ -1,6 +1,5 @@
-// The following checks involve talking to a shard node, which in this test is shutdown.
+// Checking UUID consistency involves talking to a shard node, which in this test is shutdown
 TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 (function() {
 'use strict';
@@ -50,32 +49,16 @@ assert.commandWorked(
 assert.eq(0, db.unsharded.countDocuments({}));
 assert.eq(1, s.getDB('otherDBSamePrimary').foo.countDocuments({}));
 
-const testDB = s.rs0.getPrimary().getDB('test');
-const fcvDoc = testDB.adminCommand({getParameter: 1, featureCompatibilityVersion: 1});
 jsTest.log("Testing that rename operations involving views are not allowed");
 {
     assert.commandWorked(db.collForView.insert({_id: 1}));
     assert.commandWorked(db.createView('view', 'collForView', []));
 
     let toAView = db.unsharded.renameCollection('view', true /* dropTarget */);
-
-    assert.commandFailedWithCode(
-        toAView,
-        [
-            ErrorCodes.NamespaceExists,
-            ErrorCodes.CommandNotSupportedOnView,  // TODO SERVER-68084 remove this error code
-            ErrorCodes.NamespaceNotFound           // TODO SERVER-68084 remove this error code
-        ],
-        "renameCollection should fail with NamespaceExists when the target is view");
+    assert.commandFailed(toAView);
 
     let fromAView = db.view.renameCollection('target');
-    assert.commandFailedWithCode(
-        fromAView,
-        [
-            ErrorCodes.CommandNotSupportedOnView,
-            ErrorCodes.NamespaceNotFound  // TODO SERVER-68084 remove this error code
-        ],
-        "renameCollection should fail with CommandNotSupportedOnView when renaming a view");
+    assert.commandFailed(fromAView);
 }
 
 // Rename a collection to itself fails, without loosing data
@@ -90,7 +73,9 @@ jsTest.log("Testing that rename operations involving views are not allowed");
     assert.eq(1, sameColl.countDocuments({}), "Rename a collection to itself must not loose data");
 }
 
-if (MongoRunner.compareBinVersions(fcvDoc.featureCompatibilityVersion.version, '6.1') >= 0) {
+const testDB = s.rs0.getPrimary().getDB('test');
+const fcvDoc = testDB.adminCommand({getParameter: 1, featureCompatibilityVersion: 1});
+if (MongoRunner.compareBinVersions(fcvDoc.featureCompatibilityVersion.version, '6.0') >= 0) {
     // Create collection on non-primary shard (shard1 for test db) to simulate wrong creation via
     // direct connection: collection rename should fail since `badcollection` uuids are inconsistent
     // across shards

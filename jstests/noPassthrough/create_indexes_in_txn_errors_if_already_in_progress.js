@@ -10,7 +10,6 @@
 "use strict";
 
 load("jstests/libs/parallel_shell_helpers.js");
-load('jstests/libs/fail_point_util.js');
 load('jstests/libs/test_background_ops.js');
 
 const rst = new ReplSetTest({nodes: 1});
@@ -60,7 +59,8 @@ const runFailedIndexBuildInTxn = function(dbName, collName, indexSpec, requestNu
 // This allows us to pause index builds on the collection using a fail point.
 assert.commandWorked(testColl.insert({a: 1}));
 
-const failPoint = configureFailPoint(testDB, 'hangAfterSettingUpIndexBuild');
+assert.commandWorked(
+    testDB.adminCommand({configureFailPoint: 'hangAfterSettingUpIndexBuild', mode: 'alwaysOn'}));
 let joinFirstIndexBuild;
 let joinSecondIndexBuild;
 try {
@@ -69,20 +69,21 @@ try {
         funWithArgs(runSuccessfulIndexBuild, dbName, collName, indexSpecB, 1), primary.port);
 
     jsTest.log("Waiting for first index build to get started...");
-    failPoint.wait();
+    checkLog.contains(primary,
+                      "Hanging index build due to failpoint 'hangAfterSettingUpIndexBuild'");
 
     jsTest.log(
         "Starting a parallel shell to run a transaction with a second index build request...");
     joinSecondIndexBuild = startParallelShell(
         funWithArgs(runFailedIndexBuildInTxn, dbName, collName, indexSpecB, 2), primary.port);
-    // We wait to observe the second attempt to build the index fails while the
-    // hangAfterSettingUpIndexBuild is preventing the first attempt from completing successfully.
-    joinSecondIndexBuild();
+
 } finally {
-    failPoint.off();
+    assert.commandWorked(
+        testDB.adminCommand({configureFailPoint: 'hangAfterSettingUpIndexBuild', mode: 'off'}));
 }
 
 joinFirstIndexBuild();
+joinSecondIndexBuild();
 
 // We should have the _id index and the 'the_b_1_index' index just built.
 assert.eq(testColl.getIndexes().length, 2);

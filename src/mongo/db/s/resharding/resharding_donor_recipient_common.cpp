@@ -27,12 +27,15 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/s/resharding/resharding_donor_recipient_common.h"
 
 #include <fmt/format.h>
 
 #include "mongo/db/persistent_task_store.h"
-#include "mongo/db/s/collection_sharding_runtime.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/storage/duplicate_key_error_info.h"
@@ -40,8 +43,6 @@
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/grid.h"
 #include "mongo/stdx/unordered_set.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
 
 namespace mongo {
 namespace resharding {
@@ -256,7 +257,9 @@ ReshardingDonorDocument constructDonorDocumentFromReshardingFields(
                                  sourceUUID,
                                  reshardingFields.getDonorFields()->getTempReshardingNss(),
                                  reshardingFields.getDonorFields()->getReshardingKey().toBSON());
-    commonMetadata.setStartTime(reshardingFields.getStartTime());
+    if (ShardingDataTransformMetrics::isEnabled()) {
+        commonMetadata.setStartTime(reshardingFields.getStartTime());
+    }
     donorDoc.setCommonReshardingMetadata(std::move(commonMetadata));
 
     return donorDoc;
@@ -267,33 +270,28 @@ ReshardingRecipientDocument constructRecipientDocumentFromReshardingFields(
     const NamespaceString& nss,
     const CollectionMetadata& metadata,
     const ReshardingFields& reshardingFields) {
-    const auto& recipientFields = reshardingFields.getRecipientFields();
     // The recipient state machines are created before the donor shards are prepared to donate but
     // will remain idle until the donor shards are prepared to donate.
-    invariant(!recipientFields->getCloneTimestamp());
+    invariant(!reshardingFields.getRecipientFields()->getCloneTimestamp());
 
     RecipientShardContext recipientCtx;
     recipientCtx.setState(RecipientStateEnum::kAwaitingFetchTimestamp);
 
-    auto recipientDoc =
-        ReshardingRecipientDocument{std::move(recipientCtx),
-                                    recipientFields->getDonorShards(),
-                                    recipientFields->getMinimumOperationDurationMillis()};
+    auto recipientDoc = ReshardingRecipientDocument{
+        std::move(recipientCtx),
+        reshardingFields.getRecipientFields()->getDonorShards(),
+        reshardingFields.getRecipientFields()->getMinimumOperationDurationMillis()};
 
-    auto sourceNss = recipientFields->getSourceNss();
-    auto sourceUUID = recipientFields->getSourceUUID();
+    auto sourceNss = reshardingFields.getRecipientFields()->getSourceNss();
+    auto sourceUUID = reshardingFields.getRecipientFields()->getSourceUUID();
     auto commonMetadata = CommonReshardingMetadata(reshardingFields.getReshardingUUID(),
                                                    sourceNss,
                                                    sourceUUID,
                                                    nss,
                                                    metadata.getShardKeyPattern().toBSON());
-    commonMetadata.setStartTime(reshardingFields.getStartTime());
-
-    ReshardingRecipientMetrics metrics;
-    metrics.setApproxDocumentsToCopy(recipientFields->getApproxDocumentsToCopy());
-    metrics.setApproxBytesToCopy(recipientFields->getApproxBytesToCopy());
-    recipientDoc.setMetrics(std::move(metrics));
-
+    if (ShardingDataTransformMetrics::isEnabled()) {
+        commonMetadata.setStartTime(reshardingFields.getStartTime());
+    }
     recipientDoc.setCommonReshardingMetadata(std::move(commonMetadata));
 
     return recipientDoc;
@@ -336,12 +334,7 @@ void clearFilteringMetadata(OperationContext* opCtx, bool scheduleAsyncRefresh) 
             return true;
         });
     }
-    clearFilteringMetadata(opCtx, namespacesToRefresh, scheduleAsyncRefresh);
-}
 
-void clearFilteringMetadata(OperationContext* opCtx,
-                            stdx::unordered_set<NamespaceString> namespacesToRefresh,
-                            bool scheduleAsyncRefresh) {
     auto* catalogCache = Grid::get(opCtx)->catalogCache();
 
     for (const auto& nss : namespacesToRefresh) {
@@ -350,12 +343,10 @@ void clearFilteringMetadata(OperationContext* opCtx,
             // new donor shard primaries will refresh from the config server and see the chunk
             // distribution for the ongoing resharding operation.
             catalogCache->invalidateCollectionEntry_LINEARIZABLE(nss);
-            catalogCache->invalidateIndexEntry_LINEARIZABLE(nss);
         }
 
         AutoGetCollection autoColl(opCtx, nss, MODE_IX);
-        CollectionShardingRuntime::assertCollectionLockedAndAcquireExclusive(opCtx, nss)
-            ->clearFilteringMetadata(opCtx);
+        CollectionShardingRuntime::get(opCtx, nss)->clearFilteringMetadata(opCtx);
 
         if (!scheduleAsyncRefresh) {
             continue;
@@ -369,8 +360,7 @@ void clearFilteringMetadata(OperationContext* opCtx,
             }
 
             auto opCtx = tc->makeOperationContext();
-            onCollectionPlacementVersionMismatch(
-                opCtx.get(), nss, boost::none /* chunkVersionReceived */);
+            onShardVersionMismatch(opCtx.get(), nss, boost::none /* shardVersionReceived */);
         })
             .until([](const Status& status) {
                 if (!status.isOK()) {

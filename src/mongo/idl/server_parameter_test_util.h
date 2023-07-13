@@ -31,7 +31,7 @@
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/db/server_parameter.h"
+#include "mongo/idl/server_parameter.h"
 
 namespace mongo {
 
@@ -49,11 +49,11 @@ public:
         : _serverParam(ServerParameterSet::getNodeParameterSet()->get(name)) {
         // Save the old value
         BSONObjBuilder bob;
-        _serverParam->appendSupportingRoundtrip(nullptr, &bob, name, boost::none);
+        _serverParam->appendSupportingRoundtrip(nullptr, bob, name);
         _oldValue = bob.obj();
 
         // Set to the new value
-        uassertStatusOK(_serverParam->set(BSON(name << value).firstElement(), boost::none));
+        uassertStatusOK(_serverParam->set(BSON(name << value).firstElement()));
     }
 
     /**
@@ -62,7 +62,7 @@ public:
     ~RAIIServerParameterControllerForTest() {
         // Reset to the old value
         auto elem = _oldValue.firstElement();
-        uassertStatusOK(_serverParam->set(elem, boost::none));
+        uassertStatusOK(_serverParam->set(elem));
     }
 
 private:

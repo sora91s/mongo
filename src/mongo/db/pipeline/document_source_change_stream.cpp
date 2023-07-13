@@ -27,12 +27,13 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/db/pipeline/document_source_change_stream.h"
 
 #include "mongo/bson/simple_bsonelement_comparator.h"
 #include "mongo/db/bson/bson_helper.h"
-#include "mongo/db/feature_compatibility_version_documentation.h"
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/pipeline/aggregate_command_gen.h"
 #include "mongo/db/pipeline/change_stream_constants.h"
 #include "mongo/db/pipeline/change_stream_filter_helpers.h"
@@ -46,7 +47,6 @@
 #include "mongo/db/pipeline/document_source_change_stream_ensure_resume_token_present.h"
 #include "mongo/db/pipeline/document_source_change_stream_handle_topology_change.h"
 #include "mongo/db/pipeline/document_source_change_stream_oplog_match.h"
-#include "mongo/db/pipeline/document_source_change_stream_split_large_event.h"
 #include "mongo/db/pipeline/document_source_change_stream_transform.h"
 #include "mongo/db/pipeline/document_source_change_stream_unwind_transaction.h"
 #include "mongo/db/pipeline/document_source_limit.h"
@@ -60,9 +60,6 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/vector_clock.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 
 using boost::intrusive_ptr;
@@ -71,7 +68,10 @@ using std::list;
 using std::string;
 using std::vector;
 
-// The $changeStream stage is an alias for many stages.
+// The $changeStream stage is an alias for many stages, but we need to be able to serialize
+// and re-parse the pipeline. To make this work, the 'transformation' stage will serialize itself
+// with the original specification, and all other stages that are created during the alias expansion
+// will not serialize themselves.
 REGISTER_DOCUMENT_SOURCE(changeStream,
                          DocumentSourceChangeStream::LiteParsed::parse,
                          DocumentSourceChangeStream::createFromBson,
@@ -111,20 +111,12 @@ constexpr StringData DocumentSourceChangeStream::kRegexAllDBs;
 constexpr StringData DocumentSourceChangeStream::kRegexCmdColl;
 
 void DocumentSourceChangeStream::checkValueType(const Value v,
-                                                const StringData fieldName,
+                                                const StringData filedName,
                                                 BSONType expectedType) {
     uassert(40532,
-            str::stream() << "Entry field \"" << fieldName << "\" should be "
+            str::stream() << "Entry field \"" << filedName << "\" should be "
                           << typeName(expectedType) << ", found: " << typeName(v.getType()),
             (v.getType() == expectedType));
-}
-
-void DocumentSourceChangeStream::checkValueTypeOrMissing(const Value v,
-                                                         const StringData fieldName,
-                                                         BSONType expectedType) {
-    if (!v.missing()) {
-        checkValueType(v, fieldName, expectedType);
-    }
 }
 
 DocumentSourceChangeStream::ChangeStreamType DocumentSourceChangeStream::getChangeStreamType(
@@ -274,11 +266,26 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
             "$changeStream stage expects a document as argument",
             elem.type() == BSONType::Object);
 
-    auto spec = DocumentSourceChangeStreamSpec::parse(IDLParserContext("$changeStream"),
+    auto spec = DocumentSourceChangeStreamSpec::parse(IDLParserErrorContext("$changeStream"),
                                                       elem.embeddedObject());
 
     // Make sure that it is legal to run this $changeStream before proceeding.
     DocumentSourceChangeStream::assertIsLegalSpecification(expCtx, spec);
+
+    // Save a copy of the spec on the expression context. Used when building the oplog filter.
+    expCtx->changeStreamSpec = spec;
+
+    // If we see this stage on a shard, it means that the raw $changeStream stage was dispatched to
+    // us from an old mongoS. Build a legacy shard pipeline.
+    if (expCtx->needsMerge) {
+        return change_stream_legacy::buildPipeline(expCtx, spec);
+    }
+    return _buildPipeline(expCtx, spec);
+}
+
+std::list<boost::intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::_buildPipeline(
+    const boost::intrusive_ptr<ExpressionContext>& expCtx, DocumentSourceChangeStreamSpec spec) {
+    std::list<boost::intrusive_ptr<DocumentSource>> stages;
 
     // If the user did not specify an explicit starting point, set it to the current time.
     if (!spec.getResumeAfter() && !spec.getStartAfter() && !spec.getStartAtOperationTime()) {
@@ -286,16 +293,6 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
         // correct start point when sending it to the shards.
         spec.setStartAtOperationTime(DocumentSourceChangeStream::getStartTimeForNewStream(expCtx));
     }
-
-    // Save a copy of the spec on the expression context. Used when building the oplog filter.
-    expCtx->changeStreamSpec = spec;
-
-    return _buildPipeline(expCtx, spec);
-}
-
-std::list<boost::intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::_buildPipeline(
-    const boost::intrusive_ptr<ExpressionContext>& expCtx, DocumentSourceChangeStreamSpec spec) {
-    std::list<boost::intrusive_ptr<DocumentSource>> stages;
 
     // Obtain the resume token from the spec. This will be used when building the pipeline.
     auto resumeToken = DocumentSourceChangeStream::resolveResumeTokenFromSpec(expCtx, spec);
@@ -313,9 +310,11 @@ std::list<boost::intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::_bui
     // whether the event that matches the resume token should be followed by an "invalidate" event.
     stages.push_back(DocumentSourceChangeStreamCheckInvalidate::create(expCtx, spec));
 
-    // Always include a DSCSCheckResumability stage, both to verify that there is enough history to
-    // cover the change stream's starting point, and to swallow all events up to the resume point.
-    stages.push_back(DocumentSourceChangeStreamCheckResumability::create(expCtx, spec));
+    // If the starting point is a high water mark, or if we will be splitting the pipeline for
+    // dispatch to the shards in a cluster, we must include a DSCSCheckResumability stage.
+    if (expCtx->inMongos || ResumeToken::isHighWaterMarkToken(resumeToken)) {
+        stages.push_back(DocumentSourceChangeStreamCheckResumability::create(expCtx, spec));
+    }
 
     // If the pipeline is built on MongoS, we check for topology change events here. If a topology
     // change event is detected, this stage forwards the event directly to the executor via an
@@ -324,6 +323,7 @@ std::list<boost::intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::_bui
     if (expCtx->inMongos) {
         stages.push_back(DocumentSourceChangeStreamCheckTopologyChange::create(expCtx));
     }
+
 
     // If 'fullDocumentBeforeChange' is not set to 'off', add the DSCSAddPreImage stage into the
     // pipeline. We place this stage here so that any $match stages which follow the $changeStream
@@ -398,6 +398,42 @@ void DocumentSourceChangeStream::assertIsLegalSpecification(
                           << " collection"
                           << (spec.getAllowToRunOnSystemNS() ? " through mongos" : ""),
             !expCtx->ns.isSystem() || (spec.getAllowToRunOnSystemNS() && !expCtx->inMongos));
+
+    // TODO SERVER-58584: remove the feature flag.
+    if (!feature_flags::gFeatureFlagChangeStreamPreAndPostImages.isEnabled(
+            serverGlobalParams.featureCompatibility)) {
+        const bool shouldAddPreImage =
+            (spec.getFullDocumentBeforeChange() != FullDocumentBeforeChangeModeEnum::kOff);
+        uassert(51771,
+                "the 'fullDocumentBeforeChange' option is not supported in a sharded cluster",
+                !(shouldAddPreImage && (expCtx->inMongos || expCtx->needsMerge)));
+
+        uassert(ErrorCodes::BadValue,
+                str::stream() << "Specified value '"
+                              << FullDocumentMode_serializer(spec.getFullDocument())
+                              << "' is not a valid option for the 'fullDocument' parameter of the "
+                                 "$changeStream stage",
+                spec.getFullDocument() == FullDocumentModeEnum::kDefault ||
+                    spec.getFullDocument() == FullDocumentModeEnum::kUpdateLookup);
+    }
+
+    uassert(6188501,
+            "the 'featureFlagChangeStreamsVisibility' should be enabled to use "
+            "'showExpandedEvents:true' in the change stream spec",
+            feature_flags::gFeatureFlagChangeStreamsVisibility.isEnabledAndIgnoreFCV() ||
+                !spec.getShowExpandedEvents());
+
+    uassert(6189400,
+            "the 'featureFlagChangeStreamsVisibility' should be enabled to use "
+            "'showRawUpdateDescription:true' in the change stream spec",
+            feature_flags::gFeatureFlagChangeStreamsVisibility.isEnabledAndIgnoreFCV() ||
+                !spec.getShowRawUpdateDescription());
+
+    uassert(6189301,
+            "the 'featureFlagChangeStreamsVisibility' should be enabled to use "
+            "'showSystemEvents:true' in the change stream spec",
+            feature_flags::gFeatureFlagChangeStreamsVisibility.isEnabledAndIgnoreFCV() ||
+                !spec.getShowSystemEvents());
 
     uassert(31123,
             "Change streams from mongos may not show migration events",

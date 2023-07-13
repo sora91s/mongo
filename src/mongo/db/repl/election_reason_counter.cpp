@@ -32,7 +32,7 @@
 namespace mongo {
 namespace repl {
 
-ElectionReasonCounter ElectionReasonCounter::parse(const IDLParserContext& ctxt,
+ElectionReasonCounter ElectionReasonCounter::parse(const IDLParserErrorContext& ctxt,
                                                    const BSONObj& bsonObject) {
     this->parseProtected(ctxt, bsonObject);
     return *this;

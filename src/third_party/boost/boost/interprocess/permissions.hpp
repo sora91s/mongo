@@ -29,10 +29,6 @@
 
 #include <boost/interprocess/detail/win32_api.hpp>
 
-#else
-
-#include <sys/stat.h>
-
 #endif
 
 #endif   //#ifndef BOOST_INTERPROCESS_DOXYGEN_INVOKED
@@ -74,7 +70,7 @@ class permissions
    #if defined(BOOST_INTERPROCESS_WINDOWS)
    typedef void*  os_permissions_type;
    #else
-   typedef ::mode_t    os_permissions_type;
+   typedef int    os_permissions_type;
    #endif
    os_permissions_type  m_perm;
 

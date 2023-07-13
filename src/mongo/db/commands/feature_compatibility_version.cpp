@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -36,14 +37,13 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/catalog_raii.h"
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/commands/feature_compatibility_version_gen.h"
+#include "mongo/db/commands/feature_compatibility_version_parser.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/feature_compatibility_version_documentation.h"
-#include "mongo/db/feature_compatibility_version_parser.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/db/repl/repl_server_parameters_gen.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/storage_interface.h"
@@ -57,9 +57,6 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/util/version/releases.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -75,8 +72,7 @@ namespace {
  * Utility class for recording permitted transitions between feature compatibility versions and
  * their on-disk representation as FeatureCompatibilityVersionDocument objects.
  */
-// TODO SERVER-65269: Add back 'const' qualifier to FCVTransitions class declaration
-class FCVTransitions {
+const class FCVTransitions {
 public:
     FCVTransitions() {
         auto makeFCVDoc = [](
@@ -106,7 +102,7 @@ public:
                          std::make_tuple(GenericFCV::kLastContinuous,
                                          GenericFCV::kUpgradingFromLastContinuousToLatest,
                                          GenericFCV::kLatest)}) {
-            for (auto&& isFromConfigServer : {false, true}) {
+            for (auto isFromConfigServer : std::vector{false, true}) {
                 // Start or complete upgrading to latest. If this release's lastContinuous ==
                 // lastLTS then the second loop iteration just overwrites the first.
                 _transitions[{from, to, isFromConfigServer}] = upgrading;
@@ -131,7 +127,7 @@ public:
                                          GenericFCV::kLastContinuous),
                          std::make_tuple(GenericFCV::kDowngradingFromLatestToLastLTS,
                                          GenericFCV::kLastLTS)}) {
-            for (auto&& isFromConfigServer : {false, true}) {
+            for (auto isFromConfigServer : std::vector{false, true}) {
                 // Start or complete downgrade from latest.  If this release's lastContinuous ==
                 // lastLTS then the second loop iteration just overwrites the first.
                 _transitions[{GenericFCV::kLatest, to, isFromConfigServer}] = downgrading;
@@ -140,20 +136,6 @@ public:
             _fcvDocuments[downgrading] =
                 makeFCVDoc(to /* effective */, to /* target */, GenericFCV::kLatest /* previous */
                 );
-        }
-    }
-
-    /**
-     * If feature flag gDowngradingToUpgrading is enabled,
-     * we add the new downgrading->upgrading->latest path.
-     */
-    void featureFlaggedAddNewTransitionState() {
-        if (repl::feature_flags::gDowngradingToUpgrading.isEnabledAndIgnoreFCV()) {
-            for (auto&& isFromConfigServer : {false, true}) {
-                _transitions[{GenericFCV::kDowngradingFromLatestToLastLTS,
-                              GenericFCV::kLatest,
-                              isFromConfigServer}] = GenericFCV::kUpgradingFromLastLTSToLatest;
-            }
         }
     }
 
@@ -218,6 +200,10 @@ Lock::ResourceMutex fcvDocumentLock("featureCompatibilityVersionDocumentLock");
 Timestamp lastFCVUpdateTimestamp;
 SimpleMutex lastFCVUpdateTimestampMutex;
 
+bool isWriteableStorageEngine() {
+    return !storageGlobalParams.readOnly && (storageGlobalParams.engine != "devnull");
+}
+
 /**
  * Build update command for featureCompatibilityVersion document updates.
  */
@@ -252,7 +238,7 @@ void runUpdateCommand(OperationContext* opCtx, const FeatureCompatibilityVersion
     // Update the featureCompatibilityVersion document stored in the server configuration
     // collection.
     BSONObj updateResult;
-    client.runCommand(nss.dbName(), updateCmd.obj(), updateResult);
+    client.runCommand(nss.db().toString(), updateCmd.obj(), updateResult);
     uassertStatusOK(getStatusFromWriteCommandReply(updateResult));
 }
 
@@ -294,7 +280,7 @@ void FeatureCompatibilityVersion::validateSetFeatureCompatibilityVersionRequest(
 
     auto fcvObj = findFeatureCompatibilityVersionDocument(opCtx);
     auto fcvDoc = FeatureCompatibilityVersionDocument::parse(
-        IDLParserContext("featureCompatibilityVersionDocument"), fcvObj.value());
+        IDLParserErrorContext("featureCompatibilityVersionDocument"), fcvObj.get());
     auto previousTimestamp = fcvDoc.getChangeTimestamp();
 
     if (setFCVPhase == SetFCVPhaseEnum::kStart) {
@@ -339,13 +325,10 @@ void FeatureCompatibilityVersion::updateFeatureCompatibilityVersionDocument(
     // We may have just stepped down, in which case we should not proceed.
     opCtx->checkForInterrupt();
 
-    // Only transition to fully upgraded or downgraded states when we have completed all required
-    // upgrade/downgrade behavior, unless it is the newly added downgrading to upgrading path.
+    // Only transition to fully upgraded or downgraded states when we
+    // have completed all required upgrade/downgrade behavior.
     auto transitioningVersion = setTargetVersion &&
-            serverGlobalParams.featureCompatibility.isUpgradingOrDowngrading(fromVersion) &&
-            !(repl::feature_flags::gDowngradingToUpgrading.isEnabledAndIgnoreFCV() &&
-              (fromVersion == GenericFCV::kDowngradingFromLatestToLastLTS &&
-               newVersion == GenericFCV::kLatest))
+            serverGlobalParams.featureCompatibility.isUpgradingOrDowngrading(fromVersion)
         ? fromVersion
         : fcvTransitions.getTransitionalVersion(fromVersion, newVersion, isFromConfigServer);
     FeatureCompatibilityVersionDocument fcvDoc =
@@ -366,7 +349,7 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
     // featureCompatibilityVersion is the downgrade version, so that it can be safely added to a
     // downgrade version cluster. The config server will run setFeatureCompatibilityVersion as part
     // of addShard.
-    const bool storeUpgradeVersion = !serverGlobalParams.clusterRole.isExclusivelyShardRole();
+    const bool storeUpgradeVersion = serverGlobalParams.clusterRole != ClusterRole::ShardServer;
 
     UnreplicatedWritesBlock unreplicatedWritesBlock(opCtx);
     NamespaceString nss(NamespaceString::kServerConfigurationNamespace);
@@ -396,11 +379,11 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
 
 bool FeatureCompatibilityVersion::hasNoReplicatedCollections(OperationContext* opCtx) {
     StorageEngine* storageEngine = getGlobalServiceContext()->getStorageEngine();
-    std::vector<DatabaseName> dbNames = storageEngine->listDatabases();
+    std::vector<TenantDatabaseName> tenantDbNames = storageEngine->listDatabases();
     auto catalog = CollectionCatalog::get(opCtx);
-    for (auto&& dbName : dbNames) {
-        Lock::DBLock dbLock(opCtx, dbName, MODE_S);
-        for (auto&& collNss : catalog->getAllCollectionNamesFromDb(opCtx, dbName)) {
+    for (auto&& tenantDbName : tenantDbNames) {
+        Lock::DBLock dbLock(opCtx, tenantDbName.dbName(), MODE_S);
+        for (auto&& collNss : catalog->getAllCollectionNamesFromDb(opCtx, tenantDbName)) {
             if (collNss.isReplicated()) {
                 return false;
             }
@@ -498,14 +481,12 @@ void FeatureCompatibilityVersion::fassertInitializedAfterStartup(OperationContex
 
     auto fcvDocument = findFeatureCompatibilityVersionDocument(opCtx);
 
-    // TODO SERVER-65269: Move downgrading->upgrading transition back to FCVTransitions constructor.
-    // Adding the new fcv downgrading -> upgrading path
-    fcvTransitions.featureFlaggedAddNewTransitionState();
-
     auto const storageEngine = opCtx->getServiceContext()->getStorageEngine();
-    auto dbNames = storageEngine->listDatabases();
-    bool nonLocalDatabases = std::any_of(
-        dbNames.begin(), dbNames.end(), [](auto dbName) { return dbName != DatabaseName::kLocal; });
+    auto tenantDbNames = storageEngine->listDatabases();
+    bool nonLocalDatabases =
+        std::any_of(tenantDbNames.begin(), tenantDbNames.end(), [](auto tenantDbName) {
+            return tenantDbName.dbName() != NamespaceString::kLocalDb;
+        });
 
     // Fail to start up if there is no featureCompatibilityVersion document and there are non-local
     // databases present.
@@ -517,17 +498,15 @@ void FeatureCompatibilityVersion::fassertInitializedAfterStartup(OperationContex
 
     // If we are part of a replica set and are started up with no data files, we do not set the
     // featureCompatibilityVersion until a primary is chosen. For this case, we expect the in-memory
-    // featureCompatibilityVersion parameter to still be uninitialized until after startup. In
-    // standalone mode, FCV is initialized during startup, even in read-only mode.
-    bool isWriteableStorageEngine = storageGlobalParams.engine != "devnull";
-    if (isWriteableStorageEngine && (!usingReplication || nonLocalDatabases)) {
+    // featureCompatibilityVersion parameter to still be uninitialized until after startup.
+    if (isWriteableStorageEngine() && (!usingReplication || nonLocalDatabases)) {
         invariant(serverGlobalParams.featureCompatibility.isVersionInitialized());
     }
 }
 
 Lock::ExclusiveLock FeatureCompatibilityVersion::enterFCVChangeRegion(OperationContext* opCtx) {
     invariant(!opCtx->lockState()->isLocked());
-    return Lock::ExclusiveLock(opCtx, fcvDocumentLock);
+    return Lock::ExclusiveLock(opCtx->lockState(), fcvDocumentLock);
 }
 
 void FeatureCompatibilityVersion::advanceLastFCVUpdateTimestamp(Timestamp fcvUpdateTimestamp) {
@@ -544,14 +523,13 @@ void FeatureCompatibilityVersion::clearLastFCVUpdateTimestamp() {
 
 
 void FeatureCompatibilityVersionParameter::append(OperationContext* opCtx,
-                                                  BSONObjBuilder* b,
-                                                  StringData name,
-                                                  const boost::optional<TenantId>&) {
+                                                  BSONObjBuilder& b,
+                                                  const std::string& name) {
     uassert(ErrorCodes::UnknownFeatureCompatibilityVersion,
             str::stream() << name << " is not yet known.",
             serverGlobalParams.featureCompatibility.isVersionInitialized());
 
-    BSONObjBuilder featureCompatibilityVersionBuilder(b->subobjStart(name));
+    BSONObjBuilder featureCompatibilityVersionBuilder(b.subobjStart(name));
     auto version = serverGlobalParams.featureCompatibility.getVersion();
     FeatureCompatibilityVersionDocument fcvDoc = fcvTransitions.getFCVDocument(version);
     featureCompatibilityVersionBuilder.appendElements(fcvDoc.toBSON().removeField("_id"));
@@ -582,8 +560,7 @@ void FeatureCompatibilityVersionParameter::append(OperationContext* opCtx,
     }
 }
 
-Status FeatureCompatibilityVersionParameter::setFromString(StringData,
-                                                           const boost::optional<TenantId>&) {
+Status FeatureCompatibilityVersionParameter::setFromString(const std::string&) {
     return {ErrorCodes::IllegalOperation,
             str::stream() << name() << " cannot be set via setParameter. See "
                           << feature_compatibility_version_documentation::kCompatibilityLink
@@ -594,7 +571,7 @@ FixedFCVRegion::FixedFCVRegion(OperationContext* opCtx)
     : _lk([&] {
           invariant(!opCtx->lockState()->isLocked());
           invariant(!opCtx->lockState()->isRSTLLocked());
-          return Lock::SharedLock(opCtx, fcvDocumentLock);
+          return Lock::SharedLock(opCtx->lockState(), fcvDocumentLock);
       }()) {}
 
 FixedFCVRegion::~FixedFCVRegion() = default;

@@ -72,11 +72,6 @@ public:
      */
     static void tryMirrorRequest(OperationContext* opCtx) noexcept;
 
-    /**
-     * Runs custom logic as part of receiving a mirrored operation.
-     */
-    static void onReceiveMirroredRead(OperationContext* opCtx) noexcept;
-
     static constexpr auto kServerStatusSectionName = "mirroredReads"_sd;
 };
 

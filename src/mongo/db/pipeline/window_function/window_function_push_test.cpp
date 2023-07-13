@@ -42,7 +42,7 @@ public:
     WindowFunctionPushTest() : expCtx(getExpCtx()), push(expCtx.get()) {}
 
     void addValuesToWindow(const std::vector<Value>& values) {
-        for (const auto& val : values)
+        for (auto val : values)
             push.add(val);
     }
 

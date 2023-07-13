@@ -158,12 +158,12 @@ withPinnedCursor({
         let db = coll.getDB();
         assert.commandWorked(db.runCommand({killCursors: coll.getName(), cursors: [cursorId]}));
     },
-    runGetMoreFunc: (collName, cursorId, sessionId) => {
+    runGetMoreFunc: () => {
         db.runCommand({getMore: cursorId, collection: collName, lsid: sessionId});
     },
-    failPointName: failPointName,
-    assertEndCounts: false,
-});
+    failPointName: failPointName
+},
+                 /* assertEndCounts */ false);
 
 shardingTest.stop();
 })();

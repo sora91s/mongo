@@ -60,9 +60,9 @@ public:
         BSONObj toBSON() const;
     };
 
-    CollectionBulkLoaderImpl(ServiceContext::UniqueClient client,
-                             ServiceContext::UniqueOperationContext opCtx,
-                             const NamespaceString& nss,
+    CollectionBulkLoaderImpl(ServiceContext::UniqueClient&& client,
+                             ServiceContext::UniqueOperationContext&& opCtx,
+                             std::unique_ptr<AutoGetCollection>&& autoColl,
                              const BSONObj& idIndexSpec);
     virtual ~CollectionBulkLoaderImpl();
 
@@ -104,7 +104,7 @@ private:
 
     ServiceContext::UniqueClient _client;
     ServiceContext::UniqueOperationContext _opCtx;
-    AutoGetCollection _collection;
+    std::unique_ptr<AutoGetCollection> _collection;
     NamespaceString _nss;
     std::unique_ptr<MultiIndexBlock> _idIndexBlock;
     std::unique_ptr<MultiIndexBlock> _secondaryIndexesBlock;

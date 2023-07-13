@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -45,10 +46,11 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
-
 namespace mongo {
+
+void initMyLogicalTimeV() {
+
+}
 
 namespace {
 
@@ -186,7 +188,7 @@ Status LogicalTimeValidator::validate(OperationContext* opCtx, const SignedLogic
     auto firstError = Status::OK();
     for (const auto& key : keys) {
         auto proofStatus =
-            _timeProofService.checkProof(newTime.getTime(), newProof.value(), key.getKey());
+            _timeProofService.checkProof(newTime.getTime(), newProof.get(), key.getKey());
         if (proofStatus.isOK()) {
             return Status::OK();
         } else if (firstError.isOK()) {

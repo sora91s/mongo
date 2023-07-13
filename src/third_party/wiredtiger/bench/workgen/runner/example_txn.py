@@ -44,8 +44,7 @@ op = Operation(Operation.OP_INSERT, table)
 thread = Thread(op * 500000)
 pop_workload = Workload(context, thread)
 print('populate:')
-ret = pop_workload.run(conn)
-assert ret == 0, ret
+pop_workload.run(conn)
 
 opread = Operation(Operation.OP_SEARCH, table)
 opwrite = Operation(Operation.OP_INSERT, table)
@@ -55,5 +54,4 @@ workload = Workload(context, treader * 8 + twriter * 2)
 workload.options.run_time = 10
 workload.options.report_interval = 5
 print('transactional write workload:')
-ret = workload.run(conn)
-assert ret == 0, ret
+workload.run(conn)

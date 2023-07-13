@@ -29,19 +29,19 @@
 
 #include "mongo/unittest/matcher.h"
 
-#include <fmt/format.h>
 #include <memory>
 #include <utility>
 
-#include "mongo/util/pcre.h"
+#include <fmt/format.h>
+#include <pcrecpp.h>
 
 namespace mongo::unittest::match {
 
 using namespace fmt::literals;
 
 struct ContainsRegex::Impl {
-    explicit Impl(std::string pat) : re(std::move(pat)) {}
-    pcre::Regex re;
+    explicit Impl(pcrecpp::RE pat) : re(std::move(pat)) {}
+    pcrecpp::RE re;
 };
 
 ContainsRegex::ContainsRegex(std::string pattern)
@@ -50,7 +50,9 @@ ContainsRegex::ContainsRegex(std::string pattern)
 ContainsRegex::~ContainsRegex() = default;
 
 MatchResult ContainsRegex::match(StringData x) const {
-    if (_impl->re.matchView(x))
+    bool res =
+        _impl->re.PartialMatch(pcrecpp::StringPiece{x.rawData(), static_cast<int>(x.size())});
+    if (res)
         return {};
     return MatchResult(false, "");
 }

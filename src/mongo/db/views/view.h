@@ -48,7 +48,7 @@ public:
      * In the database 'dbName', create a new view 'viewName' on the view or collection
      * 'viewOnName'. Neither 'viewName' nor 'viewOnName' should include the name of the database.
      */
-    ViewDefinition(const DatabaseName& dbName,
+    ViewDefinition(StringData dbName,
                    StringData viewName,
                    StringData viewOnName,
                    const BSONObj& pipeline,
@@ -95,8 +95,7 @@ public:
      * time-series buckets collection.
      */
     bool timeseries() const {
-        return _viewOnNss.isTimeseriesBucketsCollection() &&
-            _viewOnNss.getTimeseriesViewNamespace() == _viewNss;
+        return _viewOnNss.isTimeseriesBucketsCollection();
     }
 
     void setViewOn(const NamespaceString& viewOnNss);

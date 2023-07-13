@@ -11,8 +11,6 @@
 #include <boost/mp11/integral.hpp>
 #include <boost/mp11/detail/mp_list.hpp>
 #include <boost/mp11/detail/mp_fold.hpp>
-#include <boost/mp11/detail/mp_front.hpp>
-#include <boost/mp11/detail/mp_rename.hpp>
 #include <boost/mp11/detail/config.hpp>
 
 namespace boost
@@ -161,10 +159,6 @@ template<class C, class T, class Q, class... U> using mp_eval_if_not_q = mp_eval
 template<class T, template<class...> class F, class... U> using mp_eval_or = mp_eval_if_not<mp_valid<F, U...>, T, F, U...>;
 template<class T, class Q, class... U> using mp_eval_or_q = mp_eval_or<T, Q::template fn, U...>;
 
-// mp_valid_and_true
-template<template<class...> class F, class... T> using mp_valid_and_true = mp_eval_or<mp_false, F, T...>;
-template<class Q, class... T> using mp_valid_and_true_q = mp_valid_and_true<Q::template fn, T...>;
-
 // mp_cond
 
 // so elegant; so doesn't work
@@ -239,7 +233,7 @@ template<class Q> using mp_not_fn_q = mp_not_fn<Q::template fn>;
 namespace detail
 {
 
-template<class L, class Q> using mp_compose_helper = mp_list< mp_apply_q<Q, L> >;
+template<class T, class Q> using mp_reverse_invoke_q = mp_invoke_q<Q, T>;
 
 } // namespace detail
 
@@ -247,14 +241,14 @@ template<class L, class Q> using mp_compose_helper = mp_list< mp_apply_q<Q, L> >
 
 template<template<class...> class... F> struct mp_compose
 {
-    template<class... T> using fn = mp_front< mp_fold<mp_list<mp_quote<F>...>, mp_list<T...>, detail::mp_compose_helper> >;
+    template<class T> using fn = mp_fold<mp_list<mp_quote<F>...>, T, detail::mp_reverse_invoke_q>;
 };
 
 #endif
 
 template<class... Q> struct mp_compose_q
 {
-    template<class... T> using fn = mp_front< mp_fold<mp_list<Q...>, mp_list<T...>, detail::mp_compose_helper> >;
+    template<class T> using fn = mp_fold<mp_list<Q...>, T, detail::mp_reverse_invoke_q>;
 };
 
 } // namespace mp11

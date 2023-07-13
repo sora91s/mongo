@@ -2,15 +2,13 @@
  * Test $natural hint on a time-series collection, for find and aggregate.
  *
  * @tags: [
+ *   does_not_support_stepdowns,
+ *   does_not_support_transactions,
+ *   requires_fcv_51,
+ *   requires_getmore,
+ *   requires_pipeline_optimization,
  *   # Explain of a resolved view must be executed by mongos.
  *   directly_against_shardsvrs_incompatible,
- *   # Refusing to run a test that issues an aggregation command with explain because it may
- *   # return incomplete results if interrupted by a stepdown.
- *   does_not_support_stepdowns,
- *   # Pipeline optimization required to get expected explain output
- *   requires_pipeline_optimization,
- *   # We need a timeseries collection.
- *   requires_timeseries,
  * ]
  */
 (function() {
@@ -38,7 +36,7 @@ assert.commandWorked(coll.insert(docsAsc));
 
 function runTest({command, expectedResult, expectedDirection}) {
     const result = assert.commandWorked(db.runCommand(command));
-    assert.docEq(expectedResult, result.cursor.firstBatch);
+    assert.docEq(result.cursor.firstBatch, expectedResult);
 
     const plan = db.runCommand({explain: command});
     const scan = getAggPlanStage(plan, 'COLLSCAN');

@@ -32,7 +32,6 @@
 #include <string>
 
 #include "mongo/base/string_data.h"
-#include "mongo/db/write_concern_options.h"
 
 namespace mongo {
 class AddShard;
@@ -59,8 +58,7 @@ AddShard createAddShardCmd(OperationContext* opCtx, const ShardId& shardName);
  * doc into the shard with the given shardName (or update the shard's existing shardIdentity
  * doc's configsvrConnString if the _id, shardName, and clusterId do not conflict).
  */
-BSONObj createShardIdentityUpsertForAddShard(const AddShard& addShardCmd,
-                                             const WriteConcernOptions& wc);
+BSONObj createShardIdentityUpsertForAddShard(const AddShard& addShardCmd);
 
 }  // namespace add_shard_util
 }  // namespace mongo

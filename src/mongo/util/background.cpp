@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -47,9 +48,6 @@
 #include "mongo/util/hierarchical_acquisition.h"
 #include "mongo/util/str.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -185,9 +183,7 @@ void BackgroundJob::go() {
     // If the job is already 'done', for instance because it was cancelled or already
     // finished, ignore additional requests to run the job.
     if (_status->state == NotStarted) {
-        stdx::thread{[this] {
-            jobBody();
-        }}.detach();
+        stdx::thread{[this] { jobBody(); }}.detach();
         _status->state = Running;
     }
 }

@@ -80,9 +80,8 @@ var chunkBoundsUtil = (function() {
      */
     let _getShard = function(st, shardName) {
         for (let i = 0; i < st._connections.length; i++) {
-            const conn = st._connections[i];
-            if (conn.shardName === shardName) {
-                return conn;
+            if (st["rs" + i].name == shardName) {
+                return st._connections[i];
             }
         }
     };

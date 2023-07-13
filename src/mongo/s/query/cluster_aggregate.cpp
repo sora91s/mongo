@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -37,7 +38,6 @@
 #include "mongo/db/api_parameters.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection_uuid_mismatch_info.h"
-#include "mongo/db/catalog_shard_feature_flag_gen.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/curop.h"
@@ -56,8 +56,6 @@
 #include "mongo/db/query/explain_common.h"
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/fle/server_rewrite.h"
-#include "mongo/db/query/telemetry.h"
-#include "mongo/db/timeseries/timeseries_gen.h"
 #include "mongo/db/timeseries/timeseries_options.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/db/views/view.h"
@@ -85,9 +83,6 @@
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/util/net/socket_utils.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -139,14 +134,12 @@ boost::intrusive_ptr<ExpressionContext> makeExpressionContext(
 
     mergeCtx->inMongos = true;
 
-    // If the request explicity specified NOT to use v2 resume tokens for change streams, set this
-    // on the expCtx. We only ever expect to see an explicit value during testing.
-    if (request.getGenerateV2ResumeTokens().has_value()) {
-        // If $_generateV2ResumeTokens was specified, we must be testing and it must be false.
-        uassert(6528201,
-                "Invalid request for v2 resume tokens",
-                getTestCommandsEnabled() && !request.getGenerateV2ResumeTokens());
-        mergeCtx->changeStreamTokenVersion = 1;
+    // If the request specified v2 resume tokens for change streams, set this on the expCtx. On 6.0
+    // we only expect this to occur during testing.
+    // TODO SERVER-65370: after 6.0, assume true unless present and explicitly false.
+    if (request.getGenerateV2ResumeTokens()) {
+        uassert(6528201, "Invalid request for v2 resume tokens", getTestCommandsEnabled());
+        mergeCtx->changeStreamTokenVersion = 2;
     }
 
     // Serialize the 'AggregateCommandRequest' and save it so that the original command can be
@@ -168,7 +161,7 @@ void appendEmptyResultSetWithStatus(OperationContext* opCtx,
     if (status == ErrorCodes::ShardNotFound) {
         status = {ErrorCodes::NamespaceNotFound, status.reason()};
     }
-    appendEmptyResultSet(opCtx, *result, status, nss);
+    appendEmptyResultSet(opCtx, *result, status, nss.ns());
 }
 
 void updateHostsTargetedMetrics(OperationContext* opCtx,
@@ -196,7 +189,7 @@ void updateHostsTargetedMetrics(OperationContext* opCtx,
             if (nss == executionNss)
                 continue;
 
-            const auto [resolvedNsCM, _] =
+            const auto resolvedNsCM =
                 uassertStatusOK(getCollectionRoutingInfoForTxnCmd(opCtx, nss));
             if (resolvedNsCM.isSharded()) {
                 std::set<ShardId> shardIdsForNs;
@@ -220,39 +213,26 @@ void updateHostsTargetedMetrics(OperationContext* opCtx,
 }
 
 /**
- * Performs validations related to API versioning, time-series stages, and general command
- * validation.
+ * Performs validations related to API versioning and time-series stages.
  * Throws UserAssertion if any of the validations fails
  *     - validation of API versioning on each stage on the pipeline
  *     - validation of API versioning on 'AggregateCommandRequest' request
  *     - validation of time-series related stages
- *     - validation of command parameters
  */
 void performValidationChecks(const OperationContext* opCtx,
                              const AggregateCommandRequest& request,
                              const LiteParsedPipeline& liteParsedPipeline) {
     liteParsedPipeline.validate(opCtx);
     aggregation_request_helper::validateRequestForAPIVersion(opCtx, request);
-    aggregation_request_helper::validateRequestFromClusterQueryWithoutShardKey(request);
 }
 
 /**
  * Rebuilds the pipeline and uses a different granularity value for the 'bucketMaxSpanSeconds' field
  * in the $_internalUnpackBucket stage.
  */
-std::vector<BSONObj> rebuildPipelineWithTimeSeriesGranularity(
-    const std::vector<BSONObj>& pipeline,
-    boost::optional<BucketGranularityEnum> granularity,
-    boost::optional<int32_t> maxSpanSeconds) {
-    int32_t bucketSpan = 0;
-
-    if (maxSpanSeconds) {
-        bucketSpan = *maxSpanSeconds;
-    } else {
-        bucketSpan = timeseries::getMaxSpanSecondsFromGranularity(
-            granularity.get_value_or(BucketGranularityEnum::Seconds));
-    }
-
+std::vector<BSONObj> rebuildPipelineWithTimeSeriesGranularity(const std::vector<BSONObj>& pipeline,
+                                                              BucketGranularityEnum granularity) {
+    const auto bucketSpan = timeseries::getMaxSpanSecondsFromGranularity(granularity);
     std::vector<BSONObj> newPipeline;
     for (auto& stage : pipeline) {
         if (stage.firstElementFieldNameStringData() ==
@@ -321,8 +301,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
             !request.getNeedsMerge() && !request.getFromMongos());
 
     const auto isSharded = [](OperationContext* opCtx, const NamespaceString& nss) {
-        const auto [resolvedNsCM, _] =
-            uassertStatusOK(getCollectionRoutingInfoForTxnCmd(opCtx, nss));
+        const auto resolvedNsCM = uassertStatusOK(getCollectionRoutingInfoForTxnCmd(opCtx, nss));
         return resolvedNsCM.isSharded();
     };
 
@@ -332,10 +311,6 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
     auto involvedNamespaces = liteParsedPipeline.getInvolvedNamespaces();
     auto shouldDoFLERewrite = ::mongo::shouldDoFLERewrite(request);
     auto startsWithDocuments = liteParsedPipeline.startsWithDocuments();
-
-    if (!shouldDoFLERewrite) {
-        telemetry::registerAggRequest(request, opCtx);
-    }
 
     // If the routing table is not already taken by the higher level, fill it now.
     if (!cm) {
@@ -350,7 +325,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
             sharded_agg_helpers::getExecutionNsRoutingInfo(opCtx, namespaces.executionNss);
 
         if (!executionNsRoutingInfoStatus.isOK()) {
-            uassert(CollectionUUIDMismatchInfo(request.getDbName(),
+            uassert(CollectionUUIDMismatchInfo(request.getDbName().toString(),
                                                *request.getCollectionUUID(),
                                                request.getNamespace().coll().toString(),
                                                boost::none),
@@ -365,7 +340,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
         }
 
         if (executionNsRoutingInfoStatus.isOK()) {
-            cm = executionNsRoutingInfoStatus.getValue().cm;
+            cm = std::move(executionNsRoutingInfoStatus.getValue());
         } else if (!((hasChangeStream || startsWithDocuments) &&
                      executionNsRoutingInfoStatus == ErrorCodes::NamespaceNotFound)) {
             appendEmptyResultSetWithStatus(
@@ -410,17 +385,12 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
             // After this rewriting, the encryption info does not need to be kept around.
             pipeline = processFLEPipelineS(opCtx,
                                            namespaces.executionNss,
-                                           request.getEncryptionInformation().value(),
+                                           request.getEncryptionInformation().get(),
                                            std::move(pipeline));
             request.setEncryptionInformation(boost::none);
         }
 
         pipeline->optimizePipeline();
-
-        // Validate the pipeline post-optimization.
-        const bool alreadyOptimized = true;
-        pipeline->validateCommon(alreadyOptimized);
-
         return pipeline;
     };
 
@@ -469,7 +439,6 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
             case cluster_aggregation_planner::AggregationTargeter::TargetingPolicy::kPassthrough: {
                 // A pipeline with $changeStream should never be allowed to passthrough.
                 invariant(!hasChangeStream);
-                const bool eligibleForSampling = !request.getExplain();
                 return cluster_aggregation_planner::runPipelineOnPrimaryShard(
                     expCtx,
                     namespaces,
@@ -477,7 +446,6 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
                     request.getExplain(),
                     aggregation_request_helper::serializeToCommandDoc(request),
                     privileges,
-                    eligibleForSampling,
                     result);
             }
 
@@ -503,7 +471,6 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
             }
 
             case cluster_aggregation_planner::AggregationTargeter::TargetingPolicy::kAnyShard: {
-                const bool eligibleForSampling = !request.getExplain();
                 return cluster_aggregation_planner::dispatchPipelineAndMerge(
                     opCtx,
                     std::move(targeter),
@@ -514,8 +481,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
                     privileges,
                     result,
                     hasChangeStream,
-                    startsWithDocuments,
-                    eligibleForSampling);
+                    startsWithDocuments);
             }
             case cluster_aggregation_planner::AggregationTargeter::TargetingPolicy::
                 kSpecificShardOnly: {
@@ -537,11 +503,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
                 ShardId shardId(std::string(request.getPassthroughToShard()->getShard()));
                 uassert(6273803,
                         "$_passthroughToShard not supported for queries against config replica set",
-                        shardId != ShardId::kConfigServerId ||
-                            gFeatureFlagCatalogShard.isEnabledAndIgnoreFCV());
-                // This is an aggregation pipeline started internally, so it is not eligible for
-                // sampling.
-                const bool eligibleForSampling = false;
+                        shardId != ShardId::kConfigServerId);
 
                 return cluster_aggregation_planner::runPipelineOnSpecificShardOnly(
                     expCtx,
@@ -551,8 +513,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
                     aggregation_request_helper::serializeToCommandDoc(request),
                     privileges,
                     shardId,
-                    true /* forPerShardCursor */,
-                    eligibleForSampling,
+                    true,
                     result);
             }
 
@@ -565,6 +526,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
         updateHostsTargetedMetrics(opCtx, namespaces.executionNss, cm, involvedNamespaces);
         // Report usage statistics for each stage in the pipeline.
         liteParsedPipeline.tickGlobalStageCounters();
+
         // Add 'command' object to explain output.
         if (expCtx->explain) {
             explain_common::appendIfRoom(
@@ -603,20 +565,18 @@ Status ClusterAggregate::retryOnViewError(OperationContext* opCtx,
     nsStruct.executionNss = resolvedView.getNamespace();
 
     // For a sharded time-series collection, the routing is based on both routing table and the
-    // bucketMaxSpanSeconds value. We need to make sure we use the bucketMaxSpanSeconds of the same
-    // version as the routing table, instead of the one attached in the view error. This way the
-    // shard versioning check can correctly catch stale routing information.
+    // granularity value. We need to make sure we use the granularity value of the same version as
+    // the routing table, instead of the one attached in the view error. This way the shard
+    // versioning check can correctly catch stale routing information.
     boost::optional<ChunkManager> snapshotCm;
     if (nsStruct.executionNss.isTimeseriesBucketsCollection()) {
         auto executionNsRoutingInfoStatus =
             sharded_agg_helpers::getExecutionNsRoutingInfo(opCtx, nsStruct.executionNss);
         if (executionNsRoutingInfoStatus.isOK()) {
-            const auto& [cm, _] = executionNsRoutingInfoStatus.getValue();
+            const auto& cm = executionNsRoutingInfoStatus.getValue();
             if (cm.isSharded() && cm.getTimeseriesFields()) {
                 const auto patchedPipeline = rebuildPipelineWithTimeSeriesGranularity(
-                    resolvedAggRequest.getPipeline(),
-                    cm.getTimeseriesFields()->getGranularity(),
-                    cm.getTimeseriesFields()->getBucketMaxSpanSeconds());
+                    resolvedAggRequest.getPipeline(), cm.getTimeseriesFields()->getGranularity());
                 resolvedAggRequest.setPipeline(patchedPipeline);
                 snapshotCm = cm;
             }

@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include "mongo/base/string_data.h"

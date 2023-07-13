@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -34,7 +35,7 @@
 
 #if !defined(_WIN32)
 #include <arpa/inet.h>
-#include <cerrno>
+#include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -62,21 +63,18 @@
 #include "mongo/util/str.h"
 #include "mongo/util/winutil.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
-
 namespace mongo {
 
 #if defined(_WIN32)
 const struct WinsockInit {
     WinsockInit() {
         WSADATA d;
-        if (int e = WSAStartup(MAKEWORD(2, 2), &d)) {
+        if (WSAStartup(MAKEWORD(2, 2), &d) != 0) {
             LOGV2(23201,
                   "ERROR: wsastartup failed {error}",
                   "ERROR: wsastartup failed",
-                  "error"_attr = errorMessage(systemError(e)));
-            quickExit(ExitCode::ntServiceError);
+                  "error"_attr = errnoWithDescription());
+            quickExit(EXIT_NTSERVICE_ERROR);
         }
     }
 } winsock_init;
@@ -152,12 +150,12 @@ void setSocketKeepAliveParams(int sock,
                      &sent,
                      nullptr,
                      nullptr)) {
-            auto ec = lastSocketError();
+            int wsaErr = WSAGetLastError();
             LOGV2_DEBUG(23204,
                         logSeverity,
                         "failed setting keepalive values: {error}",
                         "Failed setting keepalive values",
-                        "error"_attr = errorMessage(ec));
+                        "error"_attr = errnoWithDescription(wsaErr));
         }
     }
 #elif defined(__APPLE__) || defined(__linux__)
@@ -167,13 +165,13 @@ void setSocketKeepAliveParams(int sock,
         socklen_t optValLen = sizeof(rawOptVal);
 
         if (getsockopt(sock, level, optnum, reinterpret_cast<char*>(&rawOptVal), &optValLen)) {
-            auto ec = lastSystemError();
+            int savedErrno = errno;
             LOGV2_DEBUG(23205,
                         logSeverity,
                         "can't get {optname}: {error}",
                         "Can't get socket option",
                         "optname"_attr = optname,
-                        "error"_attr = errorMessage(ec));
+                        "error"_attr = errnoWithDescription(savedErrno));
         }
 
         if (optVal > maxVal) {
@@ -181,13 +179,13 @@ void setSocketKeepAliveParams(int sock,
             socklen_t maxValLen = sizeof(rawMaxVal);
 
             if (setsockopt(sock, level, optnum, reinterpret_cast<char*>(&rawMaxVal), maxValLen)) {
-                auto ec = lastSystemError();
+                int savedErrno = errno;
                 LOGV2_DEBUG(23206,
                             logSeverity,
                             "can't set {optname}: {error}",
                             "Can't set socket option",
                             "optname"_attr = optname,
-                            "error"_attr = errorMessage(ec));
+                            "error"_attr = errnoWithDescription(savedErrno));
             }
         }
     };
@@ -236,11 +234,10 @@ std::string getHostName() {
     char buf[256];
     int ec = gethostname(buf, 127);
     if (ec || *buf == 0) {
-        auto ec = lastSocketError();
         LOGV2(23202,
               "can't get this server's hostname {error}",
               "Can't get this server's hostname",
-              "error"_attr = errorMessage(ec));
+              "error"_attr = errnoWithDescription());
         return "";
     }
     return buf;

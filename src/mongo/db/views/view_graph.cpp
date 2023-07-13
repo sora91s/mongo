@@ -126,9 +126,10 @@ void ViewGraph::insertWithoutValidating(const ViewDefinition& view,
     // pointers for its children.
     Node* node = &(_graph[nodeId]);
     invariant(node->children.empty());
+    invariant(!static_cast<bool>(node->collator));
 
     node->size = pipelineSize;
-    node->collator = CollatorInterface::cloneCollator(view.defaultCollator());
+    node->collator = view.defaultCollator();
 
     for (const NamespaceString& childNss : refs) {
         uint64_t childId = _getNodeId(childNss);
@@ -139,7 +140,7 @@ void ViewGraph::insertWithoutValidating(const ViewDefinition& view,
 
 void ViewGraph::remove(const NamespaceString& viewNss) {
     // If this node hasn't been referenced, return early.
-    if (_namespaceIds.find(viewNss) == _namespaceIds.end()) {
+    if (_namespaceIds.find(viewNss.ns()) == _namespaceIds.end()) {
         return;
     }
 
@@ -156,7 +157,7 @@ void ViewGraph::remove(const NamespaceString& viewNss) {
         childNode->parents.erase(nodeId);
         // If the child has no remaining references or children, remove it.
         if (childNode->parents.size() == 0 && childNode->children.size() == 0) {
-            _namespaceIds.erase(childNode->nss);
+            _namespaceIds.erase(childNode->ns);
             _graph.erase(childId);
         }
     }
@@ -164,11 +165,11 @@ void ViewGraph::remove(const NamespaceString& viewNss) {
     // This node no longer represents a view, so its children must be cleared and its collator
     // unset.
     node->children.clear();
-    node->collator = nullptr;
+    node->collator = boost::none;
 
     // Only remove node if there are no remaining references to this node.
     if (node->parents.size() == 0) {
-        _namespaceIds.erase(node->nss);
+        _namespaceIds.erase(node->ns);
         _graph.erase(nodeId);
     }
 }
@@ -192,9 +193,9 @@ Status ViewGraph::_validateParents(uint64_t currentId, int currentDepth, StatsMa
             !CollatorInterface::collatorsMatch(currentNode.collator.get(),
                                                parentNode.collator.get())) {
             return {ErrorCodes::OptionNotSupportedOnView,
-                    str::stream() << "View " << currentNode.nss.ns()
+                    str::stream() << "View " << currentNode.ns
                                   << " has a collation that does not match the collation of view "
-                                  << parentNode.nss.ns()};
+                                  << parentNode.ns};
         }
 
         if (!(*statsMap)[parentId].checked) {
@@ -235,9 +236,9 @@ Status ViewGraph::_validateChildren(uint64_t startingId,
         auto errmsg = StringBuilder();
 
         errmsg << "View cycle detected: ";
-        errmsg << _graph[*iterator].nss.ns();
+        errmsg << _graph[*iterator].ns;
         for (; iterator != traversalIds->rend(); ++iterator) {
-            errmsg << " => " << _graph[*iterator].nss.ns();
+            errmsg << " => " << _graph[*iterator].ns;
         }
         return {ErrorCodes::GraphContainsCycle, errmsg.str()};
     }
@@ -262,9 +263,9 @@ Status ViewGraph::_validateChildren(uint64_t startingId,
             !CollatorInterface::collatorsMatch(currentNode.collator.get(),
                                                childNode.collator.get())) {
             return {ErrorCodes::OptionNotSupportedOnView,
-                    str::stream() << "View " << currentNode.nss.ns()
+                    str::stream() << "View " << currentNode.ns
                                   << " has a collation that does not match the collation of view "
-                                  << childNode.nss.ns()};
+                                  << childNode.ns};
         }
 
         auto res = _validateChildren(startingId, childId, currentDepth + 1, statsMap, traversalIds);
@@ -284,13 +285,13 @@ Status ViewGraph::_validateChildren(uint64_t startingId,
 }
 
 uint64_t ViewGraph::_getNodeId(const NamespaceString& nss) {
-    if (_namespaceIds.find(nss) == _namespaceIds.end()) {
+    if (_namespaceIds.find(nss.ns()) == _namespaceIds.end()) {
         uint64_t nodeId = _idCounter++;
-        _namespaceIds[nss] = nodeId;
+        _namespaceIds[nss.ns()] = nodeId;
         // Initialize the corresponding graph node.
-        _graph[nodeId].nss = nss;
+        _graph[nodeId].ns = nss.ns();
     }
-    return _namespaceIds[nss];
+    return _namespaceIds[nss.ns()];
 }
 
 }  // namespace mongo

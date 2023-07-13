@@ -33,10 +33,6 @@
 
 #include "mongo/crypto/fle_crypto.h"
 
-namespace mongo {
-class FLETagQueryInterface;
-}
-
 namespace mongo::fle {
 
 /**
@@ -52,20 +48,12 @@ std::vector<PrfBlock> readTagsWithContention(const FLEStateCollectionReader& esc
                                              size_t memoryLimit,
                                              std::vector<PrfBlock>&& binaryTags);
 
-std::vector<PrfBlock> readTagsWithContentionV2(const FLEStateCollectionReader& esc,
-                                               ESCDerivedFromDataToken s,
-                                               EDCDerivedFromDataToken d,
-                                               uint64_t contentionFactor,
-                                               size_t memoryLimit,
-                                               std::vector<PrfBlock>&& binaryTags);
-
 /**
  * Read a list of binary tags given ESC, ECC, and EDC derived tokens and a maximum contention
  * factor.
  */
-std::vector<PrfBlock> readTags(FLETagQueryInterface* queryImpl,
-                               const NamespaceString& nssEsc,
-                               const NamespaceString& nssEcc,
+std::vector<PrfBlock> readTags(const FLEStateCollectionReader& esc,
+                               const FLEStateCollectionReader& ecc,
                                ESCDerivedFromDataToken s,
                                ECCDerivedFromDataToken c,
                                EDCDerivedFromDataToken d,

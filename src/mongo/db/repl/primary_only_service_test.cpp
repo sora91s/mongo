@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#include <boost/optional/optional_io.hpp>
 #include <memory>
 
 #include "mongo/db/client.h"
@@ -79,7 +80,7 @@ public:
     }
 
     NamespaceString getStateDocumentsNS() const override {
-        return NamespaceString::createNamespaceString_forTest("admin", "test_service");
+        return NamespaceString("admin", "test_service");
     }
 
     ThreadPool::Limits getThreadPoolLimits() const override {
@@ -178,8 +179,6 @@ public:
                 .semi();
         }
 
-        void checkIfOptionsConflict(const BSONObj&) const final {}
-
         void interrupt(Status status) override {
             // Currently unused. Functionality has been put into cancellation logic.
         }
@@ -258,14 +257,9 @@ public:
 
                 DBDirectClient client(opCtx.get());
                 if (targetState == State::kDone) {
-                    client.remove(
-                        NamespaceString::createNamespaceString_forTest("admin.test_service"), _id);
+                    client.remove("admin.test_service", _id);
                 } else {
-                    client.update(
-                        NamespaceString::createNamespaceString_forTest("admin.test_service"),
-                        _id,
-                        newStateDoc,
-                        true /*upsert*/);
+                    client.update("admin.test_service", _id, newStateDoc, true /*upsert*/);
                 }
             } catch (const DBException& e) {
                 _documentWriteException.setError(e.toStatus());
@@ -294,7 +288,7 @@ private:
         auto opCtx = opCtxHolder.get();
         DBDirectClient client(opCtx);
         BSONObj result;
-        client.runCommand(nss.dbName(),
+        client.runCommand(nss.db().toString(),
                           BSON("createIndexes"
                                << nss.coll().toString() << "indexes"
                                << BSON_ARRAY(BSON("key" << BSON("x" << 1) << "name"
@@ -323,8 +317,8 @@ public:
 
         _service = _registry->lookupServiceByName("TestService");
         ASSERT(_service);
-        auto serviceByNamespace = _registry->lookupServiceByNamespace(
-            NamespaceString::createNamespaceString_forTest("admin.test_service"));
+        auto serviceByNamespace =
+            _registry->lookupServiceByNamespace(NamespaceString("admin.test_service"));
         ASSERT_EQ(_service, serviceByNamespace);
 
         _testExecutor = makeTestExecutor();
@@ -526,7 +520,7 @@ TEST_F(PrimaryOnlyServiceTest, LookupInstance) {
     ASSERT(instance.get());
     ASSERT_EQ(0, instance->getID());
 
-    auto instance2 = TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).value();
+    auto instance2 = TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).get();
 
     ASSERT_EQ(instance.get(), instance2.get());
 
@@ -535,7 +529,7 @@ TEST_F(PrimaryOnlyServiceTest, LookupInstance) {
 
     // Shouldn't be able to look up instance after it has completed running.
     auto instance3 = TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0));
-    ASSERT_FALSE(instance3.has_value());
+    ASSERT_FALSE(instance3.is_initialized());
 }
 
 TEST_F(PrimaryOnlyServiceTest, LookupInstanceInterruptible) {
@@ -567,11 +561,11 @@ TEST_F(PrimaryOnlyServiceTest, LookupInstanceHoldingISLock) {
 
         // The RstlKillOpThread would only interrupt a read operation if the OperationContext opted
         // into always being interrupted.
-        opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+        opCtx->setAlwaysInterruptAtStepDownOrUp();
         ASSERT_FALSE(opCtx->lockState()->wasGlobalLockTakenInModeConflictingWithWrites());
 
         auto instance2 =
-            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).value();
+            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).get();
         ASSERT_EQ(instance.get(), instance2.get());
     }
 
@@ -593,7 +587,7 @@ TEST_F(PrimaryOnlyServiceTest, LookupInstanceHoldingIXLock) {
         Lock::GlobalLock lk(opCtx.get(), MODE_IX);
         ASSERT_FALSE(opCtx->shouldAlwaysInterruptAtStepDownOrUp());
         auto instance2 =
-            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).value();
+            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).get();
         ASSERT_EQ(instance.get(), instance2.get());
     }
 
@@ -845,7 +839,7 @@ TEST_F(PrimaryOnlyServiceTest, StepDownBeforePersisted) {
     auto opCtx = makeOperationContext();
     // Since the Instance never wrote its state document, it shouldn't be recreated on stepUp.
     auto recreatedInstance = TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0));
-    ASSERT(!recreatedInstance.has_value());
+    ASSERT(!recreatedInstance.is_initialized());
 }
 
 TEST_F(PrimaryOnlyServiceTest, RecreateInstanceOnStepUp) {
@@ -872,7 +866,7 @@ TEST_F(PrimaryOnlyServiceTest, RecreateInstanceOnStepUp) {
     {
         auto opCtx = makeOperationContext();
         auto recreatedInstance =
-            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).value();
+            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).get();
         ASSERT_EQ(TestService::State::kOne, recreatedInstance->getInitialState());
         TestServiceHangDuringStateTwo.waitForTimesEntered(++stateTwoFPTimesEntered);
         ASSERT_EQ(TestService::State::kTwo, recreatedInstance->getState());
@@ -890,7 +884,7 @@ TEST_F(PrimaryOnlyServiceTest, RecreateInstanceOnStepUp) {
     {
         auto opCtx = makeOperationContext();
         auto recreatedInstance =
-            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).value();
+            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).get();
         ASSERT_EQ(TestService::State::kTwo, recreatedInstance->getInitialState());
         TestServiceHangDuringStateOne.setMode(FailPoint::off);
         recreatedInstance->getCompletionFuture().get();
@@ -899,7 +893,7 @@ TEST_F(PrimaryOnlyServiceTest, RecreateInstanceOnStepUp) {
 
         auto nonExistentInstance =
             TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0));
-        ASSERT(!nonExistentInstance.has_value());
+        ASSERT(!nonExistentInstance.is_initialized());
     }
 
     stepDown();
@@ -911,7 +905,7 @@ TEST_F(PrimaryOnlyServiceTest, RecreateInstanceOnStepUp) {
         // its state document.
         auto nonExistentInstance =
             TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0));
-        ASSERT(!nonExistentInstance.has_value());
+        ASSERT(!nonExistentInstance.is_initialized());
     }
 }
 
@@ -967,7 +961,7 @@ TEST_F(PrimaryOnlyServiceTest, StepDownBeforeRebuildingInstances) {
     TestServiceHangDuringStateOne.waitForTimesEntered(++stateOneFPTimesEntered);
 
     auto opCtx = makeOperationContext();
-    auto instance = TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).value();
+    auto instance = TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).get();
     ASSERT_EQ(TestService::State::kOne, instance->getInitialState());
     ASSERT_EQ(TestService::State::kOne, instance->getState());
 
@@ -1017,8 +1011,8 @@ TEST_F(PrimaryOnlyServiceTest, RecreateInstancesFails) {
         // After stepping down we are in a consistent state again, but cannot create or lookup
         // instances because we are not primary.
         auto opCtx = makeOperationContext();
-        ASSERT_FALSE(
-            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).has_value());
+        ASSERT_FALSE(TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0))
+                         .is_initialized());
         ASSERT_THROWS_CODE(TestService::Instance::getOrCreate(
                                opCtx.get(), _service, BSON("_id" << 0 << "state" << 0)),
                            DBException,
@@ -1036,7 +1030,7 @@ TEST_F(PrimaryOnlyServiceTest, RecreateInstancesFails) {
         // Instance should be recreated successfully.
         auto opCtx = makeOperationContext();
         auto instance =
-            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).value();
+            TestService::Instance::lookup(opCtx.get(), _service, BSON("_id" << 0)).get();
         ASSERT_EQ(TestService::State::kOne, instance->getInitialState());
         ASSERT_EQ(TestService::State::kOne, instance->getState());
         TestServiceHangDuringStateOne.setMode(FailPoint::off);

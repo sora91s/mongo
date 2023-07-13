@@ -32,7 +32,6 @@
 #include "mongo/db/pipeline/document_source_bucket_auto.h"
 
 #include "mongo/db/pipeline/accumulation_statement.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/stats/resource_consumption_metrics.h"
 
@@ -126,11 +125,13 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceBucketAuto::optimize() {
 }
 
 DepsTracker::State DocumentSourceBucketAuto::getDependencies(DepsTracker* deps) const {
-    expression::addDependencies(_groupByExpression.get(), deps);
+    // Add the 'groupBy' expression.
+    _groupByExpression->addDependencies(deps);
 
+    // Add the 'output' fields.
     for (auto&& accumulatedField : _accumulatedFields) {
         // Anything the per-doc expression depends on, the whole stage depends on.
-        expression::addDependencies(accumulatedField.expr.argument.get(), deps);
+        accumulatedField.expr.argument->addDependencies(deps);
         // The initializer should be an ExpressionConstant, or something that optimizes to one.
         // ExpressionConstant doesn't have dependencies.
     }
@@ -139,16 +140,6 @@ DepsTracker::State DocumentSourceBucketAuto::getDependencies(DepsTracker* deps) 
     // depend on any further fields. The grouping process will remove any metadata from the
     // documents, so there can be no further dependencies on metadata.
     return DepsTracker::State::EXHAUSTIVE_ALL;
-}
-
-void DocumentSourceBucketAuto::addVariableRefs(std::set<Variables::Id>* refs) const {
-    expression::addVariableRefs(_groupByExpression.get(), refs);
-
-    for (auto&& accumulatedField : _accumulatedFields) {
-        expression::addVariableRefs(accumulatedField.expr.argument.get(), refs);
-        // The initializer should be an ExpressionConstant, or something that optimizes to one.
-        // ExpressionConstant doesn't have dependencies.
-    }
 }
 
 DocumentSource::GetNextResult DocumentSourceBucketAuto::populateSorter() {
@@ -160,8 +151,9 @@ DocumentSource::GetNextResult DocumentSourceBucketAuto::populateSorter() {
             opts.tempDir = pExpCtx->tempDir;
         }
         const auto& valueCmp = pExpCtx->getValueComparator();
-        auto comparator = [valueCmp](const Value& lhs, const Value& rhs) {
-            return valueCmp.compare(lhs, rhs);
+        auto comparator = [valueCmp](const Sorter<Value, Document>::Data& lhs,
+                                     const Sorter<Value, Document>::Data& rhs) {
+            return valueCmp.compare(lhs.first, rhs.first);
         };
 
         _sorter.reset(Sorter<Value, Document>::make(opts, comparator));
@@ -228,8 +220,8 @@ void DocumentSourceBucketAuto::initializeBucketIteration() {
     _sortedInput.reset(_sorter->done());
 
     auto& metricsCollector = ResourceConsumption::MetricsCollector::get(pExpCtx->opCtx);
-    metricsCollector.incrementKeysSorted(_sorter->stats().numSorted());
-    metricsCollector.incrementSorterSpills(_sorter->stats().spilledRanges());
+    metricsCollector.incrementKeysSorted(_sorter->numSorted());
+    metricsCollector.incrementSorterSpills(_sorter->numSpills());
 
     _sorter.reset();
 
@@ -419,11 +411,10 @@ intrusive_ptr<DocumentSourceBucketAuto> DocumentSourceBucketAuto::create(
     if (accumulationStatements.empty()) {
         accumulationStatements.emplace_back(
             "count",
-            AccumulationExpression(
-                ExpressionConstant::create(pExpCtx.get(), Value(BSONNULL)),
-                ExpressionConstant::create(pExpCtx.get(), Value(1)),
-                [pExpCtx] { return AccumulatorSum::create(pExpCtx.get()); },
-                AccumulatorSum::kName));
+            AccumulationExpression(ExpressionConstant::create(pExpCtx.get(), Value(BSONNULL)),
+                                   ExpressionConstant::create(pExpCtx.get(), Value(1)),
+                                   [pExpCtx] { return AccumulatorSum::create(pExpCtx.get()); },
+                                   AccumulatorSum::kName));
     }
     return new DocumentSourceBucketAuto(pExpCtx,
                                         groupByExpression,
@@ -452,25 +443,11 @@ DocumentSourceBucketAuto::DocumentSourceBucketAuto(
     }
 }
 
-boost::intrusive_ptr<Expression> DocumentSourceBucketAuto::getGroupByExpression() const {
-    return _groupByExpression;
-}
-
-boost::intrusive_ptr<Expression>& DocumentSourceBucketAuto::getMutableGroupByExpression() {
-    tassert(7020501,
-            "Cannot change group by expressions once execution has begun in BucketAuto",
-            !_populated);
+const boost::intrusive_ptr<Expression> DocumentSourceBucketAuto::getGroupByExpression() const {
     return _groupByExpression;
 }
 
 const std::vector<AccumulationStatement>& DocumentSourceBucketAuto::getAccumulatedFields() const {
-    return _accumulatedFields;
-}
-
-std::vector<AccumulationStatement>& DocumentSourceBucketAuto::getMutableAccumulatedFields() {
-    tassert(7020502,
-            "Cannot change accumulated field expression once execution has begun in BucketAuto",
-            !_populated);
     return _accumulatedFields;
 }
 
@@ -542,7 +519,7 @@ intrusive_ptr<DocumentSource> DocumentSourceBucketAuto::createFromBson(
             groupByExpression && numBuckets);
 
     return DocumentSourceBucketAuto::create(
-        pExpCtx, groupByExpression, numBuckets.value(), accumulationStatements, granularityRounder);
+        pExpCtx, groupByExpression, numBuckets.get(), accumulationStatements, granularityRounder);
 }
 
 }  // namespace mongo

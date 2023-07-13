@@ -27,14 +27,16 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include <boost/optional.hpp>
 #include <vector>
 
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
 #include "mongo/db/client.h"
-#include "mongo/db/op_observer/op_observer.h"
-#include "mongo/db/op_observer/op_observer_registry.h"
+#include "mongo/db/op_observer.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 
@@ -48,29 +50,22 @@ public:
     // Interface methods.
 
     void onInserts(OperationContext* opCtx,
-                   const CollectionPtr& coll,
+                   const NamespaceString& nss,
+                   const UUID& uuid,
                    std::vector<InsertStatement>::const_iterator first,
                    std::vector<InsertStatement>::const_iterator last,
                    bool fromMigrate) final;
-    void onInsertGlobalIndexKey(OperationContext* opCtx,
-                                const NamespaceString& globalIndexNss,
-                                const UUID& globalIndexUuid,
-                                const BSONObj& key,
-                                const BSONObj& docKey) final{};
-    void onDeleteGlobalIndexKey(OperationContext* opCtx,
-                                const NamespaceString& globalIndexNss,
-                                const UUID& globalIndexUuid,
-                                const BSONObj& key,
-                                const BSONObj& docKey) final {}
     void onUpdate(OperationContext* opCtx, const OplogUpdateEntryArgs& args) final;
     void aboutToDelete(OperationContext* opCtx,
-                       const CollectionPtr& coll,
+                       const NamespaceString& nss,
+                       const UUID& uuid,
                        const BSONObj& doc) final;
     void onDelete(OperationContext* opCtx,
-                  const CollectionPtr& coll,
+                  const NamespaceString& nss,
+                  const UUID& uuid,
                   StmtId stmtId,
                   const OplogDeleteEntryArgs& args) final;
-    void onDropDatabase(OperationContext* opCtx, const DatabaseName& dbName) final;
+    void onDropDatabase(OperationContext* opCtx, const std::string& dbName) final;
     using OpObserver::onDropCollection;
     repl::OpTime onDropCollection(OperationContext* opCtx,
                                   const NamespaceString& collectionName,
@@ -96,19 +91,6 @@ public:
 
 public:
     // Remainder of operations are ignorable.
-    void onCreateGlobalIndex(OperationContext* opCtx,
-                             const NamespaceString& globalIndexNss,
-                             const UUID& globalIndexUUID) final{};
-
-    void onModifyCollectionShardingIndexCatalog(OperationContext* opCtx,
-                                                const NamespaceString& nss,
-                                                const UUID& uuid,
-                                                BSONObj indexDoc) final {}
-
-    void onDropGlobalIndex(OperationContext* opCtx,
-                           const NamespaceString& globalIndexNss,
-                           const UUID& globalIndexUUID,
-                           long long numKeys) final{};
 
     void onCreateIndex(OperationContext* opCtx,
                        const NamespaceString& nss,
@@ -194,23 +176,18 @@ public:
                             bool stayTemp) final {}
 
     void onApplyOps(OperationContext* opCtx,
-                    const DatabaseName& dbName,
+                    const std::string& dbName,
                     const BSONObj& applyOpCmd) final {}
 
     void onEmptyCapped(OperationContext* opCtx,
                        const NamespaceString& collectionName,
                        const UUID& uuid) final {}
 
-    void onTransactionStart(OperationContext* opCtx) final {}
-
     void onUnpreparedTransactionCommit(OperationContext* opCtx,
-                                       const TransactionOperations& transactionOperations) final {}
-
-    void onBatchedWriteStart(OperationContext* opCtx) final {}
+                                       std::vector<repl::ReplOperation>* statements,
+                                       size_t numberOfPrePostImagesToWrite) final {}
 
     void onBatchedWriteCommit(OperationContext* opCtx) final {}
-
-    void onBatchedWriteAbort(OperationContext* opCtx) final {}
 
     void onPreparedTransactionCommit(
         OperationContext* opCtx,
@@ -221,22 +198,19 @@ public:
     std::unique_ptr<ApplyOpsOplogSlotAndOperationAssignment> preTransactionPrepare(
         OperationContext* opCtx,
         const std::vector<OplogSlot>& reservedSlots,
-        const TransactionOperations& transactionOperations,
-        Date_t wallClockTime) final {
+        size_t numberOfPrePostImagesToWrite,
+        Date_t wallClockTime,
+        std::vector<repl::ReplOperation>* statements) final {
         return nullptr;
     }
 
     void onTransactionPrepare(
         OperationContext* opCtx,
         const std::vector<OplogSlot>& reservedSlots,
-        const TransactionOperations& transactionOperations,
-        const ApplyOpsOplogSlotAndOperationAssignment& applyOpsOperationAssignment,
+        std::vector<repl::ReplOperation>* statements,
+        const ApplyOpsOplogSlotAndOperationAssignment* applyOpsOperationAssignment,
         size_t numberOfPrePostImagesToWrite,
         Date_t wallClockTime) final {}
-
-    void onTransactionPrepareNonPrimary(OperationContext* opCtx,
-                                        const std::vector<repl::OplogEntry>& statements,
-                                        const repl::OpTime& prepareOpTime) final {}
 
     void onTransactionAbort(OperationContext* opCtx,
                             boost::optional<OplogSlot> abortOplogEntryOpTime) final {}

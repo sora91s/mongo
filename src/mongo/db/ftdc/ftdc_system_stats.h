@@ -58,7 +58,7 @@ protected:
 
 
 /**
- * Install system metrics collectors (if any exist).
+ * Install a system metrics collector if it exists as a periodic collector.
  */
 void installSystemMetricsCollector(FTDCController* controller);
 

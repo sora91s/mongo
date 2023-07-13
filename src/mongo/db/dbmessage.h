@@ -241,6 +241,7 @@ public:
     }
 
     const char* getns() const;
+    int getQueryNToReturn() const;
 
     int pullInt();
     long long pullInt64();

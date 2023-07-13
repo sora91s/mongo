@@ -1,6 +1,7 @@
 // Check that OCSP verification works
 // @tags: [
 //   requires_http_client,
+//   live_record_incompatible,
 // ]
 
 load("jstests/ocsp/lib/mock_ocsp.js");

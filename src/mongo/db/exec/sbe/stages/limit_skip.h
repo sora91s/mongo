@@ -50,8 +50,7 @@ public:
     LimitSkipStage(std::unique_ptr<PlanStage> input,
                    boost::optional<long long> limit,
                    boost::optional<long long> skip,
-                   PlanNodeId planNodeId,
-                   bool participateInTrialRunTracking = true);
+                   PlanNodeId planNodeId);
 
     std::unique_ptr<PlanStage> clone() const final;
 

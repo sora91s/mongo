@@ -40,7 +40,7 @@ namespace mongo {
 class InternalSchemaMaxItemsMatchExpression final
     : public InternalSchemaNumArrayItemsMatchExpression {
 public:
-    InternalSchemaMaxItemsMatchExpression(boost::optional<StringData> path,
+    InternalSchemaMaxItemsMatchExpression(StringData path,
                                           long long numItems,
                                           clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : InternalSchemaNumArrayItemsMatchExpression(INTERNAL_SCHEMA_MAX_ITEMS,

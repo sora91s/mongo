@@ -38,7 +38,6 @@
 #include "mongo/db/fle_crud.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/query/cursor_response.h"
-#include "mongo/db/query/telemetry.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/rpc/get_status_from_command_result.h"
@@ -69,7 +68,7 @@ public:
     std::unique_ptr<CommandInvocation> parse(OperationContext* opCtx,
                                              const OpMsgRequest& opMsgRequest) override {
         // TODO: Parse into a QueryRequest here.
-        return std::make_unique<Invocation>(this, opMsgRequest);
+        return std::make_unique<Invocation>(this, opMsgRequest, opMsgRequest.getDatabase());
     }
 
     AllowedOnSecondary secondaryAllowed(ServiceContext* context) const override {
@@ -84,16 +83,8 @@ public:
         return false;
     }
 
-    ReadWriteType getReadWriteType() const final {
-        return ReadWriteType::kRead;
-    }
-
     bool shouldAffectCommandCounter() const final {
         return false;
-    }
-
-    bool allowedInTransactions() const final {
-        return true;
     }
 
     std::string help() const override {
@@ -102,10 +93,10 @@ public:
 
     class Invocation final : public CommandInvocation {
     public:
-        Invocation(const ClusterFindCmdBase* definition, const OpMsgRequest& request)
-            : CommandInvocation(definition),
-              _request(request),
-              _dbName(request.getValidatedTenantId(), request.getDatabase()) {}
+        Invocation(const ClusterFindCmdBase* definition,
+                   const OpMsgRequest& request,
+                   StringData dbName)
+            : CommandInvocation(definition), _request(request), _dbName(dbName) {}
 
     private:
         bool supportsWriteConcern() const override {
@@ -142,21 +133,21 @@ public:
                 const auto explainCmd =
                     ClusterExplain::wrapAsExplain(findCommand->toBSON(BSONObj()), verbosity);
 
-                Impl::checkCanExplainHere(opCtx);
+                Impl::checkCanRunHere(opCtx);
 
                 long long millisElapsed;
                 std::vector<AsyncRequestsSender::Response> shardResponses;
 
                 // We will time how long it takes to run the commands on the shards.
                 Timer timer;
-                const auto cri =
+                const auto routingInfo =
                     uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(
                         opCtx, *findCommand->getNamespaceOrUUID().nss()));
                 shardResponses = scatterGatherVersionedTargetByRoutingTable(
                     opCtx,
                     findCommand->getNamespaceOrUUID().nss()->db(),
                     *findCommand->getNamespaceOrUUID().nss(),
-                    cri,
+                    routingInfo,
                     explainCmd,
                     ReadPreferenceSetting::get(opCtx),
                     Shard::RetryPolicy::kIdempotent,
@@ -182,10 +173,9 @@ public:
                 auto aggCmdOnView =
                     uassertStatusOK(query_request_helper::asAggregationCommand(*findCommand));
                 auto viewAggregationCommand =
-                    OpMsgRequest::fromDBAndBody(_dbName.db(), aggCmdOnView).body;
+                    OpMsgRequest::fromDBAndBody(_dbName, aggCmdOnView).body;
 
                 auto aggRequestOnView = aggregation_request_helper::parseFromBSON(
-                    opCtx,
                     ns(),
                     viewAggregationCommand,
                     verbosity,
@@ -209,6 +199,11 @@ public:
 
             Impl::checkCanRunHere(opCtx);
 
+            ON_BLOCK_EXIT([opCtx] {
+                Grid::get(opCtx)->catalogCache()->checkAndRecordOperationBlockedByRefresh(
+                    opCtx, mongo::LogicalOp::opQuery);
+            });
+
             auto findCommand = _parseCmdObjectToFindCommandRequest(opCtx, ns(), _request.body);
 
             const boost::intrusive_ptr<ExpressionContext> expCtx;
@@ -219,10 +214,6 @@ public:
                                              expCtx,
                                              ExtensionsCallbackNoop(),
                                              MatchExpressionParser::kAllowAllSpecialFeatures));
-
-            if (!_didDoFLERewrite) {
-                telemetry::registerFindRequest(cq->getFindCommandRequest(), cq->nss(), opCtx);
-            }
 
             try {
                 // Do the work to generate the first batch of results. This blocks waiting to get
@@ -244,17 +235,16 @@ public:
                     firstBatch.append(obj);
                 }
                 firstBatch.setPartialResultsReturned(partialResultsReturned);
-                firstBatch.done(cursorId, cq->nss());
+                firstBatch.done(cursorId, cq->ns());
             } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
                 result->reset();
 
                 auto aggCmdOnView = uassertStatusOK(
                     query_request_helper::asAggregationCommand(cq->getFindCommandRequest()));
                 auto viewAggregationCommand =
-                    OpMsgRequest::fromDBAndBody(_dbName.db(), aggCmdOnView).body;
+                    OpMsgRequest::fromDBAndBody(_dbName, aggCmdOnView).body;
 
                 auto aggRequestOnView = aggregation_request_helper::parseFromBSON(
-                    opCtx,
                     ns(),
                     viewAggregationCommand,
                     boost::none,
@@ -277,7 +267,7 @@ public:
          * were supplied with the command, and sets the constant runtime values that will be
          * forwarded to each shard.
          */
-        std::unique_ptr<FindCommandRequest> _parseCmdObjectToFindCommandRequest(
+        static std::unique_ptr<FindCommandRequest> _parseCmdObjectToFindCommandRequest(
             OperationContext* opCtx, NamespaceString nss, BSONObj cmdObj) {
             auto findCommand = query_request_helper::makeFromFindCommand(
                 std::move(cmdObj),
@@ -296,20 +286,21 @@ public:
             uassert(51202,
                     "Cannot specify runtime constants option to a mongos",
                     !findCommand->getLegacyRuntimeConstants());
+            uassert(5746101,
+                    "Cannot specify ntoreturn in a find command against mongos",
+                    findCommand->getNtoreturn() == boost::none);
 
             if (shouldDoFLERewrite(findCommand)) {
                 invariant(findCommand->getNamespaceOrUUID().nss());
                 processFLEFindS(
                     opCtx, findCommand->getNamespaceOrUUID().nss().get(), findCommand.get());
-                _didDoFLERewrite = true;
             }
 
             return findCommand;
         }
 
         const OpMsgRequest& _request;
-        const DatabaseName _dbName;
-        bool _didDoFLERewrite{false};
+        const StringData _dbName;
     };
 };
 

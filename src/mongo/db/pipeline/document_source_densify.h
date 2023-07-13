@@ -38,8 +38,8 @@
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/pipeline/memory_usage_tracker.h"
 #include "mongo/db/query/datetime/date_time_support.h"
-#include "mongo/util/overloaded_visitor.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/visit_helper.h"
 
 
 namespace mongo {
@@ -61,13 +61,12 @@ public:
      * Convert a DensifyValue into a Value for use in documents/serialization.
      */
     Value toValue() const {
-        return stdx::visit(OverloadedVisitor{[&](Value unwrappedVal) { return unwrappedVal; },
-                                             [&](Date_t dateVal) {
-                                                 return Value(dateVal);
-                                             }
+        return stdx::visit(
+            visit_helper::Overloaded{[&](Value unwrappedVal) { return unwrappedVal; },
+                                     [&](Date_t dateVal) { return Value(dateVal); }
 
-                           },
-                           _value);
+            },
+            _value);
     }
 
     /**
@@ -75,16 +74,17 @@ public:
      * of (lhs - rhs). Returns -1 if lhs < rhs, 0 if lhs == rhs, and 1 if lhs > rhs.
      */
     static int compare(const DensifyValue& lhs, const DensifyValue& rhs) {
-        return stdx::visit(OverloadedVisitor{[&](Value lhsVal) {
-                                                 Value rhsVal = stdx::get<Value>(rhs._value);
-                                                 return Value::compare(lhsVal, rhsVal, nullptr);
-                                             },
-                                             [&](Date_t lhsVal) {
-                                                 Date_t rhsVal = stdx::get<Date_t>(rhs._value);
-                                                 return Value::compare(
-                                                     Value(lhsVal), Value(rhsVal), nullptr);
-                                             }},
-                           lhs._value);
+        return stdx::visit(
+            visit_helper::Overloaded{[&](Value lhsVal) {
+                                         Value rhsVal = stdx::get<Value>(rhs._value);
+                                         return Value::compare(lhsVal, rhsVal, nullptr);
+                                     },
+                                     [&](Date_t lhsVal) {
+                                         Date_t rhsVal = stdx::get<Date_t>(rhs._value);
+                                         return Value::compare(
+                                             Value(lhsVal), Value(rhsVal), nullptr);
+                                     }},
+            lhs._value);
     }
 
     /**
@@ -104,10 +104,8 @@ public:
     }
 
     std::string toString() const {
-        return stdx::visit(OverloadedVisitor{[&](Value v) { return v.toString(); },
-                                             [&](Date_t d) {
-                                                 return d.toString();
-                                             }},
+        return stdx::visit(visit_helper::Overloaded{[&](Value v) { return v.toString(); },
+                                                    [&](Date_t d) { return d.toString(); }},
                            _value);
     }
 
@@ -125,11 +123,10 @@ public:
      * Delegate to Value::getApproximateSize().
      */
     size_t getApproximateSize() const {
-        return stdx::visit(OverloadedVisitor{[&](Value v) { return v.getApproximateSize(); },
-                                             [&](Date_t d) {
-                                                 return Value(d).getApproximateSize();
-                                             }},
-                           _value);
+        return stdx::visit(
+            visit_helper::Overloaded{[&](Value v) { return v.getApproximateSize(); },
+                                     [&](Date_t d) { return Value(d).getApproximateSize(); }},
+            _value);
     }
 
     /**
@@ -248,12 +245,12 @@ public:
         MutableDocument spec;
         spec[kArgStep] = _step;
         spec[kArgBounds] = stdx::visit(
-            OverloadedVisitor{[&](Full) { return Value(kValFull); },
-                              [&](Partition) { return Value(kValPartition); },
-                              [&](ExplicitBounds bounds) {
-                                  return Value(std::vector<Value>(
-                                      {bounds.first.toValue(), bounds.second.toValue()}));
-                              }},
+            visit_helper::Overloaded{[&](Full) { return Value(kValFull); },
+                                     [&](Partition) { return Value(kValPartition); },
+                                     [&](ExplicitBounds bounds) {
+                                         return Value(std::vector<Value>(
+                                             {bounds.first.toValue(), bounds.second.toValue()}));
+                                     }},
             _bounds);
         if (_unit)
             spec[kArgUnit] = Value(serializeTimeUnit(*_unit));
@@ -393,11 +390,6 @@ public:
             deps->fields.insert(field.fullPath());
         }
         return DepsTracker::State::SEE_NEXT;
-    }
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {
-        // The partition expression cannot refer to any variables because it is internally generated
-        // based on a set of field paths.
     }
 
     boost::optional<DistributedPlanLogic> distributedPlanLogic() final {

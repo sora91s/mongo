@@ -79,8 +79,7 @@ public:
      * "ns" for which ns.isSystem() is false and ns.db() == dbname.
      */
     static ResourcePattern forDatabaseName(StringData dbName) {
-        return ResourcePattern(MatchTypeEnum::kMatchDatabaseName,
-                               NamespaceString(boost::none, dbName, ""));
+        return ResourcePattern(MatchTypeEnum::kMatchDatabaseName, NamespaceString(dbName, ""));
     }
 
     /**
@@ -89,7 +88,7 @@ public:
      */
     static ResourcePattern forCollectionName(StringData collectionName) {
         return ResourcePattern(MatchTypeEnum::kMatchCollectionName,
-                               NamespaceString(boost::none, "", collectionName));
+                               NamespaceString("", collectionName));
     }
 
     /**
@@ -113,7 +112,7 @@ public:
      */
     static ResourcePattern forAnySystemBucketsInDatabase(StringData dbName) {
         return ResourcePattern(MatchTypeEnum::kMatchAnySystemBucketInDBResource,
-                               NamespaceString(boost::none, dbName, ""));
+                               NamespaceString(dbName, ""));
     }
 
     /**
@@ -122,7 +121,7 @@ public:
      */
     static ResourcePattern forAnySystemBucketsInAnyDatabase(StringData collectionName) {
         return ResourcePattern(MatchTypeEnum::kMatchSystemBucketInAnyDBResource,
-                               NamespaceString(boost::none, "", collectionName));
+                               NamespaceString("", collectionName));
     }
 
     /**
@@ -133,7 +132,7 @@ public:
                                                            StringData collectionName) {
         invariant(!collectionName.startsWith("system.buckets."));
         return ResourcePattern(MatchTypeEnum::kMatchExactSystemBucketResource,
-                               NamespaceString(boost::none, dbName, collectionName));
+                               NamespaceString(dbName, collectionName));
     }
 
     /**

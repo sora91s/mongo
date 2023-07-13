@@ -41,7 +41,7 @@
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/s/resharding/resharding_oplog_applier_metrics.h"
+#include "mongo/db/s/resharding/resharding_metrics_new.h"
 #include "mongo/s/chunk_manager.h"
 
 namespace mongo {
@@ -49,6 +49,7 @@ class Collection;
 class CollectionPtr;
 class NamespaceString;
 class OperationContext;
+class ReshardingMetrics;
 
 /**
  * Applies an operation from an oplog entry using special rules that apply to resharding.
@@ -60,7 +61,8 @@ public:
                                     size_t myStashIdx,
                                     ShardId donorShardId,
                                     ChunkManager sourceChunkMgr,
-                                    ReshardingOplogApplierMetrics* applierMetrics);
+                                    ReshardingMetrics* metrics,
+                                    ReshardingMetricsNew* metricsNew);
 
     const NamespaceString& getOutputNss() const {
         return _outputNss;
@@ -96,6 +98,7 @@ private:
 
     // Queries '_stashNss' using 'idQuery'.
     BSONObj _queryStashCollById(OperationContext* opCtx,
+                                Database* db,
                                 const CollectionPtr& coll,
                                 const BSONObj& idQuery) const;
 
@@ -118,7 +121,8 @@ private:
     // The chunk manager for the source namespace and original shard key.
     const ChunkManager _sourceChunkMgr;
 
-    ReshardingOplogApplierMetrics* _applierMetrics;
+    ReshardingMetrics* _metrics;
+    ReshardingMetricsNew* _metricsNew;
 };
 
 }  // namespace mongo

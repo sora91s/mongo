@@ -1,28 +1,37 @@
 /**
  * Stress test runs many concurrent migrations against the same recipient.
- *
- * TODO SERVER-61231: shard merge can't handle concurrent migrations.
- *
  * @tags: [
  *   incompatible_with_amazon_linux,
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
- *   incompatible_with_shard_merge,
  *   requires_majority_read_concern,
  *   requires_persistence,
- *   # The currentOp output field 'lastDurableState' was changed from an enum to a string.
- *   requires_fcv_70,
  *   serverless,
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");  // for 'extractUUIDFromObject'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 load("jstests/replsets/rslib.js");  // for 'setLogVerbosity'
 
 const kMigrationsCount = 300;
 const kConcurrentMigrationsCount = 120;
+
+// An object that mirrors the donor migration states.
+const migrationStates = {
+    kUninitialized: 0,
+    kAbortingIndexBuilds: 1,
+    kDataSync: 2,
+    kBlocking: 3,
+    kCommitted: 4,
+    kAborted: 5
+};
 
 const setParameterOpts = {
     maxTenantMigrationRecipientThreadPoolSize: 1000,
@@ -36,6 +45,14 @@ const tenantMigrationTest = new TenantMigrationTest({
 
 const donorPrimary = tenantMigrationTest.getDonorPrimary();
 const recipientPrimary = tenantMigrationTest.getRecipientPrimary();
+
+if (TenantMigrationUtil.isShardMergeEnabled(donorPrimary.getDB("admin"))) {
+    // This test runs multiple concurrent migrations, which shard merge can't handle.
+    jsTestLog(
+        "Skip: featureFlagShardMerge is enabled and this test runs multiple concurrent migrations, which shard merge can't handle.");
+    tenantMigrationTest.stop();
+    return;
+}
 
 setLogVerbosity([donorPrimary, recipientPrimary], {
     "tenantMigration": {"verbosity": 0},
@@ -130,7 +147,7 @@ while (setOfCompleteMigrations.size < kMigrationsCount) {
     }
     sleep(100);  // Do not query too often in any case.
 
-    const migrationsByState = {};  // Map of sets: key is state, value is set of IDs.
+    let migrationsByState = {};  // Map of sets: key is state, value is set of IDs.
     assert.soon(function() {
         let currentOp = tenantMigrationTest.getDonorPrimary().adminCommand(
             {currentOp: true, desc: "tenant donor migration"});
@@ -146,7 +163,7 @@ while (setOfCompleteMigrations.size < kMigrationsCount) {
             assert(id >= 0, `${id}`);
             assert(id <= kMigrationsCount, `${id}`);
 
-            if (op.lastDurableState === TenantMigrationTest.DonorState.kCommitted) {
+            if (op.lastDurableState === migrationStates.kCommitted) {
                 // Check if this migration completed after previous check.
                 if (!setOfCompleteMigrations.has(id)) {
                     setOfCompleteMigrations.add(id);
@@ -154,7 +171,7 @@ while (setOfCompleteMigrations.size < kMigrationsCount) {
                 }
             }
 
-            if (op.lastDurableState === TenantMigrationTest.DonorState.kAborted) {
+            if (op.lastDurableState === migrationStates.kAborted) {
                 if (!seenAbortedMigration) {
                     seenAbortedMigration = true;
                     jsTestLog(`Found an aborted migration in ${tojson(currentOp)}`);
@@ -172,9 +189,9 @@ while (setOfCompleteMigrations.size < kMigrationsCount) {
     });
 
     // Abort a random migration until observed by the `currentOp`.
-    if (!seenAbortedMigration && TenantMigrationTest.DonorState.kDataSync in migrationsByState &&
-        migrationsByState[TenantMigrationTest.DonorState.kDataSync].size > 0) {
-        let items = Array.from(migrationsByState[TenantMigrationTest.DonorState.kDataSync]);
+    if (!seenAbortedMigration && migrationStates.kDataSync in migrationsByState &&
+        migrationsByState[migrationStates.kDataSync].size > 0) {
+        let items = Array.from(migrationsByState[migrationStates.kDataSync]);
         let id = items[Math.floor(Math.random() * items.length)];
         jsTestLog(`${id}`);
         tenantMigrationTest.tryAbortMigration(
@@ -209,3 +226,4 @@ for (let i = 0; i < kMigrationsCount; ++i) {
 }
 
 tenantMigrationTest.stop();
+})();

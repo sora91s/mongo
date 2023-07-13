@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/optional/optional_io.hpp>
+
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/query/query_test_service_context.h"
@@ -206,10 +208,8 @@ TEST(CurOpTest, OptionalAdditiveMetricsNotDisplayedIfUninitialized) {
     BSONObj command = BSON("a" << 3);
 
     // Set dummy 'ns' and 'command'.
-    curop->setGenericOpRequestDetails(NamespaceString::createNamespaceString_forTest("myDb.coll"),
-                                      nullptr,
-                                      command,
-                                      NetworkOp::dbQuery);
+    curop->setGenericOpRequestDetails(
+        opCtx.get(), NamespaceString("myDb.coll"), nullptr, command, NetworkOp::dbQuery);
 
     BSONObjBuilder builder;
     od.append(opCtx.get(), ls, {}, builder);
@@ -234,7 +234,7 @@ TEST(CurOpTest, ShouldNotReportFailpointMsgIfNotSet) {
     BSONObjBuilder reportedStateWithoutFailpointMsg;
     {
         stdx::lock_guard<Client> lk(*opCtx->getClient());
-        curop->reportState(&reportedStateWithoutFailpointMsg);
+        curop->reportState(opCtx.get(), &reportedStateWithoutFailpointMsg);
     }
     auto bsonObj = reportedStateWithoutFailpointMsg.done();
 

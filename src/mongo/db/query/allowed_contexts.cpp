@@ -41,11 +41,20 @@ void assertLanguageFeatureIsAllowed(
     AllowedWithApiStrict allowedWithApiStrict,
     AllowedWithClientType allowedWithClientType,
     boost::optional<std::function<void(const APIParameters&)>> conditionalCallback) {
-
-    assertAllowedInternalIfRequired(opCtx, operatorName, allowedWithClientType);
+    // An internal client could be one of the following :
+    //     - Does not have any transport session
+    //     - The transport session tag is internal
+    auto client = opCtx->getClient();
+    const auto isInternalClient = client &&
+        (!client->session() ||
+         (client->session()->getTags() & transport::Session::kInternalClient));
 
     const auto apiParameters = APIParameters::get(opCtx);
-    const auto isInternal = isInternalClient(opCtx->getClient());
+
+    uassert(5491300,
+            str::stream() << operatorName << "' is not allowed in user requests",
+            !(allowedWithClientType == AllowedWithClientType::kInternal && !isInternalClient));
+
     const auto apiVersion = apiParameters.getAPIVersion().value_or("");
     const auto apiStrict = apiParameters.getAPIStrict().value_or(false);
     if (!apiStrict) {
@@ -65,7 +74,7 @@ void assertLanguageFeatureIsAllowed(
                     str::stream() << operatorName
                                   << " cannot be specified with 'apiStrict: true' in API Version "
                                   << apiVersion,
-                    isInternal);
+                    isInternalClient);
             break;
         }
         case AllowedWithApiStrict::kConditionally: {
@@ -78,29 +87,5 @@ void assertLanguageFeatureIsAllowed(
             break;
         }
     }
-}
-
-/**
- * An internal client could be one of the following :
- *     - Does not have any transport session
- *     - The transport session tag is internal
- */
-bool isInternalClient(const Client* client) {
-    return client &&
-        (!client->session() ||
-         (client->session()->getTags() & transport::Session::kInternalClient));
-}
-
-/**
- * If the AllowedWithClientType requires that the session be internal assert that it is.
- */
-void assertAllowedInternalIfRequired(const OperationContext* opCtx,
-                                     StringData operatorName,
-                                     AllowedWithClientType allowedWithClientType) {
-    const auto isInternal = isInternalClient(opCtx->getClient());
-
-    uassert(5491300,
-            str::stream() << operatorName << "' is not allowed in user requests",
-            !(allowedWithClientType == AllowedWithClientType::kInternal && !isInternal));
 }
 }  // namespace mongo

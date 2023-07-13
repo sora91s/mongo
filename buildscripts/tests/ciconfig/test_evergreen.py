@@ -6,6 +6,8 @@ import unittest
 
 import buildscripts.ciconfig.evergreen as _evergreen
 
+# pylint: disable=missing-docstring,protected-access
+
 TEST_FILE_PATH = os.path.join(os.path.dirname(__file__), "evergreen.yml")
 
 
@@ -64,7 +66,7 @@ class TestEvergreenProjectConfig(unittest.TestCase):
         self.assertIn("amazon", self.conf.distro_names)
 
 
-class TestTask(unittest.TestCase):
+class TestTask(unittest.TestCase):  # pylint: disable=too-many-public-methods
     """Unit tests for the Task class."""
 
     def test_from_dict(self):

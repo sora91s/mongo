@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include <MurmurHash3.h>
+#include <third_party/murmurhash3/MurmurHash3.h>
 
 #include <boost/filesystem/path.hpp>
 #include <deque>
@@ -43,7 +43,6 @@
 #include "mongo/bson/util/builder.h"
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/sorter/sorter_gen.h"
-#include "mongo/db/sorter/sorter_stats.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/bufreader.h"
@@ -97,6 +96,14 @@
 namespace mongo {
 
 /**
+ * For collecting file usage metrics.
+ */
+struct SorterFileStats {
+    AtomicWord<long long> opened;
+    AtomicWord<long long> closed;
+};
+
+/**
  * Runtime options that control the Sorter's behavior
  */
 struct SortOptions {
@@ -123,14 +130,6 @@ struct SortOptions {
     // If set, allows us to observe Sorter file handle usage.
     SorterFileStats* sorterFileStats;
 
-    // If set, allows us to observe aggregate Sorter behaviors.
-    SorterTracker* sorterTracker;
-
-    // When set, this sorter will own a memory pool that callers should used to allocate memory for
-    // the keys we are sorting. If enabled, any values returned by memUsageForSorter() will be
-    // ignored.
-    bool useMemPool;
-
     // If set to true and sorted data fits into memory, sorted data will be moved into iterator
     // instead of copying.
     bool moveSortedDataIntoIterator;
@@ -140,8 +139,6 @@ struct SortOptions {
           maxMemoryUsageBytes(64 * 1024 * 1024),
           extSortAllowed(false),
           sorterFileStats(nullptr),
-          sorterTracker(nullptr),
-          useMemPool(false),
           moveSortedDataIntoIterator(false) {}
 
     // Fluent API to support expressions like SortOptions().Limit(1000).ExtSortAllowed(true)
@@ -176,18 +173,8 @@ struct SortOptions {
         return *this;
     }
 
-    SortOptions& Tracker(SorterTracker* newSorterTracker) {
-        sorterTracker = newSorterTracker;
-        return *this;
-    }
-
     SortOptions& MoveSortedDataIntoIterator(bool newMoveSortedDataIntoIterator = true) {
         moveSortedDataIntoIterator = newMoveSortedDataIntoIterator;
-        return *this;
-    }
-
-    SortOptions& UseMemoryPool(bool usePool) {
-        useMemPool = usePool;
         return *this;
     }
 };
@@ -210,7 +197,6 @@ public:
     NullValue getOwned() const {
         return {};
     }
-    void makeOwned() {}
 };
 
 /**
@@ -255,18 +241,6 @@ protected:
     SortIteratorInterface() {}  // can only be constructed as a base
 };
 
-class SorterBase {
-public:
-    SorterBase(SorterTracker* sorterTracker = nullptr) : _stats(sorterTracker) {}
-
-    const SorterStats& stats() const {
-        return _stats;
-    }
-
-protected:
-    SorterStats _stats;
-};
-
 /**
  * This is the way to input data to the sorting framework.
  *
@@ -283,13 +257,12 @@ protected:
  * nextFileName() for example.
  */
 template <typename Key, typename Value>
-class Sorter : public SorterBase {
+class Sorter {
     Sorter(const Sorter&) = delete;
     Sorter& operator=(const Sorter&) = delete;
 
 public:
     typedef std::pair<Key, Value> Data;
-    typedef std::function<Value()> ValueProducer;
     typedef SortIteratorInterface<Key, Value> Iterator;
     typedef std::pair<typename Key::SorterDeserializeSettings,
                       typename Value::SorterDeserializeSettings>
@@ -306,7 +279,10 @@ public:
      */
     class File {
     public:
-        File(std::string path, SorterFileStats* stats = nullptr);
+        File(std::string path, SorterFileStats* stats = nullptr)
+            : _path(std::move(path)), _stats(stats) {
+            invariant(!_path.empty());
+        }
 
         ~File();
 
@@ -379,8 +355,9 @@ public:
                                           const Settings& settings = Settings());
 
     virtual void add(const Key&, const Value&) = 0;
-    virtual void emplace(Key&&, ValueProducer) = 0;
-
+    virtual void emplace(Key&& k, Value&& v) {
+        add(k, v);
+    }
     /**
      * Cannot add more data after calling done().
      */
@@ -388,32 +365,40 @@ public:
 
     virtual ~Sorter() {}
 
-    PersistedState persistDataForShutdown();
-
-    SharedBufferFragmentBuilder& memPool() {
-        invariant(_memPool);
-        return _memPool.get();
+    size_t numSpills() const {
+        return _numSpills;
     }
 
+    size_t numSorted() const {
+        return _numSorted;
+    }
+
+    uint64_t totalDataSizeSorted() const {
+        return _totalDataSizeSorted;
+    }
+
+    PersistedState persistDataForShutdown();
+
 protected:
+    Sorter() {}  // can only be constructed as a base
+
     virtual void spill() = 0;
+
+    size_t _numSorted = 0;              // Keeps track of the number of keys sorted.
+    uint64_t _totalDataSizeSorted = 0;  // Keeps track of the total size of data sorted.
 
     SortOptions _opts;
 
     std::shared_ptr<File> _file;
 
+    std::size_t _numSpills = 0;  // Keeps track of the number of spills that have happened.
     std::vector<std::shared_ptr<Iterator>> _iters;  // Data that has already been spilled.
-
-    boost::optional<SharedBufferFragmentBuilder> _memPool;
 };
 
 
 template <typename Key, typename Value>
-class BoundedSorterInterface : public SorterBase {
-
+class BoundedSorterInterface {
 public:
-    BoundedSorterInterface(const SortOptions& opts) : SorterBase(opts.sorterTracker) {}
-
     virtual ~BoundedSorterInterface() {}
 
     // Feed one item of input to the sorter.
@@ -453,6 +438,8 @@ public:
     // Serialize the bound for explain output
     virtual Document serializeBound() const = 0;
 
+    virtual size_t totalDataSizeBytes() const = 0;
+    virtual size_t numSpills() const = 0;
     virtual size_t limit() const = 0;
 
     // By default, uassert that the input meets our assumptions of being almost-sorted.
@@ -534,6 +521,14 @@ public:
         return {makeBound.serialize()};
     };
 
+    size_t totalDataSizeBytes() const {
+        return _totalDataSizeSorted;
+    }
+
+    size_t numSpills() const {
+        return _numSpills;
+    }
+
     size_t limit() const {
         return _opts.limit;
     }
@@ -547,10 +542,19 @@ public:
 
 private:
     using SpillIterator = SortIteratorInterface<Key, Value>;
+    struct PairComparator {
+        int operator()(const std::pair<Key, Value>& p1, const std::pair<Key, Value>& p2) const;
+        const Comparator& compare;
+    };
 
     void _spill();
 
+    const PairComparator _comparePairs;
+
     bool _checkInput;
+
+    size_t _numSorted = 0;              // Keeps track of the number of keys sorted.
+    uint64_t _totalDataSizeSorted = 0;  // Keeps track of the total size of data sorted.
 
     const SortOptions _opts;
 
@@ -559,9 +563,11 @@ private:
 
     std::shared_ptr<typename Sorter<Key, Value>::File> _file;
     std::shared_ptr<SpillIterator> _spillIter;
+    std::size_t _numSpills = 0;  // Keeps track of the number of spills that have happened.
 
     boost::optional<Key> _min;
     bool _done = false;
+    size_t _memUsed = 0;
 };
 
 /**
@@ -586,31 +592,16 @@ public:
     void addAlreadySorted(const Key&, const Value&);
 
     /**
-     * Writes any data remaining in the buffer to disk and then closes the file to which data was
+     * Spills any data remaining in the buffer to disk and then closes the file to which data was
      * written.
      *
      * No more data can be added via addAlreadySorted() after calling done().
      */
     Iterator* done();
 
-    /**
-     * The SortedFileWriter organizes data into chunks, with a chunk getting written to the output
-     * file when it exceends a maximum chunks size. A SortedFilerWriter client can produce a short
-     * chunk by manually calling this function.
-     *
-     * If no new data has been added since the last chunk was written, this function is a no-op.
-     */
-    void writeChunk();
-
-    static std::shared_ptr<Iterator> createFileIteratorForResume(
-        std::shared_ptr<typename Sorter<Key, Value>::File> file,
-        std::streamoff fileStartOffset,
-        std::streamoff fileEndOffset,
-        const Settings& settings,
-        const boost::optional<std::string>& dbName,
-        uint32_t checksum);
-
 private:
+    void spill();
+
     const Settings _settings;
     std::shared_ptr<typename Sorter<Key, Value>::File> _file;
     BufBuilder _buffer;
@@ -623,7 +614,7 @@ private:
     // be given to the Iterator in done().
     std::streamoff _fileStartOffset;
 
-    SortOptions _opts;
+    boost::optional<std::string> _dbName;
 };
 }  // namespace mongo
 

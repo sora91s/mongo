@@ -2,15 +2,12 @@
  * Test that time-series bucket collections support $_requestResumeToken and a subsequent
  * $_resumeAfter.
  *
- * The test runs commands that are not allowed with security token: killCursors.
  * @tags: [
- *   not_allowed_with_security_token,
  *   # Queries on mongoS may not request or provide a resume token.
  *   assumes_against_mongod_not_mongos,
- *   # Resuming may not work properly with stepdowns.
  *   does_not_support_stepdowns,
- *   # We need a timeseries collection.
- *   requires_timeseries,
+ *   does_not_support_transactions,
+ *   requires_getmore,
  * ]
  */
 (function() {

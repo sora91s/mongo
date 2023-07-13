@@ -40,7 +40,7 @@ namespace {
 using unittest::assertGet;
 
 ChunkRange chunkRange(BSON("a" << 1), BSON("a" << 10));
-IDLParserContext ctx("_configsvrCommitChunksMerge");
+IDLParserErrorContext ctx("_configsvrCommitChunksMerge");
 
 TEST(ConfigSvrMergeChunks, BasicValidConfigCommand) {
     auto collUUID = UUID::gen();
@@ -52,8 +52,7 @@ TEST(ConfigSvrMergeChunks, BasicValidConfigCommand) {
              << "shard0000"
              << "$db"
              << "admin"));
-    ASSERT_EQ(NamespaceString::createNamespaceString_forTest("TestDB", "TestColl"),
-              request.getCommandParameter());
+    ASSERT_EQ(NamespaceString("TestDB", "TestColl"), request.getCommandParameter());
     ASSERT_TRUE(collUUID == request.getCollectionUUID());
     ASSERT_TRUE(chunkRange == request.getChunkRange());
     ASSERT_EQ("shard0000", request.getShard().toString());
@@ -61,12 +60,12 @@ TEST(ConfigSvrMergeChunks, BasicValidConfigCommand) {
 
 TEST(ConfigSvrMergeChunks, ConfigCommandtoBSON) {
     auto collUUID = UUID::gen();
-    BSONObj serializedRequest =
-        BSON("_configsvrCommitChunksMerge"
-             << "TestDB.TestColl"
-             << "shard"
-             << "shard0000"
-             << "collUUID" << collUUID.toBSON() << "chunkRange" << chunkRange.toBSON());
+    BSONObj serializedRequest = BSON("_configsvrCommitChunksMerge"
+                                     << "TestDB.TestColl"
+                                     << "shard"
+                                     << "shard0000"
+                                     << "collUUID" << collUUID.toBSON() << "chunkRange"
+                                     << chunkRange.toBSON() << "validAfter" << Timestamp{100});
     BSONObj writeConcernObj = BSON("w"
                                    << "majority");
 

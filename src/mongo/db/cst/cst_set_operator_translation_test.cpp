@@ -47,7 +47,7 @@ namespace mongo {
 namespace {
 
 auto getExpCtx() {
-    auto nss = NamespaceString::createNamespaceString_forTest("db", "coll");
+    auto nss = NamespaceString{"db", "coll"};
     return ExpressionContextForTest(nss);
 }
 

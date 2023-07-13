@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -43,13 +44,10 @@
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
-
 namespace mongo {
 namespace crypto {
 
-MONGO_INITIALIZER(CryptographyInitialized)(InitializerContext* context) {}
+// MONGO_INITIALIZER(CryptographyInitialized)(InitializerContext* context) {}
 
 size_t aesGetIVSize(crypto::aesMode mode) {
     switch (mode) {

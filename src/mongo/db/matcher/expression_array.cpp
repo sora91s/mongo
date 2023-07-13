@@ -67,9 +67,7 @@ bool ArrayMatchingMatchExpression::equivalent(const MatchExpression* other) cons
 // -------
 
 ElemMatchObjectMatchExpression::ElemMatchObjectMatchExpression(
-    boost::optional<StringData> path,
-    std::unique_ptr<MatchExpression> sub,
-    clonable_ptr<ErrorAnnotation> annotation)
+    StringData path, std::unique_ptr<MatchExpression> sub, clonable_ptr<ErrorAnnotation> annotation)
     : ArrayMatchingMatchExpression(ELEM_MATCH_OBJECT, path, std::move(annotation)),
       _sub(std::move(sub)) {}
 
@@ -103,9 +101,10 @@ void ElemMatchObjectMatchExpression::debugString(StringBuilder& debug, int inden
     _sub->debugString(debug, indentationLevel + 1);
 }
 
-BSONObj ElemMatchObjectMatchExpression::getSerializedRightHandSide(
-    SerializationOptions opts) const {
-    return BSON("$elemMatch" << _sub->serialize(opts));
+BSONObj ElemMatchObjectMatchExpression::getSerializedRightHandSide() const {
+    BSONObjBuilder subBob;
+    _sub->serialize(&subBob, true);
+    return BSON("$elemMatch" << subBob.obj());
 }
 
 MatchExpression::ExpressionOptimizerFunc ElemMatchObjectMatchExpression::getOptimizer() const {
@@ -120,14 +119,12 @@ MatchExpression::ExpressionOptimizerFunc ElemMatchObjectMatchExpression::getOpti
 // -------
 
 ElemMatchValueMatchExpression::ElemMatchValueMatchExpression(
-    boost::optional<StringData> path,
-    std::unique_ptr<MatchExpression> sub,
-    clonable_ptr<ErrorAnnotation> annotation)
+    StringData path, std::unique_ptr<MatchExpression> sub, clonable_ptr<ErrorAnnotation> annotation)
     : ArrayMatchingMatchExpression(ELEM_MATCH_VALUE, path, std::move(annotation)),
       _subs(makeVector(std::move(sub))) {}
 
 ElemMatchValueMatchExpression::ElemMatchValueMatchExpression(
-    boost::optional<StringData> path, clonable_ptr<ErrorAnnotation> annotation)
+    StringData path, clonable_ptr<ErrorAnnotation> annotation)
     : ArrayMatchingMatchExpression(ELEM_MATCH_VALUE, path, std::move(annotation)) {}
 
 void ElemMatchValueMatchExpression::add(std::unique_ptr<MatchExpression> sub) {
@@ -173,12 +170,11 @@ void ElemMatchValueMatchExpression::debugString(StringBuilder& debug, int indent
     }
 }
 
-BSONObj ElemMatchValueMatchExpression::getSerializedRightHandSide(SerializationOptions opts) const {
+BSONObj ElemMatchValueMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder emBob;
 
-    opts.includePath = false;
     for (auto&& child : _subs) {
-        child->serialize(&emBob, opts);
+        child->serialize(&emBob, false);
     }
 
     return BSON("$elemMatch" << emBob.obj());
@@ -197,7 +193,7 @@ MatchExpression::ExpressionOptimizerFunc ElemMatchValueMatchExpression::getOptim
 
 // ---------
 
-SizeMatchExpression::SizeMatchExpression(boost::optional<StringData> path,
+SizeMatchExpression::SizeMatchExpression(StringData path,
                                          int size,
                                          clonable_ptr<ErrorAnnotation> annotation)
     : ArrayMatchingMatchExpression(SIZE, path, std::move(annotation)), _size(size) {}
@@ -219,12 +215,8 @@ void SizeMatchExpression::debugString(StringBuilder& debug, int indentationLevel
     }
 }
 
-BSONObj SizeMatchExpression::getSerializedRightHandSide(SerializationOptions opts) const {
-    const char* opName = "$size";
-    if (opts.replacementForLiteralArgs) {
-        return BSON(opName << *opts.replacementForLiteralArgs);
-    }
-    return BSON(opName << _size);
+BSONObj SizeMatchExpression::getSerializedRightHandSide() const {
+    return BSON("$size" << _size);
 }
 
 bool SizeMatchExpression::equivalent(const MatchExpression* other) const {

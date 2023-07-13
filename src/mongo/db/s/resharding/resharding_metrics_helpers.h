@@ -29,10 +29,10 @@
 
 #pragma once
 
-#include "mongo/db/s/metrics/sharding_data_transform_instance_metrics.h"
 #include "mongo/db/s/resharding/coordinator_document_gen.h"
 #include "mongo/db/s/resharding/donor_document_gen.h"
 #include "mongo/db/s/resharding/recipient_document_gen.h"
+#include "mongo/db/s/sharding_data_transform_instance_metrics.h"
 #include <type_traits>
 
 namespace mongo {
@@ -41,14 +41,10 @@ namespace resharding_metrics {
 
 template <class T>
 inline constexpr bool isStateDocument =
-    std::disjunction_v<std::is_same<T, ReshardingRecipientDocument>,
-                       std::is_same<T, ReshardingCoordinatorDocument>,
-                       std::is_same<T, ReshardingDonorDocument>>;
+    std::disjunction<std::is_same<T, ReshardingRecipientDocument>,
+                     std::is_same<T, ReshardingCoordinatorDocument>,
+                     std::is_same<T, ReshardingDonorDocument>>::value;
 
-template <typename T>
-inline constexpr bool isState = std::disjunction_v<std::is_same<T, RecipientStateEnum>,
-                                                   std::is_same<T, CoordinatorStateEnum>,
-                                                   std::is_same<T, DonorStateEnum>>;
 
 template <typename T>
 inline constexpr auto getState(const T& document) {
@@ -72,29 +68,6 @@ inline constexpr ShardingDataTransformMetrics::Role getRoleForStateDocument() {
         return Role::kRecipient;
     }
     MONGO_UNREACHABLE;
-}
-
-void onCriticalSectionError(OperationContext* opCtx, const StaleConfigInfo& info) noexcept;
-
-template <typename T>
-std::string getMetricsPrefix() {
-    static_assert(isStateDocument<T>);
-    return T::kMetricsFieldName + ".";
-}
-
-template <typename T>
-std::string getIntervalPrefix(const StringData& intervalFieldName) {
-    return getMetricsPrefix<T>() + intervalFieldName + ".";
-}
-
-template <typename T>
-std::string getIntervalStartFieldName(const StringData& intervalFieldName) {
-    return getIntervalPrefix<T>(intervalFieldName) + ReshardingMetricsTimeInterval::kStartFieldName;
-}
-
-template <typename T>
-std::string getIntervalEndFieldName(const StringData& intervalFieldName) {
-    return getIntervalPrefix<T>(intervalFieldName) + ReshardingMetricsTimeInterval::kStopFieldName;
 }
 
 }  // namespace resharding_metrics

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include <chrono>
 #include <memory>
@@ -40,9 +41,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/platform/random.h"
 #include "mongo/unittest/unittest.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace {
 
@@ -786,7 +784,7 @@ TEST(R2CellUnion, Contains) {
         generateRandomCells(GeoHash(), false, &unnormalized, &normalized);
         R2CellUnion cellUnion;
         cellUnion.init(normalized);
-        for (const auto& cellId : normalized) {
+        for (auto cellId : normalized) {
             testContains(cellUnion, cellId, 100);
         }
     }
@@ -794,7 +792,7 @@ TEST(R2CellUnion, Contains) {
 
 // Naive implementation of intersects to test correctness
 bool intersects(const R2CellUnion& cellUnion, GeoHash cellId) {
-    for (const auto& unionCellId : cellUnion.cellIds()) {
+    for (auto unionCellId : cellUnion.cellIds()) {
         // Two cells will only intersect if one contains the other
         if (unionCellId.contains(cellId) || cellId.contains(unionCellId)) {
             return true;
@@ -828,7 +826,7 @@ TEST(R2CellUnion, Intersects) {
 
         // An R2CellUnion should intersect with every cell that contains a member of the union.
         // It should also intersect with cells it contains
-        for (const auto& cellId : randomUnion.cellIds()) {
+        for (auto cellId : randomUnion.cellIds()) {
             for (unsigned level = 0; level <= 32; ++level) {
                 ASSERT_TRUE(randomUnion.intersects(GeoHash(cellId.getHash(), level)));
             }
@@ -888,14 +886,14 @@ void testDifference(std::vector<GeoHash>& xCellIds, std::vector<GeoHash>& yCellI
     xUnionY.init(x.cellIds());
     xUnionY.add(y.cellIds());
 
-    for (const auto& cellId : xUnionY.cellIds()) {
+    for (auto cellId : xUnionY.cellIds()) {
         ASSERT_TRUE(xMinusYPlusY.contains(cellId));
         ASSERT_TRUE(yMinusXPlusX.contains(cellId));
     }
-    for (const auto& cellId : xMinusYPlusY.cellIds()) {
+    for (auto cellId : xMinusYPlusY.cellIds()) {
         ASSERT_TRUE(xUnionY.contains(cellId));
     }
-    for (const auto& cellId : yMinusXPlusX.cellIds()) {
+    for (auto cellId : yMinusXPlusX.cellIds()) {
         ASSERT_TRUE(xUnionY.contains(cellId));
     }
 }

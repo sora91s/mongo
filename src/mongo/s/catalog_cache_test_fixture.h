@@ -44,42 +44,42 @@ protected:
 
     /**
      * Returns a chunk manager for the specified namespace with chunks at the specified split
-     * points as well as a global index cache with the specified global indexes. Each individual
-     * chunk is placed on a separate shard with shard id being a single number ranging from "0" to
-     * the number of chunks.
+     * points. Each individual chunk is placed on a separate shard with shard id being a single
+     * number ranging from "0" to the number of chunks.
      */
-    CollectionRoutingInfo makeCollectionRoutingInfo(
-        const NamespaceString& nss,
-        const ShardKeyPattern& shardKeyPattern,
-        std::unique_ptr<CollatorInterface> defaultCollator,
-        bool unique,
-        const std::vector<BSONObj>& splitPoints,
-        const std::vector<BSONObj>& globalIndexes,
-        boost::optional<ReshardingFields> reshardingFields = boost::none);
+    ChunkManager makeChunkManager(const NamespaceString& nss,
+                                  const ShardKeyPattern& shardKeyPattern,
+                                  std::unique_ptr<CollatorInterface> defaultCollator,
+                                  bool unique,
+                                  const std::vector<BSONObj>& splitPoints,
+                                  boost::optional<ReshardingFields> reshardingFields = boost::none);
 
     /**
      * Invalidates the catalog cache for 'kNss' and schedules a thread to invoke the blocking 'get'
      * call, returning a future which can be obtained to get the specified routing information.
      *
      * The notion of 'forced' in the function name implies that we will always indicate to the
-     * catalog cache that a refresh will happen.
+     * catalog cache that a refresh will happen, regardless of an epoch change or a stale shard.
      *
      * NOTE: The returned value is always set. The reason to use optional is a deficiency of
      * std::future with the MSVC STL library, which requires the templated type to be default
      * constructible.
      */
-    executor::NetworkTestEnv::FutureHandle<boost::optional<CollectionRoutingInfo>>
+    executor::NetworkTestEnv::FutureHandle<boost::optional<ChunkManager>>
     scheduleRoutingInfoForcedRefresh(const NamespaceString& nss);
 
     /**
-     * Gets the routing information from the catalog cache. Unforced means the refresh will only
-     * happen if the cache has been invalidated elsewhere.
+     * Invalidates the catalog cache for 'kNss' and schedules a thread to invoke the blocking 'get'
+     * call, returning a future which can be obtained to get the specified routing information.
+     *
+     * The notion of 'unforced' in the function name implies that a refresh will only happen if
+     * the epoch has been changed, or if a future targetted shard has been maked as stale.
      *
      * NOTE: The returned value is always set. The reason to use optional is a deficiency of
      * std::future with the MSVC STL library, which requires the templated type to be default
      * constructible.
      */
-    executor::NetworkTestEnv::FutureHandle<boost::optional<CollectionRoutingInfo>>
+    executor::NetworkTestEnv::FutureHandle<boost::optional<ChunkManager>>
     scheduleRoutingInfoUnforcedRefresh(const NamespaceString& nss);
 
     /**
@@ -90,7 +90,7 @@ protected:
      * std::future with the MSVC STL library, which requires the templated type to be default
      * constructible.
      */
-    executor::NetworkTestEnv::FutureHandle<boost::optional<CollectionRoutingInfo>>
+    executor::NetworkTestEnv::FutureHandle<boost::optional<ChunkManager>>
     scheduleRoutingInfoIncrementalRefresh(const NamespaceString& nss);
 
     /**
@@ -138,13 +138,6 @@ protected:
                                               UUID uuid,
                                               const ShardKeyPattern& shardKeyPattern,
                                               const std::vector<ChunkType>& chunks);
-    void expectCollectionAndIndexesAggregation(NamespaceString nss,
-                                               OID epoch,
-                                               Timestamp timestamp,
-                                               UUID uuid,
-                                               const ShardKeyPattern& shardKeyPattern,
-                                               boost::optional<Timestamp> indexVersion,
-                                               const std::vector<BSONObj>& indexes);
 
     const HostAndPort kConfigHostAndPort{"DummyConfig", 1234};
 };

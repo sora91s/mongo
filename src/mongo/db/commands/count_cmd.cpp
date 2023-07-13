@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/auth/authorization_checks.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"
@@ -35,6 +39,7 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/curop_failpoint_helpers.h"
 #include "mongo/db/db_raii.h"
+#include "mongo/db/exec/count.h"
 #include "mongo/db/fle_crud.h"
 #include "mongo/db/pipeline/aggregation_request_helper.h"
 #include "mongo/db/query/collection_query_info.h"
@@ -44,14 +49,15 @@
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/view_response_formatter.h"
 #include "mongo/db/s/collection_sharding_state.h"
-#include "mongo/db/s/query_analysis_writer.h"
+#include "mongo/db/views/resolved_view.h"
 #include "mongo/logv2/log.h"
-#include "mongo/util/database_name_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 namespace mongo {
 namespace {
+
+using std::string;
+using std::stringstream;
+using std::unique_ptr;
 
 // Failpoint which causes to hang "count" cmd after acquiring the DB lock.
 MONGO_FAIL_POINT_DEFINE(hangBeforeCollectionCount);
@@ -95,10 +101,6 @@ public:
         return false;
     }
 
-    bool allowedWithSecurityToken() const final {
-        return true;
-    }
-
     ReadConcernSupportResult supportsReadConcern(const BSONObj& cmdObj,
                                                  repl::ReadConcernLevel level,
                                                  bool isImplicitDefault) const override {
@@ -121,7 +123,7 @@ public:
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbname,
+                                 const std::string& dbname,
                                  const BSONObj& cmdObj) const override {
         AuthorizationSession* authSession = AuthorizationSession::get(opCtx->getClient());
 
@@ -140,24 +142,19 @@ public:
                    const OpMsgRequest& opMsgRequest,
                    ExplainOptions::Verbosity verbosity,
                    rpc::ReplyBuilderInterface* result) const override {
-        DatabaseName dbName = DatabaseNameUtil::deserialize(opMsgRequest.getValidatedTenantId(),
-                                                            opMsgRequest.getDatabase());
+        std::string dbname = opMsgRequest.getDatabase().toString();
         const BSONObj& cmdObj = opMsgRequest.body;
         // Acquire locks. The RAII object is optional, because in the case
         // of a view, the locks need to be released.
         boost::optional<AutoGetCollectionForReadCommandMaybeLockFree> ctx;
-        ctx.emplace(
-            opCtx,
-            CommandHelpers::parseNsCollectionRequired(dbName, cmdObj),
-            AutoGetCollection::Options{}.viewMode(auto_get_collection::ViewMode::kViewsPermitted));
+        ctx.emplace(opCtx,
+                    CommandHelpers::parseNsCollectionRequired(dbname, cmdObj),
+                    AutoGetCollectionViewMode::kViewsPermitted);
         const auto nss = ctx->getNss();
 
         CountCommandRequest request(NamespaceStringOrUUID(NamespaceString{}));
         try {
-            request = CountCommandRequest::parse(
-                IDLParserContext(
-                    "count", false /* apiStrict */, opMsgRequest.getValidatedTenantId()),
-                opMsgRequest);
+            request = CountCommandRequest::parse(IDLParserErrorContext("count"), opMsgRequest);
         } catch (...) {
             return exceptionToStatus();
         }
@@ -176,11 +173,8 @@ public:
             }
 
             auto viewAggCmd =
-                OpMsgRequestBuilder::createWithValidatedTenancyScope(
-                    nss.dbName(), opMsgRequest.validatedTenancyScope, viewAggregation.getValue())
-                    .body;
+                OpMsgRequest::fromDBAndBody(nss.db(), viewAggregation.getValue()).body;
             auto viewAggRequest = aggregation_request_helper::parseFromBSON(
-                opCtx,
                 nss,
                 viewAggCmd,
                 verbosity,
@@ -203,7 +197,7 @@ public:
         boost::optional<ScopedCollectionFilter> rangePreserver;
         if (collection.isSharded()) {
             rangePreserver.emplace(
-                CollectionShardingState::acquire(opCtx, nss)
+                CollectionShardingState::getSharedForLockFreeReads(opCtx, nss)
                     ->getOwnershipFilter(
                         opCtx,
                         CollectionShardingState::OrphanCleanupPolicy::kDisallowOrphanCleanup));
@@ -226,41 +220,24 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         CommandHelpers::handleMarkKillOnClientDisconnect(opCtx);
         // Acquire locks and resolve possible UUID. The RAII object is optional, because in the case
         // of a view, the locks need to be released.
         boost::optional<AutoGetCollectionForReadCommandMaybeLockFree> ctx;
-        ctx.emplace(
-            opCtx,
-            CommandHelpers::parseNsOrUUID(dbName, cmdObj),
-            AutoGetCollection::Options{}.viewMode(auto_get_collection::ViewMode::kViewsPermitted));
+        ctx.emplace(opCtx,
+                    CommandHelpers::parseNsOrUUID(dbname, cmdObj),
+                    AutoGetCollectionViewMode::kViewsPermitted);
         const auto& nss = ctx->getNss();
 
         CurOpFailpointHelpers::waitWhileFailPointEnabled(
             &hangBeforeCollectionCount, opCtx, "hangBeforeCollectionCount", []() {}, nss);
 
-        auto request = CountCommandRequest::parse(
-            IDLParserContext("count", false /* apiStrict */, dbName.tenantId()), cmdObj);
-        auto curOp = CurOp::get(opCtx);
-        curOp->beginQueryPlanningTimer();
+        auto request = CountCommandRequest::parse(IDLParserErrorContext("count"), cmdObj);
         if (shouldDoFLERewrite(request)) {
             processFLECountD(opCtx, nss, &request);
-        }
-        if (request.getMirrored().value_or(false)) {
-            const auto& invocation = CommandInvocation::get(opCtx);
-            invocation->markMirrored();
-        }
-
-        if (analyze_shard_key::supportsPersistingSampledQueries() && request.getSampleId()) {
-            analyze_shard_key::QueryAnalysisWriter::get(opCtx)
-                ->addCountQuery(*request.getSampleId(),
-                                nss,
-                                request.getQuery(),
-                                request.getCollation().value_or(BSONObj()))
-                .getAsync([](auto) {});
         }
 
         if (ctx->getView()) {
@@ -270,18 +247,11 @@ public:
             ctx.reset();
 
             uassertStatusOK(viewAggregation.getStatus());
-            using VTS = auth::ValidatedTenancyScope;
-            boost::optional<VTS> vts = boost::none;
-            if (dbName.tenantId()) {
-                vts = VTS(dbName.tenantId().value(), VTS::TrustedForInnerOpMsgRequestTag{});
-            }
-            auto aggRequest = OpMsgRequestBuilder::createWithValidatedTenancyScope(
-                dbName, vts, std::move(viewAggregation.getValue()));
 
-            BSONObj aggResult = CommandHelpers::runCommandDirectly(opCtx, aggRequest);
+            BSONObj aggResult = CommandHelpers::runCommandDirectly(
+                opCtx, OpMsgRequest::fromDBAndBody(dbname, std::move(viewAggregation.getValue())));
 
-            uassertStatusOK(
-                ViewResponseFormatter(aggResult).appendAsCountResponse(&result, dbName.tenantId()));
+            uassertStatusOK(ViewResponseFormatter(aggResult).appendAsCountResponse(&result));
             return true;
         }
 
@@ -297,7 +267,7 @@ public:
         boost::optional<ScopedCollectionFilter> rangePreserver;
         if (collection.isSharded()) {
             rangePreserver.emplace(
-                CollectionShardingState::acquire(opCtx, nss)
+                CollectionShardingState::getSharedForLockFreeReads(opCtx, nss)
                     ->getOwnershipFilter(
                         opCtx,
                         CollectionShardingState::OrphanCleanupPolicy::kDisallowOrphanCleanup));
@@ -315,6 +285,7 @@ public:
         auto exec = std::move(statusWithPlanExecutor.getValue());
 
         // Store the plan summary string in CurOp.
+        auto curOp = CurOp::get(opCtx);
         {
             stdx::lock_guard<Client> lk(*opCtx->getClient());
             curOp->setPlanSummary_inlock(exec->getPlanExplainer().getPlanSummary());
@@ -329,7 +300,7 @@ public:
         }
         curOp->debug().setPlanSummaryMetrics(summaryStats);
 
-        if (curOp->shouldDBProfile()) {
+        if (curOp->shouldDBProfile(opCtx)) {
             auto&& explainer = exec->getPlanExplainer();
             auto&& [stats, _] =
                 explainer.getWinningPlanStats(ExplainOptions::Verbosity::kExecStats);

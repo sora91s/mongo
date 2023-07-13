@@ -35,9 +35,9 @@
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/pipeline.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_tags.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/string_map.h"
 namespace mongo {
@@ -63,6 +63,7 @@ public:
         const ShardKeyPattern& shardKeyPattern,
         std::int64_t numInitialChunks,
         bool presplitHashedZones,
+        const boost::optional<std::vector<BSONObj>>& initialSplitPoints,
         const std::vector<TagsType>& tags,
         size_t numShards,
         bool collectionIsEmpty,
@@ -76,7 +77,7 @@ public:
     struct ShardCollectionConfig {
         std::vector<ChunkType> chunks;
 
-        const auto& collPlacementVersion() const {
+        const auto& collVersion() const {
             return chunks.back().getVersion();
         }
     };
@@ -156,11 +157,19 @@ public:
 };
 
 /**
- * Split point building strategy to be used when the appropriate splitpoints can be trivially
- * deduced from the shard key.
+ * Split point building strategy to be used when explicit split points are supplied, or where the
+ * appropriate splitpoints can be trivially deduced from the shard key.
  */
 class SplitPointsBasedSplitPolicy : public InitialSplitPolicy {
 public:
+    /**
+     * Constructor used when split points are provided.
+     */
+    SplitPointsBasedSplitPolicy(std::vector<BSONObj> explicitSplitPoints)
+        : _splitPoints(std::move(explicitSplitPoints)) {
+        _numContiguousChunksPerShard = 1;
+    }
+
     /**
      * Constructor used when generating split points for a hashed-prefix shard key.
      */
@@ -272,7 +281,7 @@ private:
 /**
  * Split point building strategy for resharding.
  */
-class SamplingBasedSplitPolicy : public InitialSplitPolicy {
+class ReshardingSplitPolicy : public InitialSplitPolicy {
 public:
     using SampleDocumentPipeline = std::unique_ptr<Pipeline, PipelineDeleter>;
 
@@ -300,27 +309,20 @@ public:
     };
 
     /**
-     * Creates a new SamplingBasedSplitPolicy. Note that it should not outlive the operation
+     * Creates a new ReshardingSplitPolicy. Note that it should not outlive the operation
      * context used to create it.
      */
-    static SamplingBasedSplitPolicy make(OperationContext* opCtx,
-                                         const NamespaceString& nss,
-                                         const ShardKeyPattern& shardKey,
-                                         int numInitialChunks,
-                                         boost::optional<std::vector<TagsType>> zones,
-                                         int samplesPerChunk = kDefaultSamplesPerChunk);
+    static ReshardingSplitPolicy make(OperationContext* opCtx,
+                                      const NamespaceString& origNs,
+                                      const NamespaceString& reshardingTempNs,
+                                      const ShardKeyPattern& shardKey,
+                                      int numInitialChunks,
+                                      boost::optional<std::vector<TagsType>> zones,
+                                      int samplesPerChunk = kDefaultSamplesPerChunk);
 
-    SamplingBasedSplitPolicy(int numInitialChunks,
-                             boost::optional<std::vector<TagsType>> zones,
-                             std::unique_ptr<SampleDocumentSource> samples);
-
-    /**
-     * Generates the initial split points and returns them in ascending shard key order. Does not
-     * include MinKey or MaxKey.
-     */
-    BSONObjSet createFirstSplitPoints(OperationContext* opCtx,
-                                      const ShardKeyPattern& shardKeyPattern,
-                                      const SplitPolicyParams& params);
+    ReshardingSplitPolicy(int numInitialChunks,
+                          boost::optional<std::vector<TagsType>> zones,
+                          std::unique_ptr<SampleDocumentSource> samples);
 
     ShardCollectionConfig createFirstChunks(OperationContext* opCtx,
                                             const ShardKeyPattern& shardKeyPattern,
@@ -330,7 +332,7 @@ public:
      * Creates the aggregation pipeline BSON to get documents for sampling from shards.
      */
     static std::vector<BSONObj> createRawPipeline(const ShardKeyPattern& shardKey,
-                                                  int numInitialChunks,
+                                                  int numSplitPoints,
                                                   int samplesPerChunk);
 
     static constexpr int kDefaultSamplesPerChunk = 10;

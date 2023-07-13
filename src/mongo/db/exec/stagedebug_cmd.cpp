@@ -116,16 +116,15 @@ public:
         return {};
     }
 
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        // Command is testing-only, and can only be enabled at command line.
-        //  Hence, no auth check needed.
-        return Status::OK();
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        // Command is testing-only, and can only be enabled at command line.  Hence, no auth
+        // check needed.
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
         BSONElement argElt = cmdObj["stageDebug"];
@@ -140,7 +139,7 @@ public:
             return false;
         }
 
-        const NamespaceString nss(dbName, collElt.String());
+        const NamespaceString nss(dbname, collElt.String());
         uassert(ErrorCodes::InvalidNamespace,
                 str::stream() << nss.toString() << " is not a valid namespace",
                 nss.isValid());
@@ -262,7 +261,7 @@ public:
                 BSONObj keyPatternObj = keyPatternElement.Obj();
                 std::vector<const IndexDescriptor*> indexes;
                 collection->getIndexCatalog()->findIndexesByKeyPattern(
-                    opCtx, keyPatternObj, IndexCatalog::InclusionPolicy::kReady, &indexes);
+                    opCtx, keyPatternObj, false, &indexes);
                 uassert(16890,
                         str::stream() << "Can't find index: " << keyPatternObj,
                         !indexes.empty());

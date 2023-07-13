@@ -1,12 +1,7 @@
 // Cannot implicitly shard accessed collections because the error response from the shard about
 // using the empty string as the out collection name is converted to an error and no longer retains
 // the "code" property.
-// The test runs commands that are not allowed with security token: cleanupOrphaned,
-// cloneCollectionAsCapped, compact, dataSize, enableSharding, godinsert, mapreduce, mergeChunks,
-// moveChunk, movePrimary, planCacheClear, planCacheClearFilters, planCacheListFilters,
-// planCacheSetFilter, reIndex, shardCollection, split, updateZoneKeyRange.
 // @tags: [
-//   not_allowed_with_security_token,
 //   assumes_unsharded_collection,
 //   does_not_support_stepdowns,
 //   requires_fastcount,
@@ -15,9 +10,6 @@
 //   uses_testing_only_commands,
 //   uses_map_reduce_with_temp_collections,
 //   no_selinux,
-//   # This test has statements that do not support non-local read concern.
-//   does_not_support_causal_consistency,
-//   uses_compact,
 // ]
 
 // This file tests that commands namespace parsing rejects embedded null bytes.
@@ -56,10 +48,9 @@ function assertFailsWithInvalidNamespacesForField(
     }
 
     const dbCmd = isAdminCommand ? db.adminCommand : db.runCommand;
-    const expErrors = [ErrorCodes.InvalidNamespace, ErrorCodes.NamespaceNotFound];
     for (let cmd of cmds) {
         jsTestLog(`running ${tojson(cmd)}`);
-        assert.commandFailedWithCode(dbCmd.apply(db, [cmd]), expErrors);
+        assert.commandFailedWithCode(dbCmd.apply(db, [cmd]), ErrorCodes.InvalidNamespace);
     }
 }
 

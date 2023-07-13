@@ -26,7 +26,7 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 
-from rollback_to_stable_util import test_rollback_to_stable_base
+from test_rollback_to_stable01 import test_rollback_to_stable_base
 from wtdataset import SimpleDataSet
 
 # test_rollback_to_stable22
@@ -39,7 +39,7 @@ from wtdataset import SimpleDataSet
 # history store itself is always row-store) so it doesn't seem necessary or worthwhile to run
 # this explicitly on VLCS or FLCS.
 class test_rollback_to_stable22(test_rollback_to_stable_base):
-    conn_config = 'cache_size=100MB,verbose=(rts:5)'
+    conn_config = 'cache_size=100MB'
     prepare = False
 
     def test_rollback_to_stable(self):

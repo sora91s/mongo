@@ -43,7 +43,7 @@
 namespace mongo {
 namespace {
 
-using PushNodeTest = UpdateTestFixture;
+using PushNodeTest = UpdateNodeTest;
 using mongo::mutablebson::countChildren;
 using mongo::mutablebson::Element;
 
@@ -288,7 +288,7 @@ TEST_F(PushNodeTest, ApplyToEmptyArray) {
     ASSERT_EQUALS(fromjson("{a: [1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1]}}"), fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -307,7 +307,7 @@ TEST_F(PushNodeTest, ApplyToEmptyDocument) {
     ASSERT_EQUALS(fromjson("{a: [1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {i: {a: [1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1]}}"), fromjson("{$v: 2, diff: {i: {a: [1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -326,7 +326,8 @@ TEST_F(PushNodeTest, ApplyToArrayWithOneElement) {
     ASSERT_EQUALS(fromjson("{a: [0, 1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, u1: 1}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.1': 1}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, u1: 1}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -357,7 +358,8 @@ TEST_F(PushNodeTest, ApplyToDottedPathElement) {
                   doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {schoices: {sfirst: {i: {votes: [1]}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'choices.first.votes': [1]}}"),
+                     fromjson("{$v: 2, diff: {schoices: {sfirst: {i: {votes: [1]}}}}}"));
     ASSERT_EQUALS("{choices.first.votes}", getModifiedPaths());
 }
 
@@ -376,7 +378,7 @@ TEST_F(PushNodeTest, ApplySimpleEachToEmptyArray) {
     ASSERT_EQUALS(fromjson("{a: [1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1]}}"), fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -395,7 +397,7 @@ TEST_F(PushNodeTest, ApplySimpleEachToEmptyDocument) {
     ASSERT_EQUALS(fromjson("{a: [1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {i: {a: [1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1]}}"), fromjson("{$v: 2, diff: {i: {a: [1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -414,7 +416,7 @@ TEST_F(PushNodeTest, ApplyMultipleEachToEmptyDocument) {
     ASSERT_EQUALS(fromjson("{a: [1, 2]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {i: {a: [1, 2]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1, 2]}}"), fromjson("{$v: 2, diff: {i: {a: [1, 2]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -433,7 +435,8 @@ TEST_F(PushNodeTest, ApplySimpleEachToArrayWithOneElement) {
     ASSERT_EQUALS(fromjson("{a: [0, 1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, u1: 1}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.1': 1}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, u1: 1}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -452,7 +455,8 @@ TEST_F(PushNodeTest, ApplyMultipleEachToArrayWithOneElement) {
     ASSERT_EQUALS(fromjson("{a: [0, 1, 2]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, u1: 1, u2: 2}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.1': 1, 'a.2': 2}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, u1: 1, u2: 2}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -490,7 +494,7 @@ TEST_F(PushNodeTest, ApplyEmptyEachToEmptyDocument) {
     ASSERT_EQUALS(fromjson("{a: []}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {i: {a: []}}}"));
+    assertOplogEntry(fromjson("{$set: {a: []}}"), fromjson("{$v: 2, diff: {i: {a: []}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -528,7 +532,7 @@ TEST_F(PushNodeTest, ApplyToArrayWithSlice) {
     ASSERT_EQUALS(fromjson("{a: [3]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [3]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [3]}}"), fromjson("{$v: 2, diff: {u: {a: [3]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -547,7 +551,8 @@ TEST_F(PushNodeTest, ApplyWithNumericSort) {
     ASSERT_EQUALS(fromjson("{a: [-1, 2, 3]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [-1, 2, 3]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [-1, 2, 3]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [-1, 2, 3]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -566,7 +571,8 @@ TEST_F(PushNodeTest, ApplyWithReverseNumericSort) {
     ASSERT_EQUALS(fromjson("{a: [4, 3, -1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [4, 3, -1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [4, 3, -1]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [4, 3, -1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -585,7 +591,8 @@ TEST_F(PushNodeTest, ApplyWithMixedSort) {
     ASSERT_EQUALS(fromjson("{a: [-1, 3, 4, 't', {a: 1}, {b: 1}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [-1, 3, 4, 't', {a: 1}, {b: 1}]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [-1, 3, 4, 't', {a: 1}, {b: 1}]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [-1, 3, 4, 't', {a: 1}, {b: 1}]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -604,7 +611,8 @@ TEST_F(PushNodeTest, ApplyWithReverseMixedSort) {
     ASSERT_EQUALS(fromjson("{a: [{b: 1}, {a: 1}, 't', 4, 3, -1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [{b: 1}, {a: 1}, 't', 4, 3, -1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [{b: 1}, {a: 1}, 't', 4, 3, -1]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [{b: 1}, {a: 1}, 't', 4, 3, -1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -623,7 +631,8 @@ TEST_F(PushNodeTest, ApplyWithEmbeddedFieldSort) {
     ASSERT_EQUALS(fromjson("{a: [3, 't', {b: 1}, 4, -1, {a: 1}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [3, 't', {b: 1}, 4, -1, {a: 1}]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [3, 't', {b: 1}, 4, -1, {a: 1}]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [3, 't', {b: 1}, 4, -1, {a: 1}]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -645,7 +654,8 @@ TEST_F(PushNodeTest, ApplySortWithCollator) {
     ASSERT_EQUALS(fromjson("{a: ['ha', 'gb', 'fc', 'dd']}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: ['ha', 'gb', 'fc', 'dd']}}}"));
+    assertOplogEntry(fromjson("{$set: {a: ['ha', 'gb', 'fc', 'dd']}}"),
+                     fromjson("{$v: 2, diff: {u: {a: ['ha', 'gb', 'fc', 'dd']}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -875,7 +885,7 @@ TEST_F(PushNodeTest, ApplyToEmptyArrayWithPositionZero) {
     ASSERT_EQUALS(fromjson("{a: [1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1]}}"), fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -894,7 +904,7 @@ TEST_F(PushNodeTest, ApplyToEmptyArrayWithPositionOne) {
     ASSERT_EQUALS(fromjson("{a: [1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1]}}"), fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -913,7 +923,7 @@ TEST_F(PushNodeTest, ApplyToEmptyArrayWithLargePosition) {
     ASSERT_EQUALS(fromjson("{a: [1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1]}}"), fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -932,7 +942,7 @@ TEST_F(PushNodeTest, ApplyToSingletonArrayWithPositionZero) {
     ASSERT_EQUALS(fromjson("{a: [1, 0]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1, 0]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1, 0]}}"), fromjson("{$v: 2, diff: {u: {a: [1, 0]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -951,7 +961,8 @@ TEST_F(PushNodeTest, ApplyToSingletonArrayWithLargePosition) {
     ASSERT_EQUALS(fromjson("{a: [0, 1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson(" {$v: 2, diff: {sa: {a: true, u1: 1}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.1': 1}}"),
+                     fromjson(" {$v: 2, diff: {sa: {a: true, u1: 1}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -970,7 +981,7 @@ TEST_F(PushNodeTest, ApplyToEmptyArrayWithNegativePosition) {
     ASSERT_EQUALS(fromjson("{a: [1]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1]}}"), fromjson("{$v: 2, diff: {u: {a: [1]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -989,7 +1000,7 @@ TEST_F(PushNodeTest, ApplyToSingletonArrayWithNegativePosition) {
     ASSERT_EQUALS(fromjson("{a: [1, 0]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [1, 0]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [1, 0]}}"), fromjson("{$v: 2, diff: {u: {a: [1, 0]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -1008,7 +1019,8 @@ TEST_F(PushNodeTest, ApplyToPopulatedArrayWithNegativePosition) {
     ASSERT_EQUALS(fromjson("{a: [0, 1, 2, 5, 3, 4]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [0, 1, 2, 5, 3, 4]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [0, 1, 2, 5, 3, 4]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [0, 1, 2, 5, 3, 4]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -1027,7 +1039,8 @@ TEST_F(PushNodeTest, ApplyToPopulatedArrayWithOutOfBoundsNegativePosition) {
     ASSERT_EQUALS(fromjson("{a: [5, 0, 1, 2, 3, 4]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [5, 0, 1, 2, 3, 4]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [5, 0, 1, 2, 3, 4]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [5, 0, 1, 2, 3, 4]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -1046,7 +1059,8 @@ TEST_F(PushNodeTest, ApplyMultipleElementsPushWithNegativePosition) {
     ASSERT_EQUALS(fromjson("{a: [0, 1, 2, 5, 6, 7, 3, 4]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [0, 1, 2, 5, 6, 7, 3, 4]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [0, 1, 2, 5, 6, 7, 3, 4]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [0, 1, 2, 5, 6, 7, 3, 4]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 
@@ -1067,7 +1081,8 @@ TEST_F(PushNodeTest, PushWithMinIntAsPosition) {
     ASSERT_EQUALS(fromjson("{a: [5, 0, 1, 2, 3, 4]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: [5, 0, 1, 2, 3, 4]}}}"));
+    assertOplogEntry(fromjson("{$set: {a: [5, 0, 1, 2, 3, 4]}}"),
+                     fromjson("{$v: 2, diff: {u: {a: [5, 0, 1, 2, 3, 4]}}}"));
     ASSERT_EQUALS("{a}", getModifiedPaths());
 }
 

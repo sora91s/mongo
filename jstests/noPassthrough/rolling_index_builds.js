@@ -12,8 +12,6 @@
 (function() {
 'use strict';
 
-load('jstests/noPassthrough/libs/index_build.js');
-
 // Set up replica set
 const replTest = new ReplSetTest({nodes: 3});
 
@@ -55,23 +53,48 @@ assert.eq(nodes.length - 1,
 const standalonePort = allocatePort();
 jsTestLog('Standalone server will listen on port: ' + standalonePort);
 
-IndexBuildTest.buildIndexOnNodeAsStandalone(
-    replTest, secondaries[0], standalonePort, dbName, collName, {b: 1}, 'rolling_index_b_1');
+function buildIndexOnNodeAsStandalone(node) {
+    jsTestLog('A. Restarting as standalone: ' + node.host);
+    replTest.stop(node, /*signal=*/null, /*opts=*/null, {forRestart: true, waitpid: true});
+    const standalone = MongoRunner.runMongod({
+        restart: true,
+        dbpath: node.dbpath,
+        port: standalonePort,
+        setParameter: {
+            disableLogicalSessionCacheRefresh: true,
+            ttlMonitorEnabled: false,
+        },
+    });
+    if (jsTestOptions().keyFile) {
+        assert(jsTest.authenticate(standalone),
+               'Failed authentication during restart: ' + standalone.host);
+    }
 
-jsTestLog('Repeat the procedure for the remaining secondary: ' + secondaries[1].host);
-IndexBuildTest.buildIndexOnNodeAsStandalone(
-    replTest, secondaries[1], standalonePort, dbName, collName, {b: 1}, 'rolling_index_b_1');
+    jsTestLog('B. Building index on standalone: ' + standalone.host);
+    const standaloneDB = standalone.getDB(dbName);
+    const standaloneColl = standaloneDB.getCollection(collName);
+    assert.commandWorked(standaloneColl.createIndex({b: 1}, {name: 'rolling_index_b_1'}));
+
+    jsTestLog('C. Restarting as replica set node: ' + node.host);
+    MongoRunner.stopMongod(standalone);
+    replTest.restart(node);
+    replTest.awaitReplication();
+}
+
+buildIndexOnNodeAsStandalone(secondaries[0]);
+
+jsTestLog('D. Repeat the procedure for the remaining secondary: ' + secondaries[1].host);
+buildIndexOnNodeAsStandalone(secondaries[1]);
 
 replTest.awaitNodesAgreeOnPrimary(
     replTest.kDefaultTimeoutMS, replTest.nodes, replTest.getNodeId(primary));
 
-jsTestLog('Build index on the primary: ' + primary.host);
+jsTestLog('E. Build index on the primary: ' + primary.host);
 assert.commandWorked(primaryDB.adminCommand({replSetStepDown: 60}));
 const newPrimary = replTest.getPrimary();
 jsTestLog('Stepped down primary for index build: ' + primary.host +
           '. New primary elected: ' + newPrimary.host);
-IndexBuildTest.buildIndexOnNodeAsStandalone(
-    replTest, primary, standalonePort, dbName, collName, {b: 1}, 'rolling_index_b_1');
+buildIndexOnNodeAsStandalone(primary);
 
 // Ensure we can create an index after doing a rolling index build.
 let newPrimaryDB = newPrimary.getDB(dbName);

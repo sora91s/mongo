@@ -38,7 +38,6 @@
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/import_options.h"
-#include "mongo/db/storage/column_store.h"
 #include "mongo/db/storage/durable_catalog.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/sorted_data_interface.h"
@@ -90,11 +89,6 @@ public:
         const CollectionOptions& collOptions,
         StringData ident,
         const IndexDescriptor* desc) = 0;
-    virtual std::unique_ptr<ColumnStore> getColumnStore(OperationContext* opCtx,
-                                                        const NamespaceString& nss,
-                                                        const CollectionOptions& collOptions,
-                                                        StringData ident,
-                                                        const IndexDescriptor*) = 0;
 
     /**
      * The create and drop methods on KVEngine are not transactional. Transactional semantics
@@ -129,11 +123,6 @@ public:
                                              const CollectionOptions& collOptions,
                                              StringData ident,
                                              const IndexDescriptor* desc) = 0;
-    virtual Status createColumnStore(OperationContext* opCtx,
-                                     const NamespaceString& ns,
-                                     const CollectionOptions& collOptions,
-                                     StringData ident,
-                                     const IndexDescriptor* desc) = 0;
 
     /**
      * Similar to createSortedDataInterface but this imports from an existing table with the
@@ -164,7 +153,7 @@ public:
      */
     virtual Status dropIdent(RecoveryUnit* ru,
                              StringData ident,
-                             const StorageEngine::DropIdentCallback& onDrop = nullptr) = 0;
+                             StorageEngine::DropIdentCallback&& onDrop = nullptr) = 0;
 
     /**
      * Removes any knowledge of the ident from the storage engines metadata without removing the
@@ -239,14 +228,9 @@ public:
                       "The current storage engine doesn't support backup mode");
     }
 
-    /**
-     * Returns whether the KVEngine supports checkpoints.
-     */
-    virtual bool supportsCheckpoints() const {
-        return false;
-    }
+    virtual void checkpoint() {}
 
-    virtual void checkpoint(OperationContext* opCtx) {}
+    virtual bool isDurable() const = 0;
 
     /**
      * Returns true if the KVEngine is ephemeral -- that is, it is NOT persistent and all data is
@@ -386,9 +370,9 @@ public:
     }
 
     /**
-     * See `StorageEngine::supportsOplogTruncateMarkers`
+     * See `StorageEngine::supportsOplogStones`
      */
-    virtual bool supportsOplogTruncateMarkers() const {
+    virtual bool supportsOplogStones() const {
         return false;
     }
 
@@ -435,34 +419,6 @@ public:
      */
     virtual Status reconfigureLogging() {
         return Status::OK();
-    }
-
-    virtual StatusWith<BSONObj> getStorageMetadata(StringData ident) const {
-        return BSONObj{};
-    };
-
-    /**
-     * Returns the 'KeyFormat' tied to 'ident'.
-     */
-    virtual KeyFormat getKeyFormat(OperationContext* opCtx, StringData ident) const {
-        MONGO_UNREACHABLE;
-    }
-
-    /**
-     * Returns the cache size in MB.
-     */
-    virtual size_t getCacheSizeMB() const {
-        return 0;
-    }
-
-    /**
-     * Returns the input storage engine options, sanitized to remove options that may not apply to
-     * this node, such as encryption. Might be called for both collection and index options. See
-     * SERVER-68122.
-     */
-    virtual StatusWith<BSONObj> getSanitizedStorageOptionsForSecondaryReplication(
-        const BSONObj& options) const {
-        return options;
     }
 
     /**

@@ -31,7 +31,7 @@
 
 #include "mongo/db/pipeline/variables.h"
 #include "mongo/s/write_ops/batched_command_request.h"
-#include "mongo/util/overloaded_visitor.h"
+#include "mongo/util/visit_helper.h"
 
 #include "mongo/bson/bsonobj.h"
 
@@ -44,10 +44,10 @@ template <class T>
 BatchedCommandRequest constructBatchedCommandRequest(const OpMsgRequest& request) {
     auto batchRequest = BatchedCommandRequest{T::parse(request)};
 
-    auto shardVersionField = request.body[ShardVersion::kShardVersionField];
+    auto shardVersionField = request.body[ChunkVersion::kShardVersionField];
     if (!shardVersionField.eoo()) {
-        auto shardVersion = ShardVersion::parse(shardVersionField);
-        if (shardVersion == ShardVersion::UNSHARDED()) {
+        auto shardVersion = ChunkVersion::fromBSONPositionalOrNewerFormat(shardVersionField);
+        if (shardVersion == ChunkVersion::UNSHARDED()) {
             batchRequest.setDbVersion(DatabaseVersion(request.body));
         }
         batchRequest.setShardVersion(shardVersion);
@@ -116,32 +116,30 @@ std::size_t BatchedCommandRequest::sizeWriteOps() const {
 }
 
 bool BatchedCommandRequest::hasLegacyRuntimeConstants() const {
-    return _visit(OverloadedVisitor{[](write_ops::InsertCommandRequest&) { return false; },
-                                    [&](write_ops::UpdateCommandRequest& op) {
-                                        return op.getLegacyRuntimeConstants().has_value();
-                                    },
-                                    [&](write_ops::DeleteCommandRequest& op) {
-                                        return op.getLegacyRuntimeConstants().has_value();
-                                    }});
+    return _visit(visit_helper::Overloaded{[](write_ops::InsertCommandRequest&) { return false; },
+                                           [&](write_ops::UpdateCommandRequest& op) {
+                                               return op.getLegacyRuntimeConstants().has_value();
+                                           },
+                                           [&](write_ops::DeleteCommandRequest& op) {
+                                               return op.getLegacyRuntimeConstants().has_value();
+                                           }});
 }
 
 void BatchedCommandRequest::setLegacyRuntimeConstants(LegacyRuntimeConstants runtimeConstants) {
-    _visit(OverloadedVisitor{[](write_ops::InsertCommandRequest&) {},
-                             [&](write_ops::UpdateCommandRequest& op) {
-                                 op.setLegacyRuntimeConstants(std::move(runtimeConstants));
-                             },
-                             [&](write_ops::DeleteCommandRequest& op) {
-                                 op.setLegacyRuntimeConstants(std::move(runtimeConstants));
-                             }});
+    _visit(visit_helper::Overloaded{[](write_ops::InsertCommandRequest&) {},
+                                    [&](write_ops::UpdateCommandRequest& op) {
+                                        op.setLegacyRuntimeConstants(std::move(runtimeConstants));
+                                    },
+                                    [&](write_ops::DeleteCommandRequest& op) {
+                                        op.setLegacyRuntimeConstants(std::move(runtimeConstants));
+                                    }});
 }
 
 void BatchedCommandRequest::unsetLegacyRuntimeConstants() {
-    _visit(OverloadedVisitor{
+    _visit(visit_helper::Overloaded{
         [](write_ops::InsertCommandRequest&) {},
         [&](write_ops::UpdateCommandRequest& op) { op.setLegacyRuntimeConstants(boost::none); },
-        [&](write_ops::DeleteCommandRequest& op) {
-            op.setLegacyRuntimeConstants(boost::none);
-        }});
+        [&](write_ops::DeleteCommandRequest& op) { op.setLegacyRuntimeConstants(boost::none); }});
 }
 
 const boost::optional<LegacyRuntimeConstants>& BatchedCommandRequest::getLegacyRuntimeConstants()
@@ -202,7 +200,7 @@ void BatchedCommandRequest::setWriteCommandRequestBase(
 void BatchedCommandRequest::serialize(BSONObjBuilder* builder) const {
     _visit([&](auto&& op) { op.serialize({}, builder); });
     if (_shardVersion) {
-        _shardVersion->serialize(ShardVersion::kShardVersionField, builder);
+        _shardVersion->serializeToBSON(ChunkVersion::kShardVersionField, builder);
     }
 
     if (_dbVersion) {
@@ -265,7 +263,7 @@ BatchedCommandRequest BatchedCommandRequest::buildDeleteOp(const NamespaceString
             entry.setMulti(multiDelete);
 
             if (hint) {
-                entry.setHint(hint.value());
+                entry.setHint(hint.get());
             }
             return entry;
         }()});
@@ -297,7 +295,7 @@ BatchedCommandRequest BatchedCommandRequest::buildUpdateOp(const NamespaceString
             entry.setUpsert(upsert);
             entry.setMulti(multi);
             if (hint) {
-                entry.setHint(hint.value());
+                entry.setHint(hint.get());
             }
             return entry;
         }()});
@@ -326,13 +324,8 @@ BatchedCommandRequest BatchedCommandRequest::buildPipelineUpdateOp(
 }
 
 BatchItemRef::BatchItemRef(const BatchedCommandRequest* request, int index)
-    : _batchedRequest(*request), _index(index) {
+    : _request(*request), _index(index) {
     invariant(index < int(request->sizeWriteOps()));
-}
-
-BatchItemRef::BatchItemRef(const BulkWriteCommandRequest* request, int index)
-    : _bulkWriteRequest(*request), _index(index) {
-    invariant(index < int(request->getOps().size()));
 }
 
 }  // namespace mongo

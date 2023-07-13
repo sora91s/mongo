@@ -31,25 +31,24 @@ global:
 
 imports:
     - "mongo/db/auth/action_type.idl"
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 structs:
     DropIndexesReply:
         description: Reply to the dropIndexes command
         strict: false
-        is_command_reply: true
         fields:
             nIndexesWas:
                 description: Number of indexes on the collection at start of dropIndexes command
                              (mongod only)
                 type: int
                 optional: true
-                stability: stable
+                unstable: false
             msg:
                 description: Optional message (mongod only)
                 type: string
                 optional: true
-                stability: stable
+                unstable: false
 
     DropIndexesRequest:
         description: dropIndexes command request
@@ -63,19 +62,19 @@ structs:
                         - string
                         - array<string>
                         - object
-                stability: stable
+                unstable: false
             isTimeseriesNamespace:
                 description: "This flag is set to true when the command was originally sent to
                               mongos on the time-series view, but got rewritten to target
                               time-series buckets namespace before being sent to shards."
                 type: bool
                 optional: true
-                stability: internal
+                unstable: false
             collectionUUID:
                 type: uuid
                 description: "The expected UUID of the collection."
                 optional: true
-                stability: unstable
+                unstable: true
 
 commands:
     dropIndexes:

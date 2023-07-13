@@ -1,5 +1,7 @@
 /**
  * Tests the streamable hello protocol against nodes with invalid replica set configs.
+ * SERVER-49428: Disable for ephemeralForTest, writeConcernMajorityJournalDefault is not off
+ * @tags: [incompatible_with_eft]
  */
 (function() {
 "use strict";

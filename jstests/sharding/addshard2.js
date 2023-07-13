@@ -3,8 +3,6 @@
  * valid and invalid hosts, shardName matching or not matching a setName, etc).
  */
 (function() {
-'use strict';
-load('jstests/sharding/libs/remove_shard_util.js');
 
 // TODO SERVER-50144 Remove this and allow orphan checking.
 // This test calls removeShard which can leave docs in config.rangeDeletions in state "pending",
@@ -39,20 +37,26 @@ const assertAddShardFailed = function(res, shardName) {
     // If a shard name was specified in the addShard, make sure no shard with its name shows up
     // in config.shards.
     if (shardName) {
-        if (TestData.catalogShard && shardName === "config") {
-            // In catalog shard mode there's always an entry for config for the config server.
-            assert.neq(null, st.s.getDB('config').shards.findOne({_id: shardName}));
-        } else {
-            assert.eq(null,
-                      st.s.getDB('config').shards.findOne({_id: shardName}),
-                      "addShard for " + shardName +
-                          " reported failure, but shard shows up in config.shards");
-        }
+        assert.eq(
+            null,
+            st.s.getDB('config').shards.findOne({_id: shardName}),
+            "addShard for " + shardName + " reported failure, but shard shows up in config.shards");
     }
 };
 
+const removeShardWithName = function(shardName) {
+    let res = st.s.adminCommand({removeShard: shardName});
+    assert.commandWorked(res);
+    assert.eq('started', res.state);
+    assert.soon(function() {
+        res = st.s.adminCommand({removeShard: shardName});
+        assert.commandWorked(res);
+        return ('completed' === res.state);
+    }, "removeShard never completed for shard " + shardName);
+};
+
 const st = new ShardingTest({
-    shards: TestData.catalogShard ? 1 : 0,
+    shards: 0,
     mongos: 1,
 });
 
@@ -77,7 +81,7 @@ rst1.initiate();
 addShardRes = st.s.adminCommand({addShard: rst1.getURL()});
 assertAddShardSucceeded(addShardRes);
 assert.eq(rst1.name, addShardRes.shardAdded);
-removeShard(st, addShardRes.shardAdded);
+removeShardWithName(addShardRes.shardAdded);
 rst1.stopSet();
 
 jsTest.log(
@@ -87,7 +91,7 @@ rst2.startSet({shardsvr: ''});
 rst2.initiate();
 addShardRes = st.s.adminCommand({addShard: rst2.getURL(), name: rst2.name});
 assertAddShardSucceeded(addShardRes, rst2.name);
-removeShard(st, addShardRes.shardAdded);
+removeShardWithName(addShardRes.shardAdded);
 rst2.stopSet();
 
 let rst3 = new ReplSetTest({nodes: 1});
@@ -98,7 +102,7 @@ jsTest.log(
     "Adding a replica set with a specified shardName that differs from the set's name should succeed.");
 addShardRes = st.s.adminCommand({addShard: rst3.getURL(), name: "differentShardName"});
 assertAddShardSucceeded(addShardRes, "differentShardName");
-removeShard(st, addShardRes.shardAdded);
+removeShardWithName(addShardRes.shardAdded);
 
 jsTest.log("Adding a replica with a specified shardName of 'config' should fail.");
 addShardRes = st.s.adminCommand({addShard: rst3.getURL(), name: "config"});
@@ -141,7 +145,7 @@ jsTest.log(
     "Adding a replica set whose setName is config with a non-'config' shardName should succeed");
 addShardRes = st.s.adminCommand({addShard: rst4.getURL(), name: "nonConfig"});
 assertAddShardSucceeded(addShardRes, "nonConfig");
-removeShard(st, addShardRes.shardAdded);
+removeShardWithName(addShardRes.shardAdded);
 
 rst4.stopSet();
 
@@ -169,7 +173,7 @@ assert.neq(null, rst5.getPrimary().getDB('test').foo.findOne());
 
 assert.commandWorked(st.s.getDB('test').runCommand({dropDatabase: 1}));
 
-removeShard(st, addShardRes.shardAdded);
+removeShardWithName(addShardRes.shardAdded);
 
 rst5.stopSet();
 

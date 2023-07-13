@@ -50,7 +50,7 @@ namespace mongo {
 namespace {
 
 LogicalSessionId parseSessionIdFromCmd(BSONObj cmdObj) {
-    return LogicalSessionId::parse(IDLParserContext("lsid"), cmdObj["lsid"].Obj());
+    return LogicalSessionId::parse(IDLParserErrorContext("lsid"), cmdObj["lsid"].Obj());
 }
 
 BSONObj makePostBatchResumeToken(Timestamp clusterTime) {
@@ -63,11 +63,10 @@ BSONObj makePostBatchResumeToken(Timestamp clusterTime) {
 }
 
 BSONObj makeResumeToken(Timestamp clusterTime, UUID uuid, BSONObj docKey) {
-    ResumeTokenData data(clusterTime,
-                         ResumeTokenData::kDefaultTokenVersion,
-                         /* txnOpIndex */ 0,
-                         uuid,
-                         /* eventIdentifier */ Value(Document{docKey}));
+    ResumeTokenData data;
+    data.clusterTime = clusterTime;
+    data.uuid = uuid;
+    data.eventIdentifier = Value(Document{docKey});
     return ResumeToken(data).toDocument().toBson();
 }
 
@@ -978,60 +977,6 @@ TEST_F(AsyncResultsMergerTest, KillCursorCmdHasNoTimeout) {
     killFuture.wait();
 }
 
-TEST_F(AsyncResultsMergerTest, KillBeforeNext) {
-    std::vector<RemoteCursor> cursors;
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[0], kTestShardHosts[0], CursorResponse(kTestNss, 1, {})));
-    auto arm = makeARMFromExistingCursors(std::move(cursors));
-
-    // Mark the OperationContext as killed from this thread.
-    {
-        stdx::lock_guard<Client> lk(*operationContext()->getClient());
-        operationContext()->markKilled(ErrorCodes::Interrupted);
-    }
-
-    // Issue a blocking wait for the next result asynchronously on a different thread.
-    auto future = launchAsync([&]() {
-        auto nextStatus = arm->nextEvent();
-        ASSERT_EQ(nextStatus.getStatus(), ErrorCodes::Interrupted);
-    });
-
-    // Wait for the merger to be interrupted.
-    future.default_timed_get();
-
-    // Kill should complete.
-    auto killFuture = arm->kill(operationContext());
-    killFuture.wait();
-}
-
-TEST_F(AsyncResultsMergerTest, KillBeforeNextWithTwoRemotes) {
-    std::vector<RemoteCursor> cursors;
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[0], kTestShardHosts[0], CursorResponse(kTestNss, 1, {})));
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[1], kTestShardHosts[1], CursorResponse(kTestNss, 2, {})));
-    auto arm = makeARMFromExistingCursors(std::move(cursors));
-
-    // Mark the OperationContext as killed from this thread.
-    {
-        stdx::lock_guard<Client> lk(*operationContext()->getClient());
-        operationContext()->markKilled(ErrorCodes::Interrupted);
-    }
-
-    // Issue a blocking wait for the next result asynchronously on a different thread.
-    auto future = launchAsync([&]() {
-        auto nextStatus = arm->nextEvent();
-        ASSERT_EQ(nextStatus.getStatus(), ErrorCodes::Interrupted);
-    });
-
-    // Wait for the merger to be interrupted.
-    future.default_timed_get();
-
-    // Kill should complete.
-    auto killFuture = arm->kill(operationContext());
-    killFuture.wait();
-}
-
 TEST_F(AsyncResultsMergerTest, TailableBasic) {
     BSONObj findCmd = fromjson("{find: 'testcoll', tailable: true}");
     std::vector<RemoteCursor> cursors;
@@ -1164,7 +1109,7 @@ TEST_F(AsyncResultsMergerTest, GetMoreBatchSizes) {
     readyEvent = unittest::assertGet(arm->nextEvent());
 
     BSONObj scheduledCmd = getNthPendingRequest(0).cmdObj;
-    auto cmd = GetMoreCommandRequest::parse(IDLParserContext{"getMore"},
+    auto cmd = GetMoreCommandRequest::parse({"getMore"},
                                             scheduledCmd.addField(BSON("$db"
                                                                        << "anydbname")
                                                                       .firstElement()));
@@ -1306,110 +1251,6 @@ TEST_F(AsyncResultsMergerTest, AllowPartialResultsOnRetriableErrorNoRetries) {
 
     ASSERT_BSONOBJ_EQ(fromjson("{_id: 1}"), *unittest::assertGet(arm->nextReady()).getResult());
 
-    ASSERT_TRUE(arm->remotesExhausted());
-    ASSERT_TRUE(arm->ready());
-}
-
-TEST_F(AsyncResultsMergerTest, MaxTimeMSExpiredAllowPartialResultsTrue) {
-    BSONObj findCmd = BSON("find"
-                           << "testcoll"
-                           << "allowPartialResults" << true);
-    std::vector<RemoteCursor> cursors;
-    // Two shards.
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[0], kTestShardHosts[0], CursorResponse(kTestNss, 1, {})));
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[1], kTestShardHosts[1], CursorResponse(kTestNss, 2, {})));
-    auto arm = makeARMFromExistingCursors(std::move(cursors), findCmd);
-
-    ASSERT_FALSE(arm->ready());
-    auto readyEvent = unittest::assertGet(arm->nextEvent());
-    ASSERT_FALSE(arm->ready());
-
-    // First host returns single result.
-    std::vector<CursorResponse> responses;
-    std::vector<BSONObj> batch = {fromjson("{_id: 1}")};
-    responses.emplace_back(kTestNss, CursorId(0), batch);
-    scheduleNetworkResponses(std::move(responses));
-
-    // From the second host we get a MaxTimeMSExpired error.
-    scheduleErrorResponse({ErrorCodes::MaxTimeMSExpired, "MaxTimeMSExpired"});
-
-    executor()->waitForEvent(readyEvent);
-
-    ASSERT_TRUE(arm->ready());
-    ASSERT_BSONOBJ_EQ(fromjson("{_id: 1}"), *unittest::assertGet(arm->nextReady()).getResult());
-    ASSERT_TRUE(arm->partialResultsReturned());
-    ASSERT_TRUE(arm->remotesExhausted());
-    ASSERT_TRUE(arm->ready());
-    ASSERT_TRUE(unittest::assertGet(arm->nextReady()).isEOF());
-    ASSERT_TRUE(unittest::assertGet(arm->nextReady()).isEOF());
-}
-
-TEST_F(AsyncResultsMergerTest, MaxTimeMSExpiredAllowPartialResultsFalse) {
-    BSONObj findCmd = BSON("find"
-                           << "testcoll"
-                           << "allowPartialResults" << false);
-    std::vector<RemoteCursor> cursors;
-    // two shards
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[0], kTestShardHosts[0], CursorResponse(kTestNss, 1, {})));
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[1], kTestShardHosts[1], CursorResponse(kTestNss, 2, {})));
-    auto arm = makeARMFromExistingCursors(std::move(cursors), findCmd);
-
-    ASSERT_FALSE(arm->ready());
-    auto readyEvent = unittest::assertGet(arm->nextEvent());
-    ASSERT_FALSE(arm->ready());
-
-    // First host returns single result
-    std::vector<CursorResponse> responses;
-    std::vector<BSONObj> batch = {fromjson("{_id: 1}")};
-    responses.emplace_back(kTestNss, CursorId(0), batch);
-    scheduleNetworkResponses(std::move(responses));
-
-    // From the second host we get a MaxTimeMSExpired error.
-    scheduleErrorResponse({ErrorCodes::MaxTimeMSExpired, "MaxTimeMSExpired"});
-
-    executor()->waitForEvent(readyEvent);
-
-    ASSERT_TRUE(arm->ready());
-    auto statusWithNext = arm->nextReady();
-    ASSERT(!statusWithNext.isOK());
-    ASSERT_EQ(statusWithNext.getStatus().code(), ErrorCodes::MaxTimeMSExpired);
-    // Required to kill the 'arm' on error before destruction.
-    auto killFuture = arm->kill(operationContext());
-    killFuture.wait();
-}
-
-TEST_F(AsyncResultsMergerTest, AllowPartialResultsOnMaxTimeMSExpiredThenLateData) {
-    BSONObj findCmd = fromjson("{find: 'testcoll', allowPartialResults: true}");
-    std::vector<RemoteCursor> cursors;
-    // two shards
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[0], kTestShardHosts[0], CursorResponse(kTestNss, 1, {})));
-    cursors.push_back(
-        makeRemoteCursor(kTestShardIds[1], kTestShardHosts[1], CursorResponse(kTestNss, 2, {})));
-    auto arm = makeARMFromExistingCursors(std::move(cursors), findCmd);
-
-    ASSERT_FALSE(arm->ready());
-    auto readyEvent = unittest::assertGet(arm->nextEvent());
-    ASSERT_FALSE(arm->ready());
-
-    // From the first host we get a MaxTimeMSExpired error.
-    scheduleErrorResponse({ErrorCodes::MaxTimeMSExpired, "MaxTimeMSExpired"});
-
-    // Second host returns single result *after* first host times out.
-    std::vector<CursorResponse> responses;
-    std::vector<BSONObj> batch = {fromjson("{_id: 1}")};
-    responses.emplace_back(kTestNss, CursorId(0), batch);
-    scheduleNetworkResponses(std::move(responses));
-
-    executor()->waitForEvent(readyEvent);
-
-    ASSERT_TRUE(arm->ready());
-    ASSERT_BSONOBJ_EQ(fromjson("{_id: 1}"), *unittest::assertGet(arm->nextReady()).getResult());
-    ASSERT_TRUE(arm->partialResultsReturned());
     ASSERT_TRUE(arm->remotesExhausted());
     ASSERT_TRUE(arm->ready());
 }
@@ -1846,8 +1687,7 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorDoesNotAdvanceHighWaterMarkFo
     cursors.push_back(makeRemoteCursor(
         kTestShardIds[2],
         kTestShardHosts[2],
-        CursorResponse(
-            NamespaceString::kConfigsvrShardsNamespace, 789, {}, boost::none, pbrtConfigCursor)));
+        CursorResponse(ShardType::ConfigNS, 789, {}, boost::none, pbrtConfigCursor)));
     params.setRemotes(std::move(cursors));
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
@@ -1875,11 +1715,8 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorDoesNotAdvanceHighWaterMarkFo
     pbrtConfigCursor = makePostBatchResumeToken(Timestamp(1, 2));
     scheduleNetworkResponse({kTestNss, CursorId(123), {}, boost::none, pbrtFirstCursor});
     scheduleNetworkResponse({kTestNss, CursorId(456), {}, boost::none, pbrtSecondCursor});
-    scheduleNetworkResponse({NamespaceString::kConfigsvrShardsNamespace,
-                             CursorId(789),
-                             {},
-                             boost::none,
-                             pbrtConfigCursor});
+    scheduleNetworkResponse(
+        {ShardType::ConfigNS, CursorId(789), {}, boost::none, pbrtConfigCursor});
 
     // The high water mark has not advanced from its previous value.
     ASSERT_BSONOBJ_EQ(arm->getHighWaterMark(), initialHighWaterMark);
@@ -1897,11 +1734,8 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorDoesNotAdvanceHighWaterMarkFo
         configEvent.addField(BSON("$sortKey" << BSON_ARRAY(pbrtConfigCursor)).firstElement());
     scheduleNetworkResponse({kTestNss, CursorId(123), {}, boost::none, pbrtFirstCursor});
     scheduleNetworkResponse({kTestNss, CursorId(456), {}, boost::none, pbrtSecondCursor});
-    scheduleNetworkResponse({NamespaceString::kConfigsvrShardsNamespace,
-                             CursorId(789),
-                             {configEvent},
-                             boost::none,
-                             pbrtConfigCursor});
+    scheduleNetworkResponse(
+        {ShardType::ConfigNS, CursorId(789), {configEvent}, boost::none, pbrtConfigCursor});
 
     // The config cursor has a lower sort key than the other shards, so we can retrieve the event.
     ASSERT_TRUE(arm->ready());
@@ -1916,11 +1750,8 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorDoesNotAdvanceHighWaterMarkFo
     // event, it does not advance the ARM's high water mark sort key.
     scheduleNetworkResponse({kTestNss, CursorId(123), {}, boost::none, pbrtFirstCursor});
     scheduleNetworkResponse({kTestNss, CursorId(456), {}, boost::none, pbrtSecondCursor});
-    scheduleNetworkResponse({NamespaceString::kConfigsvrShardsNamespace,
-                             CursorId(789),
-                             {},
-                             boost::none,
-                             pbrtConfigCursor});
+    scheduleNetworkResponse(
+        {ShardType::ConfigNS, CursorId(789), {}, boost::none, pbrtConfigCursor});
     ASSERT_BSONOBJ_EQ(arm->getHighWaterMark(), initialHighWaterMark);
     ASSERT_FALSE(arm->ready());
 
@@ -1931,11 +1762,8 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorDoesNotAdvanceHighWaterMarkFo
     pbrtConfigCursor = makePostBatchResumeToken(Timestamp(1, 12));
     scheduleNetworkResponse({kTestNss, CursorId(123), {}, boost::none, pbrtFirstCursor});
     scheduleNetworkResponse({kTestNss, CursorId(456), {}, boost::none, pbrtSecondCursor});
-    scheduleNetworkResponse({NamespaceString::kConfigsvrShardsNamespace,
-                             CursorId(789),
-                             {},
-                             boost::none,
-                             pbrtConfigCursor});
+    scheduleNetworkResponse(
+        {ShardType::ConfigNS, CursorId(789), {}, boost::none, pbrtConfigCursor});
     ASSERT_BSONOBJ_GT(arm->getHighWaterMark(), initialHighWaterMark);
     ASSERT_BSONOBJ_EQ(arm->getHighWaterMark(), pbrtConfigCursor);
     ASSERT_FALSE(arm->ready());

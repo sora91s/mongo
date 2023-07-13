@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationRollback
 
 #include "mongo/platform/basic.h"
 
@@ -36,6 +37,8 @@
 #include "mongo/db/catalog/collection_mock.h"
 #include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/logical_session_id_gen.h"
+#include "mongo/db/logical_session_id_helpers.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/oplog_interface_local.h"
@@ -45,9 +48,6 @@
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/type_shard_identity.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/session/logical_session_id_gen.h"
-#include "mongo/db/session/logical_session_id_helpers.h"
-#include "mongo/idl/server_parameter_test_util.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/type_config_version.h"
 #include "mongo/stdx/thread.h"
@@ -56,9 +56,6 @@
 #include "mongo/unittest/death_test.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/uuid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationRollback
-
 
 namespace mongo {
 namespace repl {
@@ -155,6 +152,9 @@ private:
     friend class RollbackImplTest::Listener;
 
 protected:
+    // TODO (SERVER-65305): Use wiredTiger.
+    RollbackImplTest() : RollbackTest(Options{}.engine("ephemeralForTest")) {}
+
     /**
      * Creates a new mock collection with name 'nss' via the StorageInterface and associates 'uuid'
      * with the new collection in the CollectionCatalog. There must not already exist a collection
@@ -236,10 +236,7 @@ protected:
                                          boost::optional<long> optime = boost::none) {
         const auto time = optime.value_or(_counter++);
         ASSERT_OK(_insertOplogEntry(makeDeleteOplogEntry(time, id.wrap(), nss.ns(), uuid)));
-        WriteUnitOfWork wuow{_opCtx.get()};
         ASSERT_OK(_storageInterface->deleteById(_opCtx.get(), nss, id));
-        ASSERT_OK(_opCtx->recoveryUnit()->setTimestamp(Timestamp(time, time)));
-        wuow.commit();
     }
 
     /**
@@ -254,9 +251,7 @@ protected:
     std::unique_ptr<RollbackImplForTest> _rollback;
 
     bool _transitionedToRollback = false;
-    std::function<void()> _onTransitionToRollbackFn = [this]() {
-        _transitionedToRollback = true;
-    };
+    std::function<void()> _onTransitionToRollbackFn = [this]() { _transitionedToRollback = true; };
 
     bool _recoveredToStableTimestamp = false;
     Timestamp _stableTimestamp;
@@ -267,14 +262,10 @@ protected:
         };
 
     bool _recoveredFromOplog = false;
-    std::function<void()> _onRecoverFromOplogFn = [this]() {
-        _recoveredFromOplog = true;
-    };
+    std::function<void()> _onRecoverFromOplogFn = [this]() { _recoveredFromOplog = true; };
 
     bool _incrementedRollbackID = false;
-    std::function<void()> _onRollbackIDIncrementedFn = [this]() {
-        _incrementedRollbackID = true;
-    };
+    std::function<void()> _onRollbackIDIncrementedFn = [this]() { _incrementedRollbackID = true; };
 
     bool _reconstructedPreparedTransactions = false;
     std::function<void()> _onPreparedTransactionsReconstructedFn = [this]() {
@@ -283,25 +274,18 @@ protected:
 
     Timestamp _commonPointFound;
     std::function<void(Timestamp commonPoint)> _onCommonPointFoundFn =
-        [this](Timestamp commonPoint) {
-            _commonPointFound = commonPoint;
-        };
+        [this](Timestamp commonPoint) { _commonPointFound = commonPoint; };
 
     Timestamp _truncatePoint;
     std::function<void(Timestamp truncatePoint)> _onSetOplogTruncateAfterPointFn =
-        [this](Timestamp truncatePoint) {
-            _truncatePoint = truncatePoint;
-        };
+        [this](Timestamp truncatePoint) { _truncatePoint = truncatePoint; };
 
     bool _triggeredOpObserver = false;
     std::function<void(const OpObserver::RollbackObserverInfo& rbInfo)> _onRollbackOpObserverFn =
-        [this](const OpObserver::RollbackObserverInfo& rbInfo) {
-            _triggeredOpObserver = true;
-        };
+        [this](const OpObserver::RollbackObserverInfo& rbInfo) { _triggeredOpObserver = true; };
 
     std::function<void(UUID, NamespaceString)> _onRollbackFileWrittenForNamespaceFn =
-        [this](UUID, NamespaceString) {
-        };
+        [this](UUID, NamespaceString) {};
 
     std::unique_ptr<Listener> _listener;
 
@@ -586,7 +570,7 @@ TEST_F(RollbackImplTest, RollbackKillsNecessaryOperations) {
     _storageInterface->setStableTimestamp(nullptr, Timestamp(1, 1));
 
     transport::TransportLayerMock transportLayer;
-    std::shared_ptr<transport::Session> session = transportLayer.createSession();
+    transport::SessionHandle session = transportLayer.createSession();
 
     auto writeClient = getGlobalServiceContext()->makeClient("writeClient", session);
     auto writeOpCtx = writeClient->makeOperationContext();
@@ -861,9 +845,7 @@ DEATH_TEST_F(RollbackImplTest,
     _storageInterface->setStableTimestamp(nullptr, Timestamp(1, 1));
 
     // Called before aborting prepared transactions.
-    _onRollbackIDIncrementedFn = [this]() {
-        _incrementedRollbackID = true;
-    };
+    _onRollbackIDIncrementedFn = [this]() { _incrementedRollbackID = true; };
 
     _onRecoverToStableTimestampFn = [this](Timestamp stableTimestamp) {
         _recoveredToStableTimestamp = true;
@@ -871,9 +853,7 @@ DEATH_TEST_F(RollbackImplTest,
     };
 
     // Called after reconstructing prepared transactions. We should not be getting here.
-    _onPreparedTransactionsReconstructedFn = [this]() {
-        ASSERT(false);
-    };
+    _onPreparedTransactionsReconstructedFn = [this]() { ASSERT(false); };
 
     // We expect to crash when we hit the exception.
     _rollback->runRollback(_opCtx.get()).ignore();
@@ -1495,7 +1475,7 @@ RollbackImplTest::_setUpUnpreparedTransactionForCountTest(UUID collId) {
     ASSERT_OK(_insertOplogEntry(insertOp1.first));
 
     // Common field values for applyOps oplog entries.
-    auto adminCmdNss = NamespaceString(DatabaseName::kAdmin).getCommandNS();
+    auto adminCmdNss = NamespaceString(NamespaceString::kAdminDb).getCommandNS();
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(makeLogicalSessionId(_opCtx.get()));
     sessionInfo.setTxnNumber(1);
@@ -1512,7 +1492,9 @@ RollbackImplTest::_setUpUnpreparedTransactionForCountTest(UUID collId) {
 
     auto partialApplyOpsObj = BSON("applyOps" << BSON_ARRAY(insertOp2Obj) << "partialTxn" << true);
     DurableOplogEntry partialApplyOpsOplogEntry(partialApplyOpsOpTime,      // opTime
+                                                1LL,                        // hash
                                                 OpTypeEnum::kCommand,       // opType
+                                                boost::none,                // tenant id
                                                 adminCmdNss,                // nss
                                                 boost::none,                // uuid
                                                 boost::none,                // fromMigrate
@@ -1546,7 +1528,9 @@ RollbackImplTest::_setUpUnpreparedTransactionForCountTest(UUID collId) {
     auto commitApplyOpsObj = BSON("applyOps" << BSON_ARRAY(insertOp3Obj) << "count" << 1);
     DurableOplogEntry commitApplyOpsOplogEntry(
         commitApplyOpsOpTime,       // opTime
+        1LL,                        // hash
         OpTypeEnum::kCommand,       // opType
+        boost::none,                // tenant id
         adminCmdNss,                // nss
         boost::none,                // uuid
         boost::none,                // fromMigrate
@@ -1850,7 +1834,7 @@ TEST_F(RollbackImplTest, RollbackDoesNotRestoreTxnsTableWhenNoRetryableWritesEnt
     auto insertEntry = makeInsertOplogEntry(7, BSON("_id" << 3), nss.ns(), collUuid);
 
     // Create migrated no-op transactions entry after 'stableTimestamp'.
-    auto txnEntryAfterStableTs = makeMigratedNoop({{8, 8}, 8},
+    auto txnEntryAfterStableTs = makeMigratedNoop(txnOpTime,
                                                   BSONObj(),
                                                   lsid,
                                                   txnNumTwo,
@@ -1896,8 +1880,6 @@ public:
         for (auto it = ops.rbegin(); it != ops.rend(); it++) {
             ASSERT_OK(_insertOplogEntry(it->first));
         }
-        _storageInterface->oplogDiskLocRegister(
-            _opCtx.get(), ops.front().first["ts"].timestamp(), true);
         _onRollbackOpObserverFn = [&](const OpObserver::RollbackObserverInfo& rbInfo) {
             _rbInfo = rbInfo;
         };
@@ -2056,51 +2038,6 @@ TEST_F(RollbackImplObserverInfoTest,
     auto cmdObj = BSON("renameCollection" << fromNss.ns() << "to" << toNss.ns());
     auto cmdOp =
         makeCommandOp(Timestamp(2, 2), UUID::gen(), fromNss.getCommandNS().ns(), cmdObj, 2);
-
-    std::set<NamespaceString> expectedNamespaces = {fromNss, toNss};
-    auto namespaces =
-        unittest::assertGet(_rollback->_namespacesForOp_forTest(OplogEntry(cmdOp.first)));
-    ASSERT(expectedNamespaces == namespaces);
-}
-
-TEST_F(RollbackImplObserverInfoTest,
-       NamespacesForOpsExtractsNamespacesOfRenameCollectionOplogEntryWithMultitenancy) {
-    RAIIServerParameterControllerForTest multitenancyController("multitenancySupport", true);
-
-    boost::optional<TenantId> tid(OID::gen());
-    auto fromNss = NamespaceString(tid, "test", "source");
-    auto toNss = NamespaceString(tid, "test", "dest");
-
-    auto cmdObj = BSON("renameCollection" << NamespaceStringUtil::serialize(fromNss) << "to"
-                                          << NamespaceStringUtil::serialize(toNss));
-    auto cmdOp = makeCommandOp(
-        Timestamp(2, 2), UUID::gen(), NamespaceStringUtil::serialize(fromNss), cmdObj, 2);
-
-
-    std::set<NamespaceString> expectedNamespaces = {fromNss, toNss};
-    auto namespaces =
-        unittest::assertGet(_rollback->_namespacesForOp_forTest(OplogEntry(cmdOp.first)));
-    ASSERT(expectedNamespaces == namespaces);
-}
-
-TEST_F(RollbackImplObserverInfoTest,
-       NamespacesForOpsExtractsNamespacesOfRenameCollectionOplogEntryRequiresTenantId) {
-    RAIIServerParameterControllerForTest multitenancyController("multitenancySupport", true);
-    RAIIServerParameterControllerForTest featureFlagController("featureFlagRequireTenantID", true);
-
-    boost::optional<TenantId> tid(OID::gen());
-    auto fromNss = NamespaceString(tid, "test", "source");
-    auto toNss = NamespaceString(tid, "test", "dest");
-
-    auto cmdObj = BSON("renameCollection" << NamespaceStringUtil::serialize(fromNss) << "to"
-                                          << NamespaceStringUtil::serialize(toNss));
-    auto cmdOp = makeCommandOp(Timestamp(2, 2),
-                               UUID::gen(),
-                               NamespaceStringUtil::serialize(fromNss),
-                               cmdObj,
-                               2,
-                               boost::none,
-                               tid);
 
     std::set<NamespaceString> expectedNamespaces = {fromNss, toNss};
     auto namespaces =

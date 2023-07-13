@@ -35,7 +35,7 @@ global:
         - "mongo/s/catalog/type_collection.h"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/db/coll_mod.idl"
     - "mongo/db/s/sharding_ddl_coordinator.idl"
     - "mongo/s/sharding_types.idl"
@@ -46,7 +46,6 @@ enums:
         type: string
         values:
             kUnset: "unset"
-            kFreezeMigrations: "FreezeMigrations"
             kBlockShards: "BlockShards"
             kUpdateConfig: "UpdateConfig"
             kUpdateShards: "UpdateShards"

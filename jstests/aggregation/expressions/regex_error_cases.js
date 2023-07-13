@@ -2,70 +2,43 @@
 (function() {
 'use strict';
 
-load('jstests/libs/sbe_assert_error_override.js');   // Override error-code-checking APIs.
-load('jstests/libs/aggregation_pipeline_utils.js');  // For executeAggregationTestCase().
+load('jstests/libs/sbe_assert_error_override.js');  // Override error-code-checking APIs.
+load('jstests/aggregation/extras/utils.js');        // For assertErrorCode().
 
 const coll = db.regex_error_cases;
 coll.drop();
 
-function assertFails(parameters, errorCode, allowNullResponse = false) {
+function assertFails(parameters, errorCode) {
     // Check constant parameters.
     let inputDocument = {text: 'ABCD'};
+    assert.commandWorked(coll.insert(inputDocument));
 
     const constantParameters = Object.assign({input: '$text'}, parameters);
-    const regexMatchTest =
-        Object.assign({inputDocuments: inputDocument, expectedErrorCode: errorCode},
-                      allowNullResponse ? {expectedResults: [{"result": false}]} : {});
-    const regexFindTest =
-        Object.assign({inputDocuments: inputDocument, expectedErrorCode: errorCode},
-                      allowNullResponse ? {expectedResults: [{"result": null}]} : {});
-    const regexFindAllTest =
-        Object.assign({inputDocuments: inputDocument, expectedErrorCode: errorCode},
-                      allowNullResponse ? {expectedResults: [{"result": []}]} : {});
-
-    executeAggregationTestCase(
-        coll,
-        Object.assign(
-            {pipeline: [{$project: {"_id": 0, result: {'$regexMatch': constantParameters}}}]},
-            regexMatchTest));
-    executeAggregationTestCase(
-        coll,
-        Object.assign(
-            {pipeline: [{$project: {"_id": 0, result: {'$regexFind': constantParameters}}}]},
-            regexFindTest));
-    executeAggregationTestCase(
-        coll,
-        Object.assign(
-            {pipeline: [{$project: {"_id": 0, result: {'$regexFindAll': constantParameters}}}]},
-            regexFindAllTest));
+    assertErrorCode(coll, [{$project: {result: {'$regexMatch': constantParameters}}}], errorCode);
+    assertErrorCode(coll, [{$project: {result: {'$regexFind': constantParameters}}}], errorCode);
+    assertErrorCode(coll, [{$project: {result: {'$regexFindAll': constantParameters}}}], errorCode);
 
     // Check constant parameters, but without optimization phase.
     try {
         assert.commandWorked(db.adminCommand(
             {'configureFailPoint': 'disablePipelineOptimization', 'mode': 'alwaysOn'}));
 
-        executeAggregationTestCase(
-            coll,
-            Object.assign(
-                {pipeline: [{$project: {"_id": 0, result: {'$regexMatch': constantParameters}}}]},
-                regexMatchTest));
-        executeAggregationTestCase(
-            coll,
-            Object.assign(
-                {pipeline: [{$project: {"_id": 0, result: {'$regexFind': constantParameters}}}]},
-                regexFindTest));
-        executeAggregationTestCase(
-            coll,
-            Object.assign(
-                {pipeline: [{$project: {"_id": 0, result: {'$regexFindAll': constantParameters}}}]},
-                regexFindAllTest));
+        assertErrorCode(
+            coll, [{$project: {result: {'$regexMatch': constantParameters}}}], errorCode);
+        assertErrorCode(
+            coll, [{$project: {result: {'$regexFind': constantParameters}}}], errorCode);
+        assertErrorCode(
+            coll, [{$project: {result: {'$regexFindAll': constantParameters}}}], errorCode);
     } finally {
         assert.commandWorked(
             db.adminCommand({'configureFailPoint': 'disablePipelineOptimization', 'mode': 'off'}));
     }
 
+    assert(coll.drop());
+
     // Check parameters pulled from collection.
     inputDocument = Object.assign(inputDocument, parameters);
+    assert.commandWorked(coll.insert(inputDocument));
 
     const dynamicParameters = {input: '$text'};
     if ('regex' in parameters) {
@@ -74,21 +47,10 @@ function assertFails(parameters, errorCode, allowNullResponse = false) {
     if ('options' in parameters) {
         dynamicParameters.options = '$options';
     }
-    executeAggregationTestCase(
-        coll,
-        Object.assign(
-            {pipeline: [{$project: {"_id": 0, result: {'$regexMatch': dynamicParameters}}}]},
-            regexMatchTest));
-    executeAggregationTestCase(
-        coll,
-        Object.assign(
-            {pipeline: [{$project: {"_id": 0, result: {'$regexFind': dynamicParameters}}}]},
-            regexFindTest));
-    executeAggregationTestCase(
-        coll,
-        Object.assign(
-            {pipeline: [{$project: {"_id": 0, result: {'$regexFindAll': dynamicParameters}}}]},
-            regexFindAllTest));
+    assertErrorCode(coll, [{$project: {result: {'$regexMatch': dynamicParameters}}}], errorCode);
+    assertErrorCode(coll, [{$project: {result: {'$regexFind': dynamicParameters}}}], errorCode);
+    assertErrorCode(coll, [{$project: {result: {'$regexFindAll': dynamicParameters}}}], errorCode);
+    assert(coll.drop());
 }
 
 // Regex pattern must be string, BSON RegEx or null.
@@ -103,11 +65,9 @@ assertFails({regex: /.*/i, options: 's'}, 51107);
 // Regex pattern cannot contain null bytes.
 assertFails({regex: '[a-b]+\0[c-d]+'}, 51109);
 
-// Regex flags cannot contain null bytes.
+// Regex flags cannot contain null bytes (even if regex pattern is null).
 assertFails({regex: '.*', options: 'i\0s'}, 51110);
-// If regex pattern is null, the query could either return null or report the 'cannot contain null
-// bytes' error.
-assertFails({regex: null, options: 'i\0s'}, 51110, true /* allowNullResponse */);
+assertFails({regex: null, options: 'i\0s'}, 51110);
 
 // Regex pattern must be a valid regular expression.
 assertFails({regex: '[a-'}, 51111);

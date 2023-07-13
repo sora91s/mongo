@@ -6,9 +6,11 @@ from buildscripts.resmokelib import errors
 from buildscripts.resmokelib.testing.fixtures import interface
 from buildscripts.resmokelib.testing.fixtures.fixturelib import FixtureLib
 
+# pylint: disable=missing-docstring,protected-access
+
 
 class TestFixture(unittest.TestCase):
-    def test_teardown_ok(self):
+    def test_teardown_ok(self):  # pylint: disable=no-self-use
         raising_fixture = UnitTestFixture(should_raise=False)
         raising_fixture.teardown()
 

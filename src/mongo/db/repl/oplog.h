@@ -37,12 +37,11 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/catalog/collection_options.h"
-#include "mongo/db/repl/oplog_constraint_violation_logger.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/oplog_entry_or_grouped_inserts.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/session/logical_session_id.h"
 
 namespace mongo {
 class Collection;
@@ -73,12 +72,8 @@ public:
     InsertStatement(BSONObj toInsert, Timestamp ts, long long term)
         : oplogSlot(repl::OpTime(ts, term)), doc(std::move(toInsert)) {}
 
-    InsertStatement(BSONObj toInsert, RecordId rid)
-        : recordId(std::move(rid)), doc(std::move(toInsert)) {}
-
     std::vector<StmtId> stmtIds = {kUninitializedStmtId};
     OplogSlot oplogSlot;
-    RecordId recordId;
     BSONObj doc;
 };
 
@@ -89,14 +84,20 @@ struct OplogLink {
     OplogLink() = default;
 
     OpTime prevOpTime;
+    OpTime preImageOpTime;
+    OpTime postImageOpTime;
 };
 
 /**
- * Set the "lsid", "txnNumber", "stmtId", "prevOpTime" fields of the oplogEntry based on the given
- * oplogLink for retryable writes (i.e. when stmtIds.front() != kUninitializedStmtId).
+ * Set the "lsid", "txnNumber", "stmtId", "prevOpTime", "preImageOpTime" and "postImageOpTime"
+ * fields of the oplogEntry based on the given oplogLink for retryable writes (i.e. when
+ * stmtIds.front() != kUninitializedStmtId).
  *
  * If the given oplogLink.prevOpTime is a null OpTime, both the oplogLink.prevOpTime and the
  * "prevOpTime" field of the oplogEntry will be set to the TransactionParticipant's lastWriteOpTime.
+ * The "preImageOpTime" field will only be set if the given oplogLink.preImageOpTime is not null.
+ * Similarly, the "postImageOpTime" field will only be set if the given oplogLink.postImageOpTime is
+ * not null.
  */
 void appendOplogEntryChainInfo(OperationContext* opCtx,
                                MutableOplogEntry* oplogEntry,
@@ -135,8 +136,7 @@ std::vector<OpTime> logInsertOps(
     MutableOplogEntry* oplogEntryTemplate,
     std::vector<InsertStatement>::const_iterator begin,
     std::vector<InsertStatement>::const_iterator end,
-    std::function<boost::optional<ShardId>(const BSONObj& doc)> getDestinedRecipientFn,
-    const CollectionPtr& collectionPtr);
+    std::function<boost::optional<ShardId>(const BSONObj& doc)> getDestinedRecipientFn);
 
 /**
  * Returns the optime of the oplog entry written to the oplog.
@@ -158,7 +158,7 @@ void acquireOplogCollectionForLogging(OperationContext* opCtx);
  * Called by catalog::openCatalog() to re-establish the oplog collection pointer while holding onto
  * the global lock in exclusive mode.
  */
-void establishOplogCollectionForLogging(OperationContext* opCtx, const Collection* oplog);
+void establishOplogCollectionForLogging(OperationContext* opCtx, const CollectionPtr& oplog);
 
 using IncrementOpsAppliedStatsFn = std::function<void()>;
 
@@ -203,16 +203,6 @@ inline std::ostream& operator<<(std::ostream& s, OplogApplication::Mode mode) {
 }
 
 /**
- * Logs an oplog constraint violation and writes an entry into the health log.
- */
-void logOplogConstraintViolation(OperationContext* opCtx,
-                                 const NamespaceString& nss,
-                                 OplogConstraintViolationEnum type,
-                                 const std::string& operation,
-                                 const BSONObj& opObj,
-                                 boost::optional<Status> status);
-
-/**
  * Used for applying from an oplog entry or grouped inserts.
  * @param opOrGroupedInserts a single oplog entry or grouped inserts to be applied.
  * @param alwaysUpsert convert some updates to upserts for idempotency reasons
@@ -234,7 +224,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
  * Returns failure status if the op that could not be applied.
  */
 Status applyCommand_inlock(OperationContext* opCtx,
-                           const ApplierOperation& op,
+                           const OplogEntry& entry,
                            OplogApplication::Mode mode);
 
 /**

@@ -27,17 +27,13 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/change_stream_options_manager.h"
 #include "mongo/db/change_stream_options_parameter_gen.h"
-#include "mongo/db/change_stream_serverless_helpers.h"
-#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -58,7 +54,7 @@ void ChangeStreamOptionsManager::create(ServiceContext* service) {
     getChangeStreamOptionsManager(service).emplace(service);
 }
 
-ChangeStreamOptions ChangeStreamOptionsManager::getOptions(OperationContext* opCtx) const {
+const ChangeStreamOptions& ChangeStreamOptionsManager::getOptions(OperationContext* opCtx) {
     stdx::lock_guard<Latch> L(_mutex);
     return _changeStreamOptions;
 }
@@ -71,22 +67,25 @@ StatusWith<ChangeStreamOptions> ChangeStreamOptionsManager::setOptions(
 }
 
 void ChangeStreamOptionsParameter::append(OperationContext* opCtx,
-                                          BSONObjBuilder* bob,
-                                          StringData name,
-                                          const boost::optional<TenantId>& tenantId) {
+                                          BSONObjBuilder& bob,
+                                          const std::string& name) {
     ChangeStreamOptionsManager& changeStreamOptionsManager =
         ChangeStreamOptionsManager::get(getGlobalServiceContext());
-    bob->append("_id"_sd, name);
-    bob->appendElementsUnique(changeStreamOptionsManager.getOptions(opCtx).toBSON());
+    bob.append("_id"_sd, name);
+    bob.appendElementsUnique(changeStreamOptionsManager.getOptions(opCtx).toBSON());
 }
 
-Status ChangeStreamOptionsParameter::set(const BSONElement& newValueElement,
-                                         const boost::optional<TenantId>& tenantId) {
+Status ChangeStreamOptionsParameter::set(const BSONElement& newValueElement) {
     try {
+        Status validateStatus = validate(newValueElement);
+        if (!validateStatus.isOK()) {
+            return validateStatus;
+        }
+
         ChangeStreamOptionsManager& changeStreamOptionsManager =
             ChangeStreamOptionsManager::get(getGlobalServiceContext());
         ChangeStreamOptions newOptions = ChangeStreamOptions::parse(
-            IDLParserContext("changeStreamOptions"), newValueElement.Obj());
+            IDLParserErrorContext("changeStreamOptions"), newValueElement.Obj());
 
         return changeStreamOptionsManager
             .setOptions(Client::getCurrent()->getOperationContext(), newOptions)
@@ -96,16 +95,7 @@ Status ChangeStreamOptionsParameter::set(const BSONElement& newValueElement,
     }
 }
 
-Status ChangeStreamOptionsParameter::validate(const BSONElement& newValueElement,
-                                              const boost::optional<TenantId>& tenantId) const {
-    auto* repl = repl::ReplicationCoordinator::get(getGlobalServiceContext());
-    bool isStandalone = repl &&
-        repl->getReplicationMode() == repl::ReplicationCoordinator::modeNone &&
-        serverGlobalParams.clusterRole == ClusterRole::None;
-    if (isStandalone) {
-        return {ErrorCodes::IllegalOperation,
-                "The 'changeStreamOptions' parameter is unsupported in standalone."};
-    }
+Status ChangeStreamOptionsParameter::validate(const BSONElement& newValueElement) const {
     try {
         BSONObj changeStreamOptionsObj = newValueElement.Obj();
         Status validateStatus = Status::OK();
@@ -114,7 +104,7 @@ Status ChangeStreamOptionsParameter::validate(const BSONElement& newValueElement
         // default- initialized to 'off'. This is useful for parameter initialization at startup but
         // causes the IDL parser to not enforce the presence of `expireAfterSeconds` in BSON
         // representations. We assert that and the existence of PreAndPostImages here.
-        IDLParserContext ctxt = IDLParserContext("changeStreamOptions"_sd);
+        IDLParserErrorContext ctxt = IDLParserErrorContext("changeStreamOptions"_sd);
         if (auto preAndPostImagesObj = changeStreamOptionsObj["preAndPostImages"_sd];
             !preAndPostImagesObj.eoo()) {
             if (preAndPostImagesObj["expireAfterSeconds"_sd].eoo()) {
@@ -127,7 +117,7 @@ Status ChangeStreamOptionsParameter::validate(const BSONElement& newValueElement
         ChangeStreamOptions newOptions = ChangeStreamOptions::parse(ctxt, changeStreamOptionsObj);
         auto preAndPostImages = newOptions.getPreAndPostImages();
         stdx::visit(
-            OverloadedVisitor{
+            visit_helper::Overloaded{
                 [&](const std::string& expireAfterSeconds) {
                     if (expireAfterSeconds != "off"_sd) {
                         validateStatus = {
@@ -136,14 +126,6 @@ Status ChangeStreamOptionsParameter::validate(const BSONElement& newValueElement
                     }
                 },
                 [&](const std::int64_t& expireAfterSeconds) {
-                    if (change_stream_serverless_helpers::isChangeCollectionsModeActive()) {
-                        validateStatus = {
-                            ErrorCodes::CommandNotSupported,
-                            "The 'changeStreamOptions.preAndPostImages.expireAfterSeconds' is "
-                            "unsupported in serverless, consider using "
-                            "'changeStreams.expireAfterSeconds' instead."};
-                        return;
-                    }
                     if (expireAfterSeconds <= 0) {
                         validateStatus = {
                             ErrorCodes::BadValue,
@@ -160,7 +142,7 @@ Status ChangeStreamOptionsParameter::validate(const BSONElement& newValueElement
     }
 }
 
-Status ChangeStreamOptionsParameter::reset(const boost::optional<TenantId>& tenantId) {
+Status ChangeStreamOptionsParameter::reset() {
     // Replace the current changeStreamOptions with a default-constructed one, which should
     // automatically set preAndPostImages.expirationSeconds to 'off' by default.
     ChangeStreamOptionsManager& changeStreamOptionsManager =
@@ -170,8 +152,7 @@ Status ChangeStreamOptionsParameter::reset(const boost::optional<TenantId>& tena
         .getStatus();
 }
 
-LogicalTime ChangeStreamOptionsParameter::getClusterParameterTime(
-    const boost::optional<TenantId>& tenantId) const {
+const LogicalTime ChangeStreamOptionsParameter::getClusterParameterTime() const {
     ChangeStreamOptionsManager& changeStreamOptionsManager =
         ChangeStreamOptionsManager::get(getGlobalServiceContext());
     return changeStreamOptionsManager.getClusterParameterTime();

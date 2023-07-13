@@ -22,20 +22,13 @@
 #include <cstring>
 
 #if defined(_MSC_VER)
-
 # include <intrin.h>
 # pragma intrinsic(_BitScanForward)
 # pragma intrinsic(_BitScanReverse)
-
 # if defined(_M_X64)
 #  pragma intrinsic(_BitScanForward64)
 #  pragma intrinsic(_BitScanReverse64)
 # endif
-
-# pragma warning(push)
-# pragma warning(disable: 4127) // conditional expression is constant
-# pragma warning(disable: 4244) // conversion from int to T
-
 #endif // defined(_MSC_VER)
 
 namespace boost
@@ -82,9 +75,9 @@ BOOST_CONSTEXPR inline int countl_impl( unsigned long x ) BOOST_NOEXCEPT
     return x? __builtin_clzl( x ): std::numeric_limits<unsigned long>::digits;
 }
 
-BOOST_CONSTEXPR inline int countl_impl( boost::ulong_long_type x ) BOOST_NOEXCEPT
+BOOST_CONSTEXPR inline int countl_impl( unsigned long long x ) BOOST_NOEXCEPT
 {
-    return x? __builtin_clzll( x ): std::numeric_limits<boost::ulong_long_type>::digits;
+    return x? __builtin_clzll( x ): std::numeric_limits<unsigned long long>::digits;
 }
 
 } // namespace detail
@@ -224,9 +217,9 @@ BOOST_CONSTEXPR inline int countr_impl( unsigned long x ) BOOST_NOEXCEPT
     return x? __builtin_ctzl( x ): std::numeric_limits<unsigned long>::digits;
 }
 
-BOOST_CONSTEXPR inline int countr_impl( boost::ulong_long_type x ) BOOST_NOEXCEPT
+BOOST_CONSTEXPR inline int countr_impl( unsigned long long x ) BOOST_NOEXCEPT
 {
-    return x? __builtin_ctzll( x ): std::numeric_limits<boost::ulong_long_type>::digits;
+    return x? __builtin_ctzll( x ): std::numeric_limits<unsigned long long>::digits;
 }
 
 } // namespace detail
@@ -365,7 +358,7 @@ BOOST_CORE_POPCOUNT_CONSTEXPR inline int popcount_impl( unsigned long x ) BOOST_
     return __builtin_popcountl( x );
 }
 
-BOOST_CORE_POPCOUNT_CONSTEXPR inline int popcount_impl( boost::ulong_long_type x ) BOOST_NOEXCEPT
+BOOST_CORE_POPCOUNT_CONSTEXPR inline int popcount_impl( unsigned long long x ) BOOST_NOEXCEPT
 {
     return __builtin_popcountll( x );
 }
@@ -446,13 +439,10 @@ BOOST_CONSTEXPR bool has_single_bit( T x ) BOOST_NOEXCEPT
     return x != 0 && ( x & ( x - 1 ) ) == 0;
 }
 
-// bit_width should return int, https://cplusplus.github.io/LWG/issue3656
-
 template<class T>
 BOOST_CONSTEXPR T bit_width( T x ) BOOST_NOEXCEPT
 {
-    return static_cast<T>(
-        std::numeric_limits<T>::digits - boost::core::countl_zero( x ) );
+    return std::numeric_limits<T>::digits - boost::core::countl_zero( x );
 }
 
 template<class T>
@@ -587,9 +577,5 @@ typedef endian::type endian_type;
 
 } // namespace core
 } // namespace boost
-
-#if defined(_MSC_VER)
-# pragma warning(pop)
-#endif
 
 #endif  // #ifndef BOOST_CORE_BIT_HPP_INCLUDED

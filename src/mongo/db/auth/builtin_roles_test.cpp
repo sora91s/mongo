@@ -75,7 +75,7 @@ TEST(BuiltinRoles, BuiltinRolesOnlyOnAppropriateDatabases) {
 }
 
 TEST(BuiltinRoles, getBuiltinRolesForDB) {
-    auto adminRoles = auth::getBuiltinRoleNamesForDB({boost::none, "admin"});
+    auto adminRoles = auth::getBuiltinRoleNamesForDB("admin");
     ASSERT(adminRoles.contains(RoleName("read", "admin")));
     ASSERT(adminRoles.contains(RoleName("readAnyDatabase", "admin")));
     for (const auto& role : adminRoles) {
@@ -83,7 +83,7 @@ TEST(BuiltinRoles, getBuiltinRolesForDB) {
         ASSERT(auth::isBuiltinRole(role));
     }
 
-    auto testRoles = auth::getBuiltinRoleNamesForDB({boost::none, "test"});
+    auto testRoles = auth::getBuiltinRoleNamesForDB("test");
     ASSERT(testRoles.contains(RoleName("read", "test")));
     ASSERT(!testRoles.contains(RoleName("readAnyDatabase", "test")));
     for (const auto& role : testRoles) {
@@ -108,12 +108,11 @@ TEST(BuiltinRoles, addPrivilegesForBuiltinRole) {
         ActionType::killCursors,
         ActionType::listCollections,
         ActionType::listIndexes,
-        ActionType::listSearchIndexes,
         ActionType::planCacheRead,
     });
     const auto adminDB = ResourcePattern::forDatabaseName("admin");
-    const auto adminSystemJS = ResourcePattern::forExactNamespace(
-        NamespaceString::createNamespaceString_forTest("admin", "system.js"));
+    const auto adminSystemJS =
+        ResourcePattern::forExactNamespace(NamespaceString("admin", "system.js"));
 
     for (const auto& priv : privs) {
         auto resource = priv.getResourcePattern();

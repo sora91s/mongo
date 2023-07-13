@@ -26,80 +26,12 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
-#pragma once
-
 #include <iosfwd>
-#include <queue>
 
-#include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/exec/index_path_projection.h"
-#include "mongo/db/exec/projection_executor.h"
-#include "mongo/db/exec/projection_executor_builder.h"
-#include "mongo/db/query/projection_parser.h"
 #include "mongo/db/storage/column_store.h"
 #include "mongo/util/functional.h"
-#include "mongo/util/string_map.h"
 
 namespace mongo::column_keygen {
-
-/**
- * ColumnstoreProjectionTree and ColumnstoreProjectionNode act as a proxy for the Projection AST to
- * help determine which fields to preserve for the index.
- *
- * Motivation for creation was to eliminate the linear-time search for fields in the Projection AST.
- */
-class ColumnProjectionNode {
-
-public:
-    ColumnProjectionNode() : _children(), _isLeaf(true) {}
-
-    void addChild(const std::string& field, std::unique_ptr<ColumnProjectionNode> node) {
-        _children[field] = std::move(node);
-        _isLeaf = false;
-    }
-
-    ColumnProjectionNode* getChild(StringData field) {
-        auto it = _children.find(field);
-        if (it == _children.end()) {
-            return nullptr;
-        }
-        return it->second.get();
-    }
-
-    bool isLeaf() const {
-        return _isLeaf;
-    }
-
-    const StringMap<std::unique_ptr<ColumnProjectionNode>>& children() const {
-        return _children;
-    }
-
-private:
-    StringMap<std::unique_ptr<ColumnProjectionNode>> _children;
-    bool _isLeaf;
-};
-
-class ColumnProjectionTree {
-public:
-    ColumnProjectionTree() : _isInclusion(false), _root(nullptr) {}
-
-    ColumnProjectionTree(bool isInclusion, std::unique_ptr<ColumnProjectionNode> root)
-        : _isInclusion(isInclusion), _root(std::move(root)) {}
-
-    ColumnProjectionNode* root() const {
-        return _root.get();
-    }
-
-    bool isInclusion() const {
-        return _isInclusion;
-    }
-
-private:
-    bool _isInclusion;
-    std::unique_ptr<ColumnProjectionNode> _root;
-};
-
 /**
  * This is a representation of the cell prior to flattening it out into a buffer which is passed to
  * visitor callbacks.
@@ -143,108 +75,37 @@ struct UnencodedCellView {
     friend std::ostream& operator<<(std::ostream&, const UnencodedCellView*);
 };
 
-class ColumnKeyGenerator {
-public:
-    static constexpr StringData kSubtreeSuffix = ".$**"_sd;
-
-    ColumnKeyGenerator(BSONObj keyPattern, BSONObj pathProjection);
-
-    static ColumnStoreProjection createProjectionExecutor(BSONObj keyPattern,
-                                                          BSONObj pathProjection);
-
-    /**
-     * Returns a pointer to the key generator's underlying ProjectionExecutor.
-     */
-    const ColumnStoreProjection* getColumnstoreProjection() const {
-        return &_proj;
-    }
-
-    const ColumnProjectionTree* getColumnProjectionTree() const {
-        return &_projTree;
-    }
-
-    /**
-     * Visits all paths within obj and provides their cell values.
-     * Path visit order is unspecified.
-     */
-    void visitCellsForInsert(const BSONObj& obj,
-                             function_ref<void(PathView, const UnencodedCellView&)> cb) const;
-
-    /**
-     * Visits all paths within obj and provides their cell values.
-     * Visit order is completely unspecified, so callers should not assume anything, but this
-     * function will attempt to perform the visits in an order optimized for inserting into a tree.
-     *
-     * Current implementation will visit all cells for a given path before moving on to the next
-     * path. Additionally, within each path, the cells will be visited in an order matching the
-     * order of their corresponding entries in the input vector. This will typically be ordered by
-     * RecordId since callers will typically pass records in that order, but this function neither
-     * relies on nor ensures that.
-     */
-    void visitCellsForInsert(
-        const std::vector<BsonRecord>& recs,
-        function_ref<void(PathView, const BsonRecord& record, const UnencodedCellView&)> cb) const;
-
-    /**
-     * Visits all paths within obj. When deleting, you do not need to know about values.
-     * Path visit order is unspecified.
-     */
-    void visitPathsForDelete(const BSONObj& obj, function_ref<void(PathView)> cb) const;
-
-    /**
-     * See visitDiffForUpdate().
-     */
-    enum DiffAction { kInsert, kUpdate, kDelete };
-
-    /**
-     * Computes differences between oldObj and newObj, and invokes cb() with the required actions to
-     * take to update the columnar index.
-     *
-     * For kInsert and kUpdate, the UnencodedCellView will point to the cell data for newObj (you
-     * don't need to know the value for oldObj).
-     *
-     * For kDelete, the UnencodedCellView pointer will be null.
-     *
-     * Path visit order is unspecified.
-     */
-    void visitDiffForUpdate(
-        const BSONObj& oldObj,
-        const BSONObj& newObj,
-        function_ref<void(DiffAction, PathView, const UnencodedCellView*)> cb) const;
-
-private:
-    /*
-     * Private function to construct ColumnProjectionTree given
-     * Projection AST in order for faster traversals using field names
-     */
-    ColumnProjectionTree createProjectionTree();
-
-    static projection_ast::Projection getASTProjection(BSONObj keyPattern, BSONObj pathProjection);
-
-    ColumnStoreProjection _proj;
-    const BSONObj _keyPattern;
-    const BSONObj _pathProjection;
-    const ColumnProjectionTree _projTree;
-};
+/**
+ * Visits all paths within obj and provides their cell values.
+ * Path visit order is unspecified.
+ */
+void visitCellsForInsert(const BSONObj& obj,
+                         function_ref<void(PathView, const UnencodedCellView&)> cb);
 
 /**
- * An insert, update, or delete used to apply part of a diff to a document in a column store index.
- * These operations get stored in the side writes table to defer column store writes that occur
- * while the column store is being built.
+ * Visits all paths within obj. When deleting, you do not need to know about values.
+ * Path visit order is unspecified.
  */
-struct CellPatch {
-    PathValue path;
-    CellValue contents;  // Note: 'contents' is empty for DiffAcction::kDelete operations.
-    RecordId recordId;
-    ColumnKeyGenerator::DiffAction diffAction;
+void visitPathsForDelete(const BSONObj& obj, function_ref<void(PathView)> cb);
 
-    CellPatch(PathValue path,
-              CellValue contents,
-              RecordId recordId,
-              ColumnKeyGenerator::DiffAction diffAction)
-        : path{std::move(path)},
-          contents{std::move(contents)},
-          recordId{std::move(recordId)},
-          diffAction{diffAction} {}
-};
+/**
+ * See visitDiffForUpdate().
+ */
+enum DiffAction { kInsert, kUpdate, kDelete };
+
+/**
+ * Computes differences between oldObj and newObj, and invokes cb() with the required actions to
+ * take to update the columnar index.
+ *
+ * For kInsert and kUpdate, the UnencodedCellView will point to the cell data for newObj (you
+ * don't need to know the value for oldObj).
+ *
+ * For kDelete, the UnencodedCellView pointer will be null.
+ *
+ * Path visit order is unspecified.
+ */
+void visitDiffForUpdate(const BSONObj& oldObj,
+                        const BSONObj& newObj,
+                        function_ref<void(DiffAction, PathView, const UnencodedCellView*)> cb);
+
 }  // namespace mongo::column_keygen

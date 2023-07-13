@@ -1,8 +1,6 @@
 /**
  * Tests that query options are not dropped by mongos when a query against a view is rewritten as an
  * aggregation against the underlying collection.
- *
- * @tags: [temporary_catalog_shard_incompatible]
  */
 (function() {
 "use strict";
@@ -156,10 +154,7 @@ function confirmReadPreference(shardSecondary) {
 
     // Aggregation
     assert.commandWorked(mongosDB.runCommand({
-        aggregate: "view",
-        pipeline: [],
-        comment: "agg_readPref",
-        cursor: {},
+        query: {aggregate: "view", pipeline: [], comment: "agg_readPref", cursor: {}},
         $readPreference: {mode: "nearest", tags: [{tag: "secondary"}]},
         readConcern: {level: "local"}
     }));
@@ -177,9 +172,7 @@ function confirmReadPreference(shardSecondary) {
 
     // Find
     assert.commandWorked(mongosDB.runCommand({
-        find: "view",
-        comment: "find_readPref",
-        maxTimeMS: 5 * 60 * 1000,
+        query: {find: "view", comment: "find_readPref", maxTimeMS: 5 * 60 * 1000},
         $readPreference: {mode: "nearest", tags: [{tag: "secondary"}]},
         readConcern: {level: "local"}
     }));
@@ -197,8 +190,7 @@ function confirmReadPreference(shardSecondary) {
 
     // Count
     assert.commandWorked(mongosDB.runCommand({
-        count: "view",
-        comment: "count_readPref",
+        query: {count: "view", comment: "count_readPref"},
         $readPreference: {mode: "nearest", tags: [{tag: "secondary"}]},
         readConcern: {level: "local"}
     }));
@@ -216,9 +208,7 @@ function confirmReadPreference(shardSecondary) {
 
     // Distinct
     assert.commandWorked(mongosDB.runCommand({
-        distinct: "view",
-        key: "a",
-        comment: "distinct_readPref",
+        query: {distinct: "view", key: "a", comment: "distinct_readPref"},
         $readPreference: {mode: "nearest", tags: [{tag: "secondary"}]},
         readConcern: {level: "local"}
     }));

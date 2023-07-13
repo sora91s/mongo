@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/util/str.h"
 #include "mongo/util/text.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 
 namespace {
@@ -54,17 +52,17 @@ Status _truncateFile(HANDLE handle) {
     LARGE_INTEGER largeint;
     largeint.QuadPart = 0;
     if (::SetFilePointerEx(handle, largeint, NULL, FILE_BEGIN) == FALSE) {
-        auto ec = lastSystemError();
+        int errorcode = GetLastError();
         return Status(ErrorCodes::FileStreamFailed,
                       str::stream() << "Unable to truncate lock file (SetFilePointerEx failed) "
-                                    << errorMessage(ec));
+                                    << errnoWithDescription(errorcode));
     }
 
     if (::SetEndOfFile(handle) == FALSE) {
-        auto ec = lastSystemError();
+        int errorcode = GetLastError();
         return Status(ErrorCodes::FileStreamFailed,
                       str::stream() << "Unable to truncate lock file (SetEndOfFile failed) "
-                                    << errorMessage(ec));
+                                    << errnoWithDescription(errorcode));
     }
 
     return Status::OK();
@@ -121,8 +119,8 @@ Status StorageEngineLockFile::open() {
                                         NULL);
 
     if (lockFileHandle == INVALID_HANDLE_VALUE) {
-        auto ec = lastSystemError();
-        if (ec == systemError(ERROR_ACCESS_DENIED)) {
+        int errorcode = GetLastError();
+        if (errorcode == ERROR_ACCESS_DENIED) {
             return Status(ErrorCodes::IllegalOperation,
                           str::stream()
                               << "Attempted to create a lock file on a read-only directory: "
@@ -130,7 +128,7 @@ Status StorageEngineLockFile::open() {
         }
         return Status(ErrorCodes::DBPathInUse,
                       str::stream() << "Unable to create/open the lock file: " << _filespec << " ("
-                                    << errorMessage(ec) << ")."
+                                    << errnoWithDescription(errorcode) << ")."
                                     << " Ensure the user executing mongod is the owner of the lock "
                                        "file and has the appropriate permissions. Also make sure "
                                        "that another mongod instance is not already running on the "
@@ -166,10 +164,10 @@ Status StorageEngineLockFile::writeString(StringData str) {
                     static_cast<DWORD>(str.size()),
                     &bytesWritten,
                     NULL) == FALSE) {
-        auto ec = lastSystemError();
+        int errorcode = GetLastError();
         return Status(ErrorCodes::FileStreamFailed,
                       str::stream() << "Unable to write string " << str << " to file: " << _filespec
-                                    << ' ' << errorMessage(ec));
+                                    << ' ' << errnoWithDescription(errorcode));
     } else if (bytesWritten == 0) {
         return Status(ErrorCodes::FileStreamFailed,
                       str::stream() << "Unable to write string " << str << " to file: " << _filespec

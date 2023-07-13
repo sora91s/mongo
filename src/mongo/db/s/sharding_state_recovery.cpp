@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -52,9 +53,6 @@
 #include "mongo/db/write_concern_options.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/client/shard_registry.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -189,7 +187,7 @@ Status modifyRecoveryDocument(OperationContext* opCtx,
 
 }  // namespace
 
-Status ShardingStateRecovery_DEPRECATED::startMetadataOp(OperationContext* opCtx) {
+Status ShardingStateRecovery::startMetadataOp(OperationContext* opCtx) {
     Status upsertStatus =
         modifyRecoveryDocument(opCtx, RecoveryDocument::Increment, kMajorityWriteConcern);
 
@@ -204,7 +202,7 @@ Status ShardingStateRecovery_DEPRECATED::startMetadataOp(OperationContext* opCtx
     return upsertStatus;
 }
 
-void ShardingStateRecovery_DEPRECATED::endMetadataOp(OperationContext* opCtx) {
+void ShardingStateRecovery::endMetadataOp(OperationContext* opCtx) {
     Status status =
         modifyRecoveryDocument(opCtx, RecoveryDocument::Decrement, WriteConcernOptions());
     if (!status.isOK()) {
@@ -215,7 +213,7 @@ void ShardingStateRecovery_DEPRECATED::endMetadataOp(OperationContext* opCtx) {
     }
 }
 
-Status ShardingStateRecovery_DEPRECATED::recover(OperationContext* opCtx) {
+Status ShardingStateRecovery::recover(OperationContext* opCtx) {
     ShardingState* const shardingState = ShardingState::get(opCtx);
     invariant(shardingState->enabled());
 
@@ -258,22 +256,15 @@ Status ShardingStateRecovery_DEPRECATED::recover(OperationContext* opCtx) {
         "flight. Contacting the config server primary in order to retrieve the most recent opTime",
         "inProgressMetadataOperationCount"_attr = recoveryDoc.getMinOpTimeUpdaters());
 
-    // Need to fetch the latest uptime from the config server, so do a logging write.
-    //
-    // If this node is the config server, we skip the write because we may be in stepup and cannot
-    // perform majority writes. The write isn't required in this case, since the node must be in a
-    // recent enough version where configTime guarantees are maintained via the vector clock.
-    Status status = Status::OK();
-    if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-        status = ShardingLogging::get(opCtx)->logChangeChecked(
-            opCtx,
-            "Sharding minOpTime recovery",
-            NamespaceString::kServerConfigurationNamespace.ns(),
-            recoveryDocBSON,
-            ShardingCatalogClient::kMajorityWriteConcern);
-        if (!status.isOK())
-            return status;
-    }
+    // Need to fetch the latest uptime from the config server, so do a logging write
+    Status status = ShardingLogging::get(opCtx)->logChangeChecked(
+        opCtx,
+        "Sharding minOpTime recovery",
+        NamespaceString::kServerConfigurationNamespace.ns(),
+        recoveryDocBSON,
+        ShardingCatalogClient::kMajorityWriteConcern);
+    if (!status.isOK())
+        return status;
 
     LOGV2(22087, "Sharding state recovered");
 

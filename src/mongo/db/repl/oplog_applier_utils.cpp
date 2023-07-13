@@ -27,29 +27,22 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
-#include "mongo/db/catalog_raii.h"
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/document_validation.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
-#include "mongo/db/global_index.h"
-#include "mongo/db/multitenancy_gen.h"
-#include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/oplog_applier_utils.h"
 #include "mongo/db/repl/repl_server_parameters_gen.h"
-#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/util/fail_point.h"
 
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 MONGO_FAIL_POINT_DEFINE(hangAfterApplyingCollectionDropOplogEntry);
 
@@ -63,22 +56,35 @@ CachedCollectionProperties::getCollectionProperties(OperationContext* opCtx,
         return it->second;
     }
 
-    CollectionProperties collProperties;
-    if (auto collection = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(
-            opCtx, NamespaceString(ns.key()))) {
-        collProperties.isCapped = collection->isCapped();
-        collProperties.isClustered = collection->isClustered();
-        collProperties.collator = collection->getDefaultCollator();
-    }
+    auto collProperties = getCollectionPropertiesImpl(opCtx, NamespaceString(ns.key()));
     _cache[ns] = collProperties;
     return collProperties;
 }
 
-void OplogApplierUtils::processCrudOp(
-    OperationContext* opCtx,
-    OplogEntry* op,
-    uint32_t* hash,
-    const CachedCollectionProperties::CollectionProperties& collProperties) {
+CachedCollectionProperties::CollectionProperties
+CachedCollectionProperties::getCollectionPropertiesImpl(OperationContext* opCtx,
+                                                        const NamespaceString& nss) {
+    CollectionProperties collProperties;
+
+    auto collection = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
+
+    if (!collection) {
+        return collProperties;
+    }
+
+    collProperties.isCapped = collection->isCapped();
+    collProperties.isClustered = collection->isClustered();
+    collProperties.collator = collection->getDefaultCollator();
+    return collProperties;
+}
+
+void OplogApplierUtils::processCrudOp(OperationContext* opCtx,
+                                      OplogEntry* op,
+                                      uint32_t* hash,
+                                      StringMapHashedKey* hashedNs,
+                                      CachedCollectionProperties* collPropertiesCache) {
+    auto collProperties = collPropertiesCache->getCollectionProperties(opCtx, *hashedNs);
+
     // Include the _id of the document in the hash so we get parallelism even if all writes are to a
     // single collection.
     //
@@ -86,14 +92,7 @@ void OplogApplierUtils::processCrudOp(
     // insertion order. One exception are clustered capped collections with a monotonically
     // increasing cluster key, which guarantee preservation of the insertion order.
     if (!collProperties.isCapped || collProperties.isClustered) {
-        BSONElement id = [&]() {
-            if (op->isGlobalIndexCrudOpType()) {
-                // The document key indentifies the base collection's document, and is used to
-                // serialise index key writes referring to the same document.
-                return op->getObject().getField(global_index::kOplogEntryDocKeyFieldName);
-            }
-            return op->getIdElement();
-        }();
+        BSONElement id = op->getIdElement();
         BSONElementComparator elementHasher(BSONElementComparator::FieldNamesMode::kIgnore,
                                             collProperties.collator);
         const size_t idHash = elementHasher.hash(id);
@@ -107,71 +106,34 @@ void OplogApplierUtils::processCrudOp(
     }
 }
 
-uint32_t getWriterId(OperationContext* opCtx,
-                     OplogEntry* op,
-                     CachedCollectionProperties* collPropertiesCache,
-                     uint32_t numWriters,
-                     boost::optional<uint32_t> forceWriterId = boost::none) {
-    NamespaceString nss = op->isGlobalIndexCrudOpType()
-        ? NamespaceString::makeGlobalIndexNSS(op->getUuid().value())
-        : op->getNss();
-
-    // Reduce the hash from 64bit down to 32bit, just to allow combinations with murmur3 later
-    // on. Bit depth not important, we end up just doing integer modulo with this in the end.
-    // The hash function should provide entropy in the lower bits as it's used in hash tables.
-    auto hashedNs = StringMapHasher().hashed_key(nss.ns());
-    auto hash = static_cast<uint32_t>(hashedNs.hash());
-
-    if (op->isCrudOpType()) {
-        auto collProperties = collPropertiesCache->getCollectionProperties(opCtx, hashedNs);
-        OplogApplierUtils::processCrudOp(opCtx, op, &hash, collProperties);
-    }
-
-    return (forceWriterId ? *forceWriterId : hash) % numWriters;
-}
-
-template <typename Operation>
-uint32_t addToWriterVectorImpl(OperationContext* opCtx,
-                               OplogEntry* op,
-                               std::vector<std::vector<Operation>>* writerVectors,
-                               CachedCollectionProperties* collPropertiesCache,
-                               boost::optional<uint32_t> forceWriterId = boost::none) {
-    auto writerId =
-        getWriterId(opCtx, op, collPropertiesCache, writerVectors->size(), forceWriterId);
-    auto& writer = (*writerVectors)[writerId];
-
-    if (writer.empty()) {
-        // Skip a few growth rounds.
-        writer.reserve(8);
-    }
-    writer.emplace_back(op);
-
-    return writerId;
-}
-
 uint32_t OplogApplierUtils::addToWriterVector(
     OperationContext* opCtx,
     OplogEntry* op,
     std::vector<std::vector<const OplogEntry*>>* writerVectors,
     CachedCollectionProperties* collPropertiesCache,
     boost::optional<uint32_t> forceWriterId) {
-    return addToWriterVectorImpl(opCtx, op, writerVectors, collPropertiesCache, forceWriterId);
+    auto hashedNs = StringMapHasher().hashed_key(op->getNss().ns());
+
+    // Reduce the hash from 64bit down to 32bit, just to allow combinations with murmur3 later
+    // on. Bit depth not important, we end up just doing integer modulo with this in the end.
+    // The hash function should provide entropy in the lower bits as it's used in hash tables.
+    uint32_t hash = static_cast<uint32_t>(hashedNs.hash());
+
+    if (op->isCrudOpType())
+        processCrudOp(opCtx, op, &hash, &hashedNs, collPropertiesCache);
+
+    const uint32_t numWriters = writerVectors->size();
+    auto writerId = (forceWriterId ? *forceWriterId : hash) % numWriters;
+    auto& writer = (*writerVectors)[writerId];
+    if (writer.empty()) {
+        writer.reserve(8);  // Skip a few growth rounds
+    }
+    writer.push_back(op);
+    return writerId;
 }
 
-uint32_t OplogApplierUtils::addToWriterVector(
-    OperationContext* opCtx,
-    OplogEntry* op,
-    std::vector<std::vector<ApplierOperation>>* writerVectors,
-    CachedCollectionProperties* collPropertiesCache,
-    boost::optional<uint32_t> forceWriterId) {
-    return addToWriterVectorImpl(opCtx, op, writerVectors, collPropertiesCache, forceWriterId);
-}
-
-void OplogApplierUtils::stableSortByNamespace(std::vector<ApplierOperation>* ops) {
-    auto isPreparedTxnCommand = [](const ApplierOperation& op) {
-        return op->isPreparedCommit() || op->isPreparedAbort() || op->shouldPrepare();
-    };
-    auto nssComparator = [](const ApplierOperation& l, const ApplierOperation& r) {
+void OplogApplierUtils::stableSortByNamespace(std::vector<const OplogEntry*>* oplogEntryPointers) {
+    auto nssComparator = [](const OplogEntry* l, const OplogEntry* r) {
         if (l->getNss().isCommand()) {
             if (r->getNss().isCommand())
                 // l == r; now compare the namespace
@@ -184,26 +146,16 @@ void OplogApplierUtils::stableSortByNamespace(std::vector<ApplierOperation>* ops
             return false;
         return l->getNss() < r->getNss();
     };
-
-    // Walk through the vector, if a prepared transaction command is encountered, sort
-    // the ops between the previous prepared transaction command and the current one.
-    for (size_t start = 0, end = 0; end <= ops->size(); ++end) {
-        // The end iterator acts as a dummy prepared transaction command, so we would
-        // also sort the ops after the last real one encountered.
-        if (end == ops->size() || isPreparedTxnCommand(ops->at(end))) {
-            std::stable_sort(ops->begin() + start, ops->begin() + end, nssComparator);
-            start = end + 1;
-        }
-    }
+    std::stable_sort(oplogEntryPointers->begin(), oplogEntryPointers->end(), nssComparator);
 }
 
 void OplogApplierUtils::addDerivedOps(OperationContext* opCtx,
                                       std::vector<OplogEntry>* derivedOps,
-                                      std::vector<std::vector<ApplierOperation>>* writerVectors,
+                                      std::vector<std::vector<const OplogEntry*>>* writerVectors,
                                       CachedCollectionProperties* collPropertiesCache,
                                       bool serial) {
-    // Used to determine which writer vector to assign serial ops.
-    boost::optional<uint32_t> serialWriterId;
+    boost::optional<uint32_t>
+        serialWriterId;  // Used to determine which writer vector to assign serial ops.
 
     for (auto&& op : *derivedOps) {
         auto writerId =
@@ -214,90 +166,6 @@ void OplogApplierUtils::addDerivedOps(OperationContext* opCtx,
     }
 }
 
-void OplogApplierUtils::addDerivedPrepares(
-    OperationContext* opCtx,
-    OplogEntry* prepareOp,
-    std::vector<OplogEntry>* derivedOps,
-    std::vector<std::vector<ApplierOperation>>* writerVectors,
-    CachedCollectionProperties* collPropertiesCache) {
-
-    // Get the SplitPrepareSessionManager to be used to create split sessions.
-    auto splitSessManager = ReplicationCoordinator::get(opCtx)->getSplitPrepareSessionManager();
-    auto splitSessFunc = [=](const std::vector<uint32_t>& writerIds) -> const auto& {
-        const auto& sessions = splitSessManager->splitSession(
-            *prepareOp->getSessionId(), *prepareOp->getTxnNumber(), writerIds);
-        invariant(sessions.size() == writerIds.size());
-        return sessions;
-    };
-
-    // For empty (read-only) prepares, we use the namespace of the original prepare oplog entry
-    // (admin.$cmd) to decide which writer thread to apply it, and assigned it a split session.
-    // The reason that we also split an empty prepare instead of treating it as some standalone
-    // prepare op (as the prepares in initial sync or recovery mode) is so that we can keep a
-    // logical invariant that all prepares in secondary mode are split, and thus we can apply
-    // empty and non-empty prepares in the same way.
-    if (derivedOps->empty()) {
-        auto writerId = getWriterId(opCtx, prepareOp, collPropertiesCache, writerVectors->size());
-        const auto& sessionInfos = splitSessFunc({writerId});
-        (*writerVectors)[writerId].emplace_back(prepareOp,
-                                                ApplicationInstruction::applySplitPrepareOp,
-                                                sessionInfos[0].session,
-                                                std::vector<const OplogEntry*>{});
-        return;
-    }
-
-    // For non-empty prepares, the namespace of each derived op in the transaction is used to
-    // decide which writer thread to apply it. We first add all the derived ops to a buffer
-    // writer vector in order to get all the writer threads needed to apply this transaction.
-    // We then acquire that number of split sessions and assign each writer thread a unique
-    // split session when moving the ops to the real writer vector.
-    std::set<uint32_t> writerIds;
-    std::vector<std::vector<const OplogEntry*>> bufWriterVectors(writerVectors->size());
-    for (auto&& op : *derivedOps) {
-        auto writerId = addToWriterVector(opCtx, &op, &bufWriterVectors, collPropertiesCache);
-        writerIds.emplace(writerId);
-    }
-
-    const auto& sessionInfos = splitSessFunc({writerIds.begin(), writerIds.end()});
-    for (size_t i = 0, j = 0; i < bufWriterVectors.size(); ++i) {
-        auto& bufWriter = bufWriterVectors[i];
-        auto& realWriter = (*writerVectors)[i];
-        if (!bufWriter.empty()) {
-            realWriter.emplace_back(prepareOp,
-                                    ApplicationInstruction::applySplitPrepareOp,
-                                    sessionInfos[j++].session,
-                                    std::move(bufWriter));
-        }
-    }
-}
-
-void OplogApplierUtils::addDerivedCommitsOrAborts(
-    OperationContext* opCtx,
-    OplogEntry* commitOrAbortOp,
-    std::vector<std::vector<ApplierOperation>>* writerVectors,
-    CachedCollectionProperties* collPropertiesCache) {
-
-    auto splitSessManager = ReplicationCoordinator::get(opCtx)->getSplitPrepareSessionManager();
-    const auto& sessionInfos = splitSessManager->getSplitSessions(*commitOrAbortOp->getSessionId(),
-                                                                  *commitOrAbortOp->getTxnNumber());
-
-    // When this commit refers to a non-split prepare, it means the transaction was
-    // prepared when the node was primary or during inital sync/recovery. In this
-    // case we do not split the commit and just add it as-is to the writer vector.
-    if (!sessionInfos.has_value()) {
-        addToWriterVector(opCtx, commitOrAbortOp, writerVectors, collPropertiesCache);
-        return;
-    }
-
-    // When this commit refers to a split prepare, we split the commit and add them
-    // to the writers that have been assigned split prepare ops.
-    for (const auto& sessInfo : *sessionInfos) {
-        auto& writer = (*writerVectors)[sessInfo.requesterId];
-        writer.emplace_back(
-            commitOrAbortOp, ApplicationInstruction::applySplitCommitOrAbortOp, sessInfo.session);
-    }
-}
-
 NamespaceString OplogApplierUtils::parseUUIDOrNs(OperationContext* opCtx,
                                                  const OplogEntry& oplogEntry) {
     auto optionalUuid = oplogEntry.getUuid();
@@ -305,7 +173,7 @@ NamespaceString OplogApplierUtils::parseUUIDOrNs(OperationContext* opCtx,
         return oplogEntry.getNss();
     }
 
-    const auto& uuid = optionalUuid.value();
+    const auto& uuid = optionalUuid.get();
     auto catalog = CollectionCatalog::get(opCtx);
     auto nss = catalog->lookupNSSByUUID(opCtx, uuid);
     uassert(ErrorCodes::NamespaceNotFound,
@@ -317,7 +185,7 @@ NamespaceString OplogApplierUtils::parseUUIDOrNs(OperationContext* opCtx,
 NamespaceStringOrUUID OplogApplierUtils::getNsOrUUID(const NamespaceString& nss,
                                                      const OplogEntry& op) {
     if (auto ui = op.getUuid()) {
-        return {nss.dbName(), ui.value()};
+        return {nss.db().toString(), ui.get()};
     }
     return nss;
 }
@@ -331,20 +199,11 @@ Status OplogApplierUtils::applyOplogEntryOrGroupedInsertsCommon(
     OpCounters* opCounters) {
     invariant(DocumentValidationSettings::get(opCtx).isSchemaValidationDisabled());
 
-    const auto& op = entryOrGroupedInserts.getOp();
+    auto op = entryOrGroupedInserts.getOp();
     // Count each log op application as a separate operation, for reporting purposes
-    CurOp individualOp;
-    individualOp.push(opCtx);
-    const NamespaceString nss(op->getNss());
-    auto opType = op->getOpType();
-
-    if ((gMultitenancySupport && serverGlobalParams.featureCompatibility.isVersionInitialized() &&
-         gFeatureFlagRequireTenantID.isEnabled(serverGlobalParams.featureCompatibility))) {
-        invariant(op->getTid() == nss.tenantId());
-    } else {
-        invariant(op->getTid() == boost::none);
-    }
-
+    CurOp individualOp(opCtx);
+    const NamespaceString nss(op.getNss());
+    auto opType = op.getOpType();
     if (opType == OpTypeEnum::kNoop) {
         incrementOpsAppliedStats();
         return Status::OK();
@@ -353,35 +212,14 @@ Status OplogApplierUtils::applyOplogEntryOrGroupedInsertsCommon(
             writeConflictRetry(opCtx, "applyOplogEntryOrGroupedInserts_CRUD", nss.ns(), [&] {
                 // Need to throw instead of returning a status for it to be properly ignored.
                 try {
-                    boost::optional<AutoGetCollection> autoColl;
-                    Database* db = nullptr;
-
-                    // If the collection UUID does not resolve, acquire the collection using the
-                    // namespace. This is so we reach `applyOperation_inlock` below and invalidate
-                    // the preimage / postimage for the op if applicable.
-
-                    // TODO SERVER-41371 / SERVER-73661 this code is difficult to maintain and
-                    // needs to be done everywhere this situation is possible. We should try
-                    // to consolidate this into applyOperation_inlock.
-                    try {
-                        autoColl.emplace(opCtx,
-                                         getNsOrUUID(nss, *op),
-                                         fixLockModeForSystemDotViewsChanges(nss, MODE_IX));
-                        db = autoColl->getDb();
-                    } catch (ExceptionFor<ErrorCodes::NamespaceNotFound>& ex) {
-                        if (!isDataConsistent) {
-                            autoColl.emplace(
-                                opCtx, nss, fixLockModeForSystemDotViewsChanges(nss, MODE_IX));
-                            db = autoColl->ensureDbExists(opCtx);
-                        } else {
-                            throw ex;
-                        }
-                    }
-
+                    AutoGetCollection autoColl(opCtx,
+                                               getNsOrUUID(nss, op),
+                                               fixLockModeForSystemDotViewsChanges(nss, MODE_IX));
+                    auto db = autoColl.getDb();
                     uassert(ErrorCodes::NamespaceNotFound,
                             str::stream() << "missing database (" << nss.db() << ")",
                             db);
-                    OldClientContext ctx(opCtx, autoColl->getNss(), db);
+                    OldClientContext ctx(opCtx, autoColl.getNss().ns(), db);
 
                     // We convert updates to upserts in secondary mode when the
                     // oplogApplicationEnforcesSteadyStateConstraints parameter is false, to avoid
@@ -401,9 +239,7 @@ Status OplogApplierUtils::applyOplogEntryOrGroupedInsertsCommon(
                                                           isDataConsistent,
                                                           incrementOpsAppliedStats);
                     if (!status.isOK() && status.code() == ErrorCodes::WriteConflict) {
-                        throwWriteConflictException(
-                            str::stream() << "WriteConflict caught when applying operation."
-                                          << " Original error: " << status.reason());
+                        throw WriteConflictException();
                     }
                     return status;
                 } catch (ExceptionFor<ErrorCodes::NamespaceNotFound>& ex) {
@@ -417,15 +253,7 @@ Status OplogApplierUtils::applyOplogEntryOrGroupedInsertsCommon(
                         !oplogApplicationEnforcesSteadyStateConstraints &&
                         oplogApplicationMode == OplogApplication::Mode::kSecondary) {
                         if (opCounters) {
-                            const auto& opObj = redact(op->toBSONForLogging());
                             opCounters->gotDeleteFromMissingNamespace();
-                            logOplogConstraintViolation(
-                                opCtx,
-                                op->getNss(),
-                                OplogConstraintViolationEnum::kDeleteOnMissingNs,
-                                "delete",
-                                opObj,
-                                boost::none /* status */);
                         }
                         return Status::OK();
                     }
@@ -444,7 +272,7 @@ Status OplogApplierUtils::applyOplogEntryOrGroupedInsertsCommon(
                 incrementOpsAppliedStats();
                 return status;
             });
-        if (op->getCommandType() == mongo::repl::OplogEntry::CommandType::kDrop) {
+        if (op.getCommandType() == mongo::repl::OplogEntry::CommandType::kDrop) {
             hangAfterApplyingCollectionDropOplogEntry.executeIf(
                 [&](const BSONObj&) {
                     hangAfterApplyingCollectionDropOplogEntry.pauseWhileSet();
@@ -461,7 +289,7 @@ Status OplogApplierUtils::applyOplogEntryOrGroupedInsertsCommon(
 
 Status OplogApplierUtils::applyOplogBatchCommon(
     OperationContext* opCtx,
-    std::vector<ApplierOperation>* ops,
+    std::vector<const OplogEntry*>* ops,
     OplogApplication::Mode oplogApplicationMode,
     bool allowNamespaceNotFoundErrorsOnCrudOps,
     const bool isDataConsistent,
@@ -477,7 +305,7 @@ Status OplogApplierUtils::applyOplogBatchCommon(
         ops, opCtx, oplogApplicationMode, isDataConsistent, applyOplogEntryOrGroupedInserts);
 
     for (auto it = ops->cbegin(); it != ops->cend(); ++it) {
-        const auto& op = *it;
+        const OplogEntry& entry = **it;
 
         // If we are successful in grouping and applying inserts, advance the current iterator
         // past the end of the inserted group of entries.
@@ -489,8 +317,8 @@ Status OplogApplierUtils::applyOplogBatchCommon(
 
         // If we didn't create a group, try to apply the op individually.
         try {
-            const Status status =
-                applyOplogEntryOrGroupedInserts(opCtx, op, oplogApplicationMode, isDataConsistent);
+            const Status status = applyOplogEntryOrGroupedInserts(
+                opCtx, &entry, oplogApplicationMode, isDataConsistent);
 
             if (!status.isOK()) {
                 // Tried to apply an update operation but the document is missing, there must be
@@ -504,14 +332,14 @@ Status OplogApplierUtils::applyOplogBatchCommon(
                 LOGV2_FATAL_CONTINUE(21237,
                                      "Error applying operation ({oplogEntry}): {error}",
                                      "Error applying operation",
-                                     "oplogEntry"_attr = redact(op->toBSONForLogging()),
+                                     "oplogEntry"_attr = redact(entry.toBSONForLogging()),
                                      "error"_attr = causedBy(redact(status)));
                 return status;
             }
         } catch (const DBException& e) {
             // SERVER-24927 If we have a NamespaceNotFound exception, then this document will be
             // dropped before initial sync or recovery ends anyways and we should ignore it.
-            if (e.code() == ErrorCodes::NamespaceNotFound && op->isCrudOpType() &&
+            if (e.code() == ErrorCodes::NamespaceNotFound && entry.isCrudOpType() &&
                 allowNamespaceNotFoundErrorsOnCrudOps) {
                 continue;
             }
@@ -520,7 +348,7 @@ Status OplogApplierUtils::applyOplogBatchCommon(
                                  "writer worker caught exception: {error} on: {oplogEntry}",
                                  "Writer worker caught exception",
                                  "error"_attr = redact(e),
-                                 "oplogEntry"_attr = redact(op->toBSONForLogging()));
+                                 "oplogEntry"_attr = redact(entry.toBSONForLogging()));
             return e.toStatus();
         }
     }

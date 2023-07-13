@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -37,6 +38,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -54,9 +56,6 @@
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/util/concurrency/thread_pool.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
-
 namespace mongo {
 namespace repl {
 
@@ -72,7 +71,7 @@ const auto _registryRegisterer =
     ReplicaSetAwareServiceRegistry::Registerer<PrimaryOnlyServiceRegistry>(
         "PrimaryOnlyServiceRegistry");
 
-const Status kExecutorShutdownStatus(ErrorCodes::CallbackCanceled,
+const Status kExecutorShutdownStatus(ErrorCodes::InterruptedDueToReplStateChange,
                                      "PrimaryOnlyService executor shut down due to stepDown");
 
 const auto primaryOnlyServiceStateForClient =
@@ -104,7 +103,7 @@ public:
         // correctness since registering the OpCtx below will ensure that the OpCtx gets interrupted
         // at stepDown anyway, but setting this lets it get interrupted a little earlier in the
         // stepDown process.
-        opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+        opCtx->setAlwaysInterruptAtStepDownOrUp();
 
         // Register the opCtx with the PrimaryOnlyService so it will get interrupted on stepDown. We
         // need this, and cannot simply rely on the ReplicationCoordinator to interrupt this OpCtx
@@ -252,7 +251,7 @@ void PrimaryOnlyService::reportInstanceInfoForCurrentOp(
     for (auto& [_, instance] : _activeInstances) {
         auto op = instance.getInstance()->reportForCurrentOp(connMode, sessionMode);
         if (op.has_value()) {
-            ops->push_back(std::move(op.value()));
+            ops->push_back(std::move(op.get()));
         }
     }
 }
@@ -263,14 +262,6 @@ void PrimaryOnlyService::registerOpCtx(OperationContext* opCtx, bool allowOpCtxW
     invariant(inserted);
 
     if (_state == State::kRunning || (_state == State::kRebuilding && allowOpCtxWhileRebuilding)) {
-        // We do not allow creating an opCtx while in kRebuilding (unless the thread has explicitly
-        // requested it) in case the node has stepped down and back up. In that case the second
-        // stepup would join the instance from the first stepup which could wait on the opCtx which
-        // would not get interrupted. This could cause the second stepup to take a long time
-        // to join the old instance. Note that opCtx's created through a
-        // CancelableOperationContextFactory with a cancellation token *would* be interrupted (and
-        // would not delay the join), because the stepdown would have cancelled the cancellation
-        // token.
         return;
     } else {
         // If this service isn't running when an OpCtx associated with this service is created, then
@@ -369,9 +360,6 @@ void PrimaryOnlyService::onStepUp(const OpTime& stepUpOpTime) {
     for (auto& instance : savedInstances) {
         instance.second.waitForCompletion();
     }
-
-    savedInstances.clear();
-    newThenOldScopedExecutor.reset();
 
     PrimaryOnlyServiceHangBeforeLaunchingStepUpLogic.pauseWhileSet();
 
@@ -513,9 +501,7 @@ void PrimaryOnlyService::shutdown() {
 }
 
 std::pair<std::shared_ptr<PrimaryOnlyService::Instance>, bool>
-PrimaryOnlyService::getOrCreateInstance(OperationContext* opCtx,
-                                        BSONObj initialState,
-                                        bool checkOptions) {
+PrimaryOnlyService::getOrCreateInstance(OperationContext* opCtx, BSONObj initialState) {
     const auto idElem = initialState["_id"];
     uassert(4908702,
             str::stream() << "Missing _id element when adding new instance of PrimaryOnlyService \""
@@ -536,12 +522,7 @@ PrimaryOnlyService::getOrCreateInstance(OperationContext* opCtx,
 
     auto it = _activeInstances.find(instanceID);
     if (it != _activeInstances.end()) {
-        auto foundInstance = it->second.getInstance();
-        if (checkOptions) {
-            foundInstance->checkIfOptionsConflict(initialState);
-        }
-
-        return {foundInstance, false};
+        return {it->second.getInstance(), false};
     }
 
     std::vector<const Instance*> existingInstances;
@@ -760,7 +741,7 @@ void PrimaryOnlyService::_rebuildInstances(long long term) noexcept {
 std::shared_ptr<PrimaryOnlyService::Instance> PrimaryOnlyService::_insertNewInstance(
     WithLock wl, std::shared_ptr<Instance> instance, InstanceID instanceID) {
     CancellationSource instanceSource(_source.token());
-    auto runCompleteFuture =
+    auto instanceCompleteFuture =
         ExecutorFuture<void>(**_scopedExecutor)
             .then([serviceName = getServiceName(),
                    instance,
@@ -777,20 +758,12 @@ std::shared_ptr<PrimaryOnlyService::Instance> PrimaryOnlyService::_insertNewInst
 
                 return instance->run(std::move(scopedExecutor), std::move(token));
             })
-            // TODO SERVER-61717 remove this error handler once instance are automatically released
-            // at the end of run()
-            .onError<ErrorCodes::ConflictingServerlessOperation>([this, instanceID](Status status) {
-                LOGV2(6531507,
-                      "Removing instance due to ConflictingServerlessOperation error",
-                      "instanceID"_attr = instanceID);
-                releaseInstance(instanceID, Status::OK());
-
-                return status;
-            })
             .semi();
 
-    auto [it, inserted] = _activeInstances.try_emplace(
-        instanceID, std::move(instance), std::move(instanceSource), std::move(runCompleteFuture));
+    auto [it, inserted] = _activeInstances.try_emplace(instanceID,
+                                                       std::move(instance),
+                                                       std::move(instanceSource),
+                                                       std::move(instanceCompleteFuture));
     invariant(inserted);
     return it->second.getInstance();
 }

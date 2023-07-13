@@ -32,7 +32,7 @@ global:
     cpp_namespace: "mongo"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/idl/cluster_server_parameter.idl"
 
 structs:
@@ -42,7 +42,7 @@ structs:
       expireAfterSeconds:
         description: "The number of seconds after which a pre-image is eligible for
                       deletion. A string value 'off' enables the default expiration policy."
-        stability: stable
+        unstable: false
         type:
           variant: [string, safeInt64]
         default: "\"off\""
@@ -54,5 +54,5 @@ structs:
     fields:
       preAndPostImages:
         type: PreAndPostImagesOptions
-        stability: stable
+        unstable: false
         default: true

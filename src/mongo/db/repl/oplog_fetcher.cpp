@@ -27,9 +27,11 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/db/repl/oplog_fetcher.h"
 
+#include "mongo/base/counter.h"
 #include "mongo/bson/mutable/document.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/jsobj.h"
@@ -46,9 +48,6 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 namespace mongo {
 namespace repl {
@@ -90,13 +89,19 @@ BSONObj OplogBatchStats::getReport() const {
 }
 
 // The number and time spent reading batches off the network
-auto& oplogBatchStats = makeServerStatusMetric<OplogBatchStats>("repl.network.getmores");
+OplogBatchStats oplogBatchStats;
+ServerStatusMetricField<OplogBatchStats> displayBatchesRecieved("repl.network.getmores",
+                                                                &oplogBatchStats);
 // The oplog entries read via the oplog reader
-CounterMetric opsReadStats("repl.network.ops");
+Counter64 opsReadStats;
+ServerStatusMetricField<Counter64> displayOpsRead("repl.network.ops", &opsReadStats);
 // The bytes read via the oplog reader
-CounterMetric networkByteStats("repl.network.bytes");
+Counter64 networkByteStats;
+ServerStatusMetricField<Counter64> displayBytesRead("repl.network.bytes", &networkByteStats);
 
-CounterMetric readersCreatedStats("repl.network.readersCreated");
+Counter64 readersCreatedStats;
+ServerStatusMetricField<Counter64> displayReadersCreated("repl.network.readersCreated",
+                                                         &readersCreatedStats);
 
 const Milliseconds maximumAwaitDataTimeoutMS(30 * 1000);
 
@@ -206,8 +211,8 @@ void OplogFetcher::setConnection(std::unique_ptr<DBClientConnection>&& _connecte
     _conn = std::move(_connectedClient);
 }
 
-void OplogFetcher::_doStartup_inlock() {
-    uassertStatusOK(_scheduleWorkAndSaveHandle_inlock(
+Status OplogFetcher::_doStartup_inlock() noexcept {
+    return _scheduleWorkAndSaveHandle_inlock(
         [this](const executor::TaskExecutor::CallbackArgs& args) {
             // Tests use this failpoint to prevent the oplog fetcher from starting.  If those
             // tests fail and the oplog fetcher is canceled, we want to continue so we see
@@ -218,7 +223,7 @@ void OplogFetcher::_doStartup_inlock() {
             _runQuery(args);
         },
         &_runQueryHandle,
-        "_runQuery"));
+        "_runQuery");
 }
 
 void OplogFetcher::_doShutdown_inlock() noexcept {
@@ -258,8 +263,12 @@ OpTime OplogFetcher::getLastOpTimeFetched_forTest() const {
     return _getLastOpTimeFetched();
 }
 
-FindCommandRequest OplogFetcher::makeFindCmdRequest_forTest(long long findTimeout) const {
-    return _makeFindCmdRequest(findTimeout);
+BSONObj OplogFetcher::getFindQueryFilter_forTest() const {
+    return _makeFindQueryFilter();
+}
+
+Query OplogFetcher::getFindQuerySettings_forTest(long long findTimeout) const {
+    return _makeFindQuerySettings(findTimeout);
 }
 
 Milliseconds OplogFetcher::getAwaitDataTimeout_forTest() const {
@@ -573,56 +582,46 @@ AggregateCommandRequest OplogFetcher::_makeAggregateCommandRequest(long long max
     return aggRequest;
 }
 
-FindCommandRequest OplogFetcher::_makeFindCmdRequest(long long findTimeout) const {
-    FindCommandRequest findCmd{_nss};
+BSONObj OplogFetcher::_makeFindQueryFilter() const {
+    BSONObjBuilder queryBob;
 
-    // Construct the find command's filter and set it on the 'FindCommandRequest'.
-    {
-        BSONObjBuilder queryBob;
-
-        auto lastOpTimeFetched = _getLastOpTimeFetched();
-        BSONObjBuilder filterBob;
-        filterBob.append("ts", BSON("$gte" << lastOpTimeFetched.getTimestamp()));
-        // Handle caller-provided filter.
-        if (!_config.queryFilter.isEmpty()) {
-            filterBob.append(
-                "$or",
-                BSON_ARRAY(_config.queryFilter << BSON("ts" << lastOpTimeFetched.getTimestamp())));
-        }
-        findCmd.setFilter(filterBob.obj());
+    auto lastOpTimeFetched = _getLastOpTimeFetched();
+    BSONObjBuilder filterBob;
+    filterBob.append("ts", BSON("$gte" << lastOpTimeFetched.getTimestamp()));
+    // Handle caller-provided filter.
+    if (!_config.queryFilter.isEmpty()) {
+        filterBob.append(
+            "$or",
+            BSON_ARRAY(_config.queryFilter << BSON("ts" << lastOpTimeFetched.getTimestamp())));
     }
+    return filterBob.obj();
+}
 
-    findCmd.setTailable(true);
-    findCmd.setAwaitData(true);
-    findCmd.setMaxTimeMS(findTimeout);
-
-    if (_config.batchSize) {
-        findCmd.setBatchSize(_config.batchSize);
-    }
-
+Query OplogFetcher::_makeFindQuerySettings(long long findTimeout) const {
+    Query query = Query().maxTimeMS(findTimeout);
     if (_config.requestResumeToken) {
-        findCmd.setHint(BSON("$natural" << 1));
-        findCmd.setRequestResumeToken(true);
+        query.hint(BSON("$natural" << 1)).requestResumeToken(true);
     }
 
     auto lastCommittedWithCurrentTerm =
         _dataReplicatorExternalState->getCurrentTermAndLastCommittedOpTime();
     auto term = lastCommittedWithCurrentTerm.value;
     if (term != OpTime::kUninitializedTerm) {
-        findCmd.setTerm(term);
+        query.term(term);
     }
 
     if (_config.queryReadConcern.isEmpty()) {
         // This ensures that the sync source waits for all earlier oplog writes to be visible.
         // Since Timestamp(0, 0) isn't allowed, Timestamp(0, 1) is the minimal we can use.
-        findCmd.setReadConcern(BSON("level"
-                                    << "local"
-                                    << "afterClusterTime" << Timestamp(0, 1)));
+        query.readConcern(BSON("level"
+                               << "local"
+                               << "afterClusterTime" << Timestamp(0, 1)));
     } else {
         // Caller-provided read concern.
-        findCmd.setReadConcern(_config.queryReadConcern.toBSONInner());
+        query.appendElements(_config.queryReadConcern.toBSON());
     }
-    return findCmd;
+
+    return query;
 }
 
 Status OplogFetcher::_createNewCursor(bool initialFind) {
@@ -650,9 +649,17 @@ Status OplogFetcher::_createNewCursor(bool initialFind) {
         }
         _cursor = std::move(ret.getValue());
     } else {
-        auto findCmd = _makeFindCmdRequest(maxTimeMs);
         _cursor = std::make_unique<DBClientCursor>(
-            _conn.get(), std::move(findCmd), ReadPreferenceSetting{}, oplogFetcherUsesExhaust);
+            _conn.get(),
+            _nss,
+            _makeFindQueryFilter(),
+            _makeFindQuerySettings(maxTimeMs),
+            0 /* nToReturn */,
+            0 /* nToSkip */,
+            nullptr /* fieldsToReturn */,
+            QueryOption_CursorTailable | QueryOption_AwaitData |
+                (oplogFetcherUsesExhaust ? QueryOption_Exhaust : 0),
+            _config.batchSize);
     }
 
     _firstBatch = true;
@@ -808,7 +815,7 @@ Status OplogFetcher::_onSuccessfulBatch(const Documents& documents) {
                     "metadata"_attr = _metadataObj);
         return oqMetadataResult.getStatus();
     }
-    const auto& oqMetadata = oqMetadataResult.getValue();
+    auto oqMetadata = oqMetadataResult.getValue();
 
     if (_firstBatch) {
         auto status =
@@ -875,7 +882,7 @@ Status OplogFetcher::_onSuccessfulBatch(const Documents& documents) {
                     "metadata"_attr = _metadataObj);
         return metadataResult.getStatus();
     }
-    const auto& replSetMetadata = metadataResult.getValue();
+    auto replSetMetadata = metadataResult.getValue();
 
     // Determine if we should stop syncing from our current sync source.
     auto changeSyncSourceAction = _dataReplicatorExternalState->shouldStopFetching(
@@ -903,9 +910,9 @@ Status OplogFetcher::_onSuccessfulBatch(const Documents& documents) {
     oplogBatchStats.recordMillis(_lastBatchElapsedMS, documents.empty());
 
     if (_cursor->getPostBatchResumeToken()) {
-        auto pbrt =
-            ResumeTokenOplogTimestamp::parse(IDLParserContext("OplogFetcher PostBatchResumeToken"),
-                                             *_cursor->getPostBatchResumeToken());
+        auto pbrt = ResumeTokenOplogTimestamp::parse(
+            IDLParserErrorContext("OplogFetcher PostBatchResumeToken"),
+            *_cursor->getPostBatchResumeToken());
         info.resumeToken = pbrt.getTs();
     }
 

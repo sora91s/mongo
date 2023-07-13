@@ -67,10 +67,6 @@ function retryOnNetworkError(func, numRetries, sleepMs) {
     }
 }
 
-const shellGeneratedNetworkErrs = ["network error", "error doing query", "socket exception"];
-
-const networkErrs = ["SocketException", "HostNotFound"];
-const networkErrsPlusShellGeneratedNetworkErrs = [...networkErrs, ...shellGeneratedNetworkErrs];
 /**
  * Determine if a provided object represents a network error
  * @param {object|Error|string|number} errorOrResponse A command response, error or scalar
@@ -84,11 +80,18 @@ function isNetworkError(errorOrResponse) {
         }
     }
 
+    let networkErrs = [
+        "network error",
+        "error doing query",
+        "socket exception",
+        "SocketException",
+        "HostNotFound"
+    ];
+
     // Then check if it's an Error, if so see if any of the known network error strings appear
     // in the given message.
     if (errorOrResponse.message) {
-        if (networkErrsPlusShellGeneratedNetworkErrs.some(
-                err => errorOrResponse.message.includes(err))) {
+        if (networkErrs.some(err => errorOrResponse.message.includes(err))) {
             return true;
         }
     }
@@ -97,29 +100,6 @@ function isNetworkError(errorOrResponse) {
     return ErrorCodes.isNetworkError(errorOrResponse);
 }
 
-const retryableErrs = [
-    "Interrupted",
-    "InterruptedAtShutdown",
-    "InterruptedDueToReplStateChange",
-    "ExceededTimeLimit",
-    "MaxTimeMSExpired",
-    "CursorKilled",
-    "LockTimeout",
-    "ShutdownInProgress",
-    "HostUnreachable",
-    "HostNotFound",
-    "NetworkTimeout",
-    "SocketException",
-    "NotWritablePrimary",
-    "NotPrimaryNoSecondaryOk",
-    "NotPrimaryOrSecondary",
-    "PrimarySteppedDown",
-    "WriteConcernFailed",
-    "WriteConcernLegacyOK",
-    "UnknownReplWriteConcern",
-    "UnsatisfiableWriteConcern"
-];
-const retryableErrsPlusShellGeneratedNetworkErrs = [...retryableErrs, ...shellGeneratedNetworkErrs];
 /**
  * Determine if a provided object represents a retryable error
  * @param {object|Error|string|number} errorOrResponse A command response, error or scalar
@@ -133,34 +113,39 @@ function isRetryableError(errorOrResponse) {
         }
     }
 
+    const retryableErrors = [
+        "Interrupted",
+        "InterruptedAtShutdown",
+        "InterruptedDueToReplStateChange",
+        "ExceededTimeLimit",
+        "MaxTimeMSExpired",
+        "CursorKilled",
+        "LockTimeout",
+        "ShutdownInProgress",
+        "HostUnreachable",
+        "HostNotFound",
+        "NetworkTimeout",
+        "SocketException",
+        "NotWritablePrimary",
+        "NotPrimaryNoSecondaryOk",
+        "NotPrimaryOrSecondary",
+        "PrimarySteppedDown",
+        "WriteConcernFailed",
+        "WriteConcernLegacyOK",
+        "UnknownReplWriteConcern",
+        "UnsatisfiableWriteConcern"
+    ];
+
     // Then check if it's an Error, if so determine retryability by checking the error message
     if (errorOrResponse.message) {
         // See if any of the known network error strings appear in the given message.
-        if (retryableErrsPlusShellGeneratedNetworkErrs.some(
-                err => errorOrResponse.message.includes(err))) {
+        if (retryableErrors.some(err => errorOrResponse.message.includes(err))) {
             return true;
         }
     }
 
     // Otherwise fall back to checking by scalar value
     return ErrorCodes.isRetriableError(errorOrResponse);
-}
-
-/**
- * Run the passed function and catch any network error, otherwise throw the exception back to the
- * caller.
- * @param {Function} func that will run and catch any network error otherwise throws.
- * @returns returns the result of the function that was passed as a parameter or the exception.
- */
-function executeNoThrowNetworkError(func) {
-    try {
-        return func();
-    } catch (e) {
-        if (isNetworkError(e)) {
-            return e;
-        }
-        throw e;
-    }
 }
 
 // Please consider using bsonWoCompare instead of this as much as possible.
@@ -345,6 +330,7 @@ jsTestOptions = function() {
             wiredTigerEngineConfigString: TestData.wiredTigerEngineConfigString,
             wiredTigerCollectionConfigString: TestData.wiredTigerCollectionConfigString,
             wiredTigerIndexConfigString: TestData.wiredTigerIndexConfigString,
+            noJournal: TestData.noJournal,
             auth: TestData.auth,
             // Note: keyFile is also used as a flag to indicate cluster auth is turned on, set it
             // to a truthy value if you'd like to do cluster auth, even if it's not keyFile auth.
@@ -427,16 +413,12 @@ jsTestOptions = function() {
             // is shut down.
             alwaysUseLogFiles: TestData.alwaysUseLogFiles || false,
             skipCheckOrphans: TestData.skipCheckOrphans || false,
-            skipCheckRoutingTableConsistency: TestData.skipCheckRoutingTableConsistency || false,
-            skipCheckShardFilteringMetadata: TestData.skipCheckShardFilteringMetadata || false,
             inEvergreen: TestData.inEvergreen || false,
-            defaultReadPreference: TestData.defaultReadPreference,
 
             undoRecorderPath: TestData.undoRecorderPath,
             backupOnRestartDir: TestData.backupOnRestartDir || false,
 
             evergreenTaskId: TestData.evergreenTaskId || null,
-            catalogShard: TestData.catalogShard || false,
         });
     }
     return _jsTestOptions;
@@ -534,12 +516,12 @@ jsTest.isMongos = function(conn) {
 };
 
 defaultPrompt = function() {
-    var status = globalThis.db.getMongo().authStatus;
-    var prefix = globalThis.db.getMongo().promptPrefix;
+    var status = db.getMongo().authStatus;
+    var prefix = db.getMongo().promptPrefix;
 
     if (typeof prefix == 'undefined') {
         prefix = "";
-        var buildInfo = globalThis.db._runCommandWithoutApiStrict({buildInfo: 1});
+        var buildInfo = db._runCommandWithoutApiStrict({buildInfo: 1});
         try {
             if (buildInfo.modules.indexOf("enterprise") > -1) {
                 prefix += "MongoDB Enterprise ";
@@ -547,7 +529,7 @@ defaultPrompt = function() {
         } catch (e) {
             // Don't do anything here. Just throw the error away.
         }
-        var hello = globalThis.db._helloOrLegacyHello({forShell: 1});
+        var hello = db._helloOrLegacyHello({forShell: 1});
         try {
             if (hello.hasOwnProperty("automationServiceDescriptor")) {
                 prefix += "[automated] ";
@@ -555,7 +537,7 @@ defaultPrompt = function() {
         } catch (e) {
             // Don't do anything here. Just throw the error away.
         }
-        globalThis.db.getMongo().promptPrefix = prefix;
+        db.getMongo().promptPrefix = prefix;
     }
 
     try {
@@ -564,7 +546,7 @@ defaultPrompt = function() {
             try {
                 var prompt = replSetMemberStatePrompt();
                 // set our status that it was good
-                globalThis.db.getMongo().authStatus = {replSetGetStatus: true, hello: true};
+                db.getMongo().authStatus = {replSetGetStatus: true, hello: true};
                 return prefix + prompt;
             } catch (e) {
                 // don't have permission to run that, or requires auth
@@ -580,7 +562,7 @@ defaultPrompt = function() {
                 var prompt = replSetMemberStatePrompt();
                 // set our status that it was good
                 status.replSetGetStatus = true;
-                globalThis.db.getMongo().authStatus = status;
+                db.getMongo().authStatus = status;
                 return prefix + prompt;
             } catch (e) {
                 // don't have permission to run that, or requires auth
@@ -595,7 +577,7 @@ defaultPrompt = function() {
             try {
                 var prompt = helloStatePrompt(hello);
                 status.hello = true;
-                globalThis.db.getMongo().authStatus = status;
+                db.getMongo().authStatus = status;
                 return prefix + prompt;
             } catch (e) {
                 status.authRequired = true;
@@ -608,14 +590,14 @@ defaultPrompt = function() {
         status = {hello: true};
     }
 
-    globalThis.db.getMongo().authStatus = status;
+    db.getMongo().authStatus = status;
     return prefix + "> ";
 };
 
 replSetMemberStatePrompt = function() {
     var state = '';
-    var stateInfo = globalThis.db.getSiblingDB('admin')._runCommandWithoutApiStrict(
-        {replSetGetStatus: 1, forShell: 1});
+    var stateInfo =
+        db.getSiblingDB('admin')._runCommandWithoutApiStrict({replSetGetStatus: 1, forShell: 1});
     if (stateInfo.ok) {
         // Report the self member's stateStr if it's present.
         stateInfo.members.forEach(function(member) {
@@ -641,7 +623,7 @@ replSetMemberStatePrompt = function() {
 
 helloStatePrompt = function(helloReply) {
     var state = '';
-    var hello = helloReply || globalThis.db._helloOrLegacyHello({forShell: 1});
+    var hello = helloReply || db._helloOrLegacyHello({forShell: 1});
     if (hello.ok) {
         var role = "";
 
@@ -687,6 +669,8 @@ if (typeof _shouldUseImplicitSessions === 'undefined') {
 }
 
 shellPrintHelper = function(x) {
+    // print("shellPrint")
+    // print(JSON.stringify(x, null, 4))
     if (typeof (x) == "undefined") {
         return;
     }
@@ -695,26 +679,35 @@ shellPrintHelper = function(x) {
         return;
 
     if (x == null) {
-        print("null");
-        return;
+        // print("null");
+        return "null";
     }
 
     if (x === MinKey || x === MaxKey)
         return x.tojson();
 
-    if (typeof x != "object")
-        return print(x);
+    if (typeof x != "object") {
+        return x;
+    }
 
     var p = x.shellPrint;
-    if (typeof p == "function")
+    if (typeof p == "function") {
+        // TODO
+        print(2)
         return x.shellPrint();
+    }
+    
 
     var p = x.tojson;
-    if (typeof p == "function")
-        print(x.tojson());
-    else
-        print(tojson(x));
-};
+    if (typeof p == "function") {
+        // print(x.tojson());
+        return x.tojson();
+    }
+    else {
+        print(JSON.stringify(x, null, 4))
+        return JSON.stringify(x);
+    }
+};  
 
 shellAutocomplete = function(
     /*prefix*/) {  // outer scope function called on init. Actual function at end
@@ -880,14 +873,15 @@ shellHelper.use = function(dbname) {
         print("bad use parameter");
         return;
     }
-    globalThis.db = globalThis.db.getSiblingDB(dbname);
-    print("switched to db " + globalThis.db.getName());
+    db = db.getSiblingDB(dbname);
+    // print("switched to db " + db.getName());
+    return "switched to db " + db.getName();
 };
 
 shellHelper.set = function(str) {
     if (str == "") {
-        print("bad use parameter");
-        return;
+        // print("bad use parameter");
+        return "bad use parameter";
     }
     tokens = str.split(" ");
     param = tokens[0];
@@ -904,15 +898,17 @@ shellHelper.set = function(str) {
     if (param == "verbose") {
         _verboseShell = value;
     }
-    print("set " + param + " to " + value);
+    // print("set " + param + " to " + value);
+    return "set " + param + " to " + value;
 };
 
 shellHelper.it = function() {
-    if (typeof (___it___) == "undefined" || ___it___ == null) {
-        print("no cursor");
-        return;
-    }
-    shellPrintHelper(___it___);
+    // if (typeof (___it___) == "undefined" || ___it___ == null) {
+    //     print("no cursor");
+    //     return;
+    // }
+    // shellPrintHelper(___it___);
+    return "not support 'it' command";
 };
 
 shellHelper.show = function(what) {
@@ -925,17 +921,18 @@ shellHelper.show = function(what) {
     var messageIndent = "        ";
 
     if (what == "profile") {
-        if (globalThis.db.system.profile.count() == 0) {
-            print("db.system.profile is empty");
-            print("Use db.setProfilingLevel(2) will enable profiling");
-            print("Use db.system.profile.find() to show raw profile entries");
+        if (db.system.profile.count() == 0) {
+            return "db.system.profile is empty";
+            // print("Use db.setProfilingLevel(2) will enable profiling");
+            // print("Use db.system.profile.find() to show raw profile entries");
         } else {
-            print();
-            globalThis.db.system.profile.find({millis: {$gt: 0}})
+            // print();
+            var res = [];
+            db.system.profile.find({millis: {$gt: 0}})
                 .sort({$natural: -1})
                 .limit(5)
                 .forEach(function(x) {
-                    print("" + x.op + "\t" + x.ns + " " + x.millis + "ms " +
+                    res.push("" + x.op + "\t" + x.ns + " " + x.millis + "ms " +
                           String(x.ts).substring(0, 24));
                     var l = "";
                     for (var z in x) {
@@ -954,48 +951,53 @@ shellHelper.show = function(what) {
                         else
                             l += z + ":" + val + " ";
                     }
-                    print(l);
-                    print("\n");
+                    res.push(l);
                 });
+            return toJson(res);
         }
-        return "";
     }
 
     if (what == "users") {
-        globalThis.db.getUsers().forEach(printjson);
-        return "";
+        // TODO change
+        var printRes = [];
+        db.getUsers().forEach((element) => { printRes.push(tojson(element))});
+        return tojson(printRes);
     }
 
     if (what == "roles") {
-        globalThis.db.getRoles({showBuiltinRoles: true}).forEach(printjson);
-        return "";
+        var printRes = [];
+        db.getRoles({showBuiltinRoles: true}).forEach((element) => { printRes.push(tojson(element))});
+        return tojson(printRes);
     }
 
     if (what == "collections" || what == "tables") {
-        globalThis.db.getCollectionInfos({}, true, true).forEach(function(infoObj) {
-            print(infoObj.name);
+        var res = [];
+        db.getCollectionInfos({}, true, true).forEach(function(infoObj) {
+            res.push(infoObj.name);
         });
-        return "";
+
+        return tojson(res);
     }
 
     if (what == "dbs" || what == "databases") {
-        var mongo = globalThis.db.getMongo();
+        var mongo = db.getMongo();
         var dbs;
         try {
-            dbs = mongo.getDBs(globalThis.db.getSession(), undefined, false);
+            dbs = mongo.getDBs(db.getSession(), undefined, false);
         } catch (ex) {
             // Unable to get detailed information, retry name-only.
-            mongo.getDBs(globalThis.db.getSession(), undefined, true).forEach(function(x) {
-                print(x);
-            });
-            return "";
+            // var res = [];
+            // mongo.getDBs(db.getSession(), undefined, true).forEach(function(x) {
+            //     res.push(x);
+            // });
+            return tojson(ex.message);
         }
 
         var dbinfo = [];
         var maxNameLength = 0;
         var maxGbDigits = 0;
 
-        dbs.databases.forEach(function(x) {
+        dbs.databases.forEach(function(x) { 
             var sizeStr = (x.sizeOnDisk / 1024 / 1024 / 1024).toFixed(3);
             var nameLength = x.name.length;
             var gbDigits = sizeStr.indexOf(".");
@@ -1016,20 +1018,21 @@ shellHelper.show = function(what) {
         });
 
         dbinfo.sort(compareOn('name'));
+        var res = [];
         dbinfo.forEach(function(db) {
             var namePadding = maxNameLength - db.name_size;
             var sizePadding = maxGbDigits - db.gb_digits;
             var padding = Array(namePadding + sizePadding + 3).join(" ");
             if (db.size > 1) {
-                print(db.name + padding + db.size_str + "GB");
+                res.push(db.name + padding + db.size_str + "GB");
             } else if (db.empty) {
-                print(db.name + padding + "(empty)");
+                res.push(db.name + padding + "(empty)");
             } else {
-                print(db.name);
+                res.push(db.name);
             }
         });
 
-        return "";
+        return tojson(res);
     }
 
     if (what == "log") {
@@ -1037,27 +1040,29 @@ shellHelper.show = function(what) {
         if (args.length > 0)
             n = args[0];
 
-        var res = globalThis.db.adminCommand({getLog: n});
+        var res = db.adminCommand({getLog: n});
+        var printRes = [];
         if (!res.ok) {
-            print("Error while trying to show " + n + " log: " + res.errmsg);
-            return "";
+            // print("Error while trying to show " + n + " log: " + res.errmsg);
+            return "Error while trying to show " + n + " log: " + res.errmsg;
         }
         for (var i = 0; i < res.log.length; i++) {
-            print(res.log[i]);
+            printRes.push(res.log[i]);
         }
-        return "";
+        return tojson(printRes);
     }
 
     if (what == "logs") {
-        var res = globalThis.db.adminCommand({getLog: "*"});
+        var res = db.adminCommand({getLog: "*"});
+        var printRes = [];
         if (!res.ok) {
-            print("Error while trying to show logs: " + res.errmsg);
-            return "";
+            // print("Error while trying to show logs: " + res.errmsg);
+            return "Error while trying to show logs: " + res.errmsg;
         }
         for (var i = 0; i < res.names.length; i++) {
-            print(res.names[i]);
+            printRes.push(res.names[i]);
         }
-        return "";
+        return tojson(printRes);
     }
 
     if (what == "startupWarnings") {
@@ -1065,19 +1070,20 @@ shellHelper.show = function(what) {
         try {
             // !!db essentially casts db to a boolean
             // Will throw a reference exception if db hasn't been declared.
-            dbDeclared = !!globalThis.db;
+            dbDeclared = !!db;
         } catch (ex) {
             dbDeclared = false;
         }
         if (dbDeclared) {
-            var res = globalThis.db.getSiblingDB("admin")._runCommandWithoutApiStrict(
-                {getLog: "startupWarnings"});
+            var res =
+                db.getSiblingDB("admin")._runCommandWithoutApiStrict({getLog: "startupWarnings"});
             if (res.ok) {
                 if (res.log.length == 0) {
                     return "";
                 }
-                print("---");
-                print("The server generated these startup warnings when booting: ");
+                // print("---");
+                // print("The server generated these startup warnings when booting: ");
+                var printRes = [];
                 for (var i = 0; i < res.log.length; i++) {
                     var logOut;
                     try {
@@ -1094,10 +1100,9 @@ shellHelper.show = function(what) {
                         // err is intentionally unused here
                         logOut = res.log[i];
                     }
-                    print(logOut);
+                    printRes.push(logOut);
                 }
-                print("---");
-                return "";
+                return printRes;
             } else if (res.errmsg == "no such cmd: getLog") {
                 // Don't print if the command is not available
                 return "";
@@ -1106,12 +1111,12 @@ shellHelper.show = function(what) {
                 // Don't print if startupWarnings command failed due to auth
                 return "";
             } else {
-                print("Error while trying to show server startup warnings: " + res.errmsg);
-                return "";
+                // print("Error while trying to show server startup warnings: " + res.errmsg);
+                return "Error while trying to show server startup warnings: " + res.errmsg;
             }
         } else {
-            print("Cannot show startupWarnings, \"db\" is not set");
-            return "";
+            //print("Cannot show startupWarnings, \"db\" is not set");
+            return "Cannot show startupWarnings, \"db\" is not set";
         }
     }
 
@@ -1120,31 +1125,32 @@ shellHelper.show = function(what) {
         try {
             // !!db essentially casts db to a boolean
             // Will throw a reference exception if db hasn't been declared.
-            dbDeclared = !!globalThis.db;
+            dbDeclared = !!db;
         } catch (ex) {
             dbDeclared = false;
         }
 
         if (dbDeclared) {
-            var res = globalThis.db._helloOrLegacyHello({forShell: 1});
+            var res = db._helloOrLegacyHello({forShell: 1});
             if (!res.ok) {
-                print("Note: Cannot determine if automation is active");
-                return "";
+                // print("Note: Cannot determine if automation is active");
+                return "Note: Cannot determine if automation is active";
             }
 
             if (res.hasOwnProperty("automationServiceDescriptor")) {
-                print("Note: This server is managed by automation service '" +
-                      res.automationServiceDescriptor + "'.");
-                print(
-                    "Note: Many administrative actions are inappropriate, and may be automatically reverted.");
-                return "";
+                // print("Note: This server is managed by automation service '" +
+                //       res.automationServiceDescriptor + "'.");
+                // print(
+                //     "Note: Many administrative actions are inappropriate, and may be automatically reverted.");
+                return "Note: This server is managed by automation service '" +
+                res.automationServiceDescriptor + "'.";
             }
 
             return "";
 
         } else {
-            print("Cannot show automationNotices, \"db\" is not set");
-            return "";
+            // print("Cannot show automationNotices, \"db\" is not set");
+            return "Cannot show automationNotices, \"db\" is not set";
         }
     }
 
@@ -1153,23 +1159,22 @@ shellHelper.show = function(what) {
         try {
             // !!db essentially casts db to a boolean
             // Will throw a reference exception if db hasn't been declared.
-            dbDeclared = !!globalThis.db;
+            dbDeclared = !!db;
         } catch (ex) {
             dbDeclared = false;
         }
 
         if (dbDeclared) {
-            const freemonStatus = globalThis.db.adminCommand({getFreeMonitoringStatus: 1});
+            const freemonStatus = db.adminCommand({getFreeMonitoringStatus: 1});
 
             if (freemonStatus.ok) {
                 if (freemonStatus.state == 'enabled' &&
                     freemonStatus.hasOwnProperty('userReminder')) {
-                    print("---");
-                    print(freemonStatus.userReminder);
-                    print("---");
+                    // print("---");
+                    return freemonStatus.userReminder;
+                    // print("---");
                 } else if (freemonStatus.state === 'undecided') {
-                    print(
-                        "---\n" + messageIndent +
+                    return "---\n" + messageIndent +
                         "Enable MongoDB's free cloud-based monitoring service, which will then receive and display\n" +
                         messageIndent +
                         "metrics about your deployment (disk utilization, CPU, operation statistics, etc).\n" +
@@ -1183,14 +1188,14 @@ shellHelper.show = function(what) {
                         "To enable free monitoring, run the following command: db.enableFreeMonitoring()\n" +
                         messageIndent +
                         "To permanently disable this reminder, run the following command: db.disableFreeMonitoring()\n" +
-                        "---\n");
+                        "---\n";
                 }
             }
 
             return "";
         } else {
-            print("Cannot show freeMonitoring, \"db\" is not set");
-            return "";
+            // print("Cannot show freeMonitoring, \"db\" is not set");
+            return "Cannot show freeMonitoring, \"db\" is not set";
         }
     }
 
@@ -1200,7 +1205,7 @@ shellHelper.show = function(what) {
         // A MongoDB emulation service offered by a company
         // responsible for a certain disk operating system.
         try {
-            const buildInfo = globalThis.db._runCommandWithoutApiStrict({buildInfo: 1});
+            const buildInfo = db._runCommandWithoutApiStrict({buildInfo: 1});
             if (buildInfo.hasOwnProperty('_t')) {
                 matchesKnownImposterSignature = true;
             }
@@ -1212,7 +1217,7 @@ shellHelper.show = function(what) {
         // after some sort of minor river or something.
         if (!matchesKnownImposterSignature) {
             try {
-                const cmdLineOpts = globalThis.db.adminCommand({getCmdLineOpts: 1});
+                const cmdLineOpts = db.adminCommand({getCmdLineOpts: 1});
                 if (cmdLineOpts.hasOwnProperty('errmsg') &&
                     cmdLineOpts.errmsg.indexOf('not supported') !== -1) {
                     matchesKnownImposterSignature = true;
@@ -1223,7 +1228,7 @@ shellHelper.show = function(what) {
         }
 
         if (matchesKnownImposterSignature) {
-            print("\n" +
+            return"\n" +
                   "Warning: Non-Genuine MongoDB Detected\n\n" +
 
                   "This server or service appears to be an emulation of MongoDB " +
@@ -1234,7 +1239,7 @@ shellHelper.show = function(what) {
                   "or have unexpected performance characteristics.\n\n" +
 
                   "To learn more please visit: " +
-                  "https://dochub.mongodb.org/core/non-genuine-mongodb-server-warning.\n");
+                  "https://dochub.mongodb.org/core/non-genuine-mongodb-server-warning.\n";
         }
 
         return "";
@@ -1245,24 +1250,24 @@ shellHelper.show = function(what) {
 
 __promptWrapper__ = function(promptFunction) {
     // Call promptFunction directly if the global "db" is not defined, e.g. --nodb.
-    if (typeof globalThis.db === 'undefined' || !(globalThis.db instanceof DB)) {
+    if (typeof db === 'undefined' || !(db instanceof DB)) {
         __prompt__ = promptFunction();
         return;
     }
 
     // Stash the global "db" for the prompt function to make sure the session
     // of the global "db" isn't accessed by the prompt function.
-    let originalDB = globalThis.db;
+    let originalDB = db;
     try {
-        globalThis.db = originalDB.getMongo().getDB(originalDB.getName());
+        db = originalDB.getMongo().getDB(originalDB.getName());
         // Setting db._session to be a _DummyDriverSession instance makes it so that
         // a logical session id isn't included in the hello and replSetGetStatus
         // commands and therefore won't interfere with the session associated with the
         // global "db" object.
-        globalThis.db._session = new _DummyDriverSession(globalThis.db.getMongo());
+        db._session = new _DummyDriverSession(db.getMongo());
         __prompt__ = promptFunction();
     } finally {
-        globalThis.db = originalDB;
+        db = originalDB;
     }
 };
 
@@ -1501,86 +1506,87 @@ _awaitRSHostViaRSMonitor = function(hostAddr, desiredState, rsName, timeout) {
 };
 
 rs.help = function() {
-    print(
-        "\trs.status()                                     { replSetGetStatus : 1 } checks repl set status");
-    print(
-        "\trs.initiate()                                   { replSetInitiate : null } initiates set with default settings");
-    print(
-        "\trs.initiate(cfg)                                { replSetInitiate : cfg } initiates set with configuration cfg");
-    print(
-        "\trs.conf()                                       get the current configuration object from local.system.replset");
-    print(
-        "\trs.reconfig(cfg, opts)                          updates the configuration of a running replica set with cfg, using the given opts (disconnects)");
-    print(
-        "\trs.reconfigForPSASet(memberIndex, cfg, opts)    updates the configuration of a Primary-Secondary-Arbiter (PSA) replica set while preserving majority writes");
-    print(
-        "\t                                                    memberIndex: index of the node being updated; cfg: the desired new config; opts: options passed in with the reconfig");
-    print(
-        "\t                                                    Not to be used with every configuration");
-    print(
-        "\t                                                    For more information, visit: https://docs.mongodb.com/manual/reference/method/rs.reconfigForPSASet/");
-    print(
-        "\trs.add(hostportstr)                             add a new member to the set with default attributes (disconnects)");
-    print(
-        "\trs.add(membercfgobj)                            add a new member to the set with extra attributes (disconnects)");
-    print(
-        "\trs.addArb(hostportstr)                          add a new member which is arbiterOnly:true (disconnects)");
-    print("\trs.stepDown([stepdownSecs, catchUpSecs])        step down as primary (disconnects)");
-    print(
-        "\trs.syncFrom(hostportstr)                        make a secondary sync from the given member");
-    print(
-        "\trs.freeze(secs)                                 make a node ineligible to become primary for the time specified");
-    print(
-        "\trs.remove(hostportstr)                          remove a host from the replica set (disconnects)");
-    print("\trs.secondaryOk()                                allow queries on secondary nodes");
-    print();
-    print("\trs.printReplicationInfo()                       check oplog size and time range");
-    print(
-        "\trs.printSecondaryReplicationInfo()              check replica set members and replication lag");
-    print("\tdb.isMaster()                                   check who is primary");
-    print("\tdb.hello()                                      check who is primary");
-    print();
-    print("\treconfiguration helpers disconnect from the database so the shell will display");
-    print("\tan error, even if the command succeeds.");
+    var res = "";
+    res += 
+        "\trs.status()                                     { replSetGetStatus : 1 } checks repl set status \n";
+    res += 
+        "\trs.initiate()                                   { replSetInitiate : null } initiates set with default settings \n";
+    res += 
+        "\trs.initiate(cfg)                                { replSetInitiate : cfg } initiates set with configuration cfg \n";
+    res += 
+        "\trs.conf()                                       get the current configuration object from local.system.replset \n";
+    res += 
+        "\trs.reconfig(cfg, opts)                          updates the configuration of a running replica set with cfg, using the given opts (disconnects) \n";
+    res += 
+        "\trs.reconfigForPSASet(memberIndex, cfg, opts)    updates the configuration of a Primary-Secondary-Arbiter (PSA) replica set while preserving majority writes \n";
+    res += 
+        "\t                                                    memberIndex: index of the node being updated; cfg: the desired new config; opts: options passed in with the reconfig \n";
+    res += 
+        "\t                                                    Not to be used with every configuration \n";
+    res += 
+        "\t                                                    For more information, visit: https://docs.mongodb.com/manual/reference/method/rs.reconfigForPSASet/ \n";
+    res += 
+        "\trs.add(hostportstr)                             add a new member to the set with default attributes (disconnects) \n";
+    res += 
+        "\trs.add(membercfgobj)                            add a new member to the set with extra attributes (disconnects) \n";
+    res += 
+        "\trs.addArb(hostportstr)                          add a new member which is arbiterOnly:true (disconnects) \n";
+    res += "\trs.stepDown([stepdownSecs, catchUpSecs])        step down as primary (disconnects) \n";
+    res += 
+        "\trs.syncFrom(hostportstr)                        make a secondary sync from the given member \n";
+    res += 
+        "\trs.freeze(secs)                                 make a node ineligible to become primary for the time specified \n";
+    res += 
+        "\trs.remove(hostportstr)                          remove a host from the replica set (disconnects) \n";
+    res += "\trs.secondaryOk()                                allow queries on secondary nodes \n";
+    res += "\trs.printReplicationInfo()                       check oplog size and time range \n";
+    res += 
+        "\trs.printSecondaryReplicationInfo()              check replica set members and replication lag \n";
+    res += "\tdb.isMaster()                                   check who is primary \n";
+    res += "\tdb.hello()                                      check who is primary \n";
+    res += "\treconfiguration helpers disconnect from the database so the shell will display \n";
+    res += "\tan error, even if the command succeeds. \n";
+    return res;
 };
 rs.slaveOk = function(value) {
     print(
         "WARNING: slaveOk() is deprecated and may be removed in the next major release. Please use secondaryOk() instead.");
-    return globalThis.db.getMongo().setSecondaryOk(value);
+    return db.getMongo().setSecondaryOk(value);
 };
 
 rs.secondaryOk = function(value) {
-    return globalThis.db.getMongo().setSecondaryOk(value);
+    return db.getMongo().setSecondaryOk(value);
 };
 
 rs.status = function() {
-    return globalThis.db._adminCommand("replSetGetStatus");
+    return db._adminCommand("replSetGetStatus");
 };
 rs.isMaster = function() {
-    return globalThis.db.isMaster();
+    return db.isMaster();
 };
 rs.hello = function() {
-    return globalThis.db.hello();
+    return db.hello();
 };
 rs.initiate = function(c) {
-    return globalThis.db._adminCommand({replSetInitiate: c});
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+    // return db._adminCommand({replSetInitiate: c});
 };
 rs.printSlaveReplicationInfo = function() {
     print(
         "WARNING: printSlaveReplicationInfo is deprecated and may be removed in the next major release. Please use printSecondaryReplicationInfo instead.");
-    return globalThis.db.printSecondaryReplicationInfo();
+    return db.printSecondaryReplicationInfo();
 };
 rs.printSecondaryReplicationInfo = function() {
-    return globalThis.db.printSecondaryReplicationInfo();
+    return db.printSecondaryReplicationInfo();
 };
 rs.printReplicationInfo = function() {
-    return globalThis.db.printReplicationInfo();
+    return db.printReplicationInfo();
 };
 rs._runCmd = function(c) {
     // after the command, catch the disconnect and reconnect if necessary
     var res = null;
     try {
-        res = globalThis.db.adminCommand(c);
+        res = db.adminCommand(c);
     } catch (e) {
         if (isNetworkError(e)) {
             if (reconnect(db)) {
@@ -1598,12 +1604,13 @@ rs._runCmd = function(c) {
     return res;
 };
 rs.reconfig = function(cfg, options) {
-    cfg.version = rs.conf().version + 1;
-    cmd = {replSetReconfig: cfg};
-    for (var i in options) {
-        cmd[i] = options[i];
-    }
-    return this._runCmd(cmd);
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+    // cfg.version = rs.conf().version + 1;
+    // cmd = {replSetReconfig: cfg};
+    // for (var i in options) {
+    //     cmd[i] = options[i];
+    // }
+    // return this._runCmd(cmd);
 };
 
 _validateMemberIndex = function(memberIndex, newConfig) {
@@ -1655,96 +1662,101 @@ rs.reconfigForPSASet = function(memberIndex, cfg, options) {
     return res;
 };
 rs.add = function(hostport, arb) {
-    let res;
-    let self = this;
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+    // let res;
+    // let self = this;
 
-    assert.soon(function() {
-        var cfg = hostport;
+    // assert.soon(function() {
+    //     var cfg = hostport;
 
-        var local = globalThis.db.getSiblingDB("local");
-        assert(local.system.replset.count() <= 1,
-               "error: local.system.replset has unexpected contents");
-        var c = local.system.replset.findOne();
-        assert(c, "no config object retrievable from local.system.replset");
+    //     var local = db.getSiblingDB("local");
+    //     assert(local.system.replset.count() <= 1,
+    //            "error: local.system.replset has unexpected contents");
+    //     var c = local.system.replset.findOne();
+    //     assert(c, "no config object retrievable from local.system.replset");
 
-        const attemptedVersion = c.version++;
+    //     const attemptedVersion = c.version++;
 
-        var max = 0;
-        for (var i in c.members) {
-            // Omit 'newlyAdded' field if it exists in the config.
-            delete c.members[i].newlyAdded;
-            if (c.members[i]._id > max)
-                max = c.members[i]._id;
-        }
-        if (isString(hostport)) {
-            cfg = {_id: max + 1, host: hostport};
-            if (arb)
-                cfg.arbiterOnly = true;
-        } else if (arb == true) {
-            throw Error(
-                "Expected first parameter to be a host-and-port string of arbiter, but got " +
-                tojson(hostport));
-        }
+    //     var max = 0;
+    //     for (var i in c.members) {
+    //         // Omit 'newlyAdded' field if it exists in the config.
+    //         delete c.members[i].newlyAdded;
+    //         if (c.members[i]._id > max)
+    //             max = c.members[i]._id;
+    //     }
+    //     if (isString(hostport)) {
+    //         cfg = {_id: max + 1, host: hostport};
+    //         if (arb)
+    //             cfg.arbiterOnly = true;
+    //     } else if (arb == true) {
+    //         throw Error(
+    //             "Expected first parameter to be a host-and-port string of arbiter, but got " +
+    //             tojson(hostport));
+    //     }
 
-        if (cfg._id == null) {
-            cfg._id = max + 1;
-        }
-        c.members.push(cfg);
+    //     if (cfg._id == null) {
+    //         cfg._id = max + 1;
+    //     }
+    //     c.members.push(cfg);
 
-        res = self._runCmd({replSetReconfig: c});
-        if (res === "") {
-            // _runCmd caught an exception.
-            return true;
-        }
-        if (res.ok) {
-            return true;
-        }
-        if (res.code === ErrorCodes.ConfigurationInProgress ||
-            res.code === ErrorCodes.CurrentConfigNotCommittedYet) {
-            return false;  // keep retrying
-        }
-        if (res.code === ErrorCodes.NewReplicaSetConfigurationIncompatible) {
-            // We will retry only if this error was due to our config version being too low.
-            const cfgState = local.system.replset.findOne();
-            if (cfgState.version >= attemptedVersion) {
-                return false;  // keep retrying
-            }
-        }
-        // Take no action on other errors.
-        return true;
-    }, () => tojson(res), 10 * 60 * 1000 /* timeout */, 200 /* interval */);
+    //     res = self._runCmd({replSetReconfig: c});
+    //     if (res === "") {
+    //         // _runCmd caught an exception.
+    //         return true;
+    //     }
+    //     if (res.ok) {
+    //         return true;
+    //     }
+    //     if (res.code === ErrorCodes.ConfigurationInProgress ||
+    //         res.code === ErrorCodes.CurrentConfigNotCommittedYet) {
+    //         return false;  // keep retrying
+    //     }
+    //     if (res.code === ErrorCodes.NewReplicaSetConfigurationIncompatible) {
+    //         // We will retry only if this error was due to our config version being too low.
+    //         const cfgState = local.system.replset.findOne();
+    //         if (cfgState.version >= attemptedVersion) {
+    //             return false;  // keep retrying
+    //         }
+    //     }
+    //     // Take no action on other errors.
+    //     return true;
+    // }, () => tojson(res), 10 * 60 * 1000 /* timeout */, 200 /* interval */);
 
-    return res;
+    // return res;
 };
 rs.syncFrom = function(host) {
-    return globalThis.db._adminCommand({replSetSyncFrom: host});
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+    // return db._adminCommand({replSetSyncFrom: host});
 };
 rs.stepDown = function(stepdownSecs, catchUpSecs) {
-    var cmdObj = {replSetStepDown: stepdownSecs === undefined ? 60 : stepdownSecs};
-    if (catchUpSecs !== undefined) {
-        cmdObj['secondaryCatchUpPeriodSecs'] = catchUpSecs;
-    }
-    return globalThis.db._adminCommand(cmdObj);
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+    // var cmdObj = {replSetStepDown: stepdownSecs === undefined ? 60 : stepdownSecs};
+    // if (catchUpSecs !== undefined) {
+    //     cmdObj['secondaryCatchUpPeriodSecs'] = catchUpSecs;
+    // }
+    // return db._adminCommand(cmdObj);
 };
 rs.freeze = function(secs) {
-    return globalThis.db._adminCommand({replSetFreeze: secs});
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+    // return db._adminCommand({replSetFreeze: secs});
 };
 rs.addArb = function(hn) {
-    return this.add(hn, true);
+    return "{\"ok\": 0, \"reason\": \"unsupported command\"}";
+    // return this.add(hn, true);
 };
 
 rs.conf = function() {
-    var resp = globalThis.db._adminCommand({replSetGetConfig: 1});
+    var resp = db._adminCommand({replSetGetConfig: 1});
     if (resp.ok && !(resp.errmsg) && resp.config)
         return resp.config;
     else if (resp.errmsg && resp.errmsg.startsWith("no such cmd"))
-        return globalThis.db.getSiblingDB("local").system.replset.findOne();
+        return db.getSiblingDB("local").system.replset.findOne();
     throw new Error("Could not retrieve replica set config: " + tojson(resp));
 };
 rs.config = rs.conf;
 
 rs.remove = function(hn) {
-    var local = globalThis.db.getSiblingDB("local");
+    var local = db.getSiblingDB("local");
     assert(local.system.replset.count() <= 1,
            "error: local.system.replset has unexpected contents");
     var c = local.system.replset.findOne();
@@ -1754,7 +1766,7 @@ rs.remove = function(hn) {
     for (var i in c.members) {
         if (c.members[i].host == hn) {
             c.members.splice(i, 1);
-            return globalThis.db._adminCommand({replSetReconfig: c});
+            return db._adminCommand({replSetReconfig: c});
         }
     }
 
@@ -1787,7 +1799,7 @@ rs.debug.nullLastOpWritten = function(primary, secondary) {
 };
 
 rs.debug.getLastOpWritten = function(server) {
-    var s = globalThis.db.getSiblingDB("local");
+    var s = db.getSiblingDB("local");
     if (server) {
         s = connect(server + "/local");
     }
@@ -1808,7 +1820,7 @@ rs.isValidOpTime = function(opTime) {
  * Returns -1 if ot1 is 'earlier' than ot2, 1 if 'later' and 0 if equal.
  */
 rs.compareOpTimes = function(ot1, ot2) {
-    if (!globalThis.rs.isValidOpTime(ot1) || !globalThis.rs.isValidOpTime(ot2)) {
+    if (!rs.isValidOpTime(ot1) || !rs.isValidOpTime(ot2)) {
         throw Error("invalid optimes, received: " + tojson(ot1) + " and " + tojson(ot2));
     }
 
@@ -1822,138 +1834,134 @@ rs.compareOpTimes = function(ot1, ot2) {
 };
 
 help = shellHelper.help = function(x) {
+    var res = "";
     if (x == "mr") {
-        print("\nSee also http://dochub.mongodb.org/core/mapreduce");
-        print("\nfunction mapf() {");
-        print("  // 'this' holds current document to inspect");
-        print("  emit(key, value);");
-        print("}");
-        print("\nfunction reducef(key,value_array) {");
-        print("  return reduced_value;");
-        print("}");
-        print("\ndb.mycollection.mapReduce(mapf, reducef[, options])");
-        print("\noptions");
-        print("{[query : <query filter object>]");
-        print(" [, sort : <sort the query.  useful for optimization>]");
-        print(" [, limit : <number of objects to return from collection>]");
-        print(" [, out : <output-collection name>]");
-        print(" [, keeptemp: <true|false>]");
-        print(" [, finalize : <finalizefunction>]");
-        print(" [, scope : <object where fields go into javascript global scope >]");
-        print(" [, verbose : true]}\n");
-        return;
+        res += "\nSee also http://dochub.mongodb.org/core/mapreduce \n";
+        res += "\nfunction mapf() { \n";
+        res += "  // 'this' holds current document to inspect \n";
+        res += "  emit(key, value; \n";
+        res += "} \n";
+        res += "\nfunction reducef(key,value_array) { \n";
+        res += "  return reduced_value; \n";
+        res += "} \n";
+        res += "\ndb.mycollection.mapReduce(mapf, reducef[, options]) \n";
+        res += "\noptions \n";
+        res += "{[query : <query filter object>] \n";
+        res += " [, sort : <sort the query.  useful for optimization>] \n";
+        res += " [, limit : <number of objects to return from collection>] \n";
+        res += " [, out : <output-collection name>] \n";
+        res += " [, keeptemp: <true|false>] \n";
+        res += " [, finalize : <finalizefunction>] \n";
+        res += " [, scope : <object where fields go into javascript global scope >] \n";
+        res += " [, verbose : true]}\n \n";
     } else if (x == "connect") {
-        print(
-            "\nNormally one specifies the server on the mongo shell command line.  Run mongo --help to see those options.");
-        print("Additional connections may be opened:\n");
-        print("    var x = new Mongo('host[:port]');");
-        print("    var mydb = x.getDB('mydb');");
-        print("  or");
-        print("    var mydb = connect('host[:port]/mydb');");
-        return;
+        res += 
+            "\nNormally one specifies the server on the mongo shell command line.  Run mongo --help to see those options. \n";
+        res += "Additional connections may be opened:\n \n";
+        res += "    var x = new Mongo('host[:port]'; \n";
+        res += "    var mydb = x.getDB('mydb'; \n";
+        res += "  or \n";
+        res += "    var mydb = connect('host[:port]/mydb'; \n";
     } else if (x == "keys") {
-        print("Tab completion and command history is available at the command prompt.\n");
-        print("Some emacs keystrokes are available too:");
-        print("  Ctrl-A start of line");
-        print("  Ctrl-E end of line");
-        print("  Ctrl-K del to end of line");
-        print("\nMulti-line commands");
-        print(
-            "You can enter a multi line javascript expression.  If parens, braces, etc. are not closed, you will see a new line ");
-        print(
-            "beginning with '...' characters.  Type the rest of your expression.  Press Ctrl-C to abort the data entry if you");
-        print("get stuck.\n");
+        res += "Tab completion and command history is available at the command prompt.\n \n";
+        res += "Some emacs keystrokes are available too: \n";
+        res += "  Ctrl-A start of line \n";
+        res += "  Ctrl-E end of line \n";
+        res += "  Ctrl-K del to end of line \n";
+        res += "\nMulti-line commands \n";
+        res += 
+            "You can enter a multi line javascript expression.  If parens, braces, etc. are not closed, you will see a new line  \n";
+        res += 
+            "beginning with '...' characters.  Type the rest of your expression.  Press Ctrl-C to abort the data entry if you \n";
+        res += "get stuck.\n \n";
     } else if (x == "misc") {
-        print("\tb = new BinData(subtype,base64str)  create a BSON BinData value");
-        print("\tb.subtype()                         the BinData subtype (0..255)");
-        print("\tb.length()                          length of the BinData data in bytes");
-        print("\tb.hex()                             the data as a hex encoded string");
-        print("\tb.base64()                          the data as a base 64 encoded string");
-        print("\tb.toString()");
-        print();
-        print(
-            "\tb = HexData(subtype,hexstr)         create a BSON BinData value from a hex string");
-        print("\tb = UUID(hexstr)                    create a BSON BinData value of UUID subtype");
-        print("\tb = MD5(hexstr)                     create a BSON BinData value of MD5 subtype");
-        print(
-            "\t\"hexstr\"                            string, sequence of hex characters (no 0x prefix)");
-        print();
-        print("\to = new ObjectId()                  create a new ObjectId");
-        print(
-            "\to.getTimestamp()                    return timestamp derived from first 32 bits of the OID");
-        print("\to.isObjectId");
-        print("\to.toString()");
-        print("\to.equals(otherid)");
-        print();
-        print(
-            "\td = ISODate()                       like Date() but behaves more intuitively when used");
-        print(
-            "\td = ISODate('YYYY-MM-DD hh:mm:ss')    without an explicit \"new \" prefix on construction");
-        return;
+        res += "\tb = new BinData(subtype,base64str)  create a BSON BinData value \n";
+        res += "\tb.subtype()                         the BinData subtype (0..255) \n";
+        res += "\tb.length()                          length of the BinData data in bytes \n";
+        res += "\tb.hex()                             the data as a hex encoded string \n";
+        res += "\tb.base64()                          the data as a base 64 encoded string \n";
+        res += "\tb.toString() \n";
+        res += 
+            "\tb = HexData(subtype,hexstr)         create a BSON BinData value from a hex string \n";
+        res += "\tb = UUID(hexstr)                    create a BSON BinData value of UUID subtype \n";
+        res += "\tb = MD5(hexstr)                     create a BSON BinData value of MD5 subtype \n";
+        res += 
+            "\t\"hexstr\"                            string, sequence of hex characters (no 0x prefix) \n";
+        res += "\to = new ObjectId()                  create a new ObjectId \n";
+        res += 
+            "\to.getTimestamp()                    return timestamp derived from first 32 bits of the OID \n";
+        res += "\to.isObjectId \n";
+        res += "\to.toString() \n";
+        res += "\to.equals(otherid) \n";
+        res += 
+            "\td = ISODate()                       like Date() but behaves more intuitively when used \n";
+        res += 
+            "\td = ISODate('YYYY-MM-DD hh:mm:ss')    without an explicit \"new \" prefix on construction \n";
     } else if (x == "admin") {
-        print("\tls([path])                      list files");
-        print("\tpwd()                           returns current directory");
-        print("\tlistFiles([path])               returns file list");
-        print("\thostname()                      returns name of this host");
-        print("\tcat(fname)                      returns contents of text file as a string");
-        print("\tremoveFile(f)                   delete a file or directory");
-        print("\tload(jsfilename)                load and execute a .js file");
-        print("\trun(program[, args...])         spawn a program and wait for its completion");
-        print("\trunProgram(program[, args...])  same as run(), above");
-        print("\tsleep(m)                        sleep m milliseconds");
-        print("\tgetMemInfo()                    diagnostic");
+        res += "\tls([path])                      list files \n";
+        res += "\tpwd()                           returns current directory \n";
+        res += "\tlistFiles([path])               returns file list \n";
+        res += "\thostname()                      returns name of this host \n";
+        res += "\tcat(fname)                      returns contents of text file as a string \n";
+        res += "\tremoveFile(f)                   delete a file or directory \n";
+        res += "\tload(jsfilename)                load and execute a .js file \n";
+        res += "\trun(program[, args...])         spawn a program and wait for its completion \n";
+        res += "\trunProgram(program[, args...])  same as run(), above \n";
+        res += "\tsleep(m)                        sleep m milliseconds \n";
+        res += "\tgetMemInfo()                    diagnostic \n";
         return;
     } else if (x == "test") {
-        print("\tMongoRunner.runMongod(args)   DELETES DATA DIR and then starts mongod");
-        print("\t                              returns a connection to the new server");
+        res += "\tMongoRunner.runMongod(args)   DELETES DATA DIR and then starts mongod \n";
+        res += "\t                              returns a connection to the new server \n";
         return;
     } else if (x == "") {
-        print("\t" +
-              "db.help()                    help on db methods");
-        print("\t" +
-              "db.mycoll.help()             help on collection methods");
-        print("\t" +
-              "sh.help()                    sharding helpers");
-        print("\t" +
-              "rs.help()                    replica set helpers");
-        print("\t" +
-              "help admin                   administrative help");
-        print("\t" +
-              "help connect                 connecting to a db help");
-        print("\t" +
-              "help keys                    key shortcuts");
-        print("\t" +
-              "help misc                    misc things to know");
-        print("\t" +
-              "help mr                      mapreduce");
-        print();
-        print("\t" +
-              "show dbs                     show database names");
-        print("\t" +
-              "show collections             show collections in current database");
-        print("\t" +
-              "show users                   show users in current database");
-        print(
+        res += "\t" +
+              "db.help()                    help on db methods \n";
+        res += "\t" +
+              "db.mycoll.help()             help on collection methods \n";
+        res += "\t" +
+              "sh.help()                    sharding helpers \n";
+        res += "\t" +
+              "rs.help()                    replica set helpers \n";
+        res += "\t" +
+              "help admin                   administrative help \n";
+        res += "\t" +
+              "help connect                 connecting to a db help \n";
+        res += "\t" +
+              "help keys                    key shortcuts \n";
+        res += "\t" +
+              "help misc                    misc things to know \n";
+        res += "\t" +
+              "help mr                      mapreduce \n";
+        res += "\t" +
+              "show dbs                     show database names \n";
+        res += "\t" +
+              "show collections             show collections in current database \n";
+        res += "\t" +
+              "show users                   show users in current database \n";
+        res += 
             "\t" +
-            "show profile                 show most recent system.profile entries with time >= 1ms");
-        print("\t" +
-              "show logs                    show the accessible logger names");
-        print(
+            "show profile                 show most recent system.profile entries with time >= 1ms \n";
+        res += "\t" +
+              "show logs                    show the accessible logger names \n";
+        res += 
             "\t" +
-            "show log [name]              prints out the last segment of log in memory, 'global' is default");
-        print("\t" +
-              "use <db_name>                set current database");
-        print("\t" +
-              "db.mycoll.find()             list objects in collection mycoll");
-        print("\t" +
-              "db.mycoll.find( { a : 1 } )  list objects in mycoll where a == 1");
-        print(
+            "show log [name]              prints out the last segment of log in memory, 'global' is default \n";
+        res += "\t" +
+              "use <db_name>                set current database \n";
+        res += "\t" +
+              "db.mycoll.find()             list objects in collection mycoll \n";
+        res += "\t" +
+              "db.mycoll.find( { a : 1 } )  list objects in mycoll where a == 1 \n";
+        res += 
             "\t" +
-            "it                           result of the last line evaluated; use to further iterate");
-        print("\t" +
-              "DBQuery.shellBatchSize = x   set default number of items to display on shell");
-        print("\t" +
-              "exit                         quit the mongo shell");
-    } else
-        print("unknown help option");
+            "it                           result of the last line evaluated; use to further iterate \n";
+        res += "\t" +
+              "DBQuery.shellBatchSize = x   set default number of items to display on shell \n";
+        res += "\t" +
+              "exit                         quit the mongo shell \n";
+    } else {
+        res += "unknown help option \n";
+    }
+    return res;
 };

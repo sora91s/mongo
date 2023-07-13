@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/grid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -72,14 +70,14 @@ public:
                          .containsCustomizedGetLastErrorDefaults());
 
             auto addShardCmd = request();
-            auto shardIdUpsertCmd = add_shard_util::createShardIdentityUpsertForAddShard(
-                addShardCmd, ShardingCatalogClient::kMajorityWriteConcern);
+            auto shardIdUpsertCmd =
+                add_shard_util::createShardIdentityUpsertForAddShard(addShardCmd);
             DBDirectClient localClient(opCtx);
             BSONObj res;
 
-            localClient.runCommand(DatabaseName::kAdmin, shardIdUpsertCmd, res);
+            localClient.runCommand(NamespaceString::kAdminDb.toString(), shardIdUpsertCmd, res);
 
-            uassertStatusOK(getStatusFromWriteCommandReply(res));
+            uassertStatusOK(getStatusFromCommandResult(res));
 
             const auto balancerConfig = Grid::get(opCtx)->getBalancerConfiguration();
             invariant(balancerConfig);

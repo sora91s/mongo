@@ -30,6 +30,8 @@
 #pragma once
 
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/chunk_version.h"
+#include "mongo/s/shard_id.h"
 
 namespace mongo {
 
@@ -140,8 +142,6 @@ class Chunk {
 public:
     Chunk(ChunkInfo& chunkInfo, const boost::optional<Timestamp>& atClusterTime)
         : _chunkInfo(chunkInfo), _atClusterTime(atClusterTime) {}
-
-    Chunk(const Chunk& other) = default;
 
     const BSONObj& getMin() const {
         return _chunkInfo.getMin();

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/logv2/component_settings_filter.h"
 #include "mongo/logv2/log.h"
@@ -41,8 +42,6 @@
 #include <boost/log/sinks/text_ostream_backend.hpp>
 #include <boost/make_shared.hpp>
 #include <iostream>
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 
 namespace mongo {

@@ -46,12 +46,12 @@
 #include "mongo/db/query/find_command_gen.h"
 #include "mongo/db/query/fle/server_rewrite.h"
 #include "mongo/db/repl/repl_client_info.h"
-#include "mongo/db/session/session.h"
-#include "mongo/db/session/session_catalog.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/transaction/transaction_api.h"
-#include "mongo/db/transaction/transaction_participant.h"
-#include "mongo/db/transaction/transaction_participant_resource_yielder.h"
+#include "mongo/db/session.h"
+#include "mongo/db/session_catalog.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/transaction_api.h"
+#include "mongo/db/transaction_participant.h"
+#include "mongo/db/transaction_participant_resource_yielder.h"
 #include "mongo/executor/network_interface_factory.h"
 #include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/idl/idl_parser.h"
@@ -107,9 +107,8 @@ public:
                 txnParticipant.stashTransactionResources(opCtx);
             }
 
-            auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-            mongoDSessionCatalog->checkInUnscopedSession(
-                opCtx, OperationContextSession::CheckInReason::kYield);
+            MongoDOperationContextSession::checkIn(opCtx,
+                                                   OperationContextSession::CheckInReason::kYield);
         }
         _yielded = (session != nullptr);
     }
@@ -121,8 +120,7 @@ public:
             // unblocking this thread of execution. However, we must wait until the child operation
             // on this shard finishes so we can get the session back. This may limit the throughput
             // of the operation, but it's correct.
-            auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-            mongoDSessionCatalog->checkOutUnscopedSession(opCtx);
+            MongoDOperationContextSession::checkOut(opCtx);
 
             if (auto txnParticipant = TransactionParticipant::get(opCtx)) {
                 // Assumes this is only called from the 'aggregate' or 'getMore' commands.  The code
@@ -182,6 +180,10 @@ FLEBatchResult processFLEInsert(OperationContext* opCtx,
             repl::ReplicationCoordinator::get(opCtx->getServiceContext())->getReplicationMode() ==
                 repl::ReplicationCoordinator::modeReplSet);
 
+    uassert(5926101,
+            "Queryable Encryption is only supported when FCV supports 6.0",
+            gFeatureFlagFLE2.isEnabled(serverGlobalParams.featureCompatibility));
+
     auto [batchResult, insertReplyReturn] =
         processInsert(opCtx, insertRequest, &getTransactionWithRetriesForMongoD);
 
@@ -204,6 +206,10 @@ write_ops::DeleteCommandReply processFLEDelete(
             repl::ReplicationCoordinator::get(opCtx->getServiceContext())->getReplicationMode() ==
                 repl::ReplicationCoordinator::modeReplSet);
 
+    uassert(5926102,
+            "Queryable Encryption is only supported when FCV supports 6.0",
+            gFeatureFlagFLE2.isEnabled(serverGlobalParams.featureCompatibility));
+
     auto deleteReply = processDelete(opCtx, deleteRequest, &getTransactionWithRetriesForMongoD);
 
     setMongosFieldsInReply(opCtx, &deleteReply.getWriteCommandReplyBase());
@@ -219,6 +225,10 @@ write_ops::FindAndModifyCommandReply processFLEFindAndModify(
             repl::ReplicationCoordinator::get(opCtx->getServiceContext())->getReplicationMode() ==
                 repl::ReplicationCoordinator::modeReplSet);
 
+    uassert(5926103,
+            "Queryable Encryption is only supported when FCV supports 6.0",
+            gFeatureFlagFLE2.isEnabled(serverGlobalParams.featureCompatibility));
+
     auto reply = processFindAndModifyRequest<write_ops::FindAndModifyCommandReply>(
         opCtx, findAndModifyRequest, &getTransactionWithRetriesForMongoD);
 
@@ -232,6 +242,10 @@ write_ops::UpdateCommandReply processFLEUpdate(
             "Encrypted index operations are only supported on replica sets",
             repl::ReplicationCoordinator::get(opCtx->getServiceContext())->getReplicationMode() ==
                 repl::ReplicationCoordinator::modeReplSet);
+
+    uassert(5926104,
+            "Queryable Encryption is only supported when FCV supports 6.0",
+            gFeatureFlagFLE2.isEnabled(serverGlobalParams.featureCompatibility));
 
     auto updateReply = processUpdate(opCtx, updateRequest, &getTransactionWithRetriesForMongoD);
 
@@ -276,7 +290,7 @@ BSONObj processFLEWriteExplainD(OperationContext* opCtx,
                              info,
                              query,
                              &getTransactionWithRetriesForMongoD,
-                             fle::EncryptedCollScanModeAllowed::kAllow);
+                             fle::HighCardinalityModeAllowed::kAllow);
 }
 
 std::pair<write_ops::FindAndModifyCommandRequest, OpMsgRequest>

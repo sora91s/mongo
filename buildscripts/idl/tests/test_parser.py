@@ -28,6 +28,7 @@
 # it in the license file.
 #
 """Test cases for IDL parser."""
+# pylint: disable=too-many-lines
 
 import textwrap
 import unittest
@@ -45,6 +46,7 @@ else:
 
 
 class TestParser(testcase.IDLTestcase):
+    # pylint: disable=too-many-public-methods
     """Test the IDL parser only."""
 
     def test_empty(self):
@@ -502,7 +504,7 @@ class TestParser(testcase.IDLTestcase):
                         ignore: true
                         cpp_name: bar
                         comparison_order: 3
-                        stability: unstable
+                        unstable: true
             """))
 
         # Test false bools
@@ -517,7 +519,7 @@ class TestParser(testcase.IDLTestcase):
                         type: string
                         optional: false
                         ignore: false
-                        stability: stable
+                        unstable: false
             """))
 
     def test_field_negative(self):
@@ -1384,6 +1386,7 @@ class TestParser(testcase.IDLTestcase):
     def test_command_doc_sequence_positive(self):
         # type: () -> None
         """Positive supports_doc_sequence test cases."""
+        # pylint: disable=invalid-name
 
         # supports_doc_sequence can be false
         self.assert_parse(
@@ -1418,6 +1421,7 @@ class TestParser(testcase.IDLTestcase):
     def test_command_doc_sequence_negative(self):
         # type: () -> None
         """Negative supports_doc_sequence test cases."""
+        # pylint: disable=invalid-name
 
         # supports_doc_sequence must be a bool
         self.assert_parse_fail(
@@ -1497,10 +1501,10 @@ class TestParser(testcase.IDLTestcase):
                     foo: bar
             """), idl.errors.ERROR_ID_MISSING_REQUIRED_FIELD)
 
-    def test_stability_positive(self):
+    def test_unstable_positive(self):
         # type: () -> None
-        """Positive stability-field test cases."""
-        for stability in ("stable", "unstable", "internal"):
+        """Positive unstable-field test cases."""
+        for unstable in ("true", "false"):
             self.assert_parse(
                 textwrap.dedent(f"""
             commands:
@@ -1512,13 +1516,13 @@ class TestParser(testcase.IDLTestcase):
                     fields:
                         foo:
                             type: bar
-                            stability: {stability}
+                            unstable: {unstable}
                     reply_type: foo_reply_struct
                 """))
 
-    def test_stability_negative(self):
+    def test_unstable_negative(self):
         # type: () -> None
-        """Negative stability-field test cases."""
+        """Negative unstable-field test cases."""
         self.assert_parse_fail(
             textwrap.dedent("""
         commands:
@@ -1530,38 +1534,9 @@ class TestParser(testcase.IDLTestcase):
                 fields:
                     foo:
                         type: bar
-                        stability: unstable
+                        unstable: true
                 reply_type: foo_reply_struct
-            """), idl.errors.ERROR_ID_STABILITY_NO_API_VERSION)
-        self.assert_parse_fail(
-            textwrap.dedent("""
-            commands:
-                foo:
-                    description: foo
-                    command_name: foo
-                    namespace: ignored
-                    api_version: "1"
-                    fields:
-                        foo:
-                            type: bar
-                            stability: "unknown"
-                    reply_type: foo_reply_struct
-                """), idl.errors.ERROR_ID_STABILITY_UNKNOWN_VALUE)
-        self.assert_parse_fail(
-            textwrap.dedent("""
-            commands:
-                foo:
-                    description: foo
-                    command_name: foo
-                    namespace: ignored
-                    api_version: "1"
-                    fields:
-                        foo:
-                            type: bar
-                            unstable: true
-                            stability: "unstable"
-                    reply_type: foo_reply_struct
-                """), idl.errors.ERROR_ID_DUPLICATE_UNSTABLE_STABILITY)
+            """), idl.errors.ERROR_ID_UNSTABLE_NO_API_VERSION)
 
     def test_scalar_or_mapping_negative(self):
         # type: () -> None

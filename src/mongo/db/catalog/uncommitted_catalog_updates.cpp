@@ -31,16 +31,11 @@
 
 namespace mongo {
 
-namespace {
-const RecoveryUnit::Snapshot::Decoration<UncommittedCatalogUpdates> getUncommittedCatalogUpdates =
-    RecoveryUnit::Snapshot::declareDecoration<UncommittedCatalogUpdates>();
-
-const RecoveryUnit::Snapshot::Decoration<OpenedCollections> getOpenedCollections =
-    RecoveryUnit::Snapshot::declareDecoration<OpenedCollections>();
-}  // namespace
+const RecoveryUnit::Decoration<UncommittedCatalogUpdates> getUncommittedCatalogUpdates =
+    RecoveryUnit::declareDecoration<UncommittedCatalogUpdates>();
 
 UncommittedCatalogUpdates& UncommittedCatalogUpdates::get(OperationContext* opCtx) {
-    return getUncommittedCatalogUpdates(opCtx->recoveryUnit()->getSnapshot());
+    return getUncommittedCatalogUpdates(opCtx->recoveryUnit());
 }
 
 UncommittedCatalogUpdates::CollectionLookupResult UncommittedCatalogUpdates::lookupCollection(
@@ -78,10 +73,10 @@ UncommittedCatalogUpdates::CollectionLookupResult UncommittedCatalogUpdates::loo
 }
 
 boost::optional<const ViewsForDatabase&> UncommittedCatalogUpdates::getViewsForDatabase(
-    const DatabaseName& dbName) const {
+    StringData dbName) const {
     // Perform a reverse search so we find most recent entry affecting this namespace.
     auto it = std::find_if(_entries.rbegin(), _entries.rend(), [&](auto&& entry) {
-        return entry.nss.dbName() == dbName && entry.viewsForDb;
+        return entry.nss.db() == dbName && entry.viewsForDb;
     });
     if (it == _entries.rend()) {
         return boost::none;
@@ -122,13 +117,12 @@ void UncommittedCatalogUpdates::_createCollection(OperationContext* opCtx,
 
             // This will throw when registering a namespace which is already in use.
             CollectionCatalog::write(opCtx, [&, coll = createdColl](CollectionCatalog& catalog) {
-                catalog.registerCollectionTwoPhase(opCtx, uuid, coll, /*ts=*/boost::none);
+                catalog.registerCollection(opCtx, uuid, coll);
             });
 
-            opCtx->recoveryUnit()->onRollback([uuid](OperationContext* opCtx) {
+            opCtx->recoveryUnit()->onRollback([opCtx, uuid]() {
                 CollectionCatalog::write(opCtx, [&](CollectionCatalog& catalog) {
-                    catalog.deregisterCollection(
-                        opCtx, uuid, /*isDropPending=*/false, /*ts=*/boost::none);
+                    catalog.deregisterCollection(opCtx, uuid);
                 });
             });
         });
@@ -137,7 +131,7 @@ void UncommittedCatalogUpdates::_createCollection(OperationContext* opCtx,
     // We hold a reference to prevent the collection from being deleted when `PublishCatalogUpdates`
     // runs its rollback handler as that happens first. Other systems may have setup some rollback
     // handler that need to interact with this collection.
-    opCtx->recoveryUnit()->onRollback([coll](OperationContext*) {});
+    opCtx->recoveryUnit()->onRollback([coll]() {});
 }
 
 void UncommittedCatalogUpdates::writableCollection(std::shared_ptr<Collection> collection) {
@@ -155,38 +149,15 @@ void UncommittedCatalogUpdates::renameCollection(const Collection* collection,
     _entries.push_back({Entry::Action::kRenamedCollection, nullptr, from, boost::none, it->nss});
 }
 
-void UncommittedCatalogUpdates::dropIndex(const NamespaceString& nss,
-                                          std::shared_ptr<IndexCatalogEntry> indexEntry,
-                                          bool isDropPending) {
-    auto it = std::find_if(_entries.rbegin(), _entries.rend(), [indexEntry](auto&& entry) {
-        return indexEntry == entry.indexEntry;
-    });
-    invariant(it == _entries.rend());
-
-    Entry entry;
-    entry.action = Entry::Action::kDroppedIndex;
-
-    // The index entry will use the namespace of the collection it belongs to.
-    entry.nss = nss;
-
-    entry.indexEntry = std::move(indexEntry);
-    entry.isDropPending = isDropPending;
-    _entries.push_back(std::move(entry));
-}
-
-void UncommittedCatalogUpdates::dropCollection(const Collection* collection, bool isDropPending) {
+void UncommittedCatalogUpdates::dropCollection(const Collection* collection) {
     auto it =
         std::find_if(_entries.rbegin(), _entries.rend(), [uuid = collection->uuid()](auto&& entry) {
             return entry.uuid() == uuid;
         });
     if (it == _entries.rend()) {
         // An entry with this uuid was not found so add a new entry.
-        Entry entry;
-        entry.action = Entry::Action::kDroppedCollection;
-        entry.nss = collection->ns();
-        entry.externalUUID = collection->uuid();
-        entry.isDropPending = isDropPending;
-        _entries.push_back(std::move(entry));
+        _entries.push_back(
+            {Entry::Action::kDroppedCollection, nullptr, collection->ns(), collection->uuid()});
         return;
     }
 
@@ -209,14 +180,13 @@ void UncommittedCatalogUpdates::dropCollection(const Collection* collection, boo
     it->action = Entry::Action::kDroppedCollection;
     it->externalUUID = it->collection->uuid();
     it->collection = nullptr;
-    it->isDropPending = isDropPending;
 }
 
-void UncommittedCatalogUpdates::replaceViewsForDatabase(const DatabaseName& dbName,
+void UncommittedCatalogUpdates::replaceViewsForDatabase(StringData dbName,
                                                         ViewsForDatabase&& vfdb) {
     _entries.push_back({Entry::Action::kReplacedViewsForDatabase,
                         nullptr,
-                        NamespaceString{dbName, ""},
+                        NamespaceString{dbName},
                         boost::none,
                         {},
                         std::move(vfdb)});
@@ -228,7 +198,7 @@ void UncommittedCatalogUpdates::addView(OperationContext* opCtx, const Namespace
             catalog.registerUncommittedView(opCtx, nss);
         });
     });
-    opCtx->recoveryUnit()->onRollback([nss](OperationContext* opCtx) {
+    opCtx->recoveryUnit()->onRollback([opCtx, nss]() {
         CollectionCatalog::write(
             opCtx, [&](CollectionCatalog& catalog) { catalog.deregisterUncommittedView(nss); });
     });
@@ -239,18 +209,13 @@ void UncommittedCatalogUpdates::removeView(const NamespaceString& nss) {
     _entries.push_back({Entry::Action::kRemoveViewResource, nullptr, nss});
 }
 
-const std::vector<UncommittedCatalogUpdates::Entry>& UncommittedCatalogUpdates::entries() const {
-    return _entries;
-}
-
 std::vector<UncommittedCatalogUpdates::Entry> UncommittedCatalogUpdates::releaseEntries() {
     std::vector<Entry> ret;
     std::swap(ret, _entries);
     return ret;
 }
 
-void UncommittedCatalogUpdates::setIgnoreExternalViewChanges(const DatabaseName& dbName,
-                                                             bool value) {
+void UncommittedCatalogUpdates::setIgnoreExternalViewChanges(StringData dbName, bool value) {
     if (value) {
         _ignoreExternalViewChanges.emplace(dbName);
     } else {
@@ -258,7 +223,7 @@ void UncommittedCatalogUpdates::setIgnoreExternalViewChanges(const DatabaseName&
     }
 }
 
-bool UncommittedCatalogUpdates::shouldIgnoreExternalViewChanges(const DatabaseName& dbName) const {
+bool UncommittedCatalogUpdates::shouldIgnoreExternalViewChanges(StringData dbName) const {
     return _ignoreExternalViewChanges.contains(dbName);
 }
 
@@ -266,48 +231,6 @@ bool UncommittedCatalogUpdates::isCreatedCollection(OperationContext* opCtx,
                                                     const NamespaceString& nss) {
     const auto& lookupResult = lookupCollection(opCtx, nss);
     return lookupResult.newColl;
-}
-
-OpenedCollections& OpenedCollections::get(OperationContext* opCtx) {
-    return getOpenedCollections(opCtx->recoveryUnit()->getSnapshot());
-}
-
-boost::optional<std::shared_ptr<const Collection>> OpenedCollections::lookupByNamespace(
-    const NamespaceString& ns) const {
-    auto it = std::find_if(_collections.begin(), _collections.end(), [&ns](const auto& entry) {
-        if (!entry.nss)
-            return false;
-
-        return entry.nss.value() == ns;
-    });
-    if (it != _collections.end()) {
-        return it->collection;
-    }
-    return boost::none;
-}
-
-boost::optional<std::shared_ptr<const Collection>> OpenedCollections::lookupByUUID(
-    UUID uuid) const {
-    auto it = std::find_if(_collections.begin(), _collections.end(), [&uuid](const auto& entry) {
-        if (!entry.uuid)
-            return false;
-
-        return entry.uuid.value() == uuid;
-    });
-    if (it != _collections.end()) {
-        return it->collection;
-    }
-    return boost::none;
-}
-
-void OpenedCollections::store(std::shared_ptr<const Collection> coll,
-                              boost::optional<NamespaceString> nss,
-                              boost::optional<UUID> uuid) {
-    if (coll) {
-        invariant(nss == coll->ns());
-        invariant(uuid == coll->uuid());
-    }
-    _collections.push_back({std::move(coll), nss, uuid});
 }
 
 }  // namespace mongo

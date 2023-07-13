@@ -13,7 +13,6 @@
 
 #include <boost/call_traits.hpp>
 #include <iterator> // for std::iterator_traits
-#include <string>
 
 namespace boost { namespace spirit { namespace qi { namespace detail
 {

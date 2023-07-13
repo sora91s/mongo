@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kProcessHealth
 
 #include "mongo/platform/basic.h"
 
@@ -46,9 +47,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/exit_code.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kProcessHealth
-
 
 namespace mongo {
 
@@ -192,7 +190,7 @@ FaultManager::FaultManager(ServiceContext* svcCtx,
                       "Fault manager progress monitor is terminating the server",
                       "cause"_attr = cause);
           // This calls the exit_group syscall on Linux
-          ::_exit(static_cast<int>(ExitCode::processHealthCheck));
+          ::_exit(ExitCode::EXIT_PROCESS_HEALTH_CHECK);
       }) {
     invariant(_svcCtx);
     invariant(_svcCtx->getFastClockSource());
@@ -222,11 +220,7 @@ void FaultManager::setupStateMachine() {
         {FaultState::kActiveFault, {}},
     });
 
-    auto bindThis = [&](auto&& pmf) {
-        return [=](auto&&... a) {
-            return (this->*pmf)(a...);
-        };
-    };
+    auto bindThis = [&](auto&& pmf) { return [=](auto&&... a) { return (this->*pmf)(a...); }; };
 
     registerHandler(FaultState::kStartupCheck, bindThis(&FaultManager::handleStartupCheck))
         ->enter(bindThis(&FaultManager::logCurrentState))
@@ -364,7 +358,7 @@ boost::optional<FaultState> FaultManager::handleActiveFault(const OptionalMessag
 void FaultManager::logMessageReceived(FaultState state, const HealthCheckStatus& status) {
     LOGV2_DEBUG(5936504,
                 1,
-                "Fault manager received health check result",
+                "Fault manager recieved health check result",
                 "state"_attr = (str::stream() << state),
                 "observer_type"_attr = (str::stream() << status.getType()),
                 "result"_attr = status,
@@ -454,7 +448,7 @@ FaultManager::~FaultManager() {
         for (auto& pair : _healthCheckContexts) {
             auto cbHandle = pair.second.callbackHandle;
             if (cbHandle) {
-                _taskExecutor->cancel(cbHandle.value());
+                _taskExecutor->cancel(cbHandle.get());
             }
         }
     }

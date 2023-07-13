@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -37,9 +38,6 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_oplog_manager.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 namespace {
@@ -83,15 +81,14 @@ boost::optional<Timestamp> WiredTigerSnapshotManager::getMinSnapshotForNextCommi
 Timestamp WiredTigerSnapshotManager::beginTransactionOnCommittedSnapshot(
     WT_SESSION* session,
     PrepareConflictBehavior prepareConflictBehavior,
-    RoundUpPreparedTimestamps roundUpPreparedTimestamps,
-    WiredTigerBeginTxnBlock::UntimestampedWriteAssertion untimestampedWriteAssertion) const {
+    RoundUpPreparedTimestamps roundUpPreparedTimestamps) const {
 
     auto committedSnapshot = [this]() {
         stdx::lock_guard<Latch> lock(_committedSnapshotMutex);
         uassert(ErrorCodes::ReadConcernMajorityNotAvailableYet,
                 "Committed view disappeared while running operation",
                 _committedSnapshot);
-        return _committedSnapshot.value();
+        return _committedSnapshot.get();
     }();
 
     if (MONGO_unlikely(hangBeforeMajorityReadTransactionStarted.shouldFail())) {
@@ -100,11 +97,8 @@ Timestamp WiredTigerSnapshotManager::beginTransactionOnCommittedSnapshot(
 
     // We need to round up our read timestamp in case the oldest timestamp has advanced past the
     // committedSnapshot we just read.
-    WiredTigerBeginTxnBlock txnOpen(session,
-                                    prepareConflictBehavior,
-                                    roundUpPreparedTimestamps,
-                                    RoundUpReadTimestamp::kRound,
-                                    untimestampedWriteAssertion);
+    WiredTigerBeginTxnBlock txnOpen(
+        session, prepareConflictBehavior, roundUpPreparedTimestamps, RoundUpReadTimestamp::kRound);
     auto status = txnOpen.setReadSnapshot(committedSnapshot);
     fassert(30635, status);
 

@@ -6,6 +6,7 @@
  * renaming a collection while a migration is underway? adapt this test
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -16,13 +17,14 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {runMigrationAsync} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/uuid_util.js");
-load("jstests/replsets/rslib.js");  // 'createRstArgs'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 function insertData(collection) {
     // Enough for several batches.
@@ -38,7 +40,7 @@ const kDbName = tenantMigrationTest.tenantDB(kTenantId, "testDB");
 const kCollectionName = "toBeRenamed";
 const donorPrimary = tenantMigrationTest.getDonorPrimary();
 const recipientPrimary = tenantMigrationTest.getRecipientPrimary();
-const donorRstArgs = createRstArgs(tenantMigrationTest.getDonorRst());
+const donorRstArgs = TenantMigrationUtil.createRstArgs(tenantMigrationTest.getDonorRst());
 const db = donorPrimary.getDB(kDbName);
 
 jsTestLog("Populate collection");
@@ -56,7 +58,8 @@ const fpAfterBatch = configureFailPoint(
     recipientPrimary, "tenantMigrationHangCollectionClonerAfterHandlingBatchResponse");
 
 jsTestLog("Start a migration and pause after first batch");
-const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+const migrationThread =
+    new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 migrationThread.start();
 
 jsTestLog("Wait to reach failpoint");
@@ -73,3 +76,4 @@ fpAfterBatch.off();
 TenantMigrationTest.assertAborted(migrationThread.returnData(), ErrorCodes.DuplicateKey);
 assert.commandWorked(tenantMigrationTest.forgetMigration(migrationOpts.migrationIdString));
 tenantMigrationTest.stop();
+})();

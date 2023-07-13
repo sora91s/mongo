@@ -30,15 +30,13 @@
 #pragma once
 
 #include "mongo/db/s/sharding_mongod_test_fixture.h"
-#include "mongo/s/catalog_cache_loader_mock.h"
-#include "mongo/s/catalog_cache_mock.h"
 
 namespace mongo {
 
 /**
  * Test fixture for shard components, as opposed to config or mongos components. Provides a mock
- * network via ShardingMongodTestFixture. Additionally sets up mock dist lock catalog and manager
- * with a real catalog client.
+ * network and ephemeral storage engine via ShardingMongodTestFixture. Additionally sets up mock
+ * dist lock catalog and manager with a real catalog client.
  */
 class ShardServerTestFixture : public ShardingMongodTestFixture {
 protected:
@@ -69,16 +67,6 @@ protected:
     OID _clusterId;
 
     std::unique_ptr<CatalogCacheLoader> _catalogCacheLoader;
-};
-
-class ShardServerTestFixtureWithCatalogCacheMock : public ShardServerTestFixture {
-protected:
-    void setUp() override;
-    virtual std::unique_ptr<CatalogCache> makeCatalogCache() override;
-    CatalogCacheMock* getCatalogCacheMock();
-
-private:
-    CatalogCacheLoaderMock* _cacheLoaderMock;
 };
 
 }  // namespace mongo

@@ -26,7 +26,6 @@
 # ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 #
-import wttimestamp
 
 class BaseDataSet(object):
     """
@@ -44,73 +43,40 @@ class BaseDataSet(object):
         self.config = kwargs.get('config', '')
         self.projection = kwargs.get('projection', '')
 
-        # If the timestamp generator is not set, get it from the test case.
-        self.timestamp = kwargs.get('timestamp', testcase.getTimestamp())
-
-        # Get the tier populate share from the hook.
-        tier_share_percent = testcase.getTierSharePercent()
-        self.tier_share_value = (tier_share_percent * self.rows) // 100
-
-        # Get the tier cache share from the hook.
-        tier_cache_percent = testcase.getTierCachePercent()
-        self.tier_cache_value =  (tier_cache_percent * self.rows) // 100
-
     def create(self):
         self.testcase.session.create(self.uri, 'key_format=' + self.key_format
                                      + ',value_format=' + self.value_format
                                      + ',' + self.config)
 
-    def open_cursor(self, uri=None, todup=None, config=None, session=None):
-        if uri == None:
-            uri = self.uri
-        if session == None:
-            session = self.testcase.session
-        c = session.open_cursor(uri, None, config)
-        return wttimestamp.TimestampedCursor(session, c, self.timestamp, self.testcase)
-
-    def truncate(self, uri, c1, c2, config, session=None):
-        if session == None:
-            session = self.testcase.session
-        with wttimestamp.session_timestamped_transaction(session, self.timestamp):
-            return session.truncate(uri, c1, c2, config)
-
     def store_one_cursor(self, c, i):
         c[self.key(i)] = self.value(i)
 
-    def store_range(self, key, count):
-        c = self.open_cursor()
+    def store_range_cursor(self, c, key, count):
         for i in range(key, key + count):
-            # Flush the data to tiered storage.
-            if self.tier_share_value != 0 and self.tier_share_value == i:
-                self.testcase.session.checkpoint('flush_tier=(enabled,force=true)')
-            # Move the data from local cache to local disk by checkpointing and
-            # re-opening a connection.
-            if self.tier_cache_value != 0 and self.tier_cache_value == i:
-                c.close()
-                self.testcase.session.checkpoint('force=true')
-                self.testcase.reopen_conn()
-                c = self.open_cursor()
+            self.store_one(c, i)
+
+    def store_range(self, key, count):
+        c = self.testcase.session.open_cursor(self.uri, None)
+        for i in range(key, key + count):
             self.store_one_cursor(c, i)
         c.close()
 
     def fill(self):
         self.store_range(1, self.rows)
 
-    def postfill_create(self):
+    def postfill(self):
         pass
 
     @classmethod
     def is_lsm(cls):
         return False
 
-    def populate(self, create=True):
+    def populate(self):
         self.testcase.pr('populate: ' + self.uri + ' with '
                          + str(self.rows) + ' rows')
-        if create:
-            self.create()
+        self.create()
         self.fill()
-        if create:
-            self.postfill_create()
+        self.postfill()
 
     # Create a key for a Simple or Complex data set.
     @staticmethod
@@ -162,7 +128,8 @@ class BaseDataSet(object):
 
     def check(self):
         self.testcase.pr('check: ' + self.uri)
-        cursor = self.open_cursor(self.uri + self.projection)
+        cursor = self.testcase.session.open_cursor(
+            self.uri + self.projection, None, None)
         self.check_cursor(cursor)
         cursor.close()
 
@@ -229,7 +196,7 @@ class SimpleIndexDataSet(SimpleDataSet):
         BaseDataSet.check(self)
 
         # Check values in the index.
-        idxcursor = self.open_cursor(self.indexname)
+        idxcursor = self.testcase.session.open_cursor(self.indexname)
         for i in range(1, self.rows + 1):
             k = self.key(i)
             v = self.value(i)
@@ -294,7 +261,7 @@ class ComplexDataSet(BaseDataSet):
             session.create('index:' + tablepart + index[0],
                            ',columns=(' + index[1] + '),' + self.config)
 
-    def postfill_create(self):
+    def postfill(self):
         # add some indices after filling the table
         tablepart = self.uri.split(":")[1] + ':'
         session = self.testcase.session
@@ -317,16 +284,10 @@ class ComplexDataSet(BaseDataSet):
     # A value suitable for checking the value returned by a cursor, as
     # cursor.get_value() returns a list.
     def comparable_value(self, i):
-        # Most of these columns are the keys for indices.  To make sure our indices
-        # are ordered in a different order than the main btree, we'll reverse some
-        # decimal strings to produce the column values.
-        reversed = str(i)[::-1]
-        reversed18 = str(i*18)[::-1]
-        reversed23 = str(i*23)[::-1]
-        return [reversed + ': abcdefghijklmnopqrstuvwxyz'[0:i%26],    # column2
-                int(reversed),                                        # column3
-                reversed23 + ': abcdefghijklmnopqrstuvwxyz'[0:i%23],  # column4
-                reversed18 + ': abcdefghijklmnopqrstuvwxyz'[0:i%18]]  # column5
+        return [str(i) + ': abcdefghijklmnopqrstuvwxyz'[0:i%26],
+                i,
+                str(i) + ': abcdefghijklmnopqrstuvwxyz'[0:i%23],
+                str(i) + ': abcdefghijklmnopqrstuvwxyz'[0:i%18]]
 
     # A value suitable for assigning to a cursor, as cursor.set_value() expects
     # a tuple when it is used with a single argument and the value is composite.
@@ -435,7 +396,7 @@ class ProjectionIndexDataSet(BaseDataSet):
         BaseDataSet.check(self)
 
         # Check values in the index.
-        idxcursor = self.open_cursor(
+        idxcursor = self.testcase.session.open_cursor(
             self.indexname + '(v1,k,v2,v0)')
         self.check_index_cursor(idxcursor)
         idxcursor.close()
@@ -466,7 +427,7 @@ class TrackedComplexDataSet(ComplexDataSet):
     # override
     def store_one_cursor(self, c, i):
         self.track_values[i] = self.store_count(i) + 1
-        super().store_one_cursor(c, i)
+        c[self.key(i)] = self.value(i)
 
     # Redefine the value stored to get bigger depending on the multiplier,
     # and to mix up the value depending on how many times it has been updated.
@@ -521,7 +482,7 @@ class TrackedSimpleDataSet(SimpleDataSet):
     # override
     def store_one_cursor(self, c, i):
         self.track_values[i] = self.store_count(i) + 1
-        super().store_one_cursor(c, i)
+        c[self.key(i)] = self.value(i)
 
     # Redefine the value stored to get bigger depending on the multiplier,
     # and to mix up the value depending on how many times it has been updated.

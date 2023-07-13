@@ -27,6 +27,7 @@
 # exception statement from all source files in the program, then also delete
 # it in the license file.
 #
+# pylint: disable=too-many-lines
 """Test cases for IDL binder."""
 
 import textwrap
@@ -68,50 +69,7 @@ def indent_text(count, unindented_text):
 class TestBinder(testcase.IDLTestcase):
     """Test cases for the IDL binder."""
 
-    # Create a text wrap for common types.
-    common_types = textwrap.dedent("""
-    types:
-        object:
-            description: foo
-            cpp_type: foo
-            bson_serialization_type: object
-            serializer: foo
-            deserializer: foo
-
-        string:
-            description: foo
-            cpp_type: foo
-            bson_serialization_type: string
-            serializer: foo
-            deserializer: foo
-
-        any_type:
-            description: foo
-            cpp_type: foo
-            bson_serialization_type: any
-            serializer: foo
-            deserializer: foo
-
-        tenant_id:
-            bson_serialization_type: any
-            description: foo
-            cpp_type: foo
-            deserializer: foo
-            serializer: foo
-
-        database_name:
-            bson_serialization_type: string
-            description: foo
-            cpp_type: foo
-            serializer: foo
-            deserializer: foo
-
-        serialization_context:
-            bson_serialization_type: any
-            description: foo
-            cpp_type: foo
-            internal_only: true
-    """)
+    # pylint: disable=too-many-public-methods
 
     def test_empty(self):
         # type: () -> None
@@ -569,15 +527,21 @@ class TestBinder(testcase.IDLTestcase):
         """Positive struct tests."""
 
         # Setup some common types
-        test_preamble = self.common_types + indent_text(
-            1,
-            textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
             int:
                 description: foo
                 cpp_type: std::int32_t
                 bson_serialization_type: int
                 deserializer: mongo::BSONElement::_numberInt
-        """))
+        """)
 
         self.assert_bind(test_preamble + textwrap.dedent("""
             structs:
@@ -602,15 +566,21 @@ class TestBinder(testcase.IDLTestcase):
         """Negative struct tests."""
 
         # Setup some common types
-        test_preamble = self.common_types + indent_text(
-            1,
-            textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
             int:
                 description: foo
                 cpp_type: std::int32_t
                 bson_serialization_type: int
                 deserializer: mongo::BSONElement::_numberInt
-        """))
+        """)
 
         # Test array as name
         self.assert_bind_fail(
@@ -637,9 +607,15 @@ class TestBinder(testcase.IDLTestcase):
         """Positive variant test cases."""
 
         # Setup some common types
-        test_preamble = self.common_types + indent_text(
-            1,
-            textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
             int:
                 description: foo
                 cpp_type: std::int32_t
@@ -651,7 +627,7 @@ class TestBinder(testcase.IDLTestcase):
                 description: "A BSON bindata of function sub type"
                 cpp_type: "std::vector<std::uint8_t>"
                 deserializer: "mongo::BSONElement::_binDataVector"
-        """))
+        """)
 
         self.assert_bind(test_preamble + textwrap.dedent("""
         structs:
@@ -690,34 +666,27 @@ class TestBinder(testcase.IDLTestcase):
                         default: 1
             """))
 
-        # Test multiple BSON serialization type Object.
-        self.assert_bind(test_preamble + textwrap.dedent("""
-        structs:
-            insert_type:
-                description: foo
-                fields: {insert: string}
-            update_type:
-                description: foo
-                fields: {update: int}
-            foo:
-                description: foo
-                fields:
-                    my_variant_field:
-                        type:
-                            variant:
-                            - insert_type
-                            - update_type
-                            - int
-            """))
-
     def test_variant_negative(self):
         # type: () -> None
         """Negative variant test cases."""
 
         # Setup some common types
-        test_preamble = self.common_types + indent_text(
-            1,
-            textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        enums:
+            foo_enum:
+                description: foo
+                type: int
+                values:
+                    v1: 0
+                    v2: 1
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
             int:
                 description: foo
                 cpp_type: std::int32_t
@@ -732,14 +701,6 @@ class TestBinder(testcase.IDLTestcase):
                 description: foo
                 cpp_type: "std::int32_t"
                 deserializer: "mongo::BSONElement::safeNumberInt"
-        """)) + textwrap.dedent("""
-        enums:
-            foo_enum:
-                description: foo
-                type: int
-                values:
-                    v1: 0
-                    v2: 1
         """)
 
         self.assert_bind_fail(
@@ -856,8 +817,7 @@ class TestBinder(testcase.IDLTestcase):
                             - int
             """), idl.errors.ERROR_ID_VARIANT_STRUCTS)
 
-        # For multiple BSON serialization type Objects they must have different field names
-        # for their first field.
+        # At most one type can have BSON serialization type Object.
         self.assert_bind_fail(
             test_preamble + textwrap.dedent("""
         structs:
@@ -897,7 +857,15 @@ class TestBinder(testcase.IDLTestcase):
         """Positive test cases for field."""
 
         # Setup some common types
-        test_preamble = self.common_types
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+        """)
 
         # Short type
         self.assert_bind(test_preamble + textwrap.dedent("""
@@ -943,16 +911,16 @@ class TestBinder(testcase.IDLTestcase):
             """))
 
         # Test array as field type
-        self.assert_bind(self.common_types + indent_text(
-            1,
+        self.assert_bind(
             textwrap.dedent("""
-                arrayfake:
+            types:
+                 arrayfake:
                     description: foo
                     cpp_type: foo
                     bson_serialization_type: string
                     serializer: foo
                     deserializer: foo
-            """)) + textwrap.dedent("""
+
             structs:
                 foo:
                     description: foo
@@ -1011,12 +979,6 @@ class TestBinder(testcase.IDLTestcase):
                 cpp_type: foo
                 bson_serialization_type: bindata
                 bindata_subtype: uuid
-
-            serialization_context:
-                bson_serialization_type: any
-                description: foo
-                cpp_type: foo
-                internal_only: true
         """)
 
         # Test field of a struct type with a non-true default
@@ -1072,7 +1034,15 @@ class TestBinder(testcase.IDLTestcase):
 
         # Test non-inherited default with array
         self.assert_bind_fail(
-            self.common_types + textwrap.dedent("""
+            textwrap.dedent("""
+            types:
+                string:
+                    description: foo
+                    cpp_type: foo
+                    bson_serialization_type: string
+                    serializer: foo
+                    deserializer: foo
+
             structs:
                 foo:
                     description: foo
@@ -1162,7 +1132,7 @@ class TestBinder(testcase.IDLTestcase):
                 "default: foo",
         ]:
             self.assert_bind_fail(
-                self.common_types + textwrap.dedent("""
+                textwrap.dedent("""
             structs:
                 foo:
                     description: foo
@@ -1178,9 +1148,17 @@ class TestBinder(testcase.IDLTestcase):
         # type: () -> None
         """Positive parser chaining test cases."""
         # Setup some common types
-        test_preamble = self.common_types + indent_text(
-            1,
-            textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
+
+
             foo1:
                 description: foo
                 cpp_type: foo
@@ -1188,7 +1166,8 @@ class TestBinder(testcase.IDLTestcase):
                 serializer: foo
                 deserializer: foo
                 default: foo
-        """))
+
+        """)
 
         # Chaining only
         self.assert_bind(test_preamble + textwrap.dedent("""
@@ -1204,16 +1183,23 @@ class TestBinder(testcase.IDLTestcase):
         # type: () -> None
         """Negative parser chaining test cases."""
         # Setup some common types
-        test_preamble = self.common_types + indent_text(
-            1,
-            textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+
             foo1:
                 description: foo
                 cpp_type: foo
                 bson_serialization_type: chain
                 serializer: foo
                 deserializer: foo
-        """))
+
+        """)
 
         # Chaining with strict struct
         self.assert_bind_fail(
@@ -1290,9 +1276,17 @@ class TestBinder(testcase.IDLTestcase):
         # type: () -> None
         """Positive parser chaining test cases."""
         # Setup some common types
-        test_preamble = self.common_types + indent_text(
-            1,
-            textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
+
+
             foo1:
                 description: foo
                 cpp_type: foo
@@ -1300,7 +1294,7 @@ class TestBinder(testcase.IDLTestcase):
                 serializer: foo
                 deserializer: foo
                 default: foo
-        """)) + textwrap.dedent("""
+
         structs:
             chained:
                 description: foo
@@ -1411,9 +1405,17 @@ class TestBinder(testcase.IDLTestcase):
         # type: () -> None
         """Negative parser chaining test cases."""
         # Setup some common types
-        test_preamble = self.common_types + indent_text(
-            1,
-            textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
+
+
             foo1:
                 description: foo
                 cpp_type: foo
@@ -1421,7 +1423,7 @@ class TestBinder(testcase.IDLTestcase):
                 serializer: foo
                 deserializer: foo
                 default: foo
-        """)) + textwrap.dedent("""
+
         structs:
             chained:
                 description: foo
@@ -1660,7 +1662,7 @@ class TestBinder(testcase.IDLTestcase):
         # type: () -> None
         """Negative enum test cases."""
 
-        test_preamble = self.common_types + textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
         enums:
             foo:
                 description: foo
@@ -1685,7 +1687,16 @@ class TestBinder(testcase.IDLTestcase):
         """Positive command tests."""
 
         # Setup some common types
-        test_preamble = self.common_types + textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
+
         structs:
             reply:
                 description: foo
@@ -1711,7 +1722,17 @@ class TestBinder(testcase.IDLTestcase):
         """Negative command tests."""
 
         # Setup some common types
-        test_preamble = self.common_types
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+                default: foo
+        """)
+
         # Commands cannot be fields in other commands
         self.assert_bind_fail(
             test_preamble + textwrap.dedent("""
@@ -1792,9 +1813,25 @@ class TestBinder(testcase.IDLTestcase):
     def test_command_doc_sequence_positive(self):
         # type: () -> None
         """Positive supports_doc_sequence tests."""
+        # pylint: disable=invalid-name
 
         # Setup some common types
-        test_preamble = self.common_types + textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            object:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: object
+                serializer: foo
+                deserializer: foo
+
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+
         structs:
             foo_struct:
                 description: foo
@@ -1832,9 +1869,32 @@ class TestBinder(testcase.IDLTestcase):
     def test_command_doc_sequence_negative(self):
         # type: () -> None
         """Negative supports_doc_sequence tests."""
+        # pylint: disable=invalid-name
 
         # Setup some common types
-        test_preamble = self.common_types
+        test_preamble = textwrap.dedent("""
+        types:
+            object:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: object
+                serializer: foo
+                deserializer: foo
+
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+
+            any_type:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: any
+                serializer: foo
+                deserializer: foo
+        """)
 
         test_preamble2 = test_preamble + textwrap.dedent("""
         structs:
@@ -1905,8 +1965,15 @@ class TestBinder(testcase.IDLTestcase):
     def test_command_type_positive(self):
         # type: () -> None
         """Positive command custom type test cases."""
-        # Setup some common types
-        test_preamble = self.common_types
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+        """)
 
         # string
         self.assert_bind(test_preamble + textwrap.dedent("""
@@ -1939,8 +2006,15 @@ class TestBinder(testcase.IDLTestcase):
     def test_command_type_negative(self):
         # type: () -> None
         """Negative command type test cases."""
-        # Setup some common types
-        test_preamble = self.common_types
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+        """)
 
         # supports_doc_sequence must be a bool
         self.assert_bind_fail(
@@ -2374,7 +2448,15 @@ class TestBinder(testcase.IDLTestcase):
         # type: () -> None
         """Test access check."""
 
-        test_preamble = self.common_types + textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+
         enums:
             AccessCheck:
                 description: "test"
@@ -2478,7 +2560,15 @@ class TestBinder(testcase.IDLTestcase):
         # type: () -> None
         """Negative access check tests."""
 
-        test_preamble = self.common_types + textwrap.dedent("""
+        test_preamble = textwrap.dedent("""
+        types:
+            string:
+                description: foo
+                cpp_type: foo
+                bson_serialization_type: string
+                serializer: foo
+                deserializer: foo
+
         enums:
             AccessCheck:
                 description: "test"

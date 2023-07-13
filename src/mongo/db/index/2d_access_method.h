@@ -70,7 +70,7 @@ private:
                    KeyStringSet* keys,
                    KeyStringSet* multikeyMetadataKeys,
                    MultikeyPaths* multikeyPaths,
-                   const boost::optional<RecordId>& id) const final;
+                   boost::optional<RecordId> id) const final;
 
     TwoDIndexingParams _params;
 };

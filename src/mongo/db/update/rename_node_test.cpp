@@ -43,7 +43,7 @@
 namespace mongo {
 namespace {
 
-using RenameNodeTest = UpdateTestFixture;
+using RenameNodeTest = UpdateNodeTest;
 using mongo::mutablebson::countChildren;
 using mongo::mutablebson::Element;
 
@@ -125,7 +125,8 @@ TEST_F(RenameNodeTest, SimpleNumberAtRoot) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 2}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, i: {b: 2}}}"));
+    assertOplogEntry(fromjson("{$set: {b: 2}, $unset: {a: true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, i: {b: 2}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, b}");
 }
 
@@ -143,7 +144,8 @@ TEST_F(RenameNodeTest, ToExistsAtSameLevel) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 2}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, u: {b: 2}}}"));
+    assertOplogEntry(fromjson("{$set: {b: 2}, $unset: {a: true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, u: {b: 2}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, b}");
 }
 
@@ -161,7 +163,8 @@ TEST_F(RenameNodeTest, ToAndFromHaveSameValue) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 2}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, u: {b: 2}}}"));
+    assertOplogEntry(fromjson("{$set: {b: 2}, $unset: {a: true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, u: {b: 2}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, b}");
 }
 
@@ -179,7 +182,8 @@ TEST_F(RenameNodeTest, RenameToFieldWithSameValueButDifferentType) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 1}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, u: {b: 1}}}"));
+    assertOplogEntry(fromjson("{$set: {b: 1}, $unset: {a: true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, u: {b: 1}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, b}");
 }
 
@@ -197,7 +201,8 @@ TEST_F(RenameNodeTest, FromDottedElement) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {}, b: {d: 6}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {b: {d: 6}}, sa: {d: {c: false}}}}"));
+    assertOplogEntry(fromjson("{$set: {b: {d: 6}}, $unset: {'a.c': true}}"),
+                     fromjson("{$v: 2, diff: {u: {b: {d: 6}}, sa: {d: {c: false}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a.c, b}");
 }
 
@@ -215,7 +220,8 @@ TEST_F(RenameNodeTest, RenameToExistingNestedFieldDoesNotReorderFields) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: {c: 4, d: 2}}, b: 3, c: {}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {sb: {u: {c: 4}}}, sc: {d: {d: false}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b.c': 4}, $unset: {'c.d': true}}"),
+                     fromjson("{$v: 2, diff: {sa: {sb: {u: {c: 4}}}, sc: {d: {d: false}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a.b.c, c.d}");
 }
 
@@ -234,7 +240,8 @@ TEST_F(RenameNodeTest, MissingCompleteTo) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 1, c: {r: {d: 2}}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, sc: {i: {r: {d: 2}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'c.r.d': 2}, $unset: {'a': true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, sc: {i: {r: {d: 2}}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, c.r.d}");
 }
 
@@ -252,7 +259,8 @@ TEST_F(RenameNodeTest, ToIsCompletelyMissing) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: {c: {d: 2}}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, i: {b: {c: {d: 2}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'b.c.d': 2}, $unset: {'a': true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, i: {b: {c: {d: 2}}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, b.c.d}");
 }
 
@@ -270,7 +278,8 @@ TEST_F(RenameNodeTest, ToMissingDottedField) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: {c: {d: [{a:2, b:1}]}}}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, i: {b: {c: {d: [{a: 2, b: 1}]}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'b.c.d': [{a:2, b:1}]}, $unset: {'a': true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, i: {b: {c: {d: [{a: 2, b: 1}]}}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, b.c.d}");
 }
 
@@ -389,7 +398,8 @@ TEST_F(RenameNodeTest, ReplaceArrayField) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 2}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, u: {b: 2}}}"));
+    assertOplogEntry(fromjson("{$set: {b: 2}, $unset: {a: true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, u: {b: 2}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, b}");
 }
 
@@ -407,7 +417,8 @@ TEST_F(RenameNodeTest, ReplaceWithArrayField) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{b: []}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {a: false}, u: {b: []}}}"));
+    assertOplogEntry(fromjson("{$set: {b: []}, $unset: {a: true}}"),
+                     fromjson("{$v: 2, diff: {d: {a: false}, u: {b: []}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a, b}");
 }
 
@@ -425,7 +436,8 @@ TEST_F(RenameNodeTest, CanRenameFromInvalidFieldName) {
     ASSERT_TRUE(result.indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 2}"), doc);
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {d: {$a: false}, i: {a: 2}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 2}, $unset: {'$a': true}}"),
+                     fromjson("{$v: 2, diff: {d: {$a: false}, i: {a: 2}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{$a, a}");
 }
 
@@ -480,7 +492,8 @@ TEST_F(RenameNodeTest, ApplyCanRemoveRequiredPartOfDBRefIfValidateForStorageIsFa
     ASSERT_EQUALS(updated, doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {i: {b: 0}, sa: {d: {$id: false}}}}"));
+    assertOplogEntry(fromjson("{$set: {'b': 0}, $unset: {'a.$id': true}}"),
+                     fromjson("{$v: 2, diff: {i: {b: 0}, sa: {d: {$id: false}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a.$id, b}");
 }
 

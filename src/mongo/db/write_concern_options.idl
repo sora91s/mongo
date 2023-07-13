@@ -32,7 +32,7 @@ global:
 
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/db/read_write_concern_provenance_base.idl"
 
 types:
@@ -69,36 +69,36 @@ structs:
                 type: writeConcernW
                 cpp_name: writeConcernW
                 optional: true
-                stability: stable
+                unstable: false
             j:
                 type: safeBool
                 optional: true
-                stability: stable
+                unstable: false
             wtimeout:
                 type: writeConcernWTimeout
                 default: 0
-                stability: stable
+                unstable: false
             fsync:
                 type: safeBool
                 optional: true
-                stability: stable
+                unstable: false
             # Fields with names wElectionId, wOpTime, and getLastError are accepted in the WriteConcern document for
             # backwards-compatibility reasons, but their values are entirely ignored.
             wElectionId:
                 type: any
                 ignore: true
-                stability: stable
+                unstable: false
             wOpTime:
                 type: any
                 ignore: true
-                stability: stable
+                unstable: false
             getLastError:
                 type: any
                 ignore: true
-                stability: stable
+                unstable: false
             provenance:
                 description: "The source for this provenance"
                 cpp_name: source
                 type: ReadWriteConcernProvenanceSource
                 optional: true
-                stability: stable
+                unstable: false

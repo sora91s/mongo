@@ -116,7 +116,7 @@ function runTest({shardKey, cmdObj, numProfilerEntries}) {
                         {"command.shardVersion.0": {"$exists": true}},
                         {
                             "command.shardVersion.0":
-                                {$ne: ShardVersioningUtil.kIgnoredShardVersion.v}
+                                {$ne: ShardVersioningUtil.kIgnoredShardVersion[0]}
                         },
                     ]
                 },
@@ -125,7 +125,7 @@ function runTest({shardKey, cmdObj, numProfilerEntries}) {
                         {"command.shardVersion.v": {"$exists": true}},
                         {
                             "command.shardVersion.v":
-                                {$ne: ShardVersioningUtil.kIgnoredShardVersion.v}
+                                {$ne: ShardVersioningUtil.kIgnoredShardVersion[0]}
                         },
                     ]
                 },
@@ -144,8 +144,8 @@ function runTest({shardKey, cmdObj, numProfilerEntries}) {
             filter = {
                 [queryField]: cmdCollName,
                 "$or": [
-                    {"command.shardVersion.0": ShardVersioningUtil.kIgnoredShardVersion.v},
-                    {"command.shardVersion.v": ShardVersioningUtil.kIgnoredShardVersion.v},
+                    {"command.shardVersion.0": ShardVersioningUtil.kIgnoredShardVersion[0]},
+                    {"command.shardVersion.v": ShardVersioningUtil.kIgnoredShardVersion[0]},
                 ]
             };
         }
@@ -290,7 +290,8 @@ runTest({
     numProfilerEntries: {sharded: 1, unsharded: 1},
 });
 
-if (TimeseriesTest.shardedTimeseriesUpdatesAndDeletesEnabled(st.shard0)) {
+if (TimeseriesTest.timeseriesUpdatesAndDeletesEnabled(st.shard0) &&
+    TimeseriesTest.shardedTimeseriesUpdatesAndDeletesEnabled(st.shard0)) {
     // Tests for updates.
     runTest({
         shardKey: {[metaField + ".a"]: 1},

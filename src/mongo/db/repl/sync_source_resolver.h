@@ -97,6 +97,7 @@ struct SyncSourceResolverResponse {
  */
 class SyncSourceResolver {
 public:
+    static const NamespaceString kLocalOplogNss;
     static const Seconds kFetcherTimeout;
     static const Seconds kFetcherErrorDenylistDuration;
     static const Seconds kOplogEmptyDenylistDuration;

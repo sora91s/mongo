@@ -34,7 +34,6 @@
 #include "mongo/bson/json.h"
 #include "mongo/db/exec/sbe/expressions/expression.h"
 #include "mongo/db/exec/sbe/sbe_plan_stage_test.h"
-#include "mongo/db/exec/sbe/sbe_unittest.h"
 #include "mongo/db/exec/sbe/stages/hash_lookup.h"
 #include "mongo/db/exec/sbe/util/stage_results_printer.h"
 #include "mongo/db/exec/sbe/values/value_printer.h"
@@ -42,6 +41,8 @@
 #include "mongo/unittest/golden_test.h"
 #include "mongo/util/assert_util.h"
 namespace mongo::sbe {
+
+unittest::GoldenTestConfig goldenTestConfig{"src/mongo/db/test_output/exec/sbe"};
 
 class HashLookupStageTest : public PlanStageTestFixture {
 public:
@@ -89,7 +90,7 @@ public:
         if (collator) {
             // Setup collator and insert it into the ctx.
             collatorSlot = generateSlotId();
-            ctx->pushCorrelated(collatorSlot.value(), &collatorAccessor);
+            ctx->pushCorrelated(collatorSlot.get(), &collatorAccessor);
             collatorAccessor.reset(value::TypeTags::collator,
                                    value::bitcastFrom<CollatorInterface*>(collator));
         }
@@ -187,7 +188,7 @@ public:
 
         // Run the stage after the knob is set and spill to disk. We need to hold a global IS lock
         // to read from WT.
-        Lock::GlobalLock lk(operationContext(), MODE_IS);
+        Lock::GlobalLock lk(opCtx(), MODE_IS);
         stage->open(true);
         std::stringstream fourthStream;
         StageResultsPrinters::make(fourthStream, printOptions)
@@ -247,7 +248,7 @@ private:
 };
 
 TEST_F(HashLookupStageTest, BasicTests) {
-    unittest::GoldenTestContext gctx(&goldenTestConfigSbe);
+    unittest::GoldenTestContext gctx(&goldenTestConfig);
 
     runVariation(gctx,
                  "simple scalar key",

@@ -10,6 +10,8 @@ import unittest
 
 from buildscripts.resmokelib.core import redirect as _redirect
 
+# pylint: disable=missing-docstring
+
 
 class TestStdoutRedirect(unittest.TestCase):
     is_windows = os.name == "nt"

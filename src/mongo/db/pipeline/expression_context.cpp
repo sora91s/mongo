@@ -27,16 +27,21 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include <utility>
 
 #include "mongo/db/pipeline/aggregate_command_gen.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/process_interface/stub_mongo_process_interface.h"
+#include "mongo/db/query/collation/collation_spec.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/util/intrusive_counter.h"
 
 namespace mongo {
+
+using boost::intrusive_ptr;
 
 ExpressionContext::ResolvedNamespace::ResolvedNamespace(NamespaceString ns,
                                                         std::vector<BSONObj> pipeline,
@@ -49,13 +54,12 @@ ExpressionContext::ExpressionContext(OperationContext* opCtx,
                                      std::shared_ptr<MongoProcessInterface> processInterface,
                                      StringMap<ResolvedNamespace> resolvedNamespaces,
                                      boost::optional<UUID> collUUID,
-                                     bool mayDbProfile,
-                                     bool allowDiskUseByDefault)
+                                     bool mayDbProfile)
     : ExpressionContext(opCtx,
                         request.getExplain(),
                         request.getFromMongos(),
                         request.getNeedsMerge(),
-                        request.getAllowDiskUse().value_or(allowDiskUseByDefault),
+                        request.getAllowDiskUse(),
                         request.getBypassDocumentValidation().value_or(false),
                         request.getIsMapReduceCommand(),
                         request.getNamespace(),
@@ -72,7 +76,6 @@ ExpressionContext::ExpressionContext(OperationContext* opCtx,
         // 'jsHeapLimitMB' limit.
         jsHeapLimitMB = boost::none;
     }
-    forPerShardCursor = request.getPassthroughToShard().has_value();
 }
 
 ExpressionContext::ExpressionContext(
@@ -94,8 +97,7 @@ ExpressionContext::ExpressionContext(
     : explain(explain),
       fromMongos(fromMongos),
       needsMerge(needsMerge),
-      allowDiskUse(allowDiskUse &&
-                   !(opCtx && opCtx->readOnly())),  // Disallow disk use if in read-only mode.
+      allowDiskUse(allowDiskUse),
       bypassDocumentValidation(bypassDocumentValidation),
       ns(ns),
       uuid(std::move(collUUID)),
@@ -114,7 +116,6 @@ ExpressionContext::ExpressionContext(
         auto genConsts = variables.generateRuntimeConstants(opCtx);
         genConsts.setJsScope(runtimeConstants->getJsScope());
         genConsts.setIsMapReduce(runtimeConstants->getIsMapReduce());
-        genConsts.setUserRoles(runtimeConstants->getUserRoles());
         variables.setLegacyRuntimeConstants(genConsts);
     } else if (runtimeConstants) {
         variables.setLegacyRuntimeConstants(*runtimeConstants);
@@ -181,7 +182,7 @@ std::unique_ptr<ExpressionContext::CollatorStash> ExpressionContext::temporarily
     return std::unique_ptr<CollatorStash>(new CollatorStash(this, std::move(newCollator)));
 }
 
-boost::intrusive_ptr<ExpressionContext> ExpressionContext::copyWith(
+intrusive_ptr<ExpressionContext> ExpressionContext::copyWith(
     NamespaceString ns,
     boost::optional<UUID> uuid,
     boost::optional<std::unique_ptr<CollatorInterface>> updatedCollator) const {
@@ -240,53 +241,39 @@ void ExpressionContext::startExpressionCounters() {
 
 void ExpressionContext::incrementMatchExprCounter(StringData name) {
     if (enabledCounters && _expressionCounters) {
-        ++_expressionCounters.value().matchExprCountersMap[name];
+        ++_expressionCounters.get().matchExprCountersMap[name];
     }
 }
 
 void ExpressionContext::incrementAggExprCounter(StringData name) {
     if (enabledCounters && _expressionCounters) {
-        ++_expressionCounters.value().aggExprCountersMap[name];
+        ++_expressionCounters.get().aggExprCountersMap[name];
     }
 }
 
 void ExpressionContext::incrementGroupAccumulatorExprCounter(StringData name) {
     if (enabledCounters && _expressionCounters) {
-        ++_expressionCounters.value().groupAccumulatorExprCountersMap[name];
+        ++_expressionCounters.get().groupAccumulatorExprCountersMap[name];
     }
 }
 
 void ExpressionContext::incrementWindowAccumulatorExprCounter(StringData name) {
     if (enabledCounters && _expressionCounters) {
-        ++_expressionCounters.value().windowAccumulatorExprCountersMap[name];
+        ++_expressionCounters.get().windowAccumulatorExprCountersMap[name];
     }
 }
 
 void ExpressionContext::stopExpressionCounters() {
     if (enabledCounters && _expressionCounters) {
         operatorCountersMatchExpressions.mergeCounters(
-            _expressionCounters.value().matchExprCountersMap);
-        operatorCountersAggExpressions.mergeCounters(
-            _expressionCounters.value().aggExprCountersMap);
+            _expressionCounters.get().matchExprCountersMap);
+        operatorCountersAggExpressions.mergeCounters(_expressionCounters.get().aggExprCountersMap);
         operatorCountersGroupAccumulatorExpressions.mergeCounters(
-            _expressionCounters.value().groupAccumulatorExprCountersMap);
+            _expressionCounters.get().groupAccumulatorExprCountersMap);
         operatorCountersWindowAccumulatorExpressions.mergeCounters(
-            _expressionCounters.value().windowAccumulatorExprCountersMap);
+            _expressionCounters.get().windowAccumulatorExprCountersMap);
     }
     _expressionCounters = boost::none;
-}
-
-void ExpressionContext::setUserRoles() {
-    // We need to check the FCV here because the $$USER_ROLES variable will always appear in the
-    // serialized command when one shard is sending a sub-query to another shard. The query will
-    // fail in the case where the shards are running different binVersions and one of them does not
-    // have a notion of this variable. This FCV check prevents this from happening, as the value of
-    // the variable is not set (and therefore not serialized) if the FCV is too old.
-    if (serverGlobalParams.featureCompatibility.isVersionInitialized() &&
-        feature_flags::gFeatureFlagUserRoles.isEnabled(serverGlobalParams.featureCompatibility) &&
-        enableAccessToUserRoles.load()) {
-        variables.defineUserRoles(opCtx);
-    }
 }
 
 }  // namespace mongo

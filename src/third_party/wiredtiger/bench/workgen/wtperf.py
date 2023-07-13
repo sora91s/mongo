@@ -490,8 +490,7 @@ class Translator:
         s += 'pop_workload = Workload(context, populate_threads * pop_thread)\n'
         if self.verbose > 0:
             s += 'print("populate:")\n'
-        s += 'ret = pop_workload.run(conn)\n'
-        s += 'assert ret == 0, ret\n'
+        s += 'pop_workload.run(conn)\n'
 
         return s
 
@@ -610,8 +609,7 @@ class Translator:
 
             if self.verbose > 0:
                 s += 'print("workload:")\n'
-            s += 'ret = workload.run(conn)\n'
-            s += 'assert ret == 0, ret\n'
+            s += 'workload.run(conn)\n\n'
             s += 'latency_filename = context.args.home + "/latency.out"\n'
             s += 'latency.workload_latency(workload, latency_filename)\n'
 

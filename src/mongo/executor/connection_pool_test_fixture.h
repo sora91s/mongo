@@ -32,7 +32,6 @@
 #include <set>
 
 #include "mongo/executor/connection_pool.h"
-#include "mongo/util/clock_source_mock.h"
 #include "mongo/util/executor_test_util.h"
 #include "mongo/util/functional.h"
 
@@ -159,10 +158,6 @@ public:
 
     Date_t now() override;
 
-    ClockSource* getFastClockSource() override {
-        return &_fastClockSource;
-    }
-
     void shutdown() override {
         TimerImpl::clear();
     };
@@ -177,7 +172,6 @@ private:
     std::shared_ptr<OutOfLineExecutor> _executor;
 
     static boost::optional<Date_t> _now;
-    static ClockSourceMock _fastClockSource;
 };
 
 }  // namespace connection_pool_test_details

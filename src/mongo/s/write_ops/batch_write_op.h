@@ -34,7 +34,7 @@
 #include <vector>
 
 #include "mongo/base/status.h"
-#include "mongo/db/session/logical_session_id.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/rpc/write_concern_error_detail.h"
 #include "mongo/s/ns_targeter.h"
 #include "mongo/s/write_ops/batched_command_request.h"
@@ -45,6 +45,7 @@
 namespace mongo {
 
 class OperationContext;
+class TargetedWriteBatch;
 class TrackedErrors;
 
 // Conservative overhead per element contained in the write batch. This value was calculated as 1
@@ -80,7 +81,15 @@ struct ShardWCError {
     WriteConcernErrorDetail error;
 };
 
-using TargetedBatchMap = std::map<ShardId, std::unique_ptr<TargetedWriteBatch>>;
+/**
+ * Compares endpoints in a map.
+ */
+struct EndpointComp {
+    bool operator()(const ShardEndpoint* endpointA, const ShardEndpoint* endpointB) const;
+};
+
+using TargetedBatchMap =
+    std::map<const ShardEndpoint*, std::unique_ptr<TargetedWriteBatch>, EndpointComp>;
 
 /**
  * The BatchWriteOp class manages the lifecycle of a batched write received by mongos.  Each
@@ -131,12 +140,10 @@ public:
      * targeting errors, but if not we should refresh once first.)
      *
      * Returned TargetedWriteBatches are owned by the caller.
-     * If a write without a shard key is detected, return an OK StatusWith that has 'true' as the
-     * value.
      */
-    StatusWith<bool> targetBatch(const NSTargeter& targeter,
-                                 bool recordTargetErrors,
-                                 TargetedBatchMap* targetedBatches);
+    Status targetBatch(const NSTargeter& targeter,
+                       bool recordTargetErrors,
+                       std::map<ShardId, std::unique_ptr<TargetedWriteBatch>>* targetedBatches);
 
     /**
      * Fills a BatchCommandRequest from a TargetedWriteBatch for this BatchWriteOp.
@@ -247,6 +254,54 @@ private:
 };
 
 /**
+ * Data structure representing the information needed to make a batch request, along with
+ * pointers to where the resulting responses should be placed.
+ *
+ * Internal support for storage as a doubly-linked list, to allow the TargetedWriteBatch to
+ * efficiently be registered for reporting.
+ */
+class TargetedWriteBatch {
+    TargetedWriteBatch(const TargetedWriteBatch&) = delete;
+    TargetedWriteBatch& operator=(const TargetedWriteBatch&) = delete;
+
+public:
+    TargetedWriteBatch(const ShardEndpoint& endpoint) : _endpoint(endpoint) {}
+
+    const ShardEndpoint& getEndpoint() const {
+        return _endpoint;
+    }
+
+    const std::vector<std::unique_ptr<TargetedWrite>>& getWrites() const {
+        return _writes;
+    };
+
+    size_t getNumOps() const {
+        return _writes.size();
+    }
+
+    int getEstimatedSizeBytes() const {
+        return _estimatedSizeBytes;
+    }
+
+    /**
+     * TargetedWrite is owned here once given to the TargetedWriteBatch.
+     */
+    void addWrite(std::unique_ptr<TargetedWrite> targetedWrite, int estWriteSize);
+
+private:
+    // Where to send the batch
+    const ShardEndpoint _endpoint;
+
+    // Where the responses go
+    // TargetedWrite*s are owned by the TargetedWriteBatch
+    std::vector<std::unique_ptr<TargetedWrite>> _writes;
+
+    // Conservatively estimated size of the batch, for ensuring it doesn't grow past the maximum
+    // BSON size
+    int _estimatedSizeBytes{0};
+};
+
+/**
  * Helper class for tracking certain errors from batch operations
  */
 class TrackedErrors {
@@ -265,17 +320,5 @@ private:
     using TrackedErrorMap = stdx::unordered_map<int, std::vector<ShardError>>;
     TrackedErrorMap _errorMap;
 };
-
-typedef std::function<const NSTargeter&(const WriteOp& writeOp)> GetTargeterFn;
-typedef std::function<int(const WriteOp& writeOp)> GetWriteSizeFn;
-
-// Helper function to target ready writeOps. See BatchWriteOp::targetBatch for details.
-StatusWith<bool> targetWriteOps(OperationContext* opCtx,
-                                std::vector<WriteOp>& writeOps,
-                                bool ordered,
-                                bool recordTargetErrors,
-                                GetTargeterFn getTargeterFn,
-                                GetWriteSizeFn getWriteSizeFn,
-                                TargetedBatchMap& batchMap);
 
 }  // namespace mongo

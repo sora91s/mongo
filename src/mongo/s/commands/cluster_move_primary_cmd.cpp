@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/move_primary_gen.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -70,33 +68,32 @@ public:
         return " example: { moveprimary : 'foo' , to : 'localhost:9999' }";
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(
-                     ResourcePattern::forDatabaseName(parseNs(dbName, cmdObj).db()),
-                     ActionType::moveChunk)) {
+    virtual Status checkAuthForCommand(Client* client,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj) const {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forDatabaseName(parseNs(dbname, cmdObj)), ActionType::moveChunk)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
 
         return Status::OK();
     }
 
-    NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) const override {
+    virtual std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const {
         const auto nsElt = cmdObj.firstElement();
         uassert(ErrorCodes::InvalidNamespace,
                 "'movePrimary' must be of type String",
                 nsElt.type() == BSONType::String);
-        return NamespaceString(dbName.tenantId(), nsElt.str());
+        return nsElt.str();
     }
 
     virtual bool run(OperationContext* opCtx,
-                     const DatabaseName& dbName,
+                     const std::string& dbname,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        auto request = MovePrimary::parse(IDLParserContext("MovePrimary"), cmdObj);
-        const string db = parseNs(dbName, cmdObj).dbName().db();
+        auto request = MovePrimary::parse(IDLParserErrorContext("MovePrimary"), cmdObj);
+
+        const string db = parseNs("", cmdObj);
         const StringData toShard(request.getTo());
 
         // Invalidate the routing table cache entry for this database so that we reload the

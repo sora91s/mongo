@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
 
@@ -34,9 +35,6 @@
 
 #include "mongo/db/repl/member_data.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplication
-
 
 namespace mongo {
 namespace repl {
@@ -47,8 +45,7 @@ MemberData::MemberData() : _health(-1), _authIssue(false), _configIndex(-1), _is
     _lastResponse.setAppliedOpTimeAndWallTime(OpTimeAndWallTime());
 }
 
-MemberData::HeartbeatChanges MemberData::setUpValues(Date_t now,
-                                                     ReplSetHeartbeatResponse&& hbResponse) {
+bool MemberData::setUpValues(Date_t now, ReplSetHeartbeatResponse&& hbResponse) {
     _health = 1;
     if (_upSince == Date_t()) {
         _upSince = now;
@@ -70,8 +67,7 @@ MemberData::HeartbeatChanges MemberData::setUpValues(Date_t now,
         hbResponse.setAppliedOpTimeAndWallTime(_lastResponse.getAppliedOpTimeAndWallTime());
     }
     // Log if the state changes
-    const bool memberStateChanged = _lastResponse.getState() != hbResponse.getState();
-    if (memberStateChanged) {
+    if (_lastResponse.getState() != hbResponse.getState()) {
         LOGV2(21215,
               "Member {hostAndPort} is now in state {newState}",
               "Member is in new state",
@@ -93,7 +89,7 @@ MemberData::HeartbeatChanges MemberData::setUpValues(Date_t now,
 
     _lastResponse = std::move(hbResponse);
 
-    return {opTimeAdvanced, configChanged, memberStateChanged};
+    return (opTimeAdvanced || configChanged);
 }
 
 void MemberData::setDownValues(Date_t now, const std::string& heartbeatMessage) {

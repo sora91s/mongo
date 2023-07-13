@@ -36,7 +36,6 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bson_depth.h"
 #include "mongo/db/exec/document_value/document_internal.h"
-#include "mongo/db/query/serialization_options.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -70,11 +69,9 @@ public:
      *
      * Field names are validated using uassertValidFieldName().
      */
-    /* implicit */ FieldPath(std::string inputPath, bool precomputeHashes = false);
-    /* implicit */ FieldPath(StringData inputPath, bool precomputeHashes = false)
-        : FieldPath(inputPath.toString(), precomputeHashes) {}
-    /* implicit */ FieldPath(const char* inputPath, bool precomputeHashes = false)
-        : FieldPath(std::string(inputPath), precomputeHashes) {}
+    /* implicit */ FieldPath(std::string inputPath);
+    /* implicit */ FieldPath(StringData inputPath) : FieldPath(inputPath.toString()) {}
+    /* implicit */ FieldPath(const char* inputPath) : FieldPath(std::string(inputPath)) {}
 
     /**
      * Returns the number of path elements in the field path.
@@ -120,8 +117,13 @@ public:
      */
     HashedFieldName getFieldNameHashed(size_t i) const {
         dassert(i < getPathLength());
-        invariant(_fieldHash[i] != kHashUninitialized);
-        return HashedFieldName{getFieldName(i), _fieldHash[i]};
+        const auto begin = _fieldPathDotPosition[i] + 1;
+        const auto end = _fieldPathDotPosition[i + 1];
+        StringData fieldName{&_fieldPath[begin], end - begin};
+        if (_fieldHash[i] == kHashUninitialized) {
+            _fieldHash[i] = FieldNameHasher()(fieldName);
+        }
+        return HashedFieldName{fieldName, _fieldHash[i]};
     }
 
     /**
@@ -130,7 +132,6 @@ public:
     const std::string& fullPath() const {
         return _fieldPath;
     }
-    std::string redactedFullPath(SerializationOptions opts) const;
 
     /**
      * Returns the full path, including the prefix 'FieldPath::prefix'.
@@ -138,10 +139,6 @@ public:
     std::string fullPathWithPrefix() const {
         return prefix + _fieldPath;
     }
-    std::string redactedFullPathWithPrefix(SerializationOptions opts) const {
-        return prefix + redactedFullPath(opts);
-    }
-
     /**
      * A FieldPath like this but missing the first element (useful for recursion).
      * Precondition getPathLength() > 1.
@@ -180,9 +177,9 @@ private:
     // lookup.
     std::vector<size_t> _fieldPathDotPosition;
 
-    // Contains the hash value for the field names if it was requested when creating this path.
-    // Otherwise all elements are set to 'kHashUninitialized'.
-    std::vector<size_t> _fieldHash;
+    // Contains the cached hash value for the field. Will initially be set to 'kHashUninitialized',
+    // and only generated when it is first retrieved via 'getFieldNameHashed'.
+    mutable std::vector<size_t> _fieldHash;
     static constexpr std::size_t kHashUninitialized = std::numeric_limits<std::size_t>::max();
 };
 

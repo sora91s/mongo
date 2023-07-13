@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/bson/oid.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/s/balancer/balance_stats.h"
@@ -44,8 +46,8 @@ public:
         return ChunkType(_uuid, ChunkRange(minKey, maxKey), _nextVersion, shard);
     }
 
-    ShardType makeShard(const std::string& name, std::vector<std::string> zones = {}) {
-        return ShardType(name, name, zones);
+    ShardType makeShard(const std::string& name, std::vector<std::string> tags = {}) {
+        return ShardType(name, name, tags);
     }
 
     ChunkManager makeRoutingInfo(const KeyPattern& shardKeyPattern,
@@ -71,13 +73,13 @@ public:
     }
 
 private:
-    const NamespaceString _nss = NamespaceString::createNamespaceString_forTest("foo.bar");
+    const NamespaceString _nss{"foo.bar"};
     const UUID _uuid = UUID::gen();
     const OID _epoch{OID::gen()};
     const Timestamp _timestamp{Timestamp(1, 1)};
     const ShardId _shardPrimary{"dummyShardPrimary"};
     const DatabaseVersion _dbVersion{UUID::gen(), _timestamp};
-    ChunkVersion _nextVersion{{_epoch, _timestamp}, {1, 0}};
+    ChunkVersion _nextVersion{1, 0, _epoch, _timestamp};
 };
 
 TEST_F(BalanceStatsTest, SingleChunkNoZones) {

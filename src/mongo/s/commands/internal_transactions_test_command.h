@@ -27,17 +27,21 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
+
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/internal_transactions_test_command_gen.h"
 #include "mongo/db/query/find_command_gen.h"
-#include "mongo/db/transaction/transaction_api.h"
+#include "mongo/db/transaction_api.h"
 #include "mongo/executor/network_interface_factory.h"
 #include "mongo/executor/thread_pool_task_executor.h"
+#include "mongo/logv2/log.h"
 #include "mongo/s/grid.h"
 #include "mongo/stdx/future.h"
 
 namespace mongo {
+namespace {
 
 template <typename Impl>
 class InternalTransactionsTestCommandBase : public TypedCommand<Impl> {
@@ -91,7 +95,7 @@ public:
                             // from the command to append $db, which FindCommandRequest expects.
                             auto findOpMsgRequest = OpMsgRequest::fromDBAndBody(dbName, command);
                             auto findCommand = FindCommandRequest::parse(
-                                IDLParserContext("FindCommandRequest", false /* apiStrict */),
+                                IDLParserErrorContext("FindCommandRequest", false /* apiStrict */),
                                 findOpMsgRequest.body);
 
                             auto docs = txnClient.exhaustiveFind(findCommand).get();
@@ -172,14 +176,7 @@ public:
     BasicCommand::AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return BasicCommand::AllowedOnSecondary::kNever;
     }
-
-    bool supportsRetryableWrite() const final {
-        return true;
-    }
-
-    bool allowedInTransactions() const final {
-        return true;
-    }
 };
 
+}  // namespace
 }  // namespace mongo

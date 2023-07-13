@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 namespace {
@@ -86,16 +84,6 @@ bool shouldReadAtLastApplied(OperationContext* opCtx,
         return false;
     }
 
-    // Non-replicated collections do not need to read at lastApplied, as those collections are not
-    // written by the replication system. However, the oplog is special, as it *is* written by the
-    // replication system.
-    if (!nss.isReplicated() && !nss.isOplog()) {
-        if (reason) {
-            *reason = "unreplicated collection";
-        }
-        return false;
-    }
-
     // If this node can accept writes (i.e. primary), then no conflicting replication batches are
     // being applied and we can read from the default snapshot. If we are in a replication state
     // (like secondary or primary catch-up) where we are not accepting writes, we should read at
@@ -114,6 +102,16 @@ bool shouldReadAtLastApplied(OperationContext* opCtx,
     if (!repl::ReplicationCoordinator::get(opCtx)->isInPrimaryOrSecondaryState(opCtx)) {
         if (reason) {
             *reason = "not primary or secondary";
+        }
+        return false;
+    }
+
+    // Non-replicated collections do not need to read at lastApplied, as those collections are not
+    // written by the replication system.  However, the oplog is special, as it *is* written by the
+    // replication system.
+    if (!nss.isReplicated() && !nss.isOplog()) {
+        if (reason) {
+            *reason = "unreplicated collection";
         }
         return false;
     }
@@ -146,8 +144,7 @@ bool changeReadSourceIfNeeded(OperationContext* opCtx, const NamespaceString& ns
     // time we check if we should read at last applied. This string itself is only used in logging
     // with the same debug level as this check.
     std::string* reasonWriter =
-        logv2::shouldLog(MONGO_LOGV2_DEFAULT_COMPONENT, logv2::LogSeverity::Debug(2)) ? &reason
-                                                                                      : nullptr;
+        shouldLog(MONGO_LOGV2_DEFAULT_COMPONENT, logv2::LogSeverity::Debug(2)) ? &reason : nullptr;
     bool readAtLastApplied = shouldReadAtLastApplied(opCtx, nss, reasonWriter);
 
     if (!canReadAtLastApplied(opCtx)) {

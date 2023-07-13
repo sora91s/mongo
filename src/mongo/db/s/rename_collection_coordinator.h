@@ -35,9 +35,7 @@
 
 namespace mongo {
 
-class RenameCollectionCoordinator final
-    : public RecoverableShardingDDLCoordinator<RenameCollectionCoordinatorDocument,
-                                               RenameCollectionCoordinatorPhaseEnum> {
+class RenameCollectionCoordinator final : public ShardingDDLCoordinator {
 public:
     using StateDoc = RenameCollectionCoordinatorDocument;
     using Phase = RenameCollectionCoordinatorPhaseEnum;
@@ -47,7 +45,9 @@ public:
 
     void checkIfOptionsConflict(const BSONObj& doc) const override;
 
-    void appendCommandInfo(BSONObjBuilder* cmdInfoBuilder) const override;
+    boost::optional<BSONObj> reportForCurrentOp(
+        MongoProcessInterface::CurrentOpConnectionsMode connMode,
+        MongoProcessInterface::CurrentOpSessionsMode sessionMode) noexcept override;
 
     /**
      * Waits for the rename to complete and returns the collection version.
@@ -59,23 +59,40 @@ public:
     }
 
 private:
-    StringData serializePhase(const Phase& phase) const override {
-        return RenameCollectionCoordinatorPhase_serializer(phase);
-    }
-
     bool _mustAlwaysMakeProgress() override {
         return _doc.getPhase() >= Phase::kFreezeMigrations;
     };
 
-    // TODO SERVER-72796: Remove once gGlobalIndexesShardingCatalog is enabled.
-    bool _isPre63Compatible() const {
-        return operationType() == DDLCoordinatorTypeEnum::kRenameCollectionPre63Compatible;
+    ShardingDDLCoordinatorMetadata const& metadata() const override {
+        return _doc.getShardingDDLCoordinatorMetadata();
     }
 
     ExecutorFuture<void> _runImpl(std::shared_ptr<executor::ScopedTaskExecutor> executor,
                                   const CancellationToken& token) noexcept override;
 
     std::vector<StringData> _acquireAdditionalLocks(OperationContext* opCtx) override;
+
+    template <typename Func>
+    auto _executePhase(const Phase& newPhase, Func&& func) {
+        return [=] {
+            const auto& currPhase = _doc.getPhase();
+
+            if (currPhase > newPhase) {
+                // Do not execute this phase if we already reached a subsequent one.
+                return;
+            }
+            if (currPhase < newPhase) {
+                // Persist the new phase if this is the first time we are executing it.
+                _enterPhase(newPhase);
+            }
+            return func();
+        };
+    }
+
+    void _enterPhase(Phase newPhase);
+
+    mutable Mutex _docMutex = MONGO_MAKE_LATCH("RenameCollectionCoordinator::_docMutex");
+    RenameCollectionCoordinatorDocument _doc;
 
     boost::optional<RenameCollectionResponse> _response;
     const RenameCollectionRequest _request;

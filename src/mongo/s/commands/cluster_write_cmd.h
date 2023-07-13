@@ -35,7 +35,6 @@
 #include "mongo/db/commands/write_commands_common.h"
 #include "mongo/db/not_primary_error_tracker.h"
 #include "mongo/s/multi_statement_transaction_requests_sender.h"
-#include "mongo/s/write_ops/batch_write_exec.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 
 namespace mongo {
@@ -50,35 +49,6 @@ public:
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const final {
         return AllowedOnSecondary::kNever;
     }
-
-    bool shouldAffectCommandCounter() const final {
-        return false;
-    }
-
-    bool supportsRetryableWrite() const final {
-        return true;
-    }
-
-    bool allowedInTransactions() const final {
-        return true;
-    }
-
-    ReadWriteType getReadWriteType() const final {
-        return Command::ReadWriteType::kWrite;
-    }
-
-    /**
-     * Changes the shard key for the document if the response object contains a
-     * WouldChangeOwningShard error. If the original command was sent as a retryable write, starts a
-     * transaction on the same session and txnNum, deletes the original document, inserts the new
-     * one, and commits the transaction. If the original command is part of a transaction, deletes
-     * the original document and inserts the new one. Returns whether or not we actually complete
-     * the delete and insert.
-     */
-    static bool handleWouldChangeOwningShardError(OperationContext* opCtx,
-                                                  BatchedCommandRequest* request,
-                                                  BatchedCommandResponse* response,
-                                                  BatchWriteExecStats stats);
 
 protected:
     class InvocationBase;
@@ -120,7 +90,6 @@ public:
 
 private:
     virtual void preRunImplHook(OperationContext* opCtx) const = 0;
-    virtual void preExplainImplHook(OperationContext* opCtx) const = 0;
     virtual void doCheckAuthorizationHook(AuthorizationSession* authzSession) const = 0;
 
     bool runImpl(OperationContext* opCtx,
@@ -181,10 +150,6 @@ private:
             Impl::checkCanRunHere(opCtx);
         }
 
-        void preExplainImplHook(OperationContext* opCtx) const final {
-            Impl::checkCanExplainHere(opCtx);
-        }
-
         void doCheckAuthorizationHook(AuthorizationSession* authzSession) const final {
             Impl::doCheckAuthorization(
                 authzSession, getBypass(), getBatchedRequest().getInsertRequest());
@@ -229,10 +194,6 @@ private:
     private:
         void preRunImplHook(OperationContext* opCtx) const final {
             Impl::checkCanRunHere(opCtx);
-        }
-
-        void preExplainImplHook(OperationContext* opCtx) const final {
-            Impl::checkCanExplainHere(opCtx);
         }
 
         void doCheckAuthorizationHook(AuthorizationSession* authzSession) const final {
@@ -285,10 +246,6 @@ private:
     private:
         void preRunImplHook(OperationContext* opCtx) const final {
             Impl::checkCanRunHere(opCtx);
-        }
-
-        void preExplainImplHook(OperationContext* opCtx) const final {
-            Impl::checkCanExplainHere(opCtx);
         }
 
         void doCheckAuthorizationHook(AuthorizationSession* authzSession) const final {

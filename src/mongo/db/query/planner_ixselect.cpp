@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/db/query/planner_ixselect.h"
 
@@ -49,9 +50,6 @@
 #include "mongo/db/query/planner_wildcard_helpers.h"
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -180,9 +178,7 @@ bool QueryPlannerIXSelect::notEqualsNullCanUseIndex(const IndexEntry& index,
 
 bool QueryPlannerIXSelect::canUseIndexForNin(const InMatchExpression* ime) {
     const std::vector<BSONElement>& inList = ime->getEqualities();
-    auto containsNull = [](const BSONElement& elt) {
-        return elt.type() == jstNULL;
-    };
+    auto containsNull = [](const BSONElement& elt) { return elt.type() == jstNULL; };
     auto containsEmptyArray = [](const BSONElement& elt) {
         return elt.type() == Array && elt.embeddedObject().isEmpty();
     };
@@ -364,22 +360,6 @@ bool QueryPlannerIXSelect::_compatible(const BSONElement& keyPatternElt,
          boundsGeneratingNodeContainsComparisonToType(node, BSONType::Object)) &&
         !CollatorInterface::collatorsMatch(collator, index.collator)) {
         return false;
-    }
-
-    // Fields after "$_path" of a compound wildcard index should not be used to answer any query,
-    // because wildcard IndexEntry with reserved field, "$_path", present is used only to answer
-    // query on non-wildcard prefix.
-    if (index.type == IndexType::INDEX_WILDCARD) {
-        size_t idx = 0;
-        for (auto&& elt : index.keyPattern) {
-            if (elt.fieldNameStringData() == "$_path") {
-                return false;
-            }
-            if (idx == keyPatternIdx) {
-                break;
-            }
-            idx++;
-        }
     }
 
     // Historically one could create indices with any particular value for the index spec,
@@ -641,7 +621,6 @@ bool QueryPlannerIXSelect::_compatible(const BSONElement& keyPatternElt,
                       "field"_attr = keyPatternElt.toString());
         verify(0);
     }
-    MONGO_UNREACHABLE;
 }
 
 bool QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(const MatchExpression* queryExpr,

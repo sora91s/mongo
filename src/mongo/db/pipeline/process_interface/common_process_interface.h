@@ -76,16 +76,13 @@ public:
 
         int estimateUpdateSizeBytes(const BatchObject& batchObject,
                                     UpsertType type) const override {
-            return getUpdateSizeEstimate(
-                       std::get<BSONObj>(batchObject),
-                       std::get<write_ops::UpdateModification>(batchObject),
-                       std::get<boost::optional<BSONObj>>(batchObject),
-                       type != UpsertType::kNone /* includeUpsertSupplied */,
-                       boost::none /* collation */,
-                       boost::none /* arrayFilters */,
-                       BSONObj() /* hint*/,
-                       boost::none /* sampleId */,
-                       false /* $_allowShardKeyUpdatesWithoutFullShardKeyInQuery */) +
+            return getUpdateSizeEstimate(std::get<BSONObj>(batchObject),
+                                         std::get<write_ops::UpdateModification>(batchObject),
+                                         std::get<boost::optional<BSONObj>>(batchObject),
+                                         type != UpsertType::kNone /* includeUpsertSupplied */,
+                                         boost::none /* collation */,
+                                         boost::none /* arrayFilters */,
+                                         BSONObj() /* hint*/) +
                 write_ops::kWriteCommandBSONArrayPerElementOverheadBytes;
         }
     };
@@ -114,7 +111,7 @@ public:
 
     virtual void updateClientOperationTime(OperationContext* opCtx) const final;
 
-    boost::optional<ShardVersion> refreshAndGetCollectionVersion(
+    boost::optional<ChunkVersion> refreshAndGetCollectionVersion(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
         const NamespaceString& nss) const override;
 
@@ -162,12 +159,6 @@ protected:
                                                          CurrentOpConnectionsMode connMode,
                                                          CurrentOpSessionsMode sessionMode,
                                                          std::vector<BSONObj>* ops) const = 0;
-
-    /**
-     * Reports information about query sampling.
-     */
-    virtual void _reportCurrentOpsForQueryAnalysis(OperationContext* opCtx,
-                                                   std::vector<BSONObj>* ops) const = 0;
 };
 
 }  // namespace mongo

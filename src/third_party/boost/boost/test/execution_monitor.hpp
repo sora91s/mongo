@@ -479,7 +479,7 @@ execution_monitor::register_exception_translator( ExceptionTranslator const& tr,
 /// @brief This is a trivial default constructible class. Use it to report graceful abortion of a monitored function execution.
 // ************************************************************************** //
 
-struct BOOST_SYMBOL_VISIBLE execution_aborted {};
+struct execution_aborted {};
 
 // ************************************************************************** //
 // **************                  system_error                ************** //

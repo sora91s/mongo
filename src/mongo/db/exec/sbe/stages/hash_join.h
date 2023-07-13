@@ -66,8 +66,7 @@ public:
                   value::SlotVector innerCond,
                   value::SlotVector innerProjects,
                   boost::optional<value::SlotId> collatorSlot,
-                  PlanNodeId planNodeId,
-                  bool participateInTrialRunTracking = true);
+                  PlanNodeId planNodeId);
 
     std::unique_ptr<PlanStage> clone() const final;
 

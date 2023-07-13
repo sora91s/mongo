@@ -1,4 +1,5 @@
 """Command line utility for executing MongoDB tests of all kinds."""
+# pylint: disable=too-many-lines
 
 import argparse
 import collections
@@ -7,13 +8,11 @@ import os.path
 import random
 import shlex
 import sys
-import textwrap
 import time
 import shutil
 
 import curatorbin
 import pkg_resources
-import psutil
 
 from buildscripts.resmokelib import parser as main_parser
 from buildscripts.resmokelib import config
@@ -39,7 +38,7 @@ _EVERGREEN_ARGUMENT_TITLE = "Evergreen options"
 _CEDAR_ARGUMENT_TITLE = "Cedar options"
 
 
-class TestRunner(Subcommand):
+class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
     """The main class to run tests with resmoke."""
 
     def __init__(self, command, start_time=time.time()):
@@ -51,6 +50,7 @@ class TestRunner(Subcommand):
         self._archive = None
         self._interrupted = False
         self._exit_code = 0
+
         runtime_recorder.setup_start_time(start_time)
 
     def _setup_logging(self):
@@ -206,7 +206,6 @@ class TestRunner(Subcommand):
         """Run the suite and tests specified."""
         self._resmoke_logger.info("verbatim resmoke.py invocation: %s",
                                   " ".join([shlex.quote(arg) for arg in sys.argv]))
-        self._check_for_mongo_processes()
 
         if config.EVERGREEN_TASK_DOC:
             self._resmoke_logger.info("Evergreen task documentation:\n%s",
@@ -221,8 +220,6 @@ class TestRunner(Subcommand):
                 os.path.join(config.CONFIG_DIR, "evg_task_doc", "evg_task_doc.yml"))
 
         self._log_local_resmoke_invocation()
-        from buildscripts.resmokelib import multiversionconstants
-        multiversionconstants.log_constants(self._resmoke_logger)
 
         suites = None
         try:
@@ -265,121 +262,19 @@ class TestRunner(Subcommand):
             local_args = strip_fuzz_config_params(local_args)
             local_resmoke_invocation = (
                 f"{os.path.join('buildscripts', 'resmoke.py')} {' '.join(local_args)}"
-                f" --fuzzMongodConfigs={config.FUZZ_MONGOD_CONFIGS} --configFuzzSeed={str(config.CONFIG_FUZZ_SEED)}"
-            )
+                f" --fuzzMongodConfigs --configFuzzSeed={str(config.CONFIG_FUZZ_SEED)}")
 
             self._resmoke_logger.info("Fuzzed mongodSetParameters:\n%s",
                                       config.MONGOD_SET_PARAMETERS)
             self._resmoke_logger.info("Fuzzed wiredTigerConnectionString: %s",
                                       config.WT_ENGINE_CONFIG)
-        resmoke_env_options = ''
-        if os.path.exists('resmoke_env_options.txt'):
-            with open('resmoke_env_options.txt') as fin:
-                resmoke_env_options = fin.read().strip()
 
-        self._resmoke_logger.info("resmoke.py invocation for local usage: %s %s",
-                                  resmoke_env_options, local_resmoke_invocation)
-
-        suite = self._get_suites()[0]
-        if suite.get_description():
-            self._resmoke_logger.info(suite.get_description())
-
-        if suite.is_matrix_suite():
-            self._resmoke_logger.info(
-                "This suite is a matrix suite. To view the generated matrix suite run python3 ./buildscripts/resmoke.py suiteconfig %s",
-                suite.get_name())
+        self._resmoke_logger.info("resmoke.py invocation for local usage: %s",
+                                  local_resmoke_invocation)
 
         if config.EVERGREEN_TASK_ID:
             with open("local-resmoke-invocation.txt", "w") as fh:
-                lines = [f"{resmoke_env_options} {local_resmoke_invocation}"]
-                if suite.get_description():
-                    lines.append(f"{suite.get_name()}: {suite.get_description()}")
-                if suite.is_matrix_suite():
-                    lines.append(
-                        f"This suite is a matrix suite. To view the generated matrix suite run python3 ./buildscripts/resmoke.py suiteconfig {suite.get_name()}"
-                    )
-                fh.write("\n".join(lines))
-
-    def _check_for_mongo_processes(self):
-        """Check for existing mongo processes as they could interfere with running the tests."""
-
-        if config.AUTO_KILL == 'off' or config.SHELL_CONN_STRING is not None:
-            return
-
-        rogue_procs = []
-        # Iterate over all running process
-        for proc in psutil.process_iter():
-            try:
-                parent_resmoke_pid = proc.environ().get('RESMOKE_PARENT_PROCESS')
-                parent_resmoke_ctime = proc.environ().get('RESMOKE_PARENT_CTIME')
-                if not parent_resmoke_pid:
-                    continue
-                if psutil.pid_exists(int(parent_resmoke_pid)):
-                    # Double check `parent_resmoke_pid` is really a rooting resmoke process. Having
-                    # the RESMOKE_PARENT_PROCESS environment variable proves it is a process which
-                    # was spawned through resmoke. Only a resmoke process has RESMOKE_PARENT_PROCESS
-                    # as the value of its own PID.
-                    parent_resmoke_proc = psutil.Process(int(parent_resmoke_pid))
-                    if parent_resmoke_ctime == str(parent_resmoke_proc.create_time()):
-                        continue
-
-                rogue_procs.append(proc)
-
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-
-        if rogue_procs:
-            msg = "detected existing mongo processes. Please clean up these processes as they may affect tests:"
-
-            if config.AUTO_KILL == 'on':
-                msg += textwrap.dedent("""\
-
-                    Congratulations, you have selected auto kill mode:
-                    HASTA LA VISTA MONGO""" + r"""
-                                          ______
-                                         <((((((\\\
-                                         /      . }\
-                                         ;--..--._|}
-                      (\                 '--/\--'  )
-                       \\                | '-'  :'|
-                        \\               . -==- .-|
-                         \\               \.__.'   \--._
-                         [\\          __.--|       //  _/'--.
-                         \ \\       .'-._ ('-----'/ __/      \\
-                          \ \\     /   __>|      | '--.       |
-                           \ \\   |   \   |     /    /       /
-                            \ '\ /     \  |     |  _/       /
-                             \  \       \ |     | /        /
-                              \  \      \        /
-                    """)
-                print(f"WARNING: {msg}")
-            else:
-                self._resmoke_logger.error("ERROR: %s", msg)
-
-            for proc in rogue_procs:
-                if config.AUTO_KILL == 'on':
-                    proc_msg = f"    Target acquired: pid: {str(proc.pid).ljust(5)} name: {proc.exe()}"
-                    try:
-                        proc.kill()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as exc:
-                        proc_msg += f" - target escaped: {type(exc).__name__ }"
-                    else:
-                        proc_msg += " - target destroyed\n"
-                    print(proc_msg)
-
-                else:
-                    self._resmoke_logger.error("    pid: %s name: %s",
-                                               str(proc.pid).ljust(5), proc.exe())
-
-            if config.AUTO_KILL == 'on':
-                print("I'll be back...\n")
-            else:
-                raise errors.ResmokeError(
-                    textwrap.dedent("""\
-                Failing because existing mongo processes detected.
-                You can use --autoKillResmokeMongo=on to automatically kill the processes,
-                or --autoKillResmokeMongo=off to ignore them.
-                """))
+                fh.write(local_resmoke_invocation)
 
     def _log_resmoke_summary(self, suites):
         """Log a summary of the resmoke run."""
@@ -614,6 +509,7 @@ class TestRunnerEvg(TestRunner):
 class RunPlugin(PluginInterface):
     """Interface to parsing."""
 
+    # pylint: disable=missing-docstring
     def add_subcommand(self, subparsers):
         """
         Add subcommand parser.
@@ -646,7 +542,7 @@ class RunPlugin(PluginInterface):
         return None
 
     @classmethod
-    def _add_run(cls, subparsers):
+    def _add_run(cls, subparsers):  # pylint: disable=too-many-statements
         """Create and add the parser for the Run subcommand."""
         parser = subparsers.add_parser("run", help="Runs the specified tests.")
 
@@ -664,14 +560,6 @@ class RunPlugin(PluginInterface):
                   " specified, e.g. 'core'. If a list of files is passed in as"
                   " positional arguments, they will be run using the suites'"
                   " configurations."))
-
-        parser.add_argument(
-            "--autoKillResmokeMongo", dest="auto_kill", choices=['on', 'error',
-                                                                 'off'], default='on',
-            help=("When resmoke starts up, existing mongo processes created from resmoke "
-                  " could cause issues when running tests. This option causes resmoke to kill"
-                  " the existing processes and continue running the test, or if 'error' option"
-                  " is used, prints the offending processes and fails the test."))
 
         parser.add_argument("--installDir", dest="install_dir", metavar="INSTALL_DIR",
                             help="Directory to search for MongoDB binaries")
@@ -744,6 +632,9 @@ class RunPlugin(PluginInterface):
             help=("Passes one or more --setParameter options to all mongocryptd processes"
                   " started by resmoke.py. The argument is specified as bracketed YAML -"
                   " i.e. JSON with support for single quoted and unquoted keys."))
+
+        parser.add_argument("--nojournal", action="store_true", dest="no_journal",
+                            help="Disables journaling for all mongod's.")
 
         parser.add_argument("--numClientsPerFixture", type=int, dest="num_clients_per_fixture",
                             help="Number of clients running tests per fixture.")
@@ -849,18 +740,14 @@ class RunPlugin(PluginInterface):
         )
 
         parser.add_argument(
-            "--runNoFeatureFlagTests", dest="run_no_feature_flag_tests", action="store_true",
-            help=("Do not run any tests tagged with enabled feature flags."
-                  " This argument has precedence over --runAllFeatureFlagTests"
-                  "; used for multiversion suites"))
+            "--runAllFeatureFlagsNoTests", dest="run_all_feature_flags_no_tests",
+            action="store_true", help=
+            "Run MongoDB servers with all feature flags enabled but don't run any tests tagged with these feature flags; used for multiversion suites"
+        )
 
         parser.add_argument("--additionalFeatureFlags", dest="additional_feature_flags",
                             action="append", metavar="featureFlag1, featureFlag2, ...",
                             help="Additional feature flags")
-
-        parser.add_argument("--additionalFeatureFlagsFile", dest="additional_feature_flags_file",
-                            action="store", metavar="FILE",
-                            help="The path to a file with feature flags, delimited by newlines.")
 
         parser.add_argument("--maxTestQueueSize", type=int, dest="max_test_queue_size",
                             help=argparse.SUPPRESS)
@@ -947,19 +834,12 @@ class RunPlugin(PluginInterface):
                                             help="The transport layer used by jstests")
 
         mongodb_server_options.add_argument(
-            "--fuzzMongodConfigs", dest="fuzz_mongod_configs",
-            help="Randomly chooses server parameters that were not specified. Use 'stress' to fuzz "
-            "all configs including stressful storage configurations that may significantly "
-            "slow down the server. Use 'normal' to only fuzz non-stressful configurations. ",
-            metavar="MODE", choices=('normal', 'stress'))
+            "--fuzzMongodConfigs", dest="fuzz_mongod_configs", action="store_true",
+            help="Will randomly choose storage configs that were not specified.")
 
         mongodb_server_options.add_argument("--configFuzzSeed", dest="config_fuzz_seed",
                                             metavar="PATH",
                                             help="Sets the seed used by storage config fuzzer")
-
-        mongodb_server_options.add_argument(
-            "--catalogShard", dest="catalog_shard", metavar="CONFIG",
-            help="If set, specifies which node is the catalog shard. Can also be set to 'any'.")
 
         internal_options = parser.add_argument_group(
             title=_INTERNAL_OPTIONS_TITLE,
@@ -1191,7 +1071,7 @@ class RunPlugin(PluginInterface):
                             help="Where to output the generated tags.")
 
 
-def to_local_args(input_args=None):
+def to_local_args(input_args=None):  # pylint: disable=too-many-branches,too-many-locals
     """
     Return a command line invocation for resmoke.py suitable for being run outside of Evergreen.
 
@@ -1215,6 +1095,15 @@ def to_local_args(input_args=None):
     origin_suite = getattr(parsed_args, "origin_suite", None)
     if origin_suite is not None:
         setattr(parsed_args, "suite_files", origin_suite)
+
+    # Replace --runAllFeatureFlagTests with an explicit list of feature flags. The former relies on
+    # all_feature_flags.txt which may not exist in the local dev environment.
+    run_all_feature_flag_tests = getattr(parsed_args, "run_all_feature_flag_tests", None)
+    if run_all_feature_flag_tests is not None:
+        setattr(parsed_args, "additional_feature_flags", config.ENABLED_FEATURE_FLAGS)
+        del parsed_args.run_all_feature_flag_tests
+
+    del parsed_args.run_all_feature_flags_no_tests
 
     # The top-level parser has one subparser that contains all subcommand parsers.
     command_subparser = [
@@ -1278,11 +1167,6 @@ def to_local_args(input_args=None):
                     other_local_args.extend(args)
                 else:
                     arg = format_option(arg_name, arg_value)
-
-                    # In evergreen we use additionalFeatureFlagsFile because the all_feature_flags.txt
-                    # file is generated at a previous step. Developers should use runAllFeatureFlagTests
-                    if arg == "--additionalFeatureFlagsFile=all_feature_flags.txt":
-                        arg = "--runAllFeatureFlagTests"
 
                     # We track the value for the --suites and --storageEngine command line options
                     # separately in order to more easily sort them to the front.

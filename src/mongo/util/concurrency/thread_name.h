@@ -108,8 +108,9 @@ private:
 };
 
 /**
- * Returns the name reference attached to current thread.
- * The empty ThreadNameRef still has a valid string value of "-".
+ * Returns the name reference attached to current thread. Returns an empty
+ * ThreadNameRef if current thread has no ThreadContext. The empty ThreadNameRef
+ * still has a valid string value of "-".
  *
  * This string is not limited in length, so it will be a better name
  * than the name the OS uses to refer to the same thread.
@@ -124,6 +125,8 @@ ThreadNameRef getThreadNameRef();
  *   the thread name in the OS is performed lazily.
  * - Populating the "ctx" field for log lines.
  * - Providing a thread name to GDB.
+ *
+ * Has no effect if there is no `ThreadContext` for this thread.
  */
 ThreadNameRef setThreadNameRef(ThreadNameRef name);
 
@@ -137,6 +140,8 @@ ThreadNameRef setThreadNameRef(ThreadNameRef name);
  * This is an optimization on the assumption that a thread name will be
  * temporarily set to the same `ThreadNameRef` repeatedly, so setting it and
  * resetting it with the OS on each change would be wasteful.
+ *
+ * Has no effect if there is no `ThreadContext` for this thread.
  */
 void releaseThreadNameRef();
 
@@ -150,6 +155,10 @@ inline void setThreadName(std::string name) {
 /**
  * Returns current thread's name, as previously set, or "main", or
  * "thread#" if no name was previously set.
+ *
+ * Before the ThreadContext API is initialized, this returns "-". That value
+ * will mostly be associated with the main thread, or threads that were started
+ * before ThreadContext API initialization.
  *
  * Used by the MongoDB GDB pretty printer extentions in `gdb/mongo.py`.
  */

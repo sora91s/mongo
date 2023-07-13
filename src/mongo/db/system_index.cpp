@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -40,6 +41,7 @@
 #include "mongo/db/catalog/commit_quorum_options.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_key_validate.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builds_coordinator.h"
@@ -47,9 +49,6 @@
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 using namespace std::chrono_literals;
 
@@ -63,6 +62,8 @@ std::string v3SystemUsersIndexName;
 std::string v3SystemRolesIndexName;
 IndexSpec v3SystemUsersIndexSpec;
 IndexSpec v3SystemRolesIndexSpec;
+
+const NamespaceString sessionCollectionNamespace("config.system.sessions");
 
 MONGO_INITIALIZER(AuthIndexKeyPatterns)(InitializerContext*) {
     v1SystemUsersKeyPattern = BSON("user" << 1 << "userSource" << 1);
@@ -128,8 +129,15 @@ void generateSystemIndexForExistingCollection(OperationContext* opCtx,
 }  // namespace
 
 Status verifySystemIndexes(OperationContext* opCtx) {
-    const NamespaceString& systemUsers = NamespaceString::kAdminUsersNamespace;
-    const NamespaceString& systemRoles = NamespaceString::kAdminRolesNamespace;
+    // Do not try and generate any system indexes in read only mode.
+    if (storageGlobalParams.readOnly) {
+        LOGV2_WARNING(22489,
+                      "Running in queryable backup mode. Unable to create authorization indexes");
+        return Status::OK();
+    }
+
+    const NamespaceString& systemUsers = AuthorizationManager::usersCollectionNamespace;
+    const NamespaceString& systemRoles = AuthorizationManager::rolesCollectionNamespace;
 
     // Create indexes for the admin.system.users collection.
     {
@@ -141,8 +149,7 @@ Status verifySystemIndexes(OperationContext* opCtx) {
 
             // Make sure the old unique index from v2.4 on system.users doesn't exist.
             std::vector<const IndexDescriptor*> indexes;
-            indexCatalog->findIndexesByKeyPattern(
-                opCtx, v1SystemUsersKeyPattern, IndexCatalog::InclusionPolicy::kReady, &indexes);
+            indexCatalog->findIndexesByKeyPattern(opCtx, v1SystemUsersKeyPattern, false, &indexes);
 
             if (!indexes.empty()) {
                 fassert(ErrorCodes::AmbiguousIndexKeyPattern, indexes.size() == 1);
@@ -153,8 +160,7 @@ Status verifySystemIndexes(OperationContext* opCtx) {
             }
 
             // Ensure that system indexes exist for the user collection.
-            indexCatalog->findIndexesByKeyPattern(
-                opCtx, v3SystemUsersKeyPattern, IndexCatalog::InclusionPolicy::kReady, &indexes);
+            indexCatalog->findIndexesByKeyPattern(opCtx, v3SystemUsersKeyPattern, false, &indexes);
             if (indexes.empty()) {
                 try {
                     generateSystemIndexForExistingCollection(
@@ -176,8 +182,7 @@ Status verifySystemIndexes(OperationContext* opCtx) {
             invariant(indexCatalog);
 
             std::vector<const IndexDescriptor*> indexes;
-            indexCatalog->findIndexesByKeyPattern(
-                opCtx, v3SystemRolesKeyPattern, IndexCatalog::InclusionPolicy::kReady, &indexes);
+            indexCatalog->findIndexesByKeyPattern(opCtx, v3SystemRolesKeyPattern, false, &indexes);
             if (indexes.empty()) {
                 try {
                     generateSystemIndexForExistingCollection(
@@ -196,11 +201,11 @@ void createSystemIndexes(OperationContext* opCtx, CollectionWriter& collection, 
     invariant(collection);
     const NamespaceString& ns = collection->ns();
     BSONObj indexSpec;
-    if (ns == NamespaceString::kAdminUsersNamespace) {
+    if (ns == AuthorizationManager::usersCollectionNamespace) {
         indexSpec = fassert(
             40455, index_key_validate::validateIndexSpec(opCtx, v3SystemUsersIndexSpec.toBSON()));
 
-    } else if (ns == NamespaceString::kAdminRolesNamespace) {
+    } else if (ns == AuthorizationManager::rolesCollectionNamespace) {
         indexSpec = fassert(
             40457, index_key_validate::validateIndexSpec(opCtx, v3SystemRolesIndexSpec.toBSON()));
     }

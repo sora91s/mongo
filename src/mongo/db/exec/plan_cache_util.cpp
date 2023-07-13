@@ -27,11 +27,14 @@
  *    it in the license file.
  */
 
-#include "mongo/db/exec/plan_cache_util.h"
-#include "mongo/logv2/log.h"
-
 #define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
+#include "mongo/platform/basic.h"
+
+#include "mongo/db/exec/plan_cache_util.h"
+
+#include "mongo/db/query/canonical_query_encoder.h"
+#include "mongo/logv2/log.h"
 
 namespace mongo {
 namespace plan_cache_util {
@@ -69,21 +72,23 @@ void logNotCachingNoData(std::string&& solution) {
 }  // namespace log_detail
 
 void updatePlanCache(OperationContext* opCtx,
-                     const MultipleCollectionAccessor& collections,
+                     const CollectionPtr& collection,
                      const CanonicalQuery& query,
                      const QuerySolution& solution,
                      const sbe::PlanStage& root,
                      const stage_builder::PlanStageData& data) {
-    // TODO SERVER-67576: re-enable caching of "explode for sort" plans in the SBE cache.
-    if (shouldCacheQuery(query) && collections.getMainCollection() &&
-        !solution.hasExplodedForSort) {
-        auto key = plan_cache_key_factory::make(query, collections);
+    // TODO SERVER-61507: Integration between lowering parts of aggregation pipeline into the find
+    // subsystem and the new SBE cache isn't implemented yet. Remove cq->pipeline().empty() check
+    // once it's implemented.
+    if (shouldCacheQuery(query) && collection && query.pipeline().empty() &&
+        feature_flags::gFeatureFlagSbePlanCache.isEnabledAndIgnoreFCV()) {
+        auto key = plan_cache_key_factory::make<sbe::PlanCacheKey>(query, collection);
         auto plan = std::make_unique<sbe::CachedSbePlan>(root.clone(), data);
         plan->indexFilterApplied = solution.indexFilterApplied;
         sbe::getPlanCache(opCtx).setPinned(
             std::move(key),
             canonical_query_encoder::computeHash(
-                canonical_query_encoder::encodeForPlanCacheCommand(query)),
+                canonical_query_encoder::encodeForIndexFilters(query)),
             std::move(plan),
             opCtx->getServiceContext()->getPreciseClockSource()->now(),
             buildDebugInfo(&solution));
@@ -155,11 +160,6 @@ plan_cache_debug_info::DebugInfoSBE buildDebugInfo(const QuerySolution* solution
                 debugInfo.mainStats.indexesUsed.push_back(ixn->index.identifier.catalogName);
                 break;
             }
-            case STAGE_COLUMN_SCAN: {
-                auto cisn = static_cast<const ColumnIndexScanNode*>(node);
-                debugInfo.mainStats.indexesUsed.push_back(cisn->indexEntry.identifier.catalogName);
-                break;
-            }
             case STAGE_TEXT_MATCH: {
                 auto tn = static_cast<const TextMatchNode*>(node);
                 debugInfo.mainStats.indexesUsed.push_back(tn->index.identifier.catalogName);
@@ -175,21 +175,20 @@ plan_cache_debug_info::DebugInfoSBE buildDebugInfo(const QuerySolution* solution
             }
             case STAGE_EQ_LOOKUP: {
                 auto eln = static_cast<const EqLookupNode*>(node);
-                auto& secondaryStats = debugInfo.secondaryStats[eln->foreignCollection.toString()];
+                auto& secondaryStats = debugInfo.secondaryStats[eln->foreignCollection];
                 if (eln->lookupStrategy == EqLookupNode::LookupStrategy::kIndexedLoopJoin) {
                     tassert(6466200, "Index join lookup should have an index entry", eln->idxEntry);
                     secondaryStats.indexesUsed.push_back(eln->idxEntry->identifier.catalogName);
                 } else {
                     secondaryStats.collectionScans++;
                 }
-                [[fallthrough]];
             }
             default:
                 break;
         }
 
         for (auto&& child : node->children) {
-            queue.push(child.get());
+            queue.push(child);
         }
     }
 

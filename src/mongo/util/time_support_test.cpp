@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include <cstdlib>
 #include <ctime>
@@ -37,9 +38,6 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/errno_util.h"
 #include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 namespace {
@@ -102,8 +100,7 @@ MONGO_INITIALIZER(SetTimeZoneToEasternForTest)(InitializerContext*) {
     int ret = putenv(tzEnvString);
 #endif
     if (ret == -1) {
-        auto ec = lastPosixError();
-        uasserted(ErrorCodes::BadValue, errorMessage(ec));
+        uasserted(ErrorCodes::BadValue, errnoWithDescription());
     }
     tzset();
 }

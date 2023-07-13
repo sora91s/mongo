@@ -231,7 +231,7 @@ stall:
     /* Wait for our group to start. */
     time_start = l->stat_read_count_off != -1 && WT_STAT_ENABLED(session) ? __wt_clock(session) : 0;
     for (pause_cnt = 0; ticket != l->u.s.current; pause_cnt++) {
-        if (pause_cnt < WT_THOUSAND)
+        if (pause_cnt < 1000)
             WT_PAUSE();
         else if (pause_cnt < 1200)
             __wt_yield();
@@ -253,13 +253,7 @@ stall:
         else {
             stats[session->stat_bucket][l->stat_app_usecs_off] += (int64_t)time_diff;
         }
-
-        /*
-         * Not all read-write locks increment session statistics. Check whether the offset is
-         * initialized to determine whether they are enabled.
-         */
-        if (l->stat_session_usecs_off != -1)
-            session_stats[l->stat_session_usecs_off] += (int64_t)time_diff;
+        session_stats[l->stat_session_usecs_off] += (int64_t)time_diff;
     }
 
     /*
@@ -397,7 +391,7 @@ __wt_writelock(WT_SESSION_IMPL *session, WT_RWLOCK *l)
       l->stat_write_count_off != -1 && WT_STAT_ENABLED(session) ? __wt_clock(session) : 0;
     for (pause_cnt = 0, old.u.v = l->u.v; ticket != old.u.s.current || old.u.s.readers_active != 0;
          pause_cnt++, old.u.v = l->u.v) {
-        if (pause_cnt < WT_THOUSAND)
+        if (pause_cnt < 1000)
             WT_PAUSE();
         else if (pause_cnt < 1200)
             __wt_yield();
@@ -418,13 +412,7 @@ __wt_writelock(WT_SESSION_IMPL *session, WT_RWLOCK *l)
             stats[session->stat_bucket][l->stat_int_usecs_off] += (int64_t)time_diff;
         else
             stats[session->stat_bucket][l->stat_app_usecs_off] += (int64_t)time_diff;
-
-        /*
-         * Not all read-write locks increment session statistics. Check whether the offset is
-         * initialized to determine whether they are enabled.
-         */
-        if (l->stat_session_usecs_off != -1)
-            session_stats[l->stat_session_usecs_off] += (int64_t)time_diff;
+        session_stats[l->stat_session_usecs_off] += (int64_t)time_diff;
     }
 
     /*
@@ -476,6 +464,7 @@ __wt_writeunlock(WT_SESSION_IMPL *session, WT_RWLOCK *l)
     WT_DIAGNOSTIC_YIELD;
 }
 
+#ifdef HAVE_DIAGNOSTIC
 /*
  * __wt_rwlock_islocked --
  *     Return if a read/write lock is currently locked for reading or writing.
@@ -490,3 +479,4 @@ __wt_rwlock_islocked(WT_SESSION_IMPL *session, WT_RWLOCK *l)
     old.u.v = l->u.v;
     return (old.u.s.current != old.u.s.next || old.u.s.readers_active != 0);
 }
+#endif

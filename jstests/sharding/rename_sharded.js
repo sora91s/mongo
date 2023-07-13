@@ -66,17 +66,6 @@ const mongos = st.s0;
     testRename(st, dbName, toNs, false /* dropTarget */, false /* mustFail */);
 }
 
-// Rename non-existing source collection must fail
-{
-    const dbName = 'notExistingSource';
-    assert.commandWorked(
-        mongos.adminCommand({enablesharding: dbName, primaryShard: st.shard0.shardName}));
-    assert.commandFailedWithCode(
-        st.getDB(dbName).adminCommand(
-            {renameCollection: dbName + ".source", to: dbName + ".target"}),
-        ErrorCodes.NamespaceNotFound);
-}
-
 // Rename to existing sharded target collection with dropTarget=true must succeed
 {
     const dbName = 'testRenameToExistingShardedCollection';
@@ -232,12 +221,12 @@ const mongos = st.s0;
     assert.commandFailed(fromColl.renameCollection(toNs.split('.')[1], false /* dropTarget*/));
 }
 
+const fcvDoc = st.rs0.getPrimary().getDB('admin').adminCommand(
+    {getParameter: 1, featureCompatibilityVersion: 1});
 // Rename to target collection with very a long name
 {
     const dbName = 'testRenameToCollectionWithVeryLongName';
-
     const testDB = st.rs0.getPrimary().getDB(dbName);
-    const fcvDoc = testDB.adminCommand({getParameter: 1, featureCompatibilityVersion: 1});
     if (MongoRunner.compareBinVersions(fcvDoc.featureCompatibilityVersion.version, '5.3') >= 0) {
         const longEnoughNs = dbName + '.' +
             'x'.repeat(235 - dbName.length - 1);
@@ -250,7 +239,7 @@ const mongos = st.s0;
 
 // For C2C: rename of existing collection with correct uuid as argument must succeed
 // (Also creating target collection to test target UUID internal check)
-{
+if (MongoRunner.compareBinVersions(fcvDoc.featureCompatibilityVersion.version, '6.0') >= 0) {
     const dbName = 'testRenameToUnshardedCollectionWithSourceUUID';
     const fromCollName = 'from';
     const fromNs = dbName + '.' + fromCollName;

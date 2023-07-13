@@ -32,7 +32,6 @@
 #include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/pipeline/document_source_single_document_transformation.h"
 #include "mongo/db/pipeline/expression.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 
 namespace mongo {
 
@@ -61,13 +60,13 @@ public:
         _newRoot->optimize();
     }
 
-    Document serializeTransformation(boost::optional<ExplainOptions::Verbosity> explain,
-                                     SerializationOptions options = {}) const final {
+    Document serializeTransformation(
+        boost::optional<ExplainOptions::Verbosity> explain) const final {
         return Document{{"newRoot", _newRoot->serialize(static_cast<bool>(explain))}};
     }
 
     DepsTracker::State addDependencies(DepsTracker* deps) const final {
-        expression::addDependencies(_newRoot.get(), deps);
+        _newRoot->addDependencies(deps);
         // This stage will replace the entire document with a new document, so any existing fields
         // will be replaced and cannot be required as dependencies.
         return DepsTracker::State::EXHAUSTIVE_FIELDS;
@@ -75,19 +74,11 @@ public:
 
     DocumentSource::GetModPathsReturn getModifiedPaths() const final {
         // Replaces the entire root, so all paths are modified.
-        return {DocumentSource::GetModPathsReturn::Type::kAllPaths, OrderedPathSet{}, {}};
+        return {DocumentSource::GetModPathsReturn::Type::kAllPaths, std::set<std::string>{}, {}};
     }
 
     const boost::intrusive_ptr<Expression>& getExpression() const {
         return _newRoot;
-    }
-
-    boost::intrusive_ptr<Expression>& getExpressionToModify() {
-        return _newRoot;
-    }
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {
-        expression::addVariableRefs(_newRoot.get(), refs);
     }
 
 private:

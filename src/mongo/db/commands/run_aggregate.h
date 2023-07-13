@@ -32,7 +32,6 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/auth/privilege.h"
-#include "mongo/db/catalog/external_data_source_scope_guard.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/aggregate_command_gen.h"
@@ -58,8 +57,7 @@ Status runAggregate(OperationContext* opCtx,
                     const LiteParsedPipeline& liteParsedPipeline,
                     const BSONObj& cmdObj,
                     const PrivilegeVector& privileges,
-                    rpc::ReplyBuilderInterface* result,
-                    ExternalDataSourceScopeGuard externalDataSourceGuard);
+                    rpc::ReplyBuilderInterface* result);
 
 /**
  * Convenience version that internally constructs the LiteParsedPipeline.
@@ -74,5 +72,5 @@ Status runAggregate(OperationContext* opCtx,
 /**
  * Tracks explicit use of allowDiskUse:false with find and aggregate commands.
  */
-extern CounterMetric allowDiskUseFalseCounter;
+extern Counter64 allowDiskUseFalseCounter;
 }  // namespace mongo

@@ -1,5 +1,8 @@
 /**
  * Test that a change stream on the primary node survives stepdown.
+ *
+ * Change streams are only supported on WiredTiger.
+ * @tags: [requires_wiredtiger]
  */
 (function() {
 "use strict";

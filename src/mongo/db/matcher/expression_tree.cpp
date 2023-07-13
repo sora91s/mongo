@@ -46,10 +46,10 @@ void ListOfMatchExpression::_debugList(StringBuilder& debug, int indentationLeve
         _expressions[i]->debugString(debug, indentationLevel + 1);
 }
 
-void ListOfMatchExpression::_listToBSON(BSONArrayBuilder* out, SerializationOptions opts) const {
+void ListOfMatchExpression::_listToBSON(BSONArrayBuilder* out, bool includePath) const {
     for (unsigned i = 0; i < _expressions.size(); i++) {
         BSONObjBuilder childBob(out->subobjStart());
-        _expressions[i]->serialize(&childBob, opts);
+        _expressions[i]->serialize(&childBob, includePath);
     }
     out->doneFast();
 }
@@ -162,9 +162,7 @@ MatchExpression::ExpressionOptimizerFunc ListOfMatchExpression::getOptimizer() c
             boost::optional<std::string> childPath;
             const CollatorInterface* eqCollator = nullptr;
 
-            auto isRegEx = [](const BSONElement& elm) {
-                return elm.type() == BSONType::RegEx;
-            };
+            auto isRegEx = [](const BSONElement& elm) { return elm.type() == BSONType::RegEx; };
 
             // Check if all children are equality conditions or regular expressions with the
             // same path argument, and same collation.
@@ -343,7 +341,7 @@ void AndMatchExpression::debugString(StringBuilder& debug, int indentationLevel)
     _debugList(debug, indentationLevel);
 }
 
-void AndMatchExpression::serialize(BSONObjBuilder* out, SerializationOptions opts) const {
+void AndMatchExpression::serialize(BSONObjBuilder* out, bool includePath) const {
     if (!numChildren()) {
         // It is possible for an AndMatchExpression to have no children, resulting in the serialized
         // expression {$and: []}, which is not a valid query object.
@@ -351,7 +349,7 @@ void AndMatchExpression::serialize(BSONObjBuilder* out, SerializationOptions opt
     }
 
     BSONArrayBuilder arrBob(out->subarrayStart("$and"));
-    _listToBSON(&arrBob, opts);
+    _listToBSON(&arrBob, includePath);
     arrBob.doneFast();
 }
 
@@ -387,7 +385,7 @@ void OrMatchExpression::debugString(StringBuilder& debug, int indentationLevel) 
     _debugList(debug, indentationLevel);
 }
 
-void OrMatchExpression::serialize(BSONObjBuilder* out, SerializationOptions opts) const {
+void OrMatchExpression::serialize(BSONObjBuilder* out, bool includePath) const {
     if (!numChildren()) {
         // It is possible for an OrMatchExpression to have no children, resulting in the serialized
         // expression {$or: []}, which is not a valid query object. An empty $or is logically
@@ -396,7 +394,7 @@ void OrMatchExpression::serialize(BSONObjBuilder* out, SerializationOptions opts
         return;
     }
     BSONArrayBuilder arrBob(out->subarrayStart("$or"));
-    _listToBSON(&arrBob, opts);
+    _listToBSON(&arrBob, includePath);
 }
 
 bool OrMatchExpression::isTriviallyFalse() const {
@@ -429,9 +427,9 @@ void NorMatchExpression::debugString(StringBuilder& debug, int indentationLevel)
     _debugList(debug, indentationLevel);
 }
 
-void NorMatchExpression::serialize(BSONObjBuilder* out, SerializationOptions opts) const {
+void NorMatchExpression::serialize(BSONObjBuilder* out, bool includePath) const {
     BSONArrayBuilder arrBob(out->subarrayStart("$nor"));
-    _listToBSON(&arrBob, opts);
+    _listToBSON(&arrBob, includePath);
 }
 
 // -------
@@ -444,9 +442,9 @@ void NotMatchExpression::debugString(StringBuilder& debug, int indentationLevel)
 
 void NotMatchExpression::serializeNotExpressionToNor(MatchExpression* exp,
                                                      BSONObjBuilder* out,
-                                                     SerializationOptions opts) {
+                                                     bool includePath) {
     BSONObjBuilder childBob;
-    exp->serialize(&childBob, opts);
+    exp->serialize(&childBob, includePath);
     BSONObj tempObj = childBob.obj();
 
     BSONArrayBuilder tBob(out->subarrayStart("$nor"));
@@ -454,27 +452,23 @@ void NotMatchExpression::serializeNotExpressionToNor(MatchExpression* exp,
     tBob.doneFast();
 }
 
-void NotMatchExpression::serialize(BSONObjBuilder* out, SerializationOptions opts) const {
+void NotMatchExpression::serialize(BSONObjBuilder* out, bool includePath) const {
     if (_exp->matchType() == MatchType::AND && _exp->numChildren() == 0) {
-        if (opts.replacementForLiteralArgs) {
-            out->append("$alwaysFalse", *opts.replacementForLiteralArgs);
-        } else {
-            out->append("$alwaysFalse", 1);
-        }
+        out->append("$alwaysFalse", 1);
         return;
     }
 
-    if (!opts.includePath) {
+    if (!includePath) {
         BSONObjBuilder notBob(out->subobjStart("$not"));
         // Our parser does not accept a $and directly within a $not, instead expecting the direct
         // notation like {x: {$not: {$gt: 5, $lt: 0}}}. We represent such an expression with an AND
         // internally, so we un-nest it here to be able to re-parse it.
         if (_exp->matchType() == MatchType::AND) {
             for (size_t x = 0; x < _exp->numChildren(); ++x) {
-                _exp->getChild(x)->serialize(&notBob, opts);
+                _exp->getChild(x)->serialize(&notBob, includePath);
             }
         } else {
-            _exp->serialize(&notBob, opts);
+            _exp->serialize(&notBob, includePath);
         }
         return;
     }
@@ -495,18 +489,12 @@ void NotMatchExpression::serialize(BSONObjBuilder* out, SerializationOptions opt
     // 1}}.
     if (auto pathMatch = dynamic_cast<PathMatchExpression*>(expressionToNegate);
         pathMatch && !dynamic_cast<TextMatchExpressionBase*>(expressionToNegate)) {
-        auto append = [&](StringData path) {
-            BSONObjBuilder pathBob(out->subobjStart(path));
-            pathBob.append("$not", pathMatch->getSerializedRightHandSide(opts));
-        };
-        if (opts.redactFieldNames) {
-            append(opts.redactFieldNamesStrategy(pathMatch->path()));
-        } else {
-            append(pathMatch->path());
-        }
+        const auto path = pathMatch->path();
+        BSONObjBuilder pathBob(out->subobjStart(path));
+        pathBob.append("$not", pathMatch->getSerializedRightHandSide());
         return;
     }
-    return serializeNotExpressionToNor(expressionToNegate, out, opts);
+    return serializeNotExpressionToNor(expressionToNegate, out, includePath);
 }
 
 bool NotMatchExpression::equivalent(const MatchExpression* other) const {

@@ -7,13 +7,8 @@
 //   uses_transactions,
 // ]
 
-// Cannot run the filtering metadata check on tests that run refineCollectionShardKey.
-TestData.skipCheckShardFilteringMetadata = true;
-
 (function() {
 'use strict';
-
-load("jstests/sharding/updateOne_without_shard_key/libs/write_without_shard_key_test_util.js");
 
 const st = new ShardingTest({shards: 2});
 const mongos = st.s0;
@@ -167,13 +162,7 @@ const session = st.s.startSession({retryWrites: true});
 const sessionDB = session.getDatabase(kDbName);
 const sessionColl = sessionDB[kCollName];
 
-// Sharded updateOnes that do not directly target a shard can now use the two phase write
-// protocol to execute.
-if (WriteWithoutShardKeyTestUtil.isWriteWithoutShardKeyFeatureEnabled(st.s)) {
-    assert.commandWorked(sessionColl.update({d: 1}, {b: 1, c: 4, d: 1}));
-} else {
-    assert.commandFailedWithCode(sessionColl.update({d: 1}, {b: 1, c: 4, d: 1}), 31025);
-}
+assert.commandFailedWithCode(sessionColl.update({d: 1}, {b: 1, c: 4, d: 1}), 31025);
 
 // Verify that an upsert targets shards without treating missing shard key fields as null values.
 // This implies that upsert still requires the entire shard key to be specified in the query.
@@ -181,20 +170,13 @@ assert.writeErrorWithCode(
     mongos.getCollection(kNsName).update({b: 1}, {$set: {c: 2}}, {upsert: true}),
     ErrorCodes.ShardKeyNotFound);
 
-// Sharded findAndModify that do not directly target a shard can now use the two phase write
-// protocol to execute.
-if (WriteWithoutShardKeyTestUtil.isWriteWithoutShardKeyFeatureEnabled(st.s)) {
-    assert.commandWorked(sessionColl.insert({_id: "findAndModify", a: 1}));
-    let res = assert.commandWorked(sessionDB.runCommand(
-        {findAndModify: kCollName, query: {a: 1}, update: {$set: {updated: true}}}));
-    assert.eq(1, res.lastErrorObject.n);
-} else {
-    assert.commandWorked(sessionColl.insert({_id: "findAndModify", a: 1}));
-    assert.commandFailedWithCode(
-        sessionDB.runCommand(
-            {findAndModify: kCollName, query: {a: 1}, update: {$set: {updated: true}}}),
-        ErrorCodes.ShardKeyNotFound);
-}
+// Find and modify will not treat missing shard key values as null and require the full shard key to
+// be specified.
+assert.commandWorked(sessionColl.insert({_id: "findAndModify", a: 1}));
+assert.commandFailedWithCode(
+    sessionDB.runCommand(
+        {findAndModify: kCollName, query: {a: 1}, update: {$set: {updated: true}}}),
+    ErrorCodes.ShardKeyNotFound);
 
 st.stop();
 })();

@@ -1,5 +1,5 @@
 // Tests large multi-deletes in a transaction to trigger multi-applyOps transaction commit path.
-// @tags: [requires_replication]
+// @tags: [requires_replication, requires_wiredtiger]
 (function() {
 "use strict";
 

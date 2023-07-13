@@ -162,7 +162,7 @@ public:
 
     /**
      * Sets implicit default write concern whether it should be majority or not.
-     * Should be called only once on startup (except in testing).
+     * Should be called once on startup.
      */
     void setImplicitDefaultWriteConcernMajority(bool newImplicitDefaultWCMajority);
 
@@ -170,7 +170,7 @@ public:
      * Gets a bool indicating whether the implicit default write concern is majority.
      * This function should only be used for testing purposes.
      */
-    bool getImplicitDefaultWriteConcernMajority_forTest();
+    boost::optional<bool> getImplicitDefaultWriteConcernMajority_forTest();
 
     /**
      * Gets the cluster-wide write concern (CWWC) persisted on disk.
@@ -209,7 +209,7 @@ private:
     ThreadPool _threadPool;
 
     // Indicate whether implicit default write concern should be majority or not.
-    AtomicWord<bool> _implicitDefaultWriteConcernMajority;
+    boost::optional<bool> _implicitDefaultWriteConcernMajority;
 };
 
 }  // namespace mongo

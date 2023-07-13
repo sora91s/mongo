@@ -73,24 +73,24 @@ synchronized_value<boost::filesystem::path> ftdcDirectoryPathParameter;
 
 FTDCStartupParams ftdcStartupParams;
 
-void DiagnosticDataCollectionDirectoryPathServerParameter::append(
-    OperationContext* opCtx, BSONObjBuilder* b, StringData name, const boost::optional<TenantId>&) {
-    b->append(name, ftdcDirectoryPathParameter->generic_string());
+void DiagnosticDataCollectionDirectoryPathServerParameter::append(OperationContext* opCtx,
+                                                                  BSONObjBuilder& b,
+                                                                  const std::string& name) {
+    b.append(name, ftdcDirectoryPathParameter->generic_string());
 }
 
-Status DiagnosticDataCollectionDirectoryPathServerParameter::setFromString(
-    StringData str, const boost::optional<TenantId>&) {
+Status DiagnosticDataCollectionDirectoryPathServerParameter::setFromString(const std::string& str) {
     if (hasGlobalServiceContext()) {
         FTDCController* controller = FTDCController::get(getGlobalServiceContext());
         if (controller) {
-            Status s = controller->setDirectory(str.toString());
+            Status s = controller->setDirectory(str);
             if (!s.isOK()) {
                 return s;
             }
         }
     }
 
-    ftdcDirectoryPathParameter = str.toString();
+    ftdcDirectoryPathParameter = str;
 
     return Status::OK();
 }
@@ -181,11 +181,8 @@ FTDCSimpleInternalCommandCollector::FTDCSimpleInternalCommandCollector(StringDat
 }
 
 void FTDCSimpleInternalCommandCollector::collect(OperationContext* opCtx, BSONObjBuilder& builder) {
-    if (auto result = CommandHelpers::runCommandDirectly(opCtx, _request);
-        result.hasElement("cursor"))
-        builder.appendElements(result["cursor"]["firstBatch"]["0"].Obj());
-    else
-        builder.appendElements(result);
+    auto result = CommandHelpers::runCommandDirectly(opCtx, _request);
+    builder.appendElements(result);
 }
 
 std::string FTDCSimpleInternalCommandCollector::name() const {

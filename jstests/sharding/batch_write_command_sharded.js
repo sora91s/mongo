@@ -9,12 +9,11 @@
 TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 (function() {
 "use strict";
 
-var st = new ShardingTest({shards: 2, config: 3});
+var st = new ShardingTest({shards: 2});
 
 jsTest.log("Starting sharding batch write tests...");
 

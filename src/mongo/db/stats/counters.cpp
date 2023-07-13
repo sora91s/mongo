@@ -27,44 +27,47 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/stats/counters.h"
 
 #include <fmt/format.h>
 
 #include "mongo/client/authenticate.h"
-#include "mongo/db/commands/server_status.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 namespace mongo {
 
+namespace {
 using namespace fmt::literals;
-
-void OpCounters::_reset() {
-    _insert->store(0);
-    _query->store(0);
-    _update->store(0);
-    _delete->store(0);
-    _getmore->store(0);
-    _command->store(0);
-    _nestedAggregate->store(0);
-
-    _queryDeprecated->store(0);
-
-    _insertOnExistingDoc->store(0);
-    _updateOnMissingDoc->store(0);
-    _deleteWasEmpty->store(0);
-    _deleteFromMissingNamespace->store(0);
-    _acceptableErrorInCommand->store(0);
 }
 
-void OpCounters::_checkWrap(CacheExclusive<AtomicWord<long long>> OpCounters::*counter, int n) {
+void OpCounters::_checkWrap(CacheAligned<AtomicWord<long long>> OpCounters::*counter, int n) {
     static constexpr auto maxCount = 1LL << 60;
     auto oldValue = (this->*counter)->fetchAndAddRelaxed(n);
     if (oldValue > maxCount) {
-        _reset();
+        _insert->store(0);
+        _query->store(0);
+        _update->store(0);
+        _delete->store(0);
+        _getmore->store(0);
+        _command->store(0);
+
+        _insertDeprecated->store(0);
+        _queryDeprecated->store(0);
+        _updateDeprecated->store(0);
+        _deleteDeprecated->store(0);
+        _getmoreDeprecated->store(0);
+        _killcursorsDeprecated->store(0);
+
+        _insertOnExistingDoc->store(0);
+        _updateOnMissingDoc->store(0);
+        _deleteWasEmpty->store(0);
+        _deleteFromMissingNamespace->store(0);
+        _acceptableErrorInCommand->store(0);
     }
 }
 
@@ -78,9 +81,23 @@ BSONObj OpCounters::getObj() const {
     b.append("command", _command->loadRelaxed());
 
     auto queryDep = _queryDeprecated->loadRelaxed();
-    if (queryDep > 0) {
+    auto getmoreDep = _getmoreDeprecated->loadRelaxed();
+    auto killcursorsDep = _killcursorsDeprecated->loadRelaxed();
+    auto updateDep = _updateDeprecated->loadRelaxed();
+    auto deleteDep = _deleteDeprecated->loadRelaxed();
+    auto insertDep = _insertDeprecated->loadRelaxed();
+    auto totalDep = queryDep + getmoreDep + killcursorsDep + updateDep + deleteDep + insertDep;
+
+    if (totalDep > 0) {
         BSONObjBuilder d(b.subobjStart("deprecated"));
+
+        d.append("total", totalDep);
+        d.append("insert", insertDep);
         d.append("query", queryDep);
+        d.append("update", updateDep);
+        d.append("delete", deleteDep);
+        d.append("getmore", getmoreDep);
+        d.append("killcursors", killcursorsDep);
     }
 
     // Append counters for constraint relaxations, only if they exist.
@@ -170,7 +187,7 @@ void NetworkCounter::incrementNumSlowSSLOperations() {
 }
 
 void NetworkCounter::acceptedTFOIngress() {
-    _tfoAccepted->fetchAndAddRelaxed(1);
+    _tfo->accepted.fetchAndAddRelaxed(1);
 }
 
 void NetworkCounter::append(BSONObjBuilder& b) {
@@ -184,11 +201,11 @@ void NetworkCounter::append(BSONObjBuilder& b) {
 
     BSONObjBuilder tfo;
 #ifdef __linux__
-    tfo.append("kernelSetting", _tfoKernelSetting);
+    tfo.append("kernelSetting", _tfo->kernelSetting);
 #endif
-    tfo.append("serverSupported", _tfoKernelSupportServer);
-    tfo.append("clientSupported", _tfoKernelSupportClient);
-    tfo.append("accepted", _tfoAccepted->loadRelaxed());
+    tfo.append("serverSupported", _tfo->kernelSupportServer);
+    tfo.append("clientSupported", _tfo->kernelSupportClient);
+    tfo.append("accepted", _tfo->accepted.loadRelaxed());
     b.append("tcpFastOpen", tfo.obj());
 }
 
@@ -217,10 +234,6 @@ void AuthCounter::initializeMechanismMap(const std::vector<std::string>& mechani
 
 void AuthCounter::incSaslSupportedMechanismsReceived() {
     _saslSupportedMechanismsReceived.fetchAndAddRelaxed(1);
-}
-
-void AuthCounter::incAuthenticationCumulativeTime(long long micros) {
-    _authenticationCumulativeMicros.fetchAndAddRelaxed(micros);
 }
 
 void AuthCounter::MechanismCounterHandle::incSpeculativeAuthenticateReceived() {
@@ -314,18 +327,6 @@ void AuthCounter::append(BSONObjBuilder* b) {
     }
 
     mechsBuilder.done();
-
-    const auto totalAuthenticationTimeMicros = _authenticationCumulativeMicros.load();
-    b->append("totalAuthenticationTimeMicros", totalAuthenticationTimeMicros);
-}
-
-OpCounterServerStatusSection::OpCounterServerStatusSection(const std::string& sectionName,
-                                                           OpCounters* counters)
-    : ServerStatusSection(sectionName), _counters(counters) {}
-
-BSONObj OpCounterServerStatusSection::generateSection(OperationContext* opCtx,
-                                                      const BSONElement& configElement) const {
-    return _counters->getObj();
 }
 
 OpCounters globalOpCounters;
@@ -335,17 +336,10 @@ AuthCounter authCounter;
 AggStageCounters aggStageCounters;
 DotsAndDollarsFieldsCounters dotsAndDollarsFieldsCounters;
 QueryFrameworkCounters queryFrameworkCounters;
-LookupPushdownCounters lookupPushdownCounters;
-SortCounters sortCounters;
-ValidatorCounters validatorCounters;
-GroupCounters groupCounters;
 
 OperatorCounters operatorCountersAggExpressions{"operatorCounters.expressions."};
 OperatorCounters operatorCountersMatchExpressions{"operatorCounters.match."};
 OperatorCounters operatorCountersGroupAccumulatorExpressions{"operatorCounters.groupAccumulators."};
 OperatorCounters operatorCountersWindowAccumulatorExpressions{
     "operatorCounters.windowAccumulators."};
-CounterMetric updateManyCount("query.updateManyCount");
-CounterMetric deleteManyCount("query.deleteManyCount");
-
 }  // namespace mongo

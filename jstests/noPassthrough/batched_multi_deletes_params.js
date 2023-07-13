@@ -2,8 +2,8 @@
  * Validate batched multi-deleter's parameters.
  *
  * @tags: [
- *  requires_fcv_61,
- *  requires_replication,
+ *  # Running as a replica set requires journaling.
+ *  requires_journaling,
  * ]
  */
 
@@ -19,8 +19,13 @@ rst.initiate();
 rst.awaitNodesAgreeOnPrimary();
 const conn = rst.getPrimary();
 
-const db = conn.getDB("test");
-const coll = db.getCollection("c");
+// '__internalBatchedDeletesTesting.Collection0' is a special, hardcoded namespace that batches
+// multi-doc deletes if the 'internalBatchUserMultiDeletesForTest' server parameter is set.
+// TODO (SERVER-63044): remove this special handling.
+const db = conn.getDB("__internalBatchedDeletesTesting");
+const coll = db.getCollection('Collection0');
+
+assert.commandWorked(db.adminCommand({setParameter: 1, internalBatchUserMultiDeletesForTest: 1}));
 
 function validateTargetDocsPerBatch() {
     const collCount = 1234;
@@ -32,8 +37,7 @@ function validateTargetDocsPerBatch() {
 
         coll.drop();
         assert.commandWorked(
-            coll.insertMany([...Array(collCount).keys()].map(x => ({_id: x, a: "a".repeat(10)})),
-                            {ordered: false}));
+            coll.insertMany([...Array(collCount).keys()].map(x => ({_id: x, a: "a".repeat(10)}))));
 
         assert.commandWorked(
             db.adminCommand({setParameter: 1, batchedDeletesTargetBatchDocs: docsPerBatch}));
@@ -69,8 +73,7 @@ function validateTargetBatchTimeMS() {
 
         coll.drop();
         assert.commandWorked(
-            coll.insertMany([...Array(collCount).keys()].map(x => ({_id: x, a: "a".repeat(10)})),
-                            {ordered: false}));
+            coll.insertMany([...Array(collCount).keys()].map(x => ({_id: x, a: "a".repeat(10)}))));
 
         assert.commandWorked(
             db.adminCommand({setParameter: 1, batchedDeletesTargetBatchTimeMS: targetBatchTimeMS}));
@@ -121,8 +124,7 @@ function validateTargetStagedDocsBytes() {
 
         coll.drop();
         assert.commandWorked(coll.insertMany(
-            [...Array(collCount).keys()].map(x => ({a: "a".repeat(docPaddingBytes)})),
-            {ordered: false}));
+            [...Array(collCount).keys()].map(x => ({a: "a".repeat(docPaddingBytes)}))));
 
         // batchedDeletesTargetStagedDocsBytes := 0 means no limit.
         const expectedBatches =

@@ -46,8 +46,7 @@ function assertApplyOpsWorks(testdbs, ops) {
             ops.shift();
 
         // These errors are expected when replaying operations and should be ignored.
-        if (res.code == ErrorCodes.NamespaceNotFound || res.code == ErrorCodes.DuplicateKey ||
-            res.code == ErrorCodes.UnknownError) {
+        if (res.code == ErrorCodes.NamespaceNotFound || res.code == ErrorCodes.DuplicateKey) {
             ops.shift();
             continue;
         }
@@ -148,19 +147,16 @@ var tests = {
         assert.commandWorked(x.insert({_id: 1, x: 1}));
         assert.commandWorked(y.insert({_id: 1, y: 1}));
 
-        assert.commandWorked(mydb.adminCommand(
-            {renameCollection: x.getFullName(), to: z.getFullName()}));  // across databases
+        assert.commandWorked(
+            mydb.adminCommand({renameCollection: x.getFullName(), to: z.getFullName()}));
         assert.commandWorked(z.insert({_id: 2, x: 2}));
         assert.commandWorked(x.insert({_id: 2, x: false}));
         assert.commandWorked(y.insert({y: 2}));
 
-        assert.commandWorked(mydb.adminCommand({
-            renameCollection: y.getFullName(),
-            to: x.getFullName(),
-            dropTarget: true
-        }));  // within database
         assert.commandWorked(mydb.adminCommand(
-            {renameCollection: z.getFullName(), to: y.getFullName()}));  // across databases
+            {renameCollection: y.getFullName(), to: x.getFullName(), dropTarget: true}));
+        assert.commandWorked(
+            mydb.adminCommand({renameCollection: z.getFullName(), to: y.getFullName()}));
         return [mydb, otherdb];
     },
     renameCollectionAcrossDatabasesWithDropAndConvertToCapped: (db1) => {
@@ -222,8 +218,7 @@ function testIdempotency(primary, testFun, testName) {
     let ops = oplog
                   .find({
                       op: {$ne: 'n'},
-                      // admin.$cmd needed for cross-db rename applyOps
-                      ns: new RegExp('^' + mydb.getName() + "|^admin\.[$]cmd$"),
+                      ns: new RegExp('^' + mydb.getName()),
                       'o.startIndexBuild': {$exists: false},
                       'o.abortIndexBuild': {$exists: false},
                       'o.commitIndexBuild': {$exists: false},

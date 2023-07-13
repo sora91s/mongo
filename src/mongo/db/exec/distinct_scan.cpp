@@ -32,12 +32,11 @@
 #include <memory>
 
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index/index_descriptor.h"
-#include "mongo/db/query/plan_executor_impl.h"
-#include "mongo/util/assert_util.h"
 
 namespace mongo {
 
@@ -80,28 +79,18 @@ PlanStage::StageState DistinctScan::doWork(WorkingSetID* out) {
         return PlanStage::IS_EOF;
 
     boost::optional<IndexKeyEntry> kv;
+    try {
+        if (!_cursor)
+            _cursor = indexAccessMethod()->newCursor(opCtx(), _scanDirection == 1);
+        kv = _cursor->seek(IndexEntryComparison::makeKeyStringFromSeekPointForSeek(
+            _seekPoint,
+            indexAccessMethod()->getSortedDataInterface()->getKeyStringVersion(),
+            indexAccessMethod()->getSortedDataInterface()->getOrdering(),
+            _scanDirection == 1));
 
-    const auto ret = handlePlanStageYield(
-        expCtx(),
-        "DistinctScan",
-        collection()->ns().ns(),
-        [&] {
-            if (!_cursor)
-                _cursor = indexAccessMethod()->newCursor(opCtx(), _scanDirection == 1);
-            kv = _cursor->seek(IndexEntryComparison::makeKeyStringFromSeekPointForSeek(
-                _seekPoint,
-                indexAccessMethod()->getSortedDataInterface()->getKeyStringVersion(),
-                indexAccessMethod()->getSortedDataInterface()->getOrdering(),
-                _scanDirection == 1));
-            return PlanStage::ADVANCED;
-        },
-        [&] {
-            // yieldHandler
-            *out = WorkingSet::INVALID_ID;
-        });
-
-    if (ret != PlanStage::ADVANCED) {
-        return ret;
+    } catch (const WriteConflictException&) {
+        *out = WorkingSet::INVALID_ID;
+        return PlanStage::NEED_YIELD;
     }
 
     if (!kv) {

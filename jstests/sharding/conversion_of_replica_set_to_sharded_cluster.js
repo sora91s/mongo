@@ -12,7 +12,6 @@
 'use strict';
 
 load('jstests/replsets/rslib.js');
-load('jstests/sharding/libs/remove_shard_util.js');
 
 // TODO SERVER-50144 Remove this and allow orphan checking.
 // This test calls removeShard which can leave docs in config.rangeDeletions in state "pending",
@@ -260,7 +259,16 @@ let assertAddShardSucceeded = function(res, shardName) {
                "newly added shard " + res.shardAdded + " not found in config.shards");
 };
 
-let removeShardWithName = removeShard;
+var removeShardWithName = function(st, shardName) {
+    var res = st.s.adminCommand({removeShard: shardName});
+    assert.commandWorked(res);
+    assert.eq('started', res.state);
+    assert.soon(function() {
+        res = st.s.adminCommand({removeShard: shardName});
+        assert.commandWorked(res);
+        return ('completed' === res.state);
+    }, "removeShard never completed for shard " + shardName);
+};
 
 let checkCRUDCommands = function(testDB) {
     for (let command in CRUDCommands) {
@@ -307,7 +315,7 @@ checkCRUDCommands(rst0.getPrimary().getDB(dbName));
 checkDDLCommands(rst0.getPrimary().getDB(DDLDbName));
 
 let st = new ShardingTest({
-    shards: TestData.catalogShard ? 1 : 0,
+    shards: 0,
     mongos: 1,
 });
 

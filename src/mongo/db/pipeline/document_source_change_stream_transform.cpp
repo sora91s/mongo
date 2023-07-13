@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -37,9 +38,6 @@
 #include "mongo/db/pipeline/resume_token.h"
 #include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -63,12 +61,8 @@ DocumentSourceChangeStreamTransform::createFromBson(
     uassert(5467601,
             "the '$_internalChangeStreamTransform' object spec must be an object",
             rawSpec.type() == BSONType::Object);
-    auto spec =
-        DocumentSourceChangeStreamSpec::parse(IDLParserContext("$changeStream"), rawSpec.Obj());
-
-    // Set the change stream spec on the expression context.
-    expCtx->changeStreamSpec = spec;
-
+    auto spec = DocumentSourceChangeStreamSpec::parse(IDLParserErrorContext("$changeStream"),
+                                                      rawSpec.Obj());
     return new DocumentSourceChangeStreamTransform(expCtx, std::move(spec));
 }
 
@@ -124,7 +118,7 @@ DepsTracker::State DocumentSourceChangeStreamTransform::getDependencies(DepsTrac
 
 DocumentSource::GetModPathsReturn DocumentSourceChangeStreamTransform::getModifiedPaths() const {
     // All paths are modified.
-    return {DocumentSource::GetModPathsReturn::Type::kAllPaths, OrderedPathSet{}, {}};
+    return {DocumentSource::GetModPathsReturn::Type::kAllPaths, std::set<std::string>{}, {}};
 }
 
 DocumentSource::GetNextResult DocumentSourceChangeStreamTransform::doGetNext() {

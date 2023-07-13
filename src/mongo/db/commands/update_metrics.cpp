@@ -27,12 +27,16 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/commands/update_metrics.h"
 
 namespace mongo {
 UpdateMetrics::UpdateMetrics(StringData commandName)
-    : _commandsWithAggregationPipeline("commands." + commandName + ".pipeline"),
-      _commandsWithArrayFilters("commands." + commandName + ".arrayFilters") {}
+    : _commandsWithAggregationPipelineMetric("commands." + commandName + ".pipeline",
+                                             &_commandsWithAggregationPipeline),
+      _commandsWithArrayFiltersMetric("commands." + commandName + ".arrayFilters",
+                                      &_commandsWithArrayFilters) {}
 
 void UpdateMetrics::incrementExecutedWithAggregationPipeline() {
     _commandsWithAggregationPipeline.increment();

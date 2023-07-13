@@ -35,7 +35,6 @@
 
 #include "mongo/base/data_range_cursor.h"
 #include "mongo/base/data_type_validated.h"
-#include "mongo/base/init.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/json.h"
 #include "mongo/client/sasl_aws_client_protocol_gen.h"
@@ -100,7 +99,7 @@ template <typename T>
 AWSCredentials parseCredentials(StringData data) {
     BSONObj obj = fromjson(data.toString());
 
-    auto creds = T::parse(IDLParserContext("security-credentials"), obj);
+    auto creds = T::parse(IDLParserErrorContext("security-credentials"), obj);
 
     return AWSCredentials(creds.getAccessKeyId().toString(),
                           creds.getSecretAccessKey().toString(),
@@ -183,9 +182,9 @@ std::string generateClientSecond(StringData serverFirstBase64,
     if (credentials.sessionToken) {
         // TODO: move this into kms-message
         uassertKmsRequest(kms_request_add_header_field(
-            request.get(), "X-Amz-Security-Token", credentials.sessionToken.value().c_str()));
+            request.get(), "X-Amz-Security-Token", credentials.sessionToken.get().c_str()));
 
-        second.setXAmzSecurityToken(boost::optional<StringData>(credentials.sessionToken.value()));
+        second.setXAmzSecurityToken(boost::optional<StringData>(credentials.sessionToken.get()));
     }
 
     UniqueKmsCharBuffer kmsSignature(kms_request_get_signature(request.get()));
@@ -231,10 +230,6 @@ AWSCredentials parseCredentialsFromEC2IamSecurityCredentials(StringData data) {
 
 AWSCredentials parseCredentialsFromECSTaskIamCredentials(StringData data) {
     return parseCredentials<EcsTaskSecurityCredentials>(data);
-}
-
-MONGO_INITIALIZER(SASLRegisterKMS)(::mongo::InitializerContext*) {
-    kms_message_init();
 }
 
 }  // namespace awsIam

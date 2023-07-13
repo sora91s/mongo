@@ -62,7 +62,7 @@ Status checkIfNamespaceExists(OperationContext* opCtx, const NamespaceString& ns
  * Iterating through the remaining collections stops when the callback returns false.
  */
 void forEachCollectionFromDb(OperationContext* opCtx,
-                             const DatabaseName& dbName,
+                             const TenantDatabaseName& tenantDbName,
                              LockMode collLockMode,
                              CollectionCatalog::CollectionInfoFn callback,
                              CollectionCatalog::CollectionInfoFn predicate = nullptr);

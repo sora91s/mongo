@@ -5,7 +5,6 @@
 (function() {
 'use strict';
 
-load("jstests/libs/feature_flag_util.js");
 load('jstests/sharding/libs/last_lts_mongos_commands.js');
 
 function getNewDbName(dbName) {
@@ -75,9 +74,6 @@ function validateCommandTestCase(testCase) {
     assert(testCase.explicitlyCreateCollection
                ? typeof (testCase.explicitlyCreateCollection) === "boolean"
                : true);
-    assert(testCase.expectNonEmptyCollection
-               ? typeof (testCase.expectNonEmptyCollection) === "boolean"
-               : true);
     assert(testCase.cleanUp ? typeof (testCase.cleanUp) === "function" : true,
            "cleanUp must be a function: " + tojson(testCase));
 }
@@ -97,10 +93,6 @@ function testCommandAfterMovePrimary(testCase, st, dbName, collName) {
     if (testCase.explicitlyCreateCollection) {
         assert.commandWorked(primaryShardBefore.getDB(dbName).runCommand({create: collName}));
     }
-    if (testCase.expectNonEmptyCollection) {
-        assert.commandWorked(
-            primaryShardBefore.getDB(dbName).runCommand({insert: collName, documents: [{x: 0}]}));
-    }
 
     // Ensure all nodes know the dbVersion before the movePrimary.
     assert.commandWorked(st.s0.adminCommand({flushRouterConfig: 1}));
@@ -115,23 +107,20 @@ function testCommandAfterMovePrimary(testCase, st, dbName, collName) {
     const dbVersionAfter =
         st.s1.getDB("config").getCollection("databases").findOne({_id: dbName}).version;
 
-    // After the movePrimary, both old and new primary shards should have cleared the dbVersion.
+    // The only change after the movePrimary should be that the old primary shard should have
+    // cleared its dbVersion.
     assertMongosDatabaseVersion(st.s0, dbName, dbVersionBefore);
     assertShardDatabaseVersion(primaryShardBefore, dbName, {});
-    // TODO (SERVER-71309): Remove once 7.0 becomes last LTS.
-    if (FeatureFlagUtil.isEnabled(st.configRS.getPrimary().getDB('admin'),
-                                  "ResilientMovePrimary")) {
-        assertShardDatabaseVersion(primaryShardAfter, dbName, {});
-    } else {
-        assertShardDatabaseVersion(primaryShardAfter, dbName, dbVersionBefore);
-    }
+    assertShardDatabaseVersion(primaryShardAfter, dbName, dbVersionBefore);
 
     // Run the test case's command.
-    const res = st.s0.getDB(testCase.runsAgainstAdminDb ? "admin" : dbName).runCommand(command);
-    if (testCase.expectedFailureCode) {
-        assert.commandFailedWithCode(res, testCase.expectedFailureCode);
+    if (testCase.runsAgainstAdminDb) {
+        assert.commandWorked(st.s0.adminCommand(command));
+    } else if (testCase.expectedFailureCode) {
+        assert.commandFailedWithCode(st.s0.getDB(dbName).runCommand(command),
+                                     testCase.expectedFailureCode);
     } else {
-        assert.commandWorked(res);
+        assert.commandWorked(st.s0.getDB(dbName).runCommand(command));
     }
 
     if (testCase.sendsDbVersion) {
@@ -146,19 +135,13 @@ function testCommandAfterMovePrimary(testCase, st, dbName, collName) {
         assertShardDatabaseVersion(primaryShardBefore, dbName, dbVersionAfter);
         assertShardDatabaseVersion(primaryShardAfter, dbName, dbVersionAfter);
     } else {
-        // If the command does not participate in database versioning:
+        // If the command does not participate in database versioning, none of the nodes' view of
+        // the dbVersion should have changed:
         // 1. The mongos should have targeted the old primary shard but not attached a dbVersion
         // 2. The old primary shard should have returned an ok response
-        // 3. Both old and new primary shards should have cleared the dbVersion
         assertMongosDatabaseVersion(st.s0, dbName, dbVersionBefore);
         assertShardDatabaseVersion(primaryShardBefore, dbName, {});
-        // TODO (SERVER-71309): Remove once 7.0 becomes last LTS.
-        if (FeatureFlagUtil.isEnabled(st.configRS.getPrimary().getDB('admin'),
-                                      "ResilientMovePrimary")) {
-            assertShardDatabaseVersion(primaryShardAfter, dbName, {});
-        } else {
-            assertShardDatabaseVersion(primaryShardAfter, dbName, dbVersionBefore);
-        }
+        assertShardDatabaseVersion(primaryShardAfter, dbName, dbVersionBefore);
     }
 
     if (testCase.cleanUp) {
@@ -211,10 +194,6 @@ function testCommandAfterDropRecreateDatabase(testCase, st) {
     if (testCase.explicitlyCreateCollection) {
         assert.commandWorked(primaryShardAfter.getDB(dbName).runCommand({create: collName}));
     }
-    if (testCase.expectNonEmptyCollection) {
-        assert.commandWorked(
-            primaryShardAfter.getDB(dbName).runCommand({insert: collName, documents: [{x: 0}]}));
-    }
 
     // The only change after the drop/recreate database should be that the old primary shard should
     // have cleared its dbVersion.
@@ -223,11 +202,13 @@ function testCommandAfterDropRecreateDatabase(testCase, st) {
     assertShardDatabaseVersion(primaryShardAfter, dbName, {});
 
     // Run the test case's command.
-    const res = st.s0.getDB(testCase.runsAgainstAdminDb ? "admin" : dbName).runCommand(command);
-    if (testCase.expectedFailureCode) {
-        assert.commandFailedWithCode(res, testCase.expectedFailureCode);
+    if (testCase.runsAgainstAdminDb) {
+        assert.commandWorked(st.s0.adminCommand(command));
+    } else if (testCase.expectedFailureCode) {
+        assert.commandFailedWithCode(st.s0.getDB(dbName).runCommand(command),
+                                     testCase.expectedFailureCode);
     } else {
-        assert.commandWorked(res);
+        assert.commandWorked(st.s0.getDB(dbName).runCommand(command));
     }
 
     if (testCase.sendsDbVersion) {
@@ -261,10 +242,6 @@ function testCommandAfterDropRecreateDatabase(testCase, st) {
 }
 
 let testCases = {
-    _clusterQueryWithoutShardKey:
-        {skip: "executed locally on a mongos (not sent to any remote node)"},
-    _clusterWriteWithoutShardKey:
-        {skip: "executed locally on a mongos (not sent to any remote node)"},
     _getAuditConfigGeneration: {skip: "not on a user database", conditional: true},
     _hashBSONElement: {skip: "executes locally on mongos (not sent to any remote node)"},
     _isSelf: {skip: "executes locally on mongos (not sent to any remote node)"},
@@ -291,33 +268,14 @@ let testCases = {
             }
         }
     },
-    analyze: {
-        skip: "unimplemented. Serves only as a stub."
-    },  // TODO SERVER-68055: Extend test to work with analyze
-    analyzeShardKey: {
-        run: {
-            runsAgainstAdminDb: true,
-            sendsDbVersion: true,
-            explicitlyCreateCollection: true,
-            expectNonEmptyCollection: true,
-            // The command should fail while calculating the read and write distribution metrics
-            // since the cardinality of the shard key is less than analyzeShardKeyNumRanges which
-            // defaults to 100.
-            expectedFailureCode: 4952606,
-            command: function(dbName, collName) {
-                return {analyzeShardKey: dbName + "." + collName, key: {_id: 1}};
-            },
-        }
-    },
     appendOplogNote: {skip: "unversioned and executes on all shards"},
     authenticate: {skip: "does not forward command to primary shard"},
+    availableQueryOptions: {skip: "executes locally on mongos (not sent to any remote node)"},
     balancerCollectionStatus: {skip: "does not forward command to primary shard"},
     balancerStart: {skip: "not on a user database"},
     balancerStatus: {skip: "not on a user database"},
     balancerStop: {skip: "not on a user database"},
     buildInfo: {skip: "executes locally on mongos (not sent to any remote node)"},
-    bulkWrite: {skip: "not yet implemented"},
-    checkMetadataConsistency: {skip: "not yet implemented"},
     cleanupReshardCollection: {skip: "always targets the config server"},
     clearJumboFlag: {skip: "does not forward command to primary shard"},
     clearLog: {skip: "executes locally on mongos (not sent to any remote node)"},
@@ -345,7 +303,6 @@ let testCases = {
     compactStructuredEncryptionData: {skip: "requires encrypted collections"},
     configureCollectionBalancing: {skip: "always targets the config server"},
     configureFailPoint: {skip: "executes locally on mongos (not sent to any remote node)"},
-    configureQueryAnalyzer: {skip: "always targets the config server"},
     connPoolStats: {skip: "executes locally on mongos (not sent to any remote node)"},
     connPoolSync: {skip: "executes locally on mongos (not sent to any remote node)"},
     connectionStatus: {skip: "executes locally on mongos (not sent to any remote node)"},
@@ -358,7 +315,6 @@ let testCases = {
             },
         }
     },
-    coordinateCommitTransaction: {skip: "unimplemented. Serves only as a stub."},
     count: {
         run: {
             sendsDbVersion: true,
@@ -390,7 +346,6 @@ let testCases = {
             },
         }
     },
-    createSearchIndexes: {skip: "executes locally on mongos"},
     createRole: {skip: "always targets the config server"},
     createUser: {skip: "always targets the config server"},
     currentOp: {skip: "not on a user database"},
@@ -455,7 +410,6 @@ let testCases = {
         }
     },
     dropRole: {skip: "always targets the config server"},
-    dropSearchIndex: {skip: "executes locally on mongos"},
     dropUser: {skip: "always targets the config server"},
     echo: {skip: "does not forward command to primary shard"},
     enableSharding: {skip: "does not forward command to primary shard"},
@@ -502,15 +456,21 @@ let testCases = {
     flushRouterConfig: {skip: "executes locally on mongos (not sent to any remote node)"},
     fsync: {skip: "broadcast to all shards"},
     getAuditConfig: {skip: "not on a user database", conditional: true},
+    getChangeStreamOptions: {
+        skip: "executes locally on mongos (not sent to any remote node)",
+        conditional: true
+    },  // TODO SERVER-65353 remove in 6.1.
     getClusterParameter: {skip: "always targets the config server"},
     getCmdLineOpts: {skip: "executes locally on mongos (not sent to any remote node)"},
     getDefaultRWConcern: {skip: "executes locally on mongos (not sent to any remote node)"},
     getDiagnosticData: {skip: "executes locally on mongos (not sent to any remote node)"},
+    getLastError: {skip: "does not forward command to primary shard"},
     getLog: {skip: "executes locally on mongos (not sent to any remote node)"},
     getMore: {skip: "requires a previously established cursor"},
     getParameter: {skip: "executes locally on mongos (not sent to any remote node)"},
     getShardMap: {skip: "executes locally on mongos (not sent to any remote node)"},
     getShardVersion: {skip: "executes locally on mongos (not sent to any remote node)"},
+    getnonce: {skip: "not on a user database"},
     grantPrivilegesToRole: {skip: "always targets the config server"},
     grantRolesToRole: {skip: "always targets the config server"},
     grantRolesToUser: {skip: "always targets the config server"},
@@ -551,7 +511,6 @@ let testCases = {
             },
         }
     },
-    listSearchIndexes: {skip: "executes locally on mongos"},
     listShards: {skip: "does not forward command to primary shard"},
     logApplicationMessage: {skip: "not on a user database", conditional: true},
     logMessage: {skip: "not on a user database"},
@@ -591,15 +550,12 @@ let testCases = {
             }
         }
     },
-    mergeAllChunksOnShard: {skip: "does not forward command to primary shard"},
     mergeChunks: {skip: "does not forward command to primary shard"},
     moveChunk: {skip: "does not forward command to primary shard"},
     movePrimary: {skip: "reads primary shard from sharding catalog with readConcern: local"},
     moveRange: {skip: "does not forward command to primary shard"},
     multicast: {skip: "does not forward command to primary shard"},
     netstat: {skip: "executes locally on mongos (not sent to any remote node)"},
-    oidcListKeys: {skip: "executes locally on mongos (not sent to any remote node)"},
-    oidcRefreshKeys: {skip: "executes locally on mongos (not sent to any remote node)"},
     ping: {skip: "executes locally on mongos (not sent to any remote node)"},
     planCacheClear: {
         run: {
@@ -672,6 +628,10 @@ let testCases = {
     serverStatus: {skip: "executes locally on mongos (not sent to any remote node)"},
     setAllowMigrations: {skip: "not on a user database"},
     setAuditConfig: {skip: "not on a user database", conditional: true},
+    setChangeStreamOptions: {
+        skip: "always targets the config server",
+        conditional: true
+    },  // TODO SERVER-65353 remove in 6.1.
     setDefaultRWConcern: {skip: "always targets the config server"},
     setIndexCommitQuorum: {
         run: {
@@ -691,7 +651,6 @@ let testCases = {
     setFeatureCompatibilityVersion: {skip: "not on a user database"},
     setFreeMonitoring:
         {skip: "explicitly fails for mongos, primary mongod only", conditional: true},
-    setProfilingFilterGlobally: {skip: "executes locally on mongos (not sent to any remote node)"},
     setParameter: {skip: "executes locally on mongos (not sent to any remote node)"},
     setClusterParameter: {skip: "always targets the config server"},
     setUserWriteBlockMode: {skip: "executes locally on mongos (not sent to any remote node)"},
@@ -708,8 +667,6 @@ let testCases = {
     testRemoval: {skip: "executes locally on mongos (not sent to any remote node)"},
     testVersion2: {skip: "executes locally on mongos (not sent to any remote node)"},
     testVersions1And2: {skip: "executes locally on mongos (not sent to any remote node)"},
-    transitionToCatalogShard: {skip: "not on a user database"},
-    transitionToDedicatedConfigServer: {skip: "not on a user database"},
     update: {
         run: {
             sendsDbVersion: true,
@@ -733,7 +690,6 @@ let testCases = {
         }
     },
     updateRole: {skip: "always targets the config server"},
-    updateSearchIndex: {skip: "executes locally on mongos"},
     updateUser: {skip: "always targets the config server"},
     updateZoneKeyRange: {skip: "not on a user database"},
     usersInfo: {skip: "always targets the config server"},
@@ -768,10 +724,6 @@ const st = new ShardingTest({shards: 2, mongos: 2});
 
 const listCommandsRes = st.s0.adminCommand({listCommands: 1});
 assert.commandWorked(listCommandsRes);
-print("--------------------------------------------");
-for (let command of Object.keys(listCommandsRes.commands)) {
-    print(command);
-}
 
 (() => {
     // Validate test cases for all commands.

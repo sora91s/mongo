@@ -27,10 +27,14 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/base/status.h"
+#include "mongo/db/range_arithmetic.h"
 #include "mongo/db/s/collection_metadata.h"
 #include "mongo/db/s/resharding/resharding_util.h"
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/sharding_test_fixture_common.h"
 #include "mongo/unittest/unittest.h"
 
@@ -39,7 +43,7 @@ namespace {
 
 using unittest::assertGet;
 
-const NamespaceString kNss = NamespaceString::createNamespaceString_forTest("test.foo");
+const NamespaceString kNss("test.foo");
 const ShardId kThisShard("thisShard");
 const ShardId kOtherShard("otherShard");
 
@@ -53,29 +57,23 @@ CollectionMetadata makeCollectionMetadataImpl(
 
     const OID epoch = OID::gen();
 
-    const Timestamp kOnCurrentShardSince(100, 0);
+    const Timestamp kRouting(100, 0);
     const Timestamp kChunkManager(staleChunkManager ? 99 : 100, 0);
 
     std::vector<ChunkType> allChunks;
     auto nextMinKey = shardKeyPattern.globalMin();
-    ChunkVersion version({epoch, timestamp}, {1, 0});
+    ChunkVersion version{1, 0, epoch, timestamp};
     for (const auto& myNextChunk : thisShardsChunks) {
         if (SimpleBSONObjComparator::kInstance.evaluate(nextMinKey < myNextChunk.first)) {
             // Need to add a chunk to the other shard from nextMinKey to myNextChunk.first.
             allChunks.emplace_back(
                 uuid, ChunkRange{nextMinKey, myNextChunk.first}, version, kOtherShard);
-            auto& chunk = allChunks.back();
-            chunk.setOnCurrentShardSince(kOnCurrentShardSince);
-            chunk.setHistory({ChunkHistory(*chunk.getOnCurrentShardSince(), chunk.getShard())});
-
+            allChunks.back().setHistory({ChunkHistory(kRouting, kOtherShard)});
             version.incMajor();
         }
         allChunks.emplace_back(
             uuid, ChunkRange{myNextChunk.first, myNextChunk.second}, version, kThisShard);
-        auto& chunk = allChunks.back();
-        chunk.setOnCurrentShardSince(kOnCurrentShardSince);
-        chunk.setHistory({ChunkHistory(*chunk.getOnCurrentShardSince(), chunk.getShard())});
-
+        allChunks.back().setHistory({ChunkHistory(kRouting, kThisShard)});
         version.incMajor();
         nextMinKey = myNextChunk.second;
     }
@@ -83,9 +81,7 @@ CollectionMetadata makeCollectionMetadataImpl(
     if (SimpleBSONObjComparator::kInstance.evaluate(nextMinKey < shardKeyPattern.globalMax())) {
         allChunks.emplace_back(
             uuid, ChunkRange{nextMinKey, shardKeyPattern.globalMax()}, version, kOtherShard);
-        auto& chunk = allChunks.back();
-        chunk.setOnCurrentShardSince(kOnCurrentShardSince);
-        chunk.setHistory({ChunkHistory(*chunk.getOnCurrentShardSince(), chunk.getShard())});
+        allChunks.back().setHistory({ChunkHistory(kRouting, kOtherShard)});
     }
 
     return CollectionMetadata(
@@ -129,7 +125,7 @@ protected:
             reshardingFields.setRecipientFields(std::move(recipientFields));
         } else if (state == CoordinatorStateEnum::kBlockingWrites) {
             TypeCollectionDonorFields donorFields{
-                resharding::constructTemporaryReshardingNss(kNss.db(), existingUuid),
+                constructTemporaryReshardingNss(kNss.db(), existingUuid),
                 KeyPattern{BSON("newKey" << 1)},
                 {kThisShard, kOtherShard}};
             reshardingFields.setDonorFields(std::move(donorFields));

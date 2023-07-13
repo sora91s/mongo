@@ -75,9 +75,7 @@ void TimerImpl::fireIfNecessary() {
 
     for (auto&& x : timers) {
         if (_timers.count(x) && (x->_expiration <= x->now())) {
-            auto execCB = [cb = std::move(x->_cb)](auto&&) mutable {
-                std::move(cb)();
-            };
+            auto execCB = [cb = std::move(x->_cb)](auto&&) mutable { std::move(cb)(); };
             auto global = x->_global;
             _timers.erase(x);
             global->_executor->schedule(std::move(execCB));
@@ -243,7 +241,6 @@ void PoolImpl::setNow(Date_t now) {
 }
 
 boost::optional<Date_t> PoolImpl::_now;
-ClockSourceMock PoolImpl::_fastClockSource;
 
 }  // namespace connection_pool_test_details
 }  // namespace executor

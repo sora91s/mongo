@@ -6,9 +6,6 @@
 //   requires_fcv_53,
 // ]
 
-// Cannot run the filtering metadata check on tests that run refineCollectionShardKey.
-TestData.skipCheckShardFilteringMetadata = true;
-
 (function() {
 "use strict";
 
@@ -75,8 +72,8 @@ const verifyChanges = (changeStream, startingIndex) => {
         }
         return changes.length === docs.length - startingIndex;
     });
-    assert.docEq(docs.slice(startingIndex), changes.map(x => x.fullDocument));
-    assert.docEq(docKeys.slice(startingIndex), changes.map(x => x.documentKey));
+    assert.docEq(changes.map(x => x.fullDocument), docs.slice(startingIndex));
+    assert.docEq(changes.map(x => x.documentKey), docKeys.slice(startingIndex));
     return changes;
 };
 

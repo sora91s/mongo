@@ -36,6 +36,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/user_acquisition_stats.h"
 #include "mongo/db/catalog/collection_catalog.h"
+#include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/cursor_id.h"
 #include "mongo/db/operation_context.h"
@@ -46,9 +47,7 @@
 #include "mongo/logv2/attribute_storage.h"
 #include "mongo/logv2/log_component.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/util/duration.h"
 #include "mongo/util/progress_meter.h"
-#include "mongo/util/system_tick_source.h"
 #include "mongo/util/tick_source.h"
 #include "mongo/util/time_support.h"
 
@@ -243,16 +242,12 @@ public:
 
     bool hasSortStage{false};  // true if the query plan involves an in-memory sort
 
-    bool usedDisk{false};              // true if the given query used disk
-    long long sortSpills{0};           // The total number of spills to disk from sort stages
-    size_t sortTotalDataSizeBytes{0};  // The amount of data we've sorted in bytes
-    long long keysSorted{0};           // The number of keys that we've sorted.
+    bool usedDisk{false};  // true if the given query used disk
 
     // True if the plan came from the multi-planner (not from the plan cache and not a query with a
     // single solution).
     bool fromMultiPlanner{false};
 
-    bool fromPlanCache{false};
     // True if a replan was triggered during the execution of this operation.
     boost::optional<std::string> replanReason;
 
@@ -266,39 +261,24 @@ public:
     boost::optional<uint32_t> planCacheKey;
     // The hash of the query's "stable" key. This represents the query's shape.
     boost::optional<uint32_t> queryHash;
-    // The shape of the original query serialized with readConcern, application name, and namespace.
-    // If boost::none, telemetry should not be collected for this operation.
-    boost::optional<BSONObj> telemetryStoreKey;
 
-    // The query framework that this operation used. Will be unknown for non query operations.
-    PlanExecutor::QueryFramework queryFramework{PlanExecutor::QueryFramework::kUnknown};
+    // Has a value if this operation is a query. True if the execution tree for the find part of the
+    // query was built exclusively using the classic query engine, false if any part was built using
+    // SBE.
+    boost::optional<bool> classicEngineUsed;
 
-    // Tracks the amount of indexed loop joins in a pushed down lookup stage.
-    int indexedLoopJoin{0};
+    // Has a value if this operation is an aggregation query. True if `DocumentSources` were
+    // involved in the execution tree for this query, false if they were not.
+    boost::optional<bool> documentSourceUsed;
 
-    // Tracks the amount of nested loop joins in a pushed down lookup stage.
-    int nestedLoopJoin{0};
-
-    // Tracks the amount of hash lookups in a pushed down lookup stage.
-    int hashLookup{0};
-
-    // Tracks the amount of spills by hash lookup in a pushed down lookup stage.
-    int hashLookupSpillToDisk{0};
+    // Indicates whether this operation used the common query framework (CQF).
+    bool cqfUsed{false};
 
     // Details of any error (whether from an exception or a command returning failure).
     Status errInfo = Status::OK();
 
-    // Amount of time spent planning the query. Begins after parsing and ends
-    // after optimizations.
-    Microseconds planningTime{0};
-
     // response info
     Microseconds executionTime{0};
-
-    // Amount of CPU time used by this thread. Will remain zero if this platform does not support
-    // this feature.
-    Nanoseconds cpuTime{0};
-
     long long nreturned{-1};
     int responseLength{-1};
 
@@ -307,29 +287,6 @@ public:
 
     // Stores the duration of time spent blocked on prepare conflicts.
     Milliseconds prepareConflictDurationMillis{0};
-
-    // Total time spent looking up database entry in the local catalog cache, including eventual
-    // refreshes.
-    Milliseconds catalogCacheDatabaseLookupMillis{0};
-
-    // Total time spent looking up collection entry in the local catalog cache, including eventual
-    // refreshes.
-    Milliseconds catalogCacheCollectionLookupMillis{0};
-
-    // Total time spent looking up index entries in the local cache, including eventual refreshes.
-    Milliseconds catalogCacheIndexLookupMillis{0};
-
-    // Stores the duration of time spent waiting for the shard to refresh the database and wait for
-    // the database critical section.
-    Milliseconds databaseVersionRefreshMillis{0};
-
-    // Stores the duration of time spent waiting for the shard to refresh the collection and wait
-    // for the collection critical section.
-    Milliseconds placementVersionRefreshMillis{0};
-
-    // Stores the duration of time spent waiting for the specified user write concern to
-    // be fulfilled.
-    Milliseconds waitForWriteConcernDurationMillis{0};
 
     // Stores the amount of the data processed by the throttle cursors in MB/sec.
     boost::optional<float> dataThroughputLastSecond;
@@ -342,7 +299,7 @@ public:
     AdditiveMetrics additiveMetrics;
 
     // Stores storage statistics.
-    std::unique_ptr<StorageStats> storageStats;
+    std::shared_ptr<StorageStats> storageStats;
 
     bool waitingForFlowControl{false};
 
@@ -401,8 +358,6 @@ public:
                                          bool backtraceMode,
                                          BSONObjBuilder* infoBuilder);
 
-    static bool currentOpBelongsToTenant(Client* client, TenantId tenantId);
-
     /**
      * Serializes the fields of a GenericCursor which do not appear elsewhere in the currentOp
      * output. If 'maxQuerySize' is given, truncates the cursor's originatingCommand but preserves
@@ -412,19 +367,9 @@ public:
                                                      boost::optional<size_t> maxQuerySize);
 
     /**
-     * Pushes this CurOp to the top of the given "opCtx"'s CurOp stack.
+     * Constructs a nested CurOp at the top of the given "opCtx"'s CurOp stack.
      */
-    void push(OperationContext* opCtx);
-
-    CurOp() = default;
-
-    /**
-     * This allows the caller to set the command on the CurOp without using setCommand_inlock and
-     * having to acquire the Client lock or having to leave a comment indicating why the
-     * client lock isn't necessary.
-     */
-    explicit CurOp(const Command* command) : _command{command} {}
-
+    explicit CurOp(OperationContext* opCtx);
     ~CurOp();
 
     /**
@@ -433,7 +378,8 @@ public:
      * is set early in the request processing backend and does not typically need to be called
      * thereafter. Locks the client as needed to apply the specified settings.
      */
-    void setGenericOpRequestDetails(NamespaceString nss,
+    void setGenericOpRequestDetails(OperationContext* opCtx,
+                                    const NamespaceString& nss,
                                     const Command* command,
                                     BSONObj cmdObj,
                                     NetworkOp op);
@@ -444,8 +390,8 @@ public:
      * to file under the given LogComponent. Returns 'true' if, in addition to being logged, this
      * operation should also be profiled.
      */
-    bool completeAndLogOperation(logv2::LogComponent logComponent,
-                                 std::shared_ptr<const ProfileFilter> filter,
+    bool completeAndLogOperation(OperationContext* opCtx,
+                                 logv2::LogComponent logComponent,
                                  boost::optional<size_t> responseLength = boost::none,
                                  boost::optional<long long> slowMsOverride = boost::none,
                                  bool forceLog = false);
@@ -470,8 +416,7 @@ public:
         return _originatingCommand;
     }
 
-    void enter_inlock(NamespaceString nss, int dbProfileLevel);
-    void enter_inlock(const DatabaseName& dbName, int dbProfileLevel);
+    void enter_inlock(const char* ns, int dbProfileLevel);
 
     /**
      * Sets the type of the current network operation.
@@ -507,7 +452,9 @@ public:
     /**
      * Gets the name of the namespace on which the current operation operates.
      */
-    std::string getNS() const;
+    std::string getNS() const {
+        return _ns;
+    }
 
     /**
      * Returns a const pointer to the UserAcquisitionStats for the current operation.
@@ -528,7 +475,7 @@ public:
      * Gets the name of the namespace on which the current operation operates.
      */
     NamespaceString getNSS() const {
-        return _nss;
+        return NamespaceString{_ns};
     }
 
     /**
@@ -538,7 +485,7 @@ public:
      *
      * When a custom filter is set, we conservatively assume it would match this operation.
      */
-    bool shouldDBProfile() {
+    bool shouldDBProfile(OperationContext* opCtx) {
         // Profile level 2 should override any sample rate or slowms settings.
         if (_dbprofile >= 2)
             return true;
@@ -546,10 +493,10 @@ public:
         if (_dbprofile <= 0)
             return false;
 
-        if (CollectionCatalog::get(opCtx())->getDatabaseProfileSettings(getNSS().db()).filter)
+        if (CollectionCatalog::get(opCtx)->getDatabaseProfileSettings(getNSS().db()).filter)
             return true;
 
-        return elapsedTimeExcludingPauses() >= Milliseconds{serverGlobalParams.slowMS.load()};
+        return elapsedTimeExcludingPauses() >= Milliseconds{serverGlobalParams.slowMS};
     }
 
     /**
@@ -593,7 +540,7 @@ public:
     //
 
     void ensureStarted() {
-        (void)startTime();
+        static_cast<void>(startTime());
     }
     bool isStarted() const {
         return _start.load() != 0;
@@ -637,12 +584,12 @@ public:
      * This method is separate from startRemoteOpWait because operation types that do record
      * remoteOpWait, such as a getMore of a sharded aggregation, should always include the
      * remoteOpWait field even if its value is zero. An operation should call
-     * ensureRecordRemoteOpWait() to declare that it wants to report remoteOpWait, and call
+     * enableRecordRemoteOpWait() to declare that it wants to report remoteOpWait, and call
      * startRemoteOpWaitTimer()/stopRemoteOpWaitTimer() to measure the time.
      *
      * This timer uses the same clock source as elapsedTimeTotal().
      */
-    void ensureRecordRemoteOpWait() {
+    void enableRecordRemoteOpWait() {
         if (!_debug.remoteOpWaitTime) {
             _debug.remoteOpWaitTime.emplace(0);
         }
@@ -651,15 +598,10 @@ public:
     /**
      * Starts the remoteOpWait timer.
      *
-     * Does nothing if ensureRecordRemoteOpWait() was not called or the current operation was not
-     * marked as started.
+     * Does nothing if enableRecordRemoteOpWait() was not called.
      */
     void startRemoteOpWaitTimer() {
-        // There are some commands that send remote operations but do not mark the current operation
-        // as started. We do not record remote op wait time for those commands.
-        if (!isStarted()) {
-            return;
-        }
+        invariant(isStarted());
         invariant(!isDone());
         invariant(!isPaused());
         invariant(!_remoteOpStartTime);
@@ -671,15 +613,10 @@ public:
     /**
      * Stops the remoteOpWait timer.
      *
-     * Does nothing if ensureRecordRemoteOpWait() was not called or the current operation was not
-     * marked as started.
+     * Does nothing if enableRecordRemoteOpWait() was not called.
      */
     void stopRemoteOpWaitTimer() {
-        // There are some commands that send remote operations but do not mark the current operation
-        // as started. We do not record remote op wait time for those commands.
-        if (!isStarted()) {
-            return;
-        }
+        invariant(isStarted());
         invariant(!isDone());
         invariant(!isPaused());
         if (_debug.remoteOpWaitTime) {
@@ -731,69 +668,14 @@ public:
 
         return computeElapsedTimeTotal(start, _end.load()) - _totalPausedDuration;
     }
-    /**
-    * The planningTimeMicros metric, reported in the system profiler and in telemetry, is measured
-    * using the Curop instance's _tickSource. Currently, _tickSource is only paused in places where
-    logical work is being done. If this were to change, and _tickSource
-    were to be paused during query planning for reasons unrelated to the work of
-    planning/optimization, it would break the planning time measurement below.
-    *
-    */
-    void beginQueryPlanningTimer() {
-        // This is an inner executor/cursor, the metrics for which don't get tracked by
-        // OpDebug::planningTime.
-        if (_queryPlanningStart.load() != 0) {
-            return;
-        }
-        _queryPlanningStart = _tickSource->getTicks();
-    }
-
-    void stopQueryPlanningTimer() {
-        // The planningTime metric is defined as being done once PrepareExecutionHelper::prepare()
-        // is hit, which calls this function to stop the timer. As certain queries like $lookup
-        // require inner cursors/executors that will follow this same codepath, it is important to
-        // make sure the metric exclusively captures the time associated with the outermost cursor.
-        // This is done by making sure planningTime has not already been set and that start has been
-        // marked (as inner executors are prepared outside of the codepath that begins the planning
-        // timer).
-        auto start = _queryPlanningStart.load();
-        if (debug().planningTime == Microseconds{0} && start != 0) {
-            _queryPlanningEnd = _tickSource->getTicks();
-            debug().planningTime = computeElapsedTimeTotal(start, _queryPlanningEnd.load());
-        }
-    }
-
-    /**
-     * Starts the waitForWriteConcern timer.
-     *
-     * The timer must be ended before it can be started again.
-     */
-    void beginWaitForWriteConcernTimer() {
-        invariant(_waitForWriteConcernStart.load() == 0);
-        _waitForWriteConcernStart = _tickSource->getTicks();
-        _waitForWriteConcernEnd = 0;
-    }
-
-    /**
-     * Stops the waitForWriteConcern timer.
-     *
-     * Does nothing if the timer has not been started.
-     */
-    void stopWaitForWriteConcernTimer() {
-        auto start = _waitForWriteConcernStart.load();
-        if (start != 0) {
-            _waitForWriteConcernEnd = _tickSource->getTicks();
-            debug().waitForWriteConcernDurationMillis += duration_cast<Milliseconds>(
-                computeElapsedTimeTotal(start, _waitForWriteConcernEnd.load()));
-            _waitForWriteConcernStart = 0;
-        }
-    }
 
     /**
      * 'opDescription' must be either an owned BSONObj or guaranteed to outlive the OperationContext
      * it is associated with.
      */
-    void setOpDescription_inlock(const BSONObj& opDescription);
+    void setOpDescription_inlock(const BSONObj& opDescription) {
+        _opDescription = opDescription;
+    }
 
     /**
      * Sets the original command object.
@@ -822,7 +704,7 @@ public:
      * If called from a thread other than the one executing the operation associated with this
      * CurOp, it is necessary to lock the associated Client object before executing this method.
      */
-    void reportState(BSONObjBuilder* builder, bool truncateOps = false);
+    void reportState(OperationContext* opCtx, BSONObjBuilder* builder, bool truncateOps = false);
 
     /**
      * Sets the message for FailPoints used.
@@ -839,8 +721,9 @@ public:
     /**
      * Sets the message and the progress meter for this CurOp.
      *
-     * Accessors and modifiers of ProgressMeter associated with the CurOp must follow the same
-     * locking scheme as CurOp. It is necessary to hold the lock while this method executes.
+     * While it is necessary to hold the lock while this method executes, the
+     * "hit" and "finished" methods of ProgressMeter may be called safely from
+     * the thread executing the operation without locking the Client.
      */
     ProgressMeter& setProgress_inlock(StringData name,
                                       unsigned long long progressMeterTotal = 0,
@@ -886,8 +769,7 @@ public:
      * generally the Context should set this up
      * but sometimes you want to do it ahead of time
      */
-    void setNS_inlock(NamespaceString nss);
-    void setNS_inlock(const DatabaseName& dbName);
+    void setNS_inlock(StringData ns);
 
     StringData getPlanSummary() const {
         return _planSummary;
@@ -924,15 +806,14 @@ public:
 private:
     class CurOpStack;
 
-    /**
-     * Gets the OperationContext associated with this CurOp.
-     * This must only be called after the CurOp has been pushed to an OperationContext's CurOpStack.
-     */
-    OperationContext* opCtx();
-
     TickSource::Tick startTime();
     Microseconds computeElapsedTimeTotal(TickSource::Tick startTime,
                                          TickSource::Tick endTime) const;
+
+    /**
+     * Adds 'this' to the stack of active CurOp objects.
+     */
+    void _finishInit(OperationContext* opCtx, CurOpStack* stack);
 
     /**
      * Handles failpoints that check whether a command has completed or not.
@@ -942,14 +823,10 @@ private:
 
     static const OperationContext::Decoration<CurOpStack> _curopStack;
 
-    // The stack containing this CurOp instance.
-    // This is set when this instance is pushed to the stack.
-    CurOpStack* _stack{nullptr};
+    CurOp(OperationContext*, CurOpStack*);
 
-    // The CurOp beneath this CurOp instance in its stack, if any.
-    // This is set when this instance is pushed to a non-empty stack.
+    CurOpStack* _stack;
     CurOp* _parent{nullptr};
-
     const Command* _command{nullptr};
 
     // The time at which this CurOp instance was marked as started.
@@ -957,10 +834,6 @@ private:
 
     // The time at which this CurOp instance was marked as done or 0 if the CurOp is not yet done.
     std::atomic<TickSource::Tick> _end{0};  // NOLINT
-
-    // This CPU timer tracks the CPU time spent for this operation. Will be nullptr on unsupported
-    // platforms.
-    std::unique_ptr<OperationCPUTimer> _cpuTimer;
 
     // The time at which this CurOp instance had its timer paused, or 0 if the timer is not
     // currently paused.
@@ -982,7 +855,7 @@ private:
 
     bool _isCommand{false};
     int _dbprofile{0};  // 0=off, 1=slow, 2=all
-    NamespaceString _nss;
+    std::string _ns;
     BSONObj _opDescription;
     BSONObj _originatingCommand;  // Used by getMore to display original command.
     OpDebug _debug;
@@ -994,21 +867,12 @@ private:
     boost::optional<GenericCursor> _genericCursor;
 
     std::string _planSummary;
-
-    // The snapshot of lock stats taken when this CurOp instance is pushed to a
-    // CurOpStack.
-    boost::optional<SingleThreadedLockStats> _lockStatsBase;
+    boost::optional<SingleThreadedLockStats>
+        _lockStatsBase;  // This is the snapshot of lock stats taken when curOp is constructed.
 
     UserAcquisitionStats _userAcquisitionStats;
 
-    TickSource* _tickSource = globalSystemTickSource();
-    // These values are used to calculate the amount of time spent planning a query.
-    std::atomic<TickSource::Tick> _queryPlanningStart{0};  // NOLINT
-    std::atomic<TickSource::Tick> _queryPlanningEnd{0};    // NOLINT
-
-    // These values are used to calculate the amount of time spent waiting for write concern.
-    std::atomic<TickSource::Tick> _waitForWriteConcernStart{0};  // NOLINT
-    std::atomic<TickSource::Tick> _waitForWriteConcernEnd{0};    // NOLINT
+    TickSource* _tickSource = nullptr;
 };
 
 }  // namespace mongo

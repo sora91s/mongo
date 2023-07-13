@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -47,25 +48,20 @@
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/storage/storage_engine.h"
-#include "mongo/db/transaction/transaction_participant.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/logv2/log.h"
 #include "mongo/platform/mutex.h"
 #include "mongo/util/md5.hpp"
 #include "mongo/util/net/socket_utils.h"
 #include "mongo/util/timer.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 
 namespace {
 
-constexpr char SKIP_TEMP_COLLECTION[] = "skipTempCollections";
-
-class DBHashCmd : public BasicCommand {
+class DBHashCmd : public ErrmsgCommandDeprecated {
 public:
-    DBHashCmd() : BasicCommand("dbHash", "dbhash") {}
+    DBHashCmd() : ErrmsgCommandDeprecated("dbHash", "dbhash") {}
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -108,22 +104,19 @@ public:
                 kDefaultReadConcernNotPermitted};
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(ResourcePattern::forDatabaseName(dbName.db()),
-                                                  ActionType::dbHash)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        ActionSet actions;
+        actions.addAction(ActionType::dbHash);
+        out->push_back(Privilege(ResourcePattern::forDatabaseName(dbname), actions));
     }
 
-    bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
+    virtual bool errmsgRun(OperationContext* opCtx,
+                           const std::string& dbname,
+                           const BSONObj& cmdObj,
+                           std::string& errmsg,
+                           BSONObjBuilder& result) {
         Timer timer;
 
         std::set<std::string> desiredCollections;
@@ -131,22 +124,15 @@ public:
             BSONObjIterator i(cmdObj["collections"].Obj());
             while (i.more()) {
                 BSONElement e = i.next();
-                uassert(ErrorCodes::BadValue,
-                        "collections entries have to be strings",
-                        e.type() == String);
+                if (e.type() != String) {
+                    errmsg = "collections entries have to be strings";
+                    return false;
+                }
                 desiredCollections.insert(e.String());
             }
         }
 
-        const bool skipTempCollections =
-            cmdObj.hasField(SKIP_TEMP_COLLECTION) && cmdObj[SKIP_TEMP_COLLECTION].trueValue();
-        if (skipTempCollections) {
-            LOGV2(6859700, "Skipping hash computation for temporary collections");
-        }
-
-        // For empty databasename on first command field, the following code depends on the "."
-        // on ns to find the invalid empty db name instead of checking empty db name directly.
-        const std::string ns = parseNs(dbName, cmdObj).ns();
+        const std::string ns = parseNs(dbname, cmdObj);
         uassert(ErrorCodes::InvalidNamespace,
                 str::stream() << "Invalid db name: " << ns,
                 NamespaceString::validDBName(ns, NamespaceString::DollarInDbNameBehavior::Allow));
@@ -233,8 +219,7 @@ public:
             // later commitTransaction or abortTransaction oplog entry.
             shouldNotConflictBlock.emplace(opCtx->lockState());
         }
-
-        AutoGetDb autoDb(opCtx, dbName, lockMode);
+        AutoGetDb autoDb(opCtx, ns, lockMode);
         Database* db = autoDb.getDb();
 
         result.append("host", prettyHostName());
@@ -246,64 +231,68 @@ public:
         std::map<std::string, UUID> collectionToUUIDMap;
         std::set<std::string> cappedCollectionSet;
 
-        catalog::forEachCollectionFromDb(opCtx, dbName, MODE_IS, [&](const Collection* collection) {
-            auto collNss = collection->ns();
+        bool noError = true;
+        const TenantDatabaseName tenantDbName(boost::none, dbname);
+        catalog::forEachCollectionFromDb(
+            opCtx, tenantDbName, MODE_IS, [&](const CollectionPtr& collection) {
+                auto collNss = collection->ns();
 
-            uassert(ErrorCodes::BadValue,
-                    str::stream() << "weird fullCollectionName [" << collNss.toString() << "]",
-                    collNss.size() - 1 > dbName.db().size());
+                if (collNss.size() - 1 <= dbname.size()) {
+                    errmsg = str::stream()
+                        << "weird fullCollectionName [" << collNss.toString() << "]";
+                    noError = false;
+                    return false;
+                }
 
-            if (repl::ReplicationCoordinator::isOplogDisabledForNS(collNss)) {
+                if (repl::ReplicationCoordinator::isOplogDisabledForNS(collNss)) {
+                    return true;
+                }
+
+                if (collNss.coll().startsWith("tmp.mr.")) {
+                    // We skip any incremental map reduce collections as they also aren't
+                    // replicated.
+                    return true;
+                }
+
+                if (desiredCollections.size() > 0 &&
+                    desiredCollections.count(collNss.coll().toString()) == 0)
+                    return true;
+
+                // Don't include 'drop pending' collections.
+                if (collNss.isDropPendingNamespace())
+                    return true;
+
+                if (collection->isCapped()) {
+                    cappedCollectionSet.insert(collNss.coll().toString());
+                }
+
+                collectionToUUIDMap.emplace(collNss.coll().toString(), collection->uuid());
+
+                // Compute the hash for this collection.
+                std::string hash = _hashCollection(opCtx, db, collNss);
+
+                collectionToHashMap[collNss.coll().toString()] = hash;
+
                 return true;
-            }
-
-            if (collNss.coll().startsWith("tmp.mr.")) {
-                // We skip any incremental map reduce collections as they also aren't
-                // replicated.
-                return true;
-            }
-
-            if (skipTempCollections && collection->isTemporary()) {
-                return true;
-            }
-
-            if (desiredCollections.size() > 0 &&
-                desiredCollections.count(collNss.coll().toString()) == 0)
-                return true;
-
-            // Don't include 'drop pending' collections.
-            if (collNss.isDropPendingNamespace())
-                return true;
-
-            if (collection->isCapped()) {
-                cappedCollectionSet.insert(collNss.coll().toString());
-            }
-
-            collectionToUUIDMap.emplace(collNss.coll().toString(), collection->uuid());
-
-            // Compute the hash for this collection.
-            std::string hash = _hashCollection(opCtx, db, collNss);
-
-            collectionToHashMap[collNss.coll().toString()] = hash;
-
-            return true;
-        });
+            });
+        if (!noError)
+            return false;
 
         BSONObjBuilder bb(result.subobjStart("collections"));
         BSONArrayBuilder cappedCollections;
         BSONObjBuilder collectionsByUUID;
 
-        for (const auto& elem : cappedCollectionSet) {
+        for (auto elem : cappedCollectionSet) {
             cappedCollections.append(elem);
         }
 
-        for (const auto& entry : collectionToUUIDMap) {
+        for (auto entry : collectionToUUIDMap) {
             auto collName = entry.first;
             auto uuid = entry.second;
             uuid.appendToBuilder(&collectionsByUUID, collName);
         }
 
-        for (const auto& entry : collectionToHashMap) {
+        for (auto entry : collectionToHashMap) {
             auto collName = entry.first;
             auto hash = entry.second;
             bb.append(collName, hash);
@@ -322,14 +311,14 @@ public:
         result.append("md5", hash);
         result.appendNumber("timeMillis", timer.millis());
 
-        return true;
+        return 1;
     }
 
 private:
     std::string _hashCollection(OperationContext* opCtx, Database* db, const NamespaceString& nss) {
 
-        CollectionPtr collection(
-            CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss));
+        CollectionPtr collection =
+            CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
         invariant(collection);
 
         boost::optional<Lock::CollectionLock> collLock;
@@ -353,7 +342,7 @@ private:
                                   << minSnapshot->toString(),
                     !minSnapshot || *mySnapshot >= *minSnapshot);
         } else {
-            invariant(opCtx->lockState()->isDbLockedForMode(db->name(), MODE_S));
+            invariant(opCtx->lockState()->isDbLockedForMode(db->name().dbName(), MODE_S));
         }
 
         auto desc = collection->getIndexCatalog()->findIdIndex(opCtx);

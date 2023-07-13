@@ -6,19 +6,22 @@
  * @tags: [
  *   does_not_support_encrypted_storage_engine,
  *   featureFlagShardMerge,
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
+ *   requires_fcv_52,
+ *   requires_journaling,
  *   requires_replication,
  *   requires_persistence,
  *   requires_wiredtiger,
  *   serverless,
  * ]
  */
-
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {isShardMergeEnabled} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 load("jstests/libs/fail_point_util.js");
 
 const migrationId = UUID();
@@ -26,23 +29,27 @@ const tenantMigrationTest = new TenantMigrationTest({name: jsTestName()});
 const donorPrimary = tenantMigrationTest.getDonorPrimary();
 const recipientPrimary = tenantMigrationTest.getRecipientPrimary();
 
-if (!isShardMergeEnabled(recipientPrimary.getDB("admin"))) {
+if (!TenantMigrationUtil.isShardMergeEnabled(recipientPrimary.getDB("admin"))) {
     tenantMigrationTest.stop();
     jsTestLog("Skipping Shard Merge-specific test");
-    quit();
+    return;
+}
+
+if (TenantMigrationUtil.isShardMergeEnabled(recipientPrimary.getDB("admin"))) {
+    // TODO SERVER-63789: Re-enable this test for Shard Merge
+    tenantMigrationTest.stop();
+    jsTestLog("Temporarily skipping Shard Merge test, dependent on SERVER-63789.");
+    return;
 }
 
 const kDataDir =
     `${recipientPrimary.dbpath}/migrationTmpFiles.${extractUUIDFromObject(migrationId)}`;
 assert.eq(runNonMongoProgram("mkdir", "-p", kDataDir), 0);
 
-const tenantId = ObjectId();
-const dbName = `${tenantId.str}_myDatabase`;
-
 (function() {
 jsTestLog("Generate test data");
 
-const db = donorPrimary.getDB(dbName);
+const db = donorPrimary.getDB("myDatabase");
 const collection = db["myCollection"];
 const capped = db["myCappedCollection"];
 assert.commandWorked(db.createCollection("myCappedCollection", {capped: true, size: 100}));
@@ -62,28 +69,31 @@ configureFailPoint(
     recipientPrimary, "WTWriteConflictExceptionForImportCollection", {} /* data */, {times: 1});
 configureFailPoint(
     recipientPrimary, "WTWriteConflictExceptionForImportIndex", {} /* data */, {times: 1});
+configureFailPoint(recipientPrimary, "skipDeleteTempDBPath");
 
 jsTestLog("Run migration");
 // The old multitenant migrations won't copy myDatabase since it doesn't start with testTenantId,
 // but shard merge copies everything so we still expect myDatabase on the recipient, below.
+const kTenantId = "testTenantId";
 const migrationOpts = {
     migrationIdString: extractUUIDFromObject(migrationId),
-    tenantIds: [tenantId]
+    tenantId: kTenantId,
 };
 TenantMigrationTest.assertCommitted(
     tenantMigrationTest.runMigration(migrationOpts, {enableDonorStartMigrationFsync: true}));
 
 tenantMigrationTest.getRecipientRst().nodes.forEach(node => {
     for (let collectionName of ["myCollection", "myCappedCollection"]) {
-        jsTestLog(`Checking ${dbName}.${collectionName} on ${node}`);
+        jsTestLog(`Checking ${collectionName}`);
         // Use "countDocuments" to check actual docs, "count" to check sizeStorer data.
-        assert.eq(donorPrimary.getDB(dbName)[collectionName].countDocuments({}),
-                  node.getDB(dbName)[collectionName].countDocuments({}),
+        assert.eq(donorPrimary.getDB("myDatabase")[collectionName].countDocuments({}),
+                  recipientPrimary.getDB("myDatabase")[collectionName].countDocuments({}),
                   "countDocuments");
-        assert.eq(donorPrimary.getDB(dbName)[collectionName].count(),
-                  node.getDB(dbName)[collectionName].count(),
+        assert.eq(donorPrimary.getDB("myDatabase")[collectionName].count(),
+                  recipientPrimary.getDB("myDatabase")[collectionName].count(),
                   "count");
     }
 });
 
 tenantMigrationTest.stop();
+})();

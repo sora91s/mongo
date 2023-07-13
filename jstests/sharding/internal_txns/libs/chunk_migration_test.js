@@ -27,14 +27,13 @@ function InternalTransactionChunkMigrationTest(storeFindAndModifyImagesInSideCol
         rs: {nodes: 2},
         rsOptions: {
             oplogSize: 256,
-            setParameter: {
-                storeFindAndModifyImagesInSideCollection: storeFindAndModifyImagesInSideCollection,
-                maxNumberOfTransactionOperationsInSingleOplogEntry: 1
-            }
+            setParameter:
+                {storeFindAndModifyImagesInSideCollection: storeFindAndModifyImagesInSideCollection}
         }
     });
     let staticMongod = MongoRunner.runMongod({});
 
+    const kSize10MB = 10 * 1024 * 1024;
     const kInternalTxnType = {kRetryable: 1, kNonRetryable: 2};
     const kImageType = {kPreImage: 1, kPostImage: 2};
 
@@ -279,8 +278,9 @@ function InternalTransactionChunkMigrationTest(storeFindAndModifyImagesInSideCol
             const numLargeDocs = 2;
             for (let i = 0; i < numLargeDocs; i++) {
                 const docToInsert = {
-                    insert: i.toString(),
+                    insert10MB: i.toString() + new Array(kSize10MB).join("x"),
                     shardKey: -testId,
+
                 };
                 testCase.commands.push({
                     // Use stmtId -1 to get test coverage for "applyOps" entries without a stmtId.

@@ -41,7 +41,6 @@
 #include "mongo/db/matcher/match_details.h"
 #include "mongo/db/matcher/matchable.h"
 #include "mongo/db/pipeline/dependencies.h"
-#include "mongo/db/query/serialization_options.h"
 #include "mongo/util/fail_point.h"
 
 namespace mongo {
@@ -140,7 +139,6 @@ public:
         INTERNAL_SCHEMA_TYPE,
         INTERNAL_SCHEMA_UNIQUE_ITEMS,
         INTERNAL_SCHEMA_XOR,
-
     };
 
     /**
@@ -378,7 +376,7 @@ public:
     /**
      * Get the path of the leaf.  Returns StringData() if there is no path (node is logical).
      */
-    virtual StringData path() const {
+    virtual const StringData path() const {
         return StringData();
     }
     /**
@@ -474,27 +472,24 @@ public:
     void setCollator(const CollatorInterface* collator);
 
     /**
-     * Serialize the MatchExpression to BSON, appending to 'out'.
-     *
-     * See 'SerializationOptions' for some options.
-     *
-     * Generally, the output of this method is expected to be a valid query object that, when
-     * parsed, produces a logically equivalent MatchExpression. However, if special options are set,
-     * this no longer holds.
-     *
-     * If 'options.replacementForLiteralArgs' is set, the result is no longer expected to re-parse,
-     * since we will put strings in places where strings may not be accpeted syntactically (e.g. a
-     * number is always expected, as in with the $mod expression).
+     * Add the fields required for matching to 'deps'.
      */
-    virtual void serialize(BSONObjBuilder* out, SerializationOptions options) const = 0;
+    void addDependencies(DepsTracker* deps) const;
 
     /**
-     * Convenience method which serializes this MatchExpression to a BSONObj. See the override with
-     * a BSONObjBuilder* argument for details.
+     * Serialize the MatchExpression to BSON, appending to 'out'. Output of this method is expected
+     * to be a valid query object, that, when parsed, produces a logically equivalent
+     * MatchExpression. If 'includePath' is false then the serialization should assume it's in a
+     * context where the path has been serialized elsewhere, such as within an $elemMatch value.
      */
-    BSONObj serialize(SerializationOptions options = {}) const {
+    virtual void serialize(BSONObjBuilder* out, bool includePath = true) const = 0;
+
+    /**
+     * Convenience method which serializes this MatchExpression to a BSONObj.
+     */
+    BSONObj serialize(bool includePath = true) const {
         BSONObjBuilder bob;
-        serialize(&bob, options);
+        serialize(&bob, includePath);
         return bob.obj();
     }
 
@@ -567,6 +562,8 @@ protected:
      * to the collator that occur after initialization time.
      */
     virtual void _doSetCollator(const CollatorInterface* collator){};
+
+    virtual void _doAddDependencies(DepsTracker* deps) const {}
 
     void _debugAddSpace(StringBuilder& debug, int indentationLevel) const;
 

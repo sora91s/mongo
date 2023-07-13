@@ -2,7 +2,7 @@
 // impl/write.hpp
 // ~~~~~~~~~~~~~~
 //
-// Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2021 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -15,11 +15,11 @@
 # pragma once
 #endif // defined(_MSC_VER) && (_MSC_VER >= 1200)
 
-#include <boost/asio/associator.hpp>
+#include <boost/asio/associated_allocator.hpp>
+#include <boost/asio/associated_executor.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/completion_condition.hpp>
 #include <boost/asio/detail/array_fwd.hpp>
-#include <boost/asio/detail/base_from_cancellation_state.hpp>
 #include <boost/asio/detail/base_from_completion_cond.hpp>
 #include <boost/asio/detail/bind_handler.hpp>
 #include <boost/asio/detail/consuming_buffers.hpp>
@@ -289,15 +289,13 @@ namespace detail
       typename ConstBufferIterator, typename CompletionCondition,
       typename WriteHandler>
   class write_op
-    : public base_from_cancellation_state<WriteHandler>,
-      base_from_completion_cond<CompletionCondition>
+    : detail::base_from_completion_cond<CompletionCondition>
   {
   public:
     write_op(AsyncWriteStream& stream, const ConstBufferSequence& buffers,
         CompletionCondition& completion_condition, WriteHandler& handler)
-      : base_from_cancellation_state<WriteHandler>(
-          handler, enable_partial_cancellation()),
-        base_from_completion_cond<CompletionCondition>(completion_condition),
+      : detail::base_from_completion_cond<
+          CompletionCondition>(completion_condition),
         stream_(stream),
         buffers_(buffers),
         start_(0),
@@ -307,8 +305,7 @@ namespace detail
 
 #if defined(BOOST_ASIO_HAS_MOVE)
     write_op(const write_op& other)
-      : base_from_cancellation_state<WriteHandler>(other),
-        base_from_completion_cond<CompletionCondition>(other),
+      : detail::base_from_completion_cond<CompletionCondition>(other),
         stream_(other.stream_),
         buffers_(other.buffers_),
         start_(other.start_),
@@ -317,11 +314,8 @@ namespace detail
     }
 
     write_op(write_op&& other)
-      : base_from_cancellation_state<WriteHandler>(
-          BOOST_ASIO_MOVE_CAST(base_from_cancellation_state<
-            WriteHandler>)(other)),
-        base_from_completion_cond<CompletionCondition>(
-          BOOST_ASIO_MOVE_CAST(base_from_completion_cond<
+      : detail::base_from_completion_cond<CompletionCondition>(
+          BOOST_ASIO_MOVE_CAST(detail::base_from_completion_cond<
             CompletionCondition>)(other)),
         stream_(other.stream_),
         buffers_(BOOST_ASIO_MOVE_CAST(buffers_type)(other.buffers_)),
@@ -331,7 +325,7 @@ namespace detail
     }
 #endif // defined(BOOST_ASIO_HAS_MOVE)
 
-    void operator()(boost::system::error_code ec,
+    void operator()(const boost::system::error_code& ec,
         std::size_t bytes_transferred, int start = 0)
     {
       std::size_t max_size;
@@ -339,7 +333,7 @@ namespace detail
       {
         case 1:
         max_size = this->check_for_completion(ec, buffers_.total_consumed());
-        for (;;)
+        do
         {
           {
             BOOST_ASIO_HANDLER_LOCATION((__FILE__, __LINE__, "async_write"));
@@ -351,18 +345,9 @@ namespace detail
           if ((!ec && bytes_transferred == 0) || buffers_.empty())
             break;
           max_size = this->check_for_completion(ec, buffers_.total_consumed());
-          if (max_size == 0)
-            break;
-          if (this->cancelled() != cancellation_type::none)
-          {
-            ec = error::operation_aborted;
-            break;
-          }
-        }
+        } while (max_size > 0);
 
-        BOOST_ASIO_MOVE_OR_LVALUE(WriteHandler)(handler_)(
-            static_cast<const boost::system::error_code&>(ec),
-            static_cast<const std::size_t&>(buffers_.total_consumed()));
+        handler_(ec, buffers_.total_consumed());
       }
     }
 
@@ -503,22 +488,42 @@ namespace detail
 
 #if !defined(GENERATING_DOCUMENTATION)
 
-template <template <typename, typename> class Associator,
-    typename AsyncWriteStream, typename ConstBufferSequence,
+template <typename AsyncWriteStream, typename ConstBufferSequence,
     typename ConstBufferIterator, typename CompletionCondition,
-    typename WriteHandler, typename DefaultCandidate>
-struct associator<Associator,
+    typename WriteHandler, typename Allocator>
+struct associated_allocator<
     detail::write_op<AsyncWriteStream, ConstBufferSequence,
       ConstBufferIterator, CompletionCondition, WriteHandler>,
-    DefaultCandidate>
-  : Associator<WriteHandler, DefaultCandidate>
+    Allocator>
 {
-  static typename Associator<WriteHandler, DefaultCandidate>::type get(
+  typedef typename associated_allocator<WriteHandler, Allocator>::type type;
+
+  static type get(
       const detail::write_op<AsyncWriteStream, ConstBufferSequence,
         ConstBufferIterator, CompletionCondition, WriteHandler>& h,
-      const DefaultCandidate& c = DefaultCandidate()) BOOST_ASIO_NOEXCEPT
+      const Allocator& a = Allocator()) BOOST_ASIO_NOEXCEPT
   {
-    return Associator<WriteHandler, DefaultCandidate>::get(h.handler_, c);
+    return associated_allocator<WriteHandler, Allocator>::get(h.handler_, a);
+  }
+};
+
+template <typename AsyncWriteStream, typename ConstBufferSequence,
+    typename ConstBufferIterator, typename CompletionCondition,
+    typename WriteHandler, typename Executor>
+struct associated_executor<
+    detail::write_op<AsyncWriteStream, ConstBufferSequence,
+      ConstBufferIterator, CompletionCondition, WriteHandler>,
+    Executor>
+  : detail::associated_executor_forwarding_base<WriteHandler, Executor>
+{
+  typedef typename associated_executor<WriteHandler, Executor>::type type;
+
+  static type get(
+      const detail::write_op<AsyncWriteStream, ConstBufferSequence,
+        ConstBufferIterator, CompletionCondition, WriteHandler>& h,
+      const Executor& ex = Executor()) BOOST_ASIO_NOEXCEPT
+  {
+    return associated_executor<WriteHandler, Executor>::get(h.handler_, ex);
   }
 };
 
@@ -527,38 +532,38 @@ struct associator<Associator,
 template <typename AsyncWriteStream,
     typename ConstBufferSequence, typename CompletionCondition,
     BOOST_ASIO_COMPLETION_TOKEN_FOR(void (boost::system::error_code,
-      std::size_t)) WriteToken>
-inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteToken,
+      std::size_t)) WriteHandler>
+inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteHandler,
     void (boost::system::error_code, std::size_t))
 async_write(AsyncWriteStream& s, const ConstBufferSequence& buffers,
     CompletionCondition completion_condition,
-    BOOST_ASIO_MOVE_ARG(WriteToken) token,
+    BOOST_ASIO_MOVE_ARG(WriteHandler) handler,
     typename constraint<
       is_const_buffer_sequence<ConstBufferSequence>::value
     >::type)
 {
-  return async_initiate<WriteToken,
+  return async_initiate<WriteHandler,
     void (boost::system::error_code, std::size_t)>(
       detail::initiate_async_write_buffer_sequence<AsyncWriteStream>(s),
-      token, buffers,
+      handler, buffers,
       BOOST_ASIO_MOVE_CAST(CompletionCondition)(completion_condition));
 }
 
 template <typename AsyncWriteStream, typename ConstBufferSequence,
     BOOST_ASIO_COMPLETION_TOKEN_FOR(void (boost::system::error_code,
-      std::size_t)) WriteToken>
-inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteToken,
+      std::size_t)) WriteHandler>
+inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteHandler,
     void (boost::system::error_code, std::size_t))
 async_write(AsyncWriteStream& s, const ConstBufferSequence& buffers,
-    BOOST_ASIO_MOVE_ARG(WriteToken) token,
+    BOOST_ASIO_MOVE_ARG(WriteHandler) handler,
     typename constraint<
       is_const_buffer_sequence<ConstBufferSequence>::value
     >::type)
 {
-  return async_initiate<WriteToken,
+  return async_initiate<WriteHandler,
     void (boost::system::error_code, std::size_t)>(
       detail::initiate_async_write_buffer_sequence<AsyncWriteStream>(s),
-      token, buffers, transfer_all());
+      handler, buffers, transfer_all());
 }
 
 #if !defined(BOOST_ASIO_NO_DYNAMIC_BUFFER_V1)
@@ -613,8 +618,7 @@ namespace detail
             BOOST_ASIO_MOVE_CAST(write_dynbuf_v1_op)(*this));
         return; default:
         buffers_.consume(bytes_transferred);
-        BOOST_ASIO_MOVE_OR_LVALUE(WriteHandler)(handler_)(ec,
-            static_cast<const std::size_t&>(bytes_transferred));
+        handler_(ec, static_cast<const std::size_t&>(bytes_transferred));
       }
     }
 
@@ -738,22 +742,40 @@ namespace detail
 
 #if !defined(GENERATING_DOCUMENTATION)
 
-template <template <typename, typename> class Associator,
-    typename AsyncWriteStream, typename DynamicBuffer_v1,
-    typename CompletionCondition, typename WriteHandler,
-    typename DefaultCandidate>
-struct associator<Associator,
+template <typename AsyncWriteStream, typename DynamicBuffer_v1,
+    typename CompletionCondition, typename WriteHandler, typename Allocator>
+struct associated_allocator<
     detail::write_dynbuf_v1_op<AsyncWriteStream,
       DynamicBuffer_v1, CompletionCondition, WriteHandler>,
-    DefaultCandidate>
-  : Associator<WriteHandler, DefaultCandidate>
+    Allocator>
 {
-  static typename Associator<WriteHandler, DefaultCandidate>::type get(
+  typedef typename associated_allocator<WriteHandler, Allocator>::type type;
+
+  static type get(
       const detail::write_dynbuf_v1_op<AsyncWriteStream,
         DynamicBuffer_v1, CompletionCondition, WriteHandler>& h,
-      const DefaultCandidate& c = DefaultCandidate()) BOOST_ASIO_NOEXCEPT
+      const Allocator& a = Allocator()) BOOST_ASIO_NOEXCEPT
   {
-    return Associator<WriteHandler, DefaultCandidate>::get(h.handler_, c);
+    return associated_allocator<WriteHandler, Allocator>::get(h.handler_, a);
+  }
+};
+
+template <typename AsyncWriteStream, typename DynamicBuffer_v1,
+    typename CompletionCondition, typename WriteHandler, typename Executor>
+struct associated_executor<
+    detail::write_dynbuf_v1_op<AsyncWriteStream,
+      DynamicBuffer_v1, CompletionCondition, WriteHandler>,
+    Executor>
+  : detail::associated_executor_forwarding_base<WriteHandler, Executor>
+{
+  typedef typename associated_executor<WriteHandler, Executor>::type type;
+
+  static type get(
+      const detail::write_dynbuf_v1_op<AsyncWriteStream,
+        DynamicBuffer_v1, CompletionCondition, WriteHandler>& h,
+      const Executor& ex = Executor()) BOOST_ASIO_NOEXCEPT
+  {
+    return associated_executor<WriteHandler, Executor>::get(h.handler_, ex);
   }
 };
 
@@ -761,12 +783,12 @@ struct associator<Associator,
 
 template <typename AsyncWriteStream, typename DynamicBuffer_v1,
     BOOST_ASIO_COMPLETION_TOKEN_FOR(void (boost::system::error_code,
-      std::size_t)) WriteToken>
-inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteToken,
+      std::size_t)) WriteHandler>
+inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteHandler,
     void (boost::system::error_code, std::size_t))
 async_write(AsyncWriteStream& s,
     BOOST_ASIO_MOVE_ARG(DynamicBuffer_v1) buffers,
-    BOOST_ASIO_MOVE_ARG(WriteToken) token,
+    BOOST_ASIO_MOVE_ARG(WriteHandler) handler,
     typename constraint<
       is_dynamic_buffer_v1<typename decay<DynamicBuffer_v1>::type>::value
     >::type,
@@ -776,19 +798,19 @@ async_write(AsyncWriteStream& s,
 {
   return async_write(s,
       BOOST_ASIO_MOVE_CAST(DynamicBuffer_v1)(buffers),
-      transfer_all(), BOOST_ASIO_MOVE_CAST(WriteToken)(token));
+      transfer_all(), BOOST_ASIO_MOVE_CAST(WriteHandler)(handler));
 }
 
 template <typename AsyncWriteStream,
     typename DynamicBuffer_v1, typename CompletionCondition,
     BOOST_ASIO_COMPLETION_TOKEN_FOR(void (boost::system::error_code,
-      std::size_t)) WriteToken>
-inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteToken,
+      std::size_t)) WriteHandler>
+inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteHandler,
     void (boost::system::error_code, std::size_t))
 async_write(AsyncWriteStream& s,
     BOOST_ASIO_MOVE_ARG(DynamicBuffer_v1) buffers,
     CompletionCondition completion_condition,
-    BOOST_ASIO_MOVE_ARG(WriteToken) token,
+    BOOST_ASIO_MOVE_ARG(WriteHandler) handler,
     typename constraint<
       is_dynamic_buffer_v1<typename decay<DynamicBuffer_v1>::type>::value
     >::type,
@@ -796,10 +818,10 @@ async_write(AsyncWriteStream& s,
       !is_dynamic_buffer_v2<typename decay<DynamicBuffer_v1>::type>::value
     >::type)
 {
-  return async_initiate<WriteToken,
+  return async_initiate<WriteHandler,
     void (boost::system::error_code, std::size_t)>(
       detail::initiate_async_write_dynbuf_v1<AsyncWriteStream>(s),
-      token, BOOST_ASIO_MOVE_CAST(DynamicBuffer_v1)(buffers),
+      handler, BOOST_ASIO_MOVE_CAST(DynamicBuffer_v1)(buffers),
       BOOST_ASIO_MOVE_CAST(CompletionCondition)(completion_condition));
 }
 
@@ -808,31 +830,31 @@ async_write(AsyncWriteStream& s,
 
 template <typename AsyncWriteStream, typename Allocator,
     BOOST_ASIO_COMPLETION_TOKEN_FOR(void (boost::system::error_code,
-      std::size_t)) WriteToken>
-inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteToken,
+      std::size_t)) WriteHandler>
+inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteHandler,
     void (boost::system::error_code, std::size_t))
 async_write(AsyncWriteStream& s,
     boost::asio::basic_streambuf<Allocator>& b,
-    BOOST_ASIO_MOVE_ARG(WriteToken) token)
+    BOOST_ASIO_MOVE_ARG(WriteHandler) handler)
 {
   return async_write(s, basic_streambuf_ref<Allocator>(b),
-      BOOST_ASIO_MOVE_CAST(WriteToken)(token));
+      BOOST_ASIO_MOVE_CAST(WriteHandler)(handler));
 }
 
 template <typename AsyncWriteStream,
     typename Allocator, typename CompletionCondition,
     BOOST_ASIO_COMPLETION_TOKEN_FOR(void (boost::system::error_code,
-      std::size_t)) WriteToken>
-inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteToken,
+      std::size_t)) WriteHandler>
+inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteHandler,
     void (boost::system::error_code, std::size_t))
 async_write(AsyncWriteStream& s,
     boost::asio::basic_streambuf<Allocator>& b,
     CompletionCondition completion_condition,
-    BOOST_ASIO_MOVE_ARG(WriteToken) token)
+    BOOST_ASIO_MOVE_ARG(WriteHandler) handler)
 {
   return async_write(s, basic_streambuf_ref<Allocator>(b),
       BOOST_ASIO_MOVE_CAST(CompletionCondition)(completion_condition),
-      BOOST_ASIO_MOVE_CAST(WriteToken)(token));
+      BOOST_ASIO_MOVE_CAST(WriteHandler)(handler));
 }
 
 #endif // !defined(BOOST_ASIO_NO_IOSTREAM)
@@ -889,8 +911,7 @@ namespace detail
             BOOST_ASIO_MOVE_CAST(write_dynbuf_v2_op)(*this));
         return; default:
         buffers_.consume(bytes_transferred);
-        BOOST_ASIO_MOVE_OR_LVALUE(WriteHandler)(handler_)(ec,
-            static_cast<const std::size_t&>(bytes_transferred));
+        handler_(ec, static_cast<const std::size_t&>(bytes_transferred));
       }
     }
 
@@ -1014,45 +1035,40 @@ namespace detail
 
 #if !defined(GENERATING_DOCUMENTATION)
 
-template <template <typename, typename> class Associator,
-    typename AsyncWriteStream, typename DynamicBuffer_v2,
-    typename CompletionCondition, typename WriteHandler,
-    typename DefaultCandidate>
-struct associator<Associator,
-    detail::write_dynbuf_v2_op<AsyncWriteStream,
-      DynamicBuffer_v2, CompletionCondition, WriteHandler>,
-    DefaultCandidate>
-  : Associator<WriteHandler, DefaultCandidate>
-{
-  static typename Associator<WriteHandler, DefaultCandidate>::type get(
-      const detail::write_dynbuf_v2_op<AsyncWriteStream,
-        DynamicBuffer_v2, CompletionCondition, WriteHandler>& h,
-      const DefaultCandidate& c = DefaultCandidate()) BOOST_ASIO_NOEXCEPT
-  {
-    return Associator<WriteHandler, DefaultCandidate>::get(h.handler_, c);
-  }
-};
-
 template <typename AsyncWriteStream, typename DynamicBuffer_v2,
-    typename CompletionCondition, typename WriteHandler,
-    typename CancellationSlot>
-struct associated_cancellation_slot<
+    typename CompletionCondition, typename WriteHandler, typename Allocator>
+struct associated_allocator<
     detail::write_dynbuf_v2_op<AsyncWriteStream,
       DynamicBuffer_v2, CompletionCondition, WriteHandler>,
-    CancellationSlot>
-  : detail::associated_cancellation_slot_forwarding_base<
-      WriteHandler, CancellationSlot>
+    Allocator>
 {
-  typedef typename associated_cancellation_slot<
-      WriteHandler, CancellationSlot>::type type;
+  typedef typename associated_allocator<WriteHandler, Allocator>::type type;
 
   static type get(
       const detail::write_dynbuf_v2_op<AsyncWriteStream,
         DynamicBuffer_v2, CompletionCondition, WriteHandler>& h,
-      const CancellationSlot& s = CancellationSlot()) BOOST_ASIO_NOEXCEPT
+      const Allocator& a = Allocator()) BOOST_ASIO_NOEXCEPT
   {
-    return associated_cancellation_slot<WriteHandler,
-        CancellationSlot>::get(h.handler_, s);
+    return associated_allocator<WriteHandler, Allocator>::get(h.handler_, a);
+  }
+};
+
+template <typename AsyncWriteStream, typename DynamicBuffer_v2,
+    typename CompletionCondition, typename WriteHandler, typename Executor>
+struct associated_executor<
+    detail::write_dynbuf_v2_op<AsyncWriteStream,
+      DynamicBuffer_v2, CompletionCondition, WriteHandler>,
+    Executor>
+  : detail::associated_executor_forwarding_base<WriteHandler, Executor>
+{
+  typedef typename associated_executor<WriteHandler, Executor>::type type;
+
+  static type get(
+      const detail::write_dynbuf_v2_op<AsyncWriteStream,
+        DynamicBuffer_v2, CompletionCondition, WriteHandler>& h,
+      const Executor& ex = Executor()) BOOST_ASIO_NOEXCEPT
+  {
+    return associated_executor<WriteHandler, Executor>::get(h.handler_, ex);
   }
 };
 
@@ -1060,37 +1076,37 @@ struct associated_cancellation_slot<
 
 template <typename AsyncWriteStream, typename DynamicBuffer_v2,
     BOOST_ASIO_COMPLETION_TOKEN_FOR(void (boost::system::error_code,
-      std::size_t)) WriteToken>
-inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteToken,
+      std::size_t)) WriteHandler>
+inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteHandler,
     void (boost::system::error_code, std::size_t))
 async_write(AsyncWriteStream& s, DynamicBuffer_v2 buffers,
-    BOOST_ASIO_MOVE_ARG(WriteToken) token,
+    BOOST_ASIO_MOVE_ARG(WriteHandler) handler,
     typename constraint<
       is_dynamic_buffer_v2<DynamicBuffer_v2>::value
     >::type)
 {
   return async_write(s,
       BOOST_ASIO_MOVE_CAST(DynamicBuffer_v2)(buffers),
-      transfer_all(), BOOST_ASIO_MOVE_CAST(WriteToken)(token));
+      transfer_all(), BOOST_ASIO_MOVE_CAST(WriteHandler)(handler));
 }
 
 template <typename AsyncWriteStream,
     typename DynamicBuffer_v2, typename CompletionCondition,
     BOOST_ASIO_COMPLETION_TOKEN_FOR(void (boost::system::error_code,
-      std::size_t)) WriteToken>
-inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteToken,
+      std::size_t)) WriteHandler>
+inline BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(WriteHandler,
     void (boost::system::error_code, std::size_t))
 async_write(AsyncWriteStream& s, DynamicBuffer_v2 buffers,
     CompletionCondition completion_condition,
-    BOOST_ASIO_MOVE_ARG(WriteToken) token,
+    BOOST_ASIO_MOVE_ARG(WriteHandler) handler,
     typename constraint<
       is_dynamic_buffer_v2<DynamicBuffer_v2>::value
     >::type)
 {
-  return async_initiate<WriteToken,
+  return async_initiate<WriteHandler,
     void (boost::system::error_code, std::size_t)>(
       detail::initiate_async_write_dynbuf_v2<AsyncWriteStream>(s),
-      token, BOOST_ASIO_MOVE_CAST(DynamicBuffer_v2)(buffers),
+      handler, BOOST_ASIO_MOVE_CAST(DynamicBuffer_v2)(buffers),
       BOOST_ASIO_MOVE_CAST(CompletionCondition)(completion_condition));
 }
 

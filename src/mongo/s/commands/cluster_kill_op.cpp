@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -49,16 +50,13 @@
 #include "mongo/s/grid.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 namespace {
 
 class ClusterKillOpCommand : public KillOpCmdBase {
 public:
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& db,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
         BSONElement element = cmdObj.getField("op");
@@ -67,14 +65,14 @@ public:
         if (isKillingLocalOp(element)) {
             const unsigned int opId = KillOpCmdBase::parseOpId(cmdObj);
             killLocalOperation(opCtx, opId);
-            reportSuccessfulCompletion(opCtx, dbName, cmdObj);
+            reportSuccessfulCompletion(opCtx, db, cmdObj);
 
             // killOp always reports success once past the auth check.
             return true;
         } else if (element.type() == BSONType::String) {
             // It's a string. Should be of the form shardid:opid.
             if (_killShardOperation(opCtx, element.str(), result)) {
-                reportSuccessfulCompletion(opCtx, dbName, cmdObj);
+                reportSuccessfulCompletion(opCtx, db, cmdObj);
                 return true;
             } else {
                 return false;

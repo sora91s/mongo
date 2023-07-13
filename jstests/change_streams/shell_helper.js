@@ -74,7 +74,7 @@ resumeToken = change._id;
 delete change._id;
 delete change.clusterTime;
 delete change.wallTime;
-assert.docEq(expected, change);
+assert.docEq(change, expected);
 
 jsTestLog("Testing watch() with pipeline");
 changeStreamCursor = coll.watch([{$project: {clusterTime: 1, docId: "$documentKey._id"}}]);

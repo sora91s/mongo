@@ -2,14 +2,9 @@
 
 import re
 import sys
-import os
-from pathlib import Path
+
 import gdb
 import gdb.printing
-
-if not gdb:
-    sys.path.insert(0, str(Path(os.path.abspath(__file__)).parent.parent.parent))
-    from buildscripts.gdb.mongo import get_current_thread_name, get_thread_id, RegisterMongoCommand
 
 if sys.version_info[0] < 3:
     raise gdb.GdbError(
@@ -312,7 +307,7 @@ def find_mutex_holder(graph, thread_dict, show):
         graph.add_edge(Lock(int(mutex_value), "Mutex"), mutex_holder)
 
 
-def find_lock_manager_holders(graph, thread_dict, show):
+def find_lock_manager_holders(graph, thread_dict, show):  # pylint: disable=too-many-locals
     """Find lock manager holders."""
     frame = find_frame(r'mongo::LockerImpl::')
     if not frame:
@@ -325,11 +320,8 @@ def find_lock_manager_holders(graph, thread_dict, show):
 
     locker_ptr_type = gdb.lookup_type("mongo::LockerImpl").pointer()
 
-    # Do not call mongo::getGlobalLockManager() due to the compiler optimizing this function in a very weird way
-    # See SERVER-72816 for more context
     lock_head = gdb.parse_and_eval(
-        "mongo::LockManager::get((mongo::ServiceContext*) mongo::getGlobalServiceContext())->_getBucket(resId)->findOrInsert(resId)"
-    )
+        "mongo::getGlobalLockManager()->_getBucket(resId)->findOrInsert(resId)")
 
     granted_list = lock_head.dereference()["grantedList"]
     lock_request_ptr = granted_list["_front"]
@@ -377,8 +369,8 @@ def get_threads_info():
             # PTID is a tuple: Process ID (PID), Lightweight Process ID (LWPID), Thread ID (TID)
             (_, lwpid, _) = thread.ptid
             thread_num = thread.num
-            thread_name = get_current_thread_name()
-            thread_id = get_thread_id()
+            thread_name = get_current_thread_name()  # pylint: disable=undefined-variable
+            thread_id = get_thread_id()  # pylint: disable=undefined-variable
             if not thread_id:
                 print("Unable to retrieve thread_info for thread %d" % thread_num)
                 continue
@@ -394,7 +386,8 @@ class MongoDBShowLocks(gdb.Command):
 
     def __init__(self):
         """Initialize MongoDBShowLocks."""
-        RegisterMongoCommand.register(self, "mongodb-show-locks", gdb.COMMAND_DATA)
+        RegisterMongoCommand.register(  # pylint: disable=undefined-variable
+            self, "mongodb-show-locks", gdb.COMMAND_DATA)
 
     def invoke(self, *_):
         """Invoke mongodb_show_locks."""
@@ -418,7 +411,8 @@ class MongoDBWaitsForGraph(gdb.Command):
 
     def __init__(self):
         """Initialize MongoDBWaitsForGraph."""
-        RegisterMongoCommand.register(self, "mongodb-waitsfor-graph", gdb.COMMAND_DATA)
+        RegisterMongoCommand.register(  # pylint: disable=undefined-variable
+            self, "mongodb-waitsfor-graph", gdb.COMMAND_DATA)
 
     def invoke(self, arg, *_):
         """Invoke mongodb_waitsfor_graph."""

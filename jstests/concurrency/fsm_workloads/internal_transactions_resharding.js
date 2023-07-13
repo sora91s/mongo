@@ -8,14 +8,12 @@
  * @tags: [
  *  requires_fcv_60,
  *  requires_sharding,
- *  uses_transactions,
- *  antithesis_incompatible,
+ *  uses_transactions
  * ]
  */
 load('jstests/concurrency/fsm_libs/extend_workload.js');
 load('jstests/concurrency/fsm_workloads/internal_transactions_sharded.js');
 load('jstests/libs/fail_point_util.js');
-load("jstests/libs/feature_flag_util.js");
 
 var $config = extendWorkload($config, function($config, $super) {
     // reshardingMinimumOperationDurationMillis is set to 30 seconds when there are stepdowns.
@@ -80,27 +78,8 @@ var $config = extendWorkload($config, function($config, $super) {
 
             print(`Started resharding collection ${ns}: ${tojson({newShardKey})}`);
             if (TestData.runningWithShardStepdowns) {
-                assert.soon(function() {
-                    var res = db.adminCommand(reshardCollectionCmdObj);
-                    if (res.ok) {
-                        return true;
-                    }
-                    assert(res.hasOwnProperty("code"));
-
-                    if (!FeatureFlagUtil.isEnabled(db, "PointInTimeCatalogLookups")) {
-                        // Expected error prior to the PointInTimeCatalogLookups project.
-                        if (res.code === ErrorCodes.SnapshotUnavailable) {
-                            return true;
-                        }
-                    }
-
-                    // Race to retry.
-                    if (res.code === ErrorCodes.ReshardCollectionInProgress) {
-                        return false;
-                    }
-                    // Unexpected error.
-                    doassert(`Failed with unexpected ${tojson(res)}`);
-                }, "Reshard command failed", 10 * 1000);
+                assert.commandWorkedOrFailedWithCode(db.adminCommand(reshardCollectionCmdObj),
+                                                     [ErrorCodes.SnapshotUnavailable]);
             } else {
                 assert.commandWorked(db.adminCommand(reshardCollectionCmdObj));
             }

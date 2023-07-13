@@ -31,11 +31,10 @@
 
 #include <boost/optional.hpp>
 #include <cstddef>
-#include <string>
 #include <vector>
 
+#include "mongo/base/counter.h"
 #include "mongo/bson/bsonobj.h"
-#include "mongo/db/commands/server_status_metric.h"
 #include "mongo/util/interruptible.h"
 #include "mongo/util/time_support.h"
 
@@ -192,11 +191,6 @@ public:
 
 class OplogBuffer::Counters {
 public:
-    explicit Counters(const std::string& prefix)
-        : count(prefix + ".count"),
-          size(prefix + ".sizeBytes"),
-          maxSize(prefix + ".maxSizeBytes") {}
-
     /**
      * Sets maximum size of operations for this OplogBuffer.
      * This function should only be called by a single thread.
@@ -225,13 +219,13 @@ public:
     }
 
     // Number of operations in this OplogBuffer.
-    CounterMetric count;
+    Counter64 count;
 
     // Total size of operations in this OplogBuffer. Measured in bytes.
-    CounterMetric size;
+    Counter64 size;
 
     // Maximum size of operations in this OplogBuffer. Measured in bytes.
-    CounterMetric maxSize;
+    Counter64 maxSize;
 };
 
 /**

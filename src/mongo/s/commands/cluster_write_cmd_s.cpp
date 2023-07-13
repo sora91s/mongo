@@ -48,10 +48,6 @@ struct ClusterInsertCmdS {
     static void checkCanRunHere(OperationContext* opCtx) {
         // Can always run on a mongos.
     }
-
-    static void checkCanExplainHere(OperationContext* opCtx) {
-        // Can always run on a mongos.
-    }
 };
 ClusterInsertCmdBase<ClusterInsertCmdS> clusterInsertCmdS;
 
@@ -71,10 +67,6 @@ struct ClusterUpdateCmdS {
     static void checkCanRunHere(OperationContext* opCtx) {
         // Can always run on a mongos.
     }
-
-    static void checkCanExplainHere(OperationContext* opCtx) {
-        // Can always run on a mongos.
-    }
 };
 ClusterUpdateCmdBase<ClusterUpdateCmdS> clusterUpdateCmdS;
 
@@ -92,10 +84,6 @@ struct ClusterDeleteCmdS {
     }
 
     static void checkCanRunHere(OperationContext* opCtx) {
-        // Can always run on a mongos.
-    }
-
-    static void checkCanExplainHere(OperationContext* opCtx) {
         // Can always run on a mongos.
     }
 };

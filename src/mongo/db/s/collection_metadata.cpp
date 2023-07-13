@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 
@@ -71,7 +69,7 @@ boost::optional<ShardKeyPattern> CollectionMetadata::getReshardingKeyIfShouldFor
 
     // Used a switch statement so that the compiler warns anyone who modifies the coordinator
     // states enum.
-    switch (reshardingFields.value().getState()) {
+    switch (reshardingFields.get().getState()) {
         case CoordinatorStateEnum::kUnused:
         case CoordinatorStateEnum::kInitializing:
         case CoordinatorStateEnum::kBlockingWrites:
@@ -109,13 +107,13 @@ void CollectionMetadata::throwIfReshardingInProgress(NamespaceString const& nss)
     }
 }
 
-BSONObj CollectionMetadata::extractDocumentKey(const ShardKeyPattern* shardKeyPattern,
-                                               const BSONObj& doc) {
+BSONObj CollectionMetadata::extractDocumentKey(const BSONObj& doc) const {
     BSONObj key;
 
-    if (shardKeyPattern) {
-        key = dotted_path_support::extractElementsBasedOnTemplate(doc, shardKeyPattern->toBSON());
-        if (shardKeyPattern->hasId()) {
+    if (isSharded()) {
+        auto const& pattern = _cm->getShardKeyPattern();
+        key = dotted_path_support::extractElementsBasedOnTemplate(doc, pattern.toBSON());
+        if (pattern.hasId()) {
             return key;
         }
         // else, try to append an _id field from the document.
@@ -129,17 +127,12 @@ BSONObj CollectionMetadata::extractDocumentKey(const ShardKeyPattern* shardKeyPa
     return doc;
 }
 
-BSONObj CollectionMetadata::extractDocumentKey(const BSONObj& doc) const {
-    return extractDocumentKey(isSharded() ? &_cm->getShardKeyPattern() : nullptr, doc);
-}
-
 std::string CollectionMetadata::toStringBasic() const {
     if (isSharded()) {
-        return str::stream() << "collection placement version: " << _cm->getVersion().toString()
-                             << ", shard placement version: "
-                             << getShardPlacementVersionForLogging().toString();
+        return str::stream() << "collection version: " << _cm->getVersion().toString()
+                             << ", shard version: " << getShardVersionForLogging().toString();
     } else {
-        return "collection placement version: <unsharded>";
+        return "collection version: <unsharded>";
     }
 }
 

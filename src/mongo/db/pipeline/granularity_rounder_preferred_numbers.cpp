@@ -348,7 +348,7 @@ string GranularityRounderPreferredNumbers::getName() {
     return _name;
 }
 
-vector<double> GranularityRounderPreferredNumbers::getSeries() const {
+const vector<double> GranularityRounderPreferredNumbers::getSeries() const {
     return _baseSeries;
 }
 }  //  namespace mongo

@@ -33,8 +33,8 @@
 
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/database_version.h"
-#include "mongo/s/shard_version.h"
 #include "mongo/util/future.h"
 #include "mongo/util/string_map.h"
 
@@ -49,7 +49,7 @@ class ScopedSetShardRole {
 public:
     ScopedSetShardRole(OperationContext* opCtx,
                        NamespaceString nss,
-                       boost::optional<ShardVersion> shardVersion,
+                       boost::optional<ChunkVersion> shardVersion,
                        boost::optional<DatabaseVersion> databaseVersion);
     ~ScopedSetShardRole();
 
@@ -58,7 +58,7 @@ private:
 
     NamespaceString _nss;
 
-    boost::optional<ShardVersion> _shardVersion;
+    boost::optional<ChunkVersion> _shardVersion;
     boost::optional<DatabaseVersion> _databaseVersion;
 };
 
@@ -113,23 +113,15 @@ public:
      */
     static void setShardRole(OperationContext* opCtx,
                              const NamespaceString& nss,
-                             const boost::optional<ShardVersion>& shardVersion,
+                             const boost::optional<ChunkVersion>& shardVersion,
                              const boost::optional<DatabaseVersion>& dbVersion);
-
-    /**
-     * Used to clear the shard role from the opCtx for ddl operations which are not required to send
-     * the index version (ex. split, merge). These operations will do their own metadata checks
-     * rather than us the collection sharding runtime checks.
-     */
-    static void unsetShardRoleForLegacyDDLOperationsSentWithShardVersionIfNeeded(
-        OperationContext* opCtx, const NamespaceString& nss);
 
     /**
      * Returns the shard version (i.e. maximum chunk version) of a namespace being used by the
      * operation. Documents in chunks which did not belong on this shard at this shard version
      * will be filtered out.
      */
-    boost::optional<ShardVersion> getShardVersion(const NamespaceString& nss);
+    boost::optional<ChunkVersion> getShardVersion(const NamespaceString& nss);
 
     /**
      * Returns true if the client sent a databaseVersion for any namespace.
@@ -178,11 +170,11 @@ private:
 
     // Stores the shard version expected for each collection that will be accessed
     struct ShardVersionTracker {
-        ShardVersionTracker(ShardVersion v) : v(v) {}
+        ShardVersionTracker(ChunkVersion v) : v(v) {}
         ShardVersionTracker(ShardVersionTracker&&) = default;
         ShardVersionTracker(const ShardVersionTracker&) = delete;
         ShardVersionTracker& operator=(const ShardVersionTracker&) = delete;
-        ShardVersion v;
+        ChunkVersion v;
         int recursion{0};
     };
     StringMap<ShardVersionTracker> _shardVersions;

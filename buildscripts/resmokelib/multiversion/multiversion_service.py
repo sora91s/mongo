@@ -163,15 +163,15 @@ class MongoReleases(BaseModel):
 
     def get_fcv_versions(self) -> List[Version]:
         """Get the Version representation of all fcv versions."""
-        return [Version(fcv) for fcv in self.feature_compatibility_versions]  # pylint: disable=not-an-iterable
+        return [Version(fcv) for fcv in self.feature_compatibility_versions]
 
     def get_lts_versions(self) -> List[Version]:
         """Get the Version representation of the lts versions."""
-        return [Version(lts) for lts in self.long_term_support_releases]  # pylint: disable=not-an-iterable
+        return [Version(lts) for lts in self.long_term_support_releases]
 
     def get_eol_versions(self) -> List[Version]:
         """Get the Version representation of the EOL versions."""
-        return [Version(eol) for eol in self.eol_versions]  # pylint: disable=not-an-iterable
+        return [Version(eol) for eol in self.eol_versions]
 
 
 class MultiversionService:
@@ -193,6 +193,7 @@ class MultiversionService:
         fcvs = self.mongo_releases.get_fcv_versions()
         lts = self.mongo_releases.get_lts_versions()
         eols = self.mongo_releases.get_eol_versions()
+        lower_bound_override = self.mongo_releases.generate_fcv_lower_bound_override
 
         # Highest release less than latest.
         last_continuous = fcvs[bisect_left(fcvs, latest) - 1]
@@ -200,8 +201,13 @@ class MultiversionService:
         # Highest LTS release less than latest.
         last_lts = lts[bisect_left(lts, latest) - 1]
 
-        # All FCVs greater than last LTS, up to latest.
-        requires_fcv_tag_list = fcvs[bisect_right(fcvs, last_lts):bisect_right(fcvs, latest)]
+        # Normally, this list includes all FCVs greater than last LTS, up to latest.
+        # However, if we have 'generateFCVLowerBoundOverride' set in releases.yml, we will
+        # extend the lower bound to also include the previous value of lastLTS.
+        lts_cutoff = last_lts
+        if lower_bound_override is not None:
+            lts_cutoff = Version(lower_bound_override)
+        requires_fcv_tag_list = fcvs[bisect_right(fcvs, lts_cutoff):bisect_right(fcvs, latest)]
         requires_fcv_tag_list_continuous = [latest]
 
         # All FCVs less than latest.

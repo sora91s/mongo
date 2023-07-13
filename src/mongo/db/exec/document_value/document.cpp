@@ -88,7 +88,6 @@ const StringDataSet Document::allMetadataFieldNames{Document::metaFieldTextScore
                                                     Document::metaFieldGeoNearPoint,
                                                     Document::metaFieldSearchScore,
                                                     Document::metaFieldSearchHighlights,
-                                                    Document::metaFieldSearchSortValues,
                                                     Document::metaFieldIndexKey,
                                                     Document::metaFieldSearchScoreDetails};
 
@@ -463,8 +462,6 @@ void DocumentStorage::loadLazyMetadata() const {
                 _metadataFields.setIndexKey(elem.Obj());
             } else if (fieldName == Document::metaFieldSearchScoreDetails) {
                 _metadataFields.setSearchScoreDetails(elem.Obj());
-            } else if (fieldName == Document::metaFieldSearchSortValues) {
-                _metadataFields.setSearchSortValues(elem.Obj());
             }
         }
     }
@@ -518,11 +515,22 @@ void Document::toBson(BSONObjBuilder* builder, size_t recursionLevel) const {
     }
 }
 
-boost::optional<BSONObj> Document::toBsonIfTriviallyConvertible() const {
-    if (isTriviallyConvertible()) {
+BSONObj Document::toBson() const {
+    if (!storage().isModified() && !storage().stripMetadata()) {
         return storage().bsonObj();
     }
-    return boost::none;
+
+    BSONObjBuilder bb;
+    toBson(&bb);
+    return bb.obj();
+}
+
+boost::optional<BSONObj> Document::toBsonIfTriviallyConvertible() const {
+    if (!storage().isModified() && !storage().stripMetadata()) {
+        return storage().bsonObj();
+    } else {
+        return boost::none;
+    }
 }
 
 constexpr StringData Document::metaFieldTextScore;
@@ -533,7 +541,6 @@ constexpr StringData Document::metaFieldGeoNearPoint;
 constexpr StringData Document::metaFieldSearchScore;
 constexpr StringData Document::metaFieldSearchHighlights;
 constexpr StringData Document::metaFieldSearchScoreDetails;
-constexpr StringData Document::metaFieldSearchSortValues;
 
 BSONObj Document::toBsonWithMetaData() const {
     BSONObjBuilder bb;
@@ -562,9 +569,6 @@ BSONObj Document::toBsonWithMetaData() const {
         bb.append(metaFieldIndexKey, metadata().getIndexKey());
     if (metadata().hasSearchScoreDetails())
         bb.append(metaFieldSearchScoreDetails, metadata().getSearchScoreDetails());
-    if (metadata().hasSearchSortValues()) {
-        bb.append(metaFieldSearchSortValues, metadata().getSearchSortValues());
-    }
     return bb.obj();
 }
 
@@ -696,7 +700,7 @@ static Value getNestedFieldHelper(const Document& doc,
     return getNestedFieldHelper(val.getDocument(), fieldNames, positions, level + 1);
 }
 
-Value Document::getNestedField(const FieldPath& path, vector<Position>* positions) const {
+const Value Document::getNestedField(const FieldPath& path, vector<Position>* positions) const {
     fassert(16489, path.getPathLength());
     assertFieldPathLengthOK(path);
     return getNestedFieldHelper(*this, path, positions, 0);

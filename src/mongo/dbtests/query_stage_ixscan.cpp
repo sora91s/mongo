@@ -27,7 +27,8 @@
  *    it in the license file.
  */
 
-#include "mongo/db/catalog/collection_write_path.h"
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
@@ -38,7 +39,6 @@
 #include "mongo/db/json.h"
 #include "mongo/dbtests/dbtests.h"
 
-namespace mongo {
 namespace QueryStageIxscan {
 namespace {
 const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
@@ -47,8 +47,8 @@ const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
 class IndexScanTest {
 public:
     IndexScanTest()
-        : _dbLock(&_opCtx, nss().dbName(), MODE_X),
-          _ctx(&_opCtx, nss()),
+        : _dbLock(&_opCtx, nsToDatabaseSubstring(ns()), MODE_X),
+          _ctx(&_opCtx, ns()),
           _coll(nullptr),
           _expCtx(make_intrusive<ExpressionContext>(&_opCtx, nullptr, nss())) {}
 
@@ -59,7 +59,7 @@ public:
 
         _ctx.db()->dropCollection(&_opCtx, nss()).transitional_ignore();
         _coll = _ctx.db()->createCollection(&_opCtx, nss());
-        _collPtr = CollectionPtr(_coll);
+        _collPtr = _coll;
 
         ASSERT_OK(_coll->getIndexCatalog()->createIndexOnEmptyCollection(
             &_opCtx,
@@ -73,8 +73,7 @@ public:
     void insert(const BSONObj& doc) {
         WriteUnitOfWork wunit(&_opCtx);
         OpDebug* const nullOpDebug = nullptr;
-        ASSERT_OK(collection_internal::insertDocument(
-            &_opCtx, CollectionPtr(_coll), InsertStatement(doc), nullOpDebug, false));
+        ASSERT_OK(_coll->insertDocument(&_opCtx, InsertStatement(doc), nullOpDebug, false));
         wunit.commit();
     }
 
@@ -98,8 +97,7 @@ public:
     IndexScan* createIndexScanSimpleRange(BSONObj startKey, BSONObj endKey) {
         IndexCatalog* catalog = _coll->getIndexCatalog();
         std::vector<const IndexDescriptor*> indexes;
-        catalog->findIndexesByKeyPattern(
-            &_opCtx, BSON("x" << 1), IndexCatalog::InclusionPolicy::kReady, &indexes);
+        catalog->findIndexesByKeyPattern(&_opCtx, BSON("x" << 1), false, &indexes);
         ASSERT_EQ(indexes.size(), 1U);
 
         // We are not testing indexing here so use maximal bounds
@@ -122,8 +120,7 @@ public:
                                int direction = 1) {
         IndexCatalog* catalog = _coll->getIndexCatalog();
         std::vector<const IndexDescriptor*> indexes;
-        catalog->findIndexesByKeyPattern(
-            &_opCtx, BSON("x" << 1), IndexCatalog::InclusionPolicy::kReady, &indexes);
+        catalog->findIndexesByKeyPattern(&_opCtx, BSON("x" << 1), false, &indexes);
         ASSERT_EQ(indexes.size(), 1U);
 
         IndexScanParams params(&_opCtx, _collPtr, indexes[0]);
@@ -137,7 +134,7 @@ public:
         params.bounds.fields.push_back(oil);
 
         MatchExpression* filter = nullptr;
-        return new IndexScan(_expCtx.get(), _collPtr, params, &_ws, filter);
+        return new IndexScan(_expCtx.get(), _coll, params, &_ws, filter);
     }
 
     static const char* ns() {
@@ -336,4 +333,3 @@ public:
 OldStyleSuiteInitializer<All> aueryStageIxscanAll;
 
 }  // namespace QueryStageIxscan
-}  // namespace mongo

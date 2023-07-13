@@ -37,7 +37,7 @@ namespace {
 using namespace mongo;
 
 TEST(TopTest, CollectionDropped) {
-    Top().collectionDropped(NamespaceString::createNamespaceString_forTest("test.coll"));
+    Top().collectionDropped(NamespaceString("test.coll"));
 }
 
 }  // namespace

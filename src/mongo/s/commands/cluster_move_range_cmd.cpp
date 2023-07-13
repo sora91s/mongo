@@ -27,15 +27,13 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/move_range_request_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -68,12 +66,11 @@ public:
             const auto nss = ns();
             const auto& req = request();
 
-            uassert(ErrorCodes::InvalidOptions,
-                    "Missing required parameter 'min' or 'max'",
-                    req.getMin() || req.getMax());
+            // TODO SERVER-64926 do not assume min always present
+            uassert(ErrorCodes::InvalidOptions, "Missing required parameter 'min'", req.getMin());
 
             ConfigsvrMoveRange configsvrRequest(nss);
-            configsvrRequest.setDbName(DatabaseName::kAdmin);
+            configsvrRequest.setDbName(NamespaceString::kAdminDb);
             configsvrRequest.setMoveRangeRequestBase(req.getMoveRangeRequestBase());
             configsvrRequest.setForceJumbo(request().getForceJumbo() ? ForceJumbo::kForceManual
                                                                      : ForceJumbo::kDoNotForce);
@@ -82,7 +79,7 @@ public:
             const auto commandResponse = uassertStatusOK(configShard->runCommand(
                 opCtx,
                 ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-                DatabaseName::kAdmin.toString(),
+                NamespaceString::kAdminDb.toString(),
                 configsvrRequest.toBSON(BSON(WriteConcernOptions::kWriteConcernField
                                              << opCtx->getWriteConcern().toBSON())),
                 Shard::RetryPolicy::kIdempotent));

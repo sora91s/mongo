@@ -46,7 +46,7 @@ namespace mongo {
 class ArrayMatchingMatchExpression : public PathMatchExpression {
 public:
     ArrayMatchingMatchExpression(MatchType matchType,
-                                 boost::optional<StringData> path,
+                                 StringData path,
                                  clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : PathMatchExpression(matchType,
                               path,
@@ -72,7 +72,7 @@ public:
 
 class ElemMatchObjectMatchExpression final : public ArrayMatchingMatchExpression {
 public:
-    ElemMatchObjectMatchExpression(boost::optional<StringData> path,
+    ElemMatchObjectMatchExpression(StringData path,
                                    std::unique_ptr<MatchExpression> sub,
                                    clonable_ptr<ErrorAnnotation> annotation = nullptr);
 
@@ -90,7 +90,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int indentationLevel) const;
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final;
+    BSONObj getSerializedRightHandSide() const final;
 
     std::vector<std::unique_ptr<MatchExpression>>* getChildVector() final {
         return nullptr;
@@ -101,7 +101,6 @@ public:
     }
 
     virtual MatchExpression* getChild(size_t i) const {
-        tassert(6400204, "Out-of-bounds access to child of MatchExpression.", i < numChildren());
         return _sub.get();
     }
 
@@ -134,10 +133,10 @@ private:
 
 class ElemMatchValueMatchExpression final : public ArrayMatchingMatchExpression {
 public:
-    ElemMatchValueMatchExpression(boost::optional<StringData> path,
+    ElemMatchValueMatchExpression(StringData path,
                                   std::unique_ptr<MatchExpression> sub,
                                   clonable_ptr<ErrorAnnotation> annotation = nullptr);
-    explicit ElemMatchValueMatchExpression(boost::optional<StringData> path,
+    explicit ElemMatchValueMatchExpression(StringData path,
                                            clonable_ptr<ErrorAnnotation> annotation = nullptr);
 
     void add(std::unique_ptr<MatchExpression> sub);
@@ -158,7 +157,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int indentationLevel) const;
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final;
+    BSONObj getSerializedRightHandSide() const final;
 
     std::vector<std::unique_ptr<MatchExpression>>* getChildVector() final {
         return &_subs;
@@ -169,7 +168,6 @@ public:
     }
 
     virtual MatchExpression* getChild(size_t i) const {
-        tassert(6400205, "Out-of-bounds access to child of MatchExpression.", i < numChildren());
         return _subs[i].get();
     }
 
@@ -196,7 +194,7 @@ private:
 
 class SizeMatchExpression : public ArrayMatchingMatchExpression {
 public:
-    SizeMatchExpression(boost::optional<StringData> path,
+    SizeMatchExpression(StringData path,
                         int size,
                         clonable_ptr<ErrorAnnotation> annotation = nullptr);
 
@@ -217,7 +215,6 @@ public:
     }
 
     MatchExpression* getChild(size_t i) const override {
-        tassert(6400206, "SizeMatchExpression does not have any children.", i < numChildren());
         return nullptr;
     }
 
@@ -233,7 +230,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int indentationLevel) const;
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final;
+    BSONObj getSerializedRightHandSide() const final;
 
     virtual bool equivalent(const MatchExpression* other) const;
 
@@ -259,9 +256,7 @@ public:
 
 private:
     virtual ExpressionOptimizerFunc getOptimizer() const final {
-        return [](std::unique_ptr<MatchExpression> expression) {
-            return expression;
-        };
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
     }
 
     int _size;  // >= 0 real, < 0, nothing will match

@@ -45,8 +45,8 @@ using std::set;
 using std::string;
 
 template <size_t ArrayLen>
-OrderedPathSet arrayToSet(const char* (&array)[ArrayLen]) {
-    OrderedPathSet out;
+set<string> arrayToSet(const char* (&array)[ArrayLen]) {
+    set<string> out;
     for (size_t i = 0; i < ArrayLen; i++)
         out.insert(array[i]);
     return out;
@@ -306,17 +306,19 @@ TEST(DependenciesToProjectionTest, SortFieldPaths) {
                            "b.a"
                            "b.aa"
                            "b.🌲d"};
-    auto fields = arrayToSet(array);
+    DepsTracker deps;
+    deps.fields = arrayToSet(array);
     // our custom sort will restore the ordering above
-    auto itr = fields.begin();
-    for (unsigned long i = 0; i < fields.size(); i++) {
+    std::list<std::string> fieldPathSorted = deps.sortedFields();
+    auto itr = fieldPathSorted.begin();
+    for (unsigned long i = 0; i < fieldPathSorted.size(); i++) {
         ASSERT_EQ(*itr, array[i]);
         ++itr;
     }
 }
 
 TEST(DependenciesToProjectionTest, PathLessThan) {
-    auto lessThan = PathComparator();
+    auto lessThan = PathPrefixComparator();
     ASSERT_FALSE(lessThan("a", "a"));
     ASSERT_TRUE(lessThan("a", "aa"));
     ASSERT_TRUE(lessThan("a", "b"));

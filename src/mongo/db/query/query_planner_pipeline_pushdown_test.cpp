@@ -63,8 +63,7 @@ protected:
         return Pipeline::parse(rawPipeline, expCtx);
     }
 
-    const NamespaceString kSecondaryNamespace =
-        NamespaceString::createNamespaceString_forTest("test.other");
+    const NamespaceString kSecondaryNamespace{"test.other"};
     const std::map<NamespaceString, SecondaryCollectionInfo> secondaryCollMap{
         {kSecondaryNamespace, SecondaryCollectionInfo()}};
 };

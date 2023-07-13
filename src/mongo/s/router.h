@@ -100,9 +100,9 @@ public:
     auto route(OperationContext* opCtx, StringData comment, F&& callbackFn) {
         RouteContext context{comment.toString()};
         while (true) {
-            auto cri = _getRoutingInfo(opCtx);
+            auto cm = _getRoutingInfo(opCtx);
             try {
-                return callbackFn(opCtx, cri);
+                return callbackFn(opCtx, cm);
             } catch (const DBException& ex) {
                 _onException(&context, ex.toStatus());
             }
@@ -110,11 +110,11 @@ public:
     }
 
     static void appendCRUDRoutingTokenToCommand(const ShardId& shardId,
-                                                const CollectionRoutingInfo& cri,
+                                                const ChunkManager& cm,
                                                 BSONObjBuilder* builder);
 
 private:
-    CollectionRoutingInfo _getRoutingInfo(OperationContext* opCtx) const;
+    ChunkManager _getRoutingInfo(OperationContext* opCtx) const;
     void _onException(RouteContext* context, Status s);
 
     NamespaceString _nss;

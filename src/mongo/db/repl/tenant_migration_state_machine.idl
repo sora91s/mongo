@@ -29,7 +29,7 @@ global:
     cpp_namespace: "mongo"
     cpp_includes:
         - "mongo/client/read_preference.h"
-        - "mongo/db/feature_compatibility_version_parser.h"
+        - "mongo/db/commands/feature_compatibility_version_parser.h"
         - "mongo/db/repl/tenant_migration_util.h"
 
 imports:
@@ -37,7 +37,7 @@ imports:
     - "mongo/db/repl/replication_types.idl"
     - "mongo/db/repl/tenant_migration_pem_payload.idl"
     - "mongo/db/serverless/serverless_types.idl"
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 enums:
     TenantMigrationDonorState:
@@ -61,8 +61,6 @@ enums:
             kConsistent: "consistent"
             kDone: "done"
             kLearnedFilenames: "learned filenames"
-            kCommitted: "committed"
-            kAborted: "aborted"
 
 structs:
     tenantMigrationDonorDocument:
@@ -147,10 +145,6 @@ structs:
                 description: "Which migration protocol to use."
                 type: MigrationProtocol
                 optional: true
-            tenantIds:
-                type: array<tenant_id>
-                optional: true
-                description: "The tenants list for Shard Merge."
 
     tenantMigrationRecipientDocument:
         description: "Represents an in-progress tenant migration on the migration recipient."
@@ -170,10 +164,12 @@ structs:
             tenantId:
                 type: string
                 description: "The tenantId for the migration."
+                validator:
+                    callback: "tenant_migration_util::validateDatabasePrefix"
             startMigrationDonorTimestamp:
                 type: timestamp
                 description: >-
-                    Timestamp after all index builds for tenant are complete or aborted. Recipient
+                    Timestamp after all index builds for tenant are complete or aborted.  Recipient
                     must not start cloning/fetching oplog entries from the donor until this
                     timestamp is majority committed.
                 validator:
@@ -271,14 +267,4 @@ structs:
                 type: date
                 description: >-
                     The wall-clock time at which the state machine document is initialized.
-                optional: true
-            tenantIds:
-                type: array<tenant_id>
-                optional: true
-                description: "The tenants list for Shard Merge."
-            abortOpTime:
-                type: optime
-                description:
-                    The opTime at which the donor's state document was set to 'aborted'. Only set
-                    for 'shard merge' when it goes into 'aborted' state.
                 optional: true

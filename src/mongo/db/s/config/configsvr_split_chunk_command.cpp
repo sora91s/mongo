@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/db/s/split_chunk_request_type.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -65,9 +63,6 @@ using std::string;
  *   writeConcern: <BSONObj>
  * }
  */
-
-constexpr StringData kCollectionVersionField = "collectionVersion"_sd;
-
 class ConfigSvrSplitChunkCommand : public BasicCommand {
 public:
     ConfigSvrSplitChunkCommand() : BasicCommand("_configsvrCommitChunkSplit") {}
@@ -94,23 +89,22 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::internal)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::internal)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
-    NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) const {
-        return NamespaceString(dbName.tenantId(), CommandHelpers::parseNsFullyQualified(cmdObj));
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsFullyQualified(cmdObj);
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         uassert(ErrorCodes::IllegalOperation,
@@ -133,9 +127,7 @@ public:
                 parsedRequest.getSplitPoints(),
                 parsedRequest.getShardName(),
                 parsedRequest.isFromChunkSplitter()));
-
-        shardAndCollVers.collectionPlacementVersion.serialize(kCollectionVersionField, &result);
-        shardAndCollVers.shardPlacementVersion.serialize(ChunkVersion::kChunkVersionField, &result);
+        result.appendElements(shardAndCollVers);
 
         return true;
     }

@@ -15,9 +15,7 @@
 static int
 usage(void)
 {
-    static const char *options[] = {"-?", "show this message", NULL, NULL};
-
-    util_usage("rename uri newuri", "options:", options);
+    util_usage("rename uri newuri", NULL, NULL);
     return (1);
 }
 
@@ -33,11 +31,9 @@ util_rename(WT_SESSION *session, int argc, char *argv[])
     char *uri, *newuri;
 
     uri = NULL;
-    while ((ch = __wt_getopt(progname, argc, argv, "?")) != EOF)
+    while ((ch = __wt_getopt(progname, argc, argv, "")) != EOF)
         switch (ch) {
         case '?':
-            usage();
-            return (0);
         default:
             return (usage());
         }

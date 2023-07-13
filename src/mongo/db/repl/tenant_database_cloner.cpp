@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTenantMigration
 
 #include "mongo/platform/basic.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTenantMigration
-
 
 namespace mongo {
 namespace repl {
@@ -87,9 +85,8 @@ BaseCloner::AfterStageBehavior TenantDatabaseCloner::listCollectionsStage() {
     // This will be set after a successful listCollections command.
     _operationTime = Timestamp();
 
-    // TODO SERVER-72945: Use the _dbName which is DatabaseName object already.
-    auto collectionInfos = getClient()->getCollectionInfos(
-        DatabaseName(boost::none, _dbName), ListCollectionsFilter::makeTypeCollectionFilter());
+    auto collectionInfos =
+        getClient()->getCollectionInfos(_dbName, ListCollectionsFilter::makeTypeCollectionFilter());
 
     // Do a majority read on the sync source to make sure the collections listed exist on a majority
     // of nodes in the set. We do not check the rollbackId - rollback would lead to the sync source
@@ -116,8 +113,7 @@ BaseCloner::AfterStageBehavior TenantDatabaseCloner::listCollectionsStage() {
 
     BSONObj readResult;
     BSONObj cmd = ClonerUtils::buildMajorityWaitRequest(_operationTime);
-    getClient()->runCommand(
-        DatabaseName(boost::none, "admin"), cmd, readResult, QueryOption_SecondaryOk);
+    getClient()->runCommand("admin", cmd, readResult, QueryOption_SecondaryOk);
     uassertStatusOKWithContext(
         getStatusFromCommandResult(readResult),
         "TenantDatabaseCloner failed to get listCollections result majority-committed");
@@ -140,7 +136,7 @@ BaseCloner::AfterStageBehavior TenantDatabaseCloner::listCollectionsStage() {
         ListCollectionResult result;
         try {
             result = ListCollectionResult::parse(
-                IDLParserContext("TenantDatabaseCloner::listCollectionsStage"), info);
+                IDLParserErrorContext("TenantDatabaseCloner::listCollectionsStage"), info);
         } catch (const DBException& e) {
             uasserted(
                 ErrorCodes::FailedToParse,
@@ -192,21 +188,20 @@ BaseCloner::AfterStageBehavior TenantDatabaseCloner::listExistingCollectionsStag
     }
     auto opCtx = cc().makeOperationContext();
     DBDirectClient client(opCtx.get());
-    tenantMigrationInfo(opCtx.get()) =
-        boost::make_optional<TenantMigrationInfo>(getSharedData()->getMigrationId());
+    tenantMigrationRecipientInfo(opCtx.get()) =
+        boost::make_optional<TenantMigrationRecipientInfo>(getSharedData()->getMigrationId());
 
     long long sizeOfCurrCollOnDisk = 0;
     long long approxTotalDBSizeOnDisk = 0;
 
     std::vector<UUID> clonedCollectionUUIDs;
-    // TODO SERVER-72945: Use the _dbName which is DatabaseName object already.
-    auto collectionInfos = client.getCollectionInfos(
-        DatabaseName(boost::none, _dbName), ListCollectionsFilter::makeTypeCollectionFilter());
+    auto collectionInfos =
+        client.getCollectionInfos(_dbName, ListCollectionsFilter::makeTypeCollectionFilter());
     for (auto&& info : collectionInfos) {
         ListCollectionResult result;
         try {
             result = ListCollectionResult::parse(
-                IDLParserContext("TenantDatabaseCloner::listExistingCollectionsStage"), info);
+                IDLParserErrorContext("TenantDatabaseCloner::listExistingCollectionsStage"), info);
         } catch (const DBException& e) {
             uasserted(
                 ErrorCodes::FailedToParse,
@@ -227,9 +222,7 @@ BaseCloner::AfterStageBehavior TenantDatabaseCloner::listExistingCollectionsStag
         clonedCollectionUUIDs.emplace_back(result.getInfo().getUuid());
 
         BSONObj res;
-        // TODO SERVER-72945: Use the _dbName which is DatabaseName object already.
-        client.runCommand(
-            DatabaseName(boost::none, _dbName), BSON("collStats" << result.getName()), res);
+        client.runCommand(_dbName, BSON("collStats" << result.getName()), res);
         if (auto status = getStatusFromCommandResult(res); !status.isOK()) {
             LOGV2_WARNING(5522901,
                           "Skipping recording of data size metrics for database due to failure "
@@ -245,7 +238,7 @@ BaseCloner::AfterStageBehavior TenantDatabaseCloner::listExistingCollectionsStag
         }
     }
 
-    if (getSharedData()->getResumePhase() == ResumePhase::kNone) {
+    if (!getSharedData()->isResuming()) {
         uassert(ErrorCodes::NamespaceExists,
                 str::stream() << "Tenant '" << _tenantId
                               << "': collections already exist prior to data sync",

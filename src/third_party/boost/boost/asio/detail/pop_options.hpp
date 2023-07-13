@@ -2,7 +2,7 @@
 // detail/pop_options.hpp
 // ~~~~~~~~~~~~~~~~~~~~~~
 //
-// Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2021 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -51,10 +51,6 @@
 
 # pragma GCC diagnostic pop
 
-# pragma pop_macro ("emit")
-# pragma pop_macro ("signal")
-# pragma pop_macro ("slot")
-
 #elif defined(__GNUC__)
 
 // GNU C++
@@ -80,10 +76,6 @@
 # endif // (__GNUC__ == 4 && __GNUC_MINOR__ >= 1) || (__GNUC__ > 4)
 
 # pragma GCC diagnostic pop
-
-# pragma pop_macro ("emit")
-# pragma pop_macro ("signal")
-# pragma pop_macro ("slot")
 
 #elif defined(__KCC)
 
@@ -145,9 +137,5 @@
 #   undef BOOST_ASIO_CLR_WORKAROUND
 #  endif
 # endif
-
-# pragma pop_macro ("emit")
-# pragma pop_macro ("signal")
-# pragma pop_macro ("slot")
 
 #endif

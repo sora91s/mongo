@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/prepare_conflict_tracker.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
@@ -37,6 +37,9 @@
 #include "mongo/util/fail_point.h"
 
 namespace mongo {
+
+// When set, simulates returning WT_PREPARE_CONFLICT on WT cursor read operations.
+extern FailPoint WTPrepareConflictForReads;
 
 // When set, WT_ROLLBACK is returned in place of retrying on WT_PREPARE_CONFLICT errors.
 extern FailPoint WTSkipPrepareConflictRetries;
@@ -66,7 +69,9 @@ template <typename F>
 int wiredTigerPrepareConflictRetry(OperationContext* opCtx, F&& f) {
     invariant(opCtx);
 
-    int ret = WT_READ_CHECK(f());
+    // If the failpoint is enabled, don't call the function, just simulate a conflict.
+    int ret = MONGO_unlikely(WTPrepareConflictForReads.shouldFail()) ? WT_PREPARE_CONFLICT
+                                                                     : WT_READ_CHECK(f());
     if (ret != WT_PREPARE_CONFLICT)
         return ret;
 
@@ -78,7 +83,7 @@ int wiredTigerPrepareConflictRetry(OperationContext* opCtx, F&& f) {
         // be blocking on a prepared update that requires replication to make progress, creating a
         // stall in the MDB cluster.
         wiredTigerPrepareConflictOplogResourceLog();
-        throwWriteConflictException("Holding a resource (oplog slot).");
+        throw WriteConflictException();
     }
 
     auto recoveryUnit = WiredTigerRecoveryUnit::get(opCtx);
@@ -139,7 +144,9 @@ int wiredTigerPrepareConflictRetry(OperationContext* opCtx, F&& f) {
     while (true) {
         attempts++;
         auto lastCount = recoveryUnit->getSessionCache()->getPrepareCommitOrAbortCount();
-        ret = WT_READ_CHECK(f());
+        // If the failpoint is enabled, don't call the function, just simulate a conflict.
+        ret = MONGO_unlikely(WTPrepareConflictForReads.shouldFail()) ? WT_PREPARE_CONFLICT
+                                                                     : WT_READ_CHECK(f());
 
         if (ret != WT_PREPARE_CONFLICT)
             return ret;

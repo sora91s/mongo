@@ -30,13 +30,12 @@
 #include "mongo/platform/basic.h"
 
 
-#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/capped_utils.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/query/find.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator.h"
@@ -45,54 +44,48 @@
 namespace mongo {
 namespace {
 
-class CmdCloneCollectionAsCapped : public BasicCommand {
+class CmdCloneCollectionAsCapped : public ErrmsgCommandDeprecated {
 public:
-    CmdCloneCollectionAsCapped() : BasicCommand("cloneCollectionAsCapped") {}
+    CmdCloneCollectionAsCapped() : ErrmsgCommandDeprecated("cloneCollectionAsCapped") {}
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
-
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
-
     std::string help() const override {
         return "{ cloneCollectionAsCapped:<fromName>, toCollection:<toName>, size:<sizeInBytes> }";
     }
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        ActionSet sourceActions;
+        sourceActions.addAction(ActionType::find);
+        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), sourceActions));
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(parseResourcePattern(dbName.db(), cmdObj),
-                                                  ActionType::find)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
+        ActionSet targetActions;
+        targetActions.addAction(ActionType::insert);
+        targetActions.addAction(ActionType::createIndex);
+        targetActions.addAction(ActionType::convertToCapped);
 
         const auto nssElt = cmdObj["toCollection"];
         uassert(ErrorCodes::TypeMismatch,
                 "'toCollection' must be of type String",
                 nssElt.type() == BSONType::String);
-        const NamespaceString nss(dbName, nssElt.valueStringData());
+        const NamespaceString nss(dbname, nssElt.valueStringData());
         uassert(ErrorCodes::InvalidNamespace,
                 str::stream() << "Invalid target namespace: " << nss.ns(),
                 nss.isValid());
 
-        if (!as->isAuthorizedForActionsOnResource(
-                ResourcePattern::forExactNamespace(nss),
-                {ActionType::insert, ActionType::createIndex, ActionType::convertToCapped})) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
+        out->push_back(Privilege(ResourcePattern::forExactNamespace(nss), targetActions));
     }
-
-    bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        const auto fromElt = cmdObj["cloneCollectionAsCapped"];
-        const auto toElt = cmdObj["toCollection"];
+    bool errmsgRun(OperationContext* opCtx,
+                   const std::string& dbname,
+                   const BSONObj& jsobj,
+                   std::string& errmsg,
+                   BSONObjBuilder& result) {
+        const auto fromElt = jsobj["cloneCollectionAsCapped"];
+        const auto toElt = jsobj["toCollection"];
 
         uassert(ErrorCodes::TypeMismatch,
                 "'cloneCollectionAsCapped' must be of type String",
@@ -111,13 +104,16 @@ public:
                 str::stream() << "Invalid target collection name: " << to,
                 NamespaceString::validCollectionName(to));
 
-        auto size = cmdObj.getField("size").safeNumberLong();
-        bool temp = cmdObj.getField("temp").trueValue();
+        double size = jsobj.getField("size").number();
+        bool temp = jsobj.getField("temp").trueValue();
 
-        uassert(ErrorCodes::InvalidOptions, "invalid command spec", size != 0);
+        if (size == 0) {
+            errmsg = "invalid command spec";
+            return false;
+        }
 
-        NamespaceString fromNs(dbName, from);
-        NamespaceString toNs(dbName, to);
+        NamespaceString fromNs(dbname, from);
+        NamespaceString toNs(dbname, to);
 
         AutoGetCollection autoColl(opCtx, fromNs, MODE_X);
         Lock::CollectionLock collLock(opCtx, toNs, MODE_X);
@@ -131,7 +127,7 @@ public:
         Database* const db = autoColl.getDb();
         if (!db) {
             uasserted(ErrorCodes::NamespaceNotFound,
-                      str::stream() << "database " << dbName.toString() << " not found");
+                      str::stream() << "database " << dbname << " not found");
         }
 
         cloneCollectionAsCapped(opCtx, db, fromNs, toNs, size, temp);
@@ -144,9 +140,9 @@ public:
  * Converts the given collection to a capped collection w/ the specified size. This command is not
  * highly used, and is not currently supported with sharded environments.
  */
-class CmdConvertToCapped : public BasicCommand {
+class CmdConvertToCapped : public ErrmsgCommandDeprecated {
 public:
-    CmdConvertToCapped() : BasicCommand("convertToCapped") {}
+    CmdConvertToCapped() : ErrmsgCommandDeprecated("convertToCapped") {}
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
@@ -161,27 +157,26 @@ public:
     std::string help() const override {
         return "{ convertToCapped:<fromCollectionName>, size:<sizeInBytes> }";
     }
-
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(parseResourcePattern(dbName.db(), cmdObj),
-                                                  ActionType::convertToCapped)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        ActionSet actions;
+        actions.addAction(ActionType::convertToCapped);
+        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
-    bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
-        auto size = cmdObj.getField("size").safeNumberLong();
+    bool errmsgRun(OperationContext* opCtx,
+                   const std::string& dbname,
+                   const BSONObj& jsobj,
+                   std::string& errmsg,
+                   BSONObjBuilder& result) {
+        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, jsobj));
+        long long size = jsobj.getField("size").safeNumberLong();
 
-        uassert(ErrorCodes::InvalidOptions, "invalid command spec", size != 0);
+        if (size == 0) {
+            errmsg = "invalid command spec";
+            return false;
+        }
 
         convertToCapped(opCtx, nss, size);
         return true;

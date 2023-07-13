@@ -1,4 +1,3 @@
-# pylint: disable=invalid-name
 """Extension to the unittest.TestResult.
 
 This is used to support additional test status and timing information for the report.json file.
@@ -15,7 +14,7 @@ from buildscripts.resmokelib.testing.symbolizer_service import ResmokeSymbolizer
 
 
 # pylint: disable=attribute-defined-outside-init
-class TestReport(unittest.TestResult):
+class TestReport(unittest.TestResult):  # pylint: disable=too-many-instance-attributes
     """Record test status and timing information."""
 
     def __init__(self, job_logger, suite_options, job_num=None):
@@ -104,7 +103,7 @@ class TestReport(unittest.TestResult):
 
         return combined_report
 
-    def startTest(self, test):
+    def startTest(self, test):  # pylint: disable=invalid-name
         """Call before 'test' is run."""
 
         unittest.TestResult.startTest(self, test)
@@ -128,10 +127,6 @@ class TestReport(unittest.TestResult):
                                                                       test.basename(), command,
                                                                       test.logger, self.job_num,
                                                                       test.id(), self.job_logger)
-
-        # Set up logging handlers to capture exceptions.
-        test_info.exception_extractors = logging.loggers.configure_exception_capture(test_logger)
-
         test_info.url_endpoint = url_endpoint
         if self.logging_prefix is not None:
             test_logger.info(self.logging_prefix)
@@ -141,44 +136,40 @@ class TestReport(unittest.TestResult):
         test.override_logger(test_logger)
         test_info.start_time = time.time()
 
-    def stopTest(self, test):
+    def stopTest(self, test):  # pylint: disable=invalid-name
         """Call after 'test' has run."""
 
-        try:
-            # check if there are stacktrace files, if so, invoke the symbolizer here.
-            # If there are no stacktrace files for this job, we do not need to invoke the symbolizer at all.
-            # Take a lock to download the debug symbols if it hasn't already been downloaded.
-            # log symbolized output to test.logger.info()
+        # check if there are stacktrace files, if so, invoke the symbolizer here.
+        # If there are no stacktrace files for this job, we do not need to invoke the symbolizer at all.
+        # Take a lock to download the debug symbols if it hasn't already been downloaded.
+        # log symbolized output to test.logger.info()
 
-            symbolizer = ResmokeSymbolizer()
-            symbolizer.symbolize_test_logs(test)
-            # symbolization completed
+        symbolizer = ResmokeSymbolizer()
+        symbolizer.symbolize_test_logs(test)
+        # symbolization completed
 
-            unittest.TestResult.stopTest(self, test)
+        unittest.TestResult.stopTest(self, test)
 
-            with self._lock:
-                test_info = self.find_test_info(test)
-                test_info.end_time = time.time()
-                test_status = "no failures detected" if test_info.status == "pass" else "failed"
+        with self._lock:
+            test_info = self.find_test_info(test)
+            test_info.end_time = time.time()
+            test_status = "no failures detected" if test_info.status == "pass" else "failed"
 
-            time_taken = test_info.end_time - test_info.start_time
-            self.job_logger.info("%s ran in %0.2f seconds: %s.", test.basename(), time_taken,
-                                 test_status)
+        time_taken = test_info.end_time - test_info.start_time
+        self.job_logger.info("%s ran in %0.2f seconds: %s.", test.basename(), time_taken,
+                             test_status)
 
-        finally:
-            # This is a failsafe. In the event that 'stopTest' fails,
-            # any rogue logger handlers will be removed from this test.
-            # If not cleaned up, these will trigger 'setup failures' --
-            # indicated by exiting with LoggerRuntimeConfigError.EXIT_CODE.
-            for handler in test.logger.handlers:
-                # We ignore the cancellation token returned by close_later() since we always want the
-                # logs to eventually get flushed.
-                logging.flush.close_later(handler)
+        # Asynchronously closes the buildlogger test handler to avoid having too many threads open
+        # on 32-bit systems.
+        for handler in test.logger.handlers:
+            # We ignore the cancellation token returned by close_later() since we always want the
+            # logs to eventually get flushed.
+            logging.flush.close_later(handler)
 
-            # Restore the original logger for the test.
-            test.reset_logger()
+        # Restore the original logger for the test.
+        test.reset_logger()
 
-    def addError(self, test, err):
+    def addError(self, test, err):  # pylint: disable=invalid-name
         """Call when a non-failureException was raised during the execution of 'test'."""
 
         unittest.TestResult.addError(self, test, err)
@@ -191,9 +182,8 @@ class TestReport(unittest.TestResult):
             test_info.status = "error"
             test_info.evergreen_status = "fail"
             test_info.return_code = test.return_code
-            test_info.error = self._exc_info_to_string(err, test).split('\n')
 
-    def setError(self, test, err):
+    def setError(self, test):  # pylint: disable=invalid-name
         """Change the outcome of an existing test to an error."""
         self.job_logger.info("setError(%s)", test)
 
@@ -206,7 +196,6 @@ class TestReport(unittest.TestResult):
             test_info.status = "error"
             test_info.evergreen_status = "fail"
             test_info.return_code = 2
-            test_info.error = self._exc_info_to_string(err, test).split('\n')
 
         # Recompute number of success, failures, and errors.
         self.num_succeeded = len(self.get_successful())
@@ -214,7 +203,7 @@ class TestReport(unittest.TestResult):
         self.num_errored = len(self.get_errored())
         self.num_interrupted = len(self.get_interrupted())
 
-    def addFailure(self, test, err):
+    def addFailure(self, test, err):  # pylint: disable=invalid-name
         """Call when a failureException was raised during the execution of 'test'."""
 
         unittest.TestResult.addFailure(self, test, err)
@@ -232,7 +221,7 @@ class TestReport(unittest.TestResult):
                 test_info.evergreen_status = self.suite_options.report_failure_status
             test_info.return_code = test.return_code
 
-    def setFailure(self, test, return_code=1):
+    def setFailure(self, test, return_code=1):  # pylint: disable=invalid-name
         """Change the outcome of an existing test to a failure."""
 
         with self._lock:
@@ -255,7 +244,7 @@ class TestReport(unittest.TestResult):
         self.num_errored = len(self.get_errored())
         self.num_interrupted = len(self.get_interrupted())
 
-    def addSuccess(self, test):
+    def addSuccess(self, test):  # pylint: disable=invalid-name
         """Call when 'test' executed successfully."""
 
         unittest.TestResult.addSuccess(self, test)
@@ -268,7 +257,7 @@ class TestReport(unittest.TestResult):
             test_info.evergreen_status = "pass"
             test_info.return_code = test.return_code
 
-    def wasSuccessful(self):
+    def wasSuccessful(self):  # pylint: disable=invalid-name
         """Return true if all tests executed successfully."""
 
         with self._lock:
@@ -396,7 +385,7 @@ class TestReport(unittest.TestResult):
         raise ValueError("Details for %s not found in the report" % (test.basename()))
 
 
-class TestInfo(object):
+class TestInfo(object):  # pylint: disable=too-many-instance-attributes
     """Holder for the test status and timing information."""
 
     def __init__(self, test_id, test_file, dynamic):
@@ -414,8 +403,6 @@ class TestInfo(object):
         self.evergreen_status = None
         self.return_code = None
         self.url_endpoint = None
-        self.exception_extractors = None
-        self.error = None
 
 
 def test_order(test_name):

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/platform/mutex.h"
 #include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
@@ -145,7 +143,7 @@ void WiredTigerOplogManager::waitForAllEarlierOplogWritesToBeVisible(
         opCtx->recoveryUnit()->abandonSnapshot();
         return;
     }
-    const auto& waitingFor = lastOplogRecord->id;
+    const auto waitingFor = lastOplogRecord->id;
 
     // Close transaction before we wait.
     opCtx->recoveryUnit()->abandonSnapshot();

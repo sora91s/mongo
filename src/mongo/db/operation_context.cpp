@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -44,9 +45,6 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/system_tick_source.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 
@@ -80,7 +78,7 @@ OperationContext::OperationContext(Client* client, OperationIdSlot&& opIdSlot)
     : _client(client),
       _opId(std::move(opIdSlot)),
       _elapsedTime(client ? client->getServiceContext()->getTickSource()
-                          : globalSystemTickSource()) {}
+                          : SystemTickSource::get()) {}
 
 OperationContext::~OperationContext() {
     releaseOperationKey();
@@ -220,6 +218,10 @@ bool opShouldFail(Client* client, const BSONObj& failPointInfo) {
 }  // namespace
 
 Status OperationContext::checkForInterruptNoAssert() noexcept {
+    if (_noReplStateChangeWhileIgnoringOtherInterrupts()) {
+        return Status::OK();
+    }
+
     // TODO: Remove the MONGO_likely(hasClientAndServiceContext) once all operation contexts are
     // constructed with clients.
     const auto hasClientAndServiceContext = getClient() && getServiceContext();
@@ -309,7 +311,8 @@ StatusWith<stdx::cv_status> OperationContext::waitForConditionOrInterruptNoAsser
     // maxTimeNeverTimeOut is set) then we assume that the incongruity is due to a clock mismatch
     // and return _timeoutError regardless. To prevent this behaviour, only consider the op's
     // deadline in the event that the maxTimeNeverTimeOut failpoint is not set.
-    bool opHasDeadline = (hasDeadline() && !MONGO_unlikely(maxTimeNeverTimeOut.shouldFail()));
+    bool opHasDeadline = (hasDeadline() && !_noReplStateChangeWhileIgnoringOtherInterrupts() &&
+                          !MONGO_unlikely(maxTimeNeverTimeOut.shouldFail()));
 
     if (opHasDeadline) {
         deadline = std::min(deadline, getDeadline());
@@ -397,10 +400,7 @@ void OperationContext::setIsExecutingShutdown() {
 
     _isExecutingShutdown = true;
 
-    // The OperationContext executing shutdown is immune from interruption.
-    _hasArtificialDeadline = true;
-    setDeadlineByDate(Date_t::max(), ErrorCodes::ExceededTimeLimit);
-    _ignoreInterrupts = true;
+    pushIgnoreInterrupts();
 }
 
 void OperationContext::setLogicalSessionId(LogicalSessionId lsid) {
@@ -435,10 +435,6 @@ void OperationContext::setTxnRetryCounter(TxnRetryCounter txnRetryCounter) {
 }
 
 std::unique_ptr<RecoveryUnit> OperationContext::releaseRecoveryUnit() {
-    if (_recoveryUnit) {
-        _recoveryUnit->setOperationContext(nullptr);
-    }
-
     return std::move(_recoveryUnit);
 }
 
@@ -450,19 +446,9 @@ std::unique_ptr<RecoveryUnit> OperationContext::releaseAndReplaceRecoveryUnit() 
     return ru;
 }
 
-void OperationContext::replaceRecoveryUnit() {
-    setRecoveryUnit(
-        std::unique_ptr<RecoveryUnit>(getServiceContext()->getStorageEngine()->newRecoveryUnit()),
-        WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
-}
-
 WriteUnitOfWork::RecoveryUnitState OperationContext::setRecoveryUnit(
     std::unique_ptr<RecoveryUnit> unit, WriteUnitOfWork::RecoveryUnitState state) {
     _recoveryUnit = std::move(unit);
-    if (_recoveryUnit) {
-        _recoveryUnit->setOperationContext(this);
-    }
-
     WriteUnitOfWork::RecoveryUnitState oldState = _ruState;
     _ruState = state;
     return oldState;

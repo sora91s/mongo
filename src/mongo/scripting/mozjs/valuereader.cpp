@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -46,9 +47,6 @@
 #include "mongo/scripting/mozjs/implscope.h"
 #include "mongo/scripting/mozjs/objectwrapper.h"
 #include "mongo/util/base64.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 namespace mozjs {
@@ -156,7 +154,7 @@ void ValueReader::fromBSONElement(const BSONElement& elem, const BSONObj& parent
             JS::RootedValueArray<2> args(_context);
 
             ValueReader(_context, args[0])
-                .fromDouble(static_cast<double>(elem.timestampTime().toMillisSinceEpoch()) / 1000);
+                .fromDouble(elem.timestampTime().toMillisSinceEpoch() / 1000);
             ValueReader(_context, args[1]).fromDouble(elem.timestampInc());
 
             scope->getProto<TimestampInfo>().newInstance(args, _value);

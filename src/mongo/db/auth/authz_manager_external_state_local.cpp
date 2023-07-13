@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kAccessControl
 
 #include "mongo/platform/basic.h"
 
@@ -50,24 +51,22 @@
 #include "mongo/util/net/ssl_types.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kAccessControl
-
-
 namespace mongo {
 
 using std::vector;
 using ResolveRoleOption = AuthzManagerExternalStateLocal::ResolveRoleOption;
 
-Status AuthzManagerExternalStateLocal::hasValidStoredAuthorizationVersion(
-    OperationContext* opCtx, BSONObj* foundVersionDoc) {
+Status AuthzManagerExternalStateLocal::getStoredAuthorizationVersion(OperationContext* opCtx,
+                                                                     int* outVersion) {
+    BSONObj versionDoc;
     Status status = findOne(opCtx,
-                            NamespaceString::kServerConfigurationNamespace,
+                            AuthorizationManager::versionCollectionNamespace,
                             AuthorizationManager::versionDocumentQuery,
-                            foundVersionDoc);
+                            &versionDoc);
     if (status.isOK()) {
-        BSONElement versionElement =
-            (*foundVersionDoc)[AuthorizationManager::schemaVersionFieldName];
+        BSONElement versionElement = versionDoc[AuthorizationManager::schemaVersionFieldName];
         if (versionElement.isNumber()) {
+            *outVersion = versionElement.numberInt();
             return Status::OK();
         } else if (versionElement.eoo()) {
             return Status(ErrorCodes::NoSuchKey,
@@ -82,41 +81,39 @@ Status AuthzManagerExternalStateLocal::hasValidStoredAuthorizationVersion(
                               << ") for " << AuthorizationManager::schemaVersionFieldName
                               << " field in version document");
         }
+    } else if (status == ErrorCodes::NoMatchingDocument) {
+        *outVersion = AuthorizationManager::schemaVersion28SCRAM;
+        return Status::OK();
     } else {
         return status;
     }
 }
 
-Status AuthzManagerExternalStateLocal::getStoredAuthorizationVersion(OperationContext* opCtx,
-                                                                     int* outVersion) {
-    BSONObj foundVersionDoc;
-    auto status = hasValidStoredAuthorizationVersion(opCtx, &foundVersionDoc);
-    if (status.isOK()) {
-        *outVersion = foundVersionDoc.getIntField(AuthorizationManager::schemaVersionFieldName);
-        return status;
-    } else if (status == ErrorCodes::NoMatchingDocument) {
-        *outVersion = AuthorizationManager::schemaVersion28SCRAM;
-        return Status::OK();
-    }
-
-    return status;
-}
-
 namespace {
 
+// Temporary placeholder pending availability of NamespaceWithTenant.
+NamespaceString getNamespaceWithTenant(const NamespaceString& nss,
+                                       const boost::optional<TenantId>& tenant) {
+    if (tenant) {
+        return NamespaceString(str::stream() << tenant.get() << '_' << nss.db(), nss.coll());
+    } else {
+        return nss;
+    }
+}
+
 NamespaceString getUsersCollection(const boost::optional<TenantId>& tenant) {
-    return NamespaceString(tenant, DatabaseName::kAdmin.db(), NamespaceString::kSystemUsers);
+    return getNamespaceWithTenant(AuthorizationManager::usersCollectionNamespace, tenant);
 }
 
 NamespaceString getRolesCollection(const boost::optional<TenantId>& tenant) {
-    return NamespaceString(tenant, DatabaseName::kAdmin.db(), NamespaceString::kSystemRoles);
+    return getNamespaceWithTenant(AuthorizationManager::rolesCollectionNamespace, tenant);
 }
 
 void serializeResolvedRoles(BSONObjBuilder* user,
                             const AuthzManagerExternalState::ResolvedRoleData& data,
                             boost::optional<const BSONObj&> roleDoc = boost::none) {
     BSONArrayBuilder rolesBuilder(user->subarrayStart("inheritedRoles"));
-    for (const auto& roleName : data.roles.value()) {
+    for (const auto& roleName : data.roles.get()) {
         roleName.serializeToBSON(&rolesBuilder);
     }
     rolesBuilder.doneFast();
@@ -124,14 +121,14 @@ void serializeResolvedRoles(BSONObjBuilder* user,
     if (data.privileges) {
         BSONArrayBuilder privsBuilder(user->subarrayStart("inheritedPrivileges"));
         if (roleDoc) {
-            auto privs = roleDoc.value()["privileges"];
+            auto privs = roleDoc.get()["privileges"];
             if (privs) {
                 for (const auto& privilege : privs.Obj()) {
                     privsBuilder.append(privilege);
                 }
             }
         }
-        for (const auto& privilege : data.privileges.value()) {
+        for (const auto& privilege : data.privileges.get()) {
             privsBuilder.append(privilege.toBSON());
         }
         privsBuilder.doneFast();
@@ -140,7 +137,7 @@ void serializeResolvedRoles(BSONObjBuilder* user,
     if (data.restrictions) {
         BSONArrayBuilder arBuilder(user->subarrayStart("inheritedAuthenticationRestrictions"));
         if (roleDoc) {
-            auto ar = roleDoc.value()["authenticationRestrictions"];
+            auto ar = roleDoc.get()["authenticationRestrictions"];
             if ((ar.type() == Array) && (ar.Obj().nFields() > 0)) {
                 arBuilder.append(ar);
             }
@@ -165,8 +162,7 @@ constexpr auto kAuthenticationRestrictionFieldName = "authenticationRestrictions
 std::vector<RoleName> filterAndMapRole(BSONObjBuilder* builder,
                                        BSONObj role,
                                        ResolveRoleOption option,
-                                       bool liftAuthenticationRestrictions,
-                                       const boost::optional<TenantId>& tenant) {
+                                       bool liftAuthenticationRestrictions) {
     std::vector<RoleName> subRoles;
     bool sawRestrictions = false;
 
@@ -175,7 +171,7 @@ std::vector<RoleName> filterAndMapRole(BSONObjBuilder* builder,
             uassert(
                 ErrorCodes::BadValue, "Invalid roles field, expected array", elem.type() == Array);
             for (const auto& roleName : elem.Obj()) {
-                subRoles.push_back(RoleName::parseFromBSON(roleName, tenant));
+                subRoles.push_back(RoleName::parseFromBSON(roleName));
             }
             if ((option & ResolveRoleOption::kRoles) == 0) {
                 continue;
@@ -234,7 +230,7 @@ void handleAuthLocalGetUserFailPoint(const std::vector<RoleName>& directRoles) {
         return;
     }
 
-    IDLParserContext ctx("authLocalGetUser");
+    IDLParserErrorContext ctx("authLocalGetUser");
     auto delay = AuthLocalGetUserFailPoint::parse(ctx, sfp.getData()).getResolveRolesDelayMS();
 
     if (delay <= 0) {
@@ -250,23 +246,16 @@ void handleAuthLocalGetUserFailPoint(const std::vector<RoleName>& directRoles) {
 }
 }  // namespace
 
-Status AuthzManagerExternalStateLocal::hasAnyUserDocuments(
-    OperationContext* opCtx, const boost::optional<TenantId>& tenantId) {
-    BSONObj userBSONObj;
-    return findOne(opCtx,
-                   NamespaceString(tenantId, NamespaceString::kAdminUsersNamespace.ns()),
-                   BSONObj(),
-                   &userBSONObj);
-}
-
-// If tenantId is none, we're checking whether to enable localhost auth bypass which by definition
-// will be a local user.
+// We ignore tenant-specific collections here, since hasAnyPrivilegeDocuments
+// only impacts localhost auth bypass which by definition will be a local user.
 bool AuthzManagerExternalStateLocal::hasAnyPrivilegeDocuments(OperationContext* opCtx) {
     if (_hasAnyPrivilegeDocuments.load()) {
         return true;
     }
 
-    Status statusFindUsers = hasAnyUserDocuments(opCtx, boost::none);
+    BSONObj userBSONObj;
+    Status statusFindUsers =
+        findOne(opCtx, AuthorizationManager::usersCollectionNamespace, BSONObj(), &userBSONObj);
 
     // If we were unable to complete the query,
     // it's best to assume that there _are_ privilege documents.
@@ -274,10 +263,8 @@ bool AuthzManagerExternalStateLocal::hasAnyPrivilegeDocuments(OperationContext* 
         _hasAnyPrivilegeDocuments.store(true);
         return true;
     }
-
-    BSONObj userBSONObj;
     Status statusFindRoles =
-        findOne(opCtx, NamespaceString::kAdminRolesNamespace, BSONObj(), &userBSONObj);
+        findOne(opCtx, AuthorizationManager::rolesCollectionNamespace, BSONObj(), &userBSONObj);
     if (statusFindRoles != ErrorCodes::NoMatchingDocument) {
         _hasAnyPrivilegeDocuments.store(true);
         return true;
@@ -291,7 +278,8 @@ AuthzManagerExternalStateLocal::RolesLocks::RolesLocks(OperationContext* opCtx,
     if (!storageGlobalParams.disableLockFreeReads) {
         _readLockFree = std::make_unique<AutoReadLockFree>(opCtx);
     } else {
-        _adminLock = std::make_unique<Lock::DBLock>(opCtx, DatabaseName::kAdmin, LockMode::MODE_IS);
+        _adminLock =
+            std::make_unique<Lock::DBLock>(opCtx, NamespaceString::kAdminDb, LockMode::MODE_IS);
         _rolesLock = std::make_unique<Lock::CollectionLock>(
             opCtx, getRolesCollection(tenant), LockMode::MODE_S);
     }
@@ -312,7 +300,7 @@ StatusWith<User> AuthzManagerExternalStateLocal::getUserObject(OperationContext*
                                                                const UserRequest& userReq) try {
     const UserName& userName = userReq.name;
     std::vector<RoleName> directRoles;
-    User user(userReq);
+    User user(userReq.name);
 
     auto rolesLock = _lockRoles(opCtx, userName.getTenant());
 
@@ -348,20 +336,13 @@ StatusWith<User> AuthzManagerExternalStateLocal::getUserObject(OperationContext*
         user.setRoles(makeRoleNameIteratorForContainer(directRoles));
     }
 
-    if (auto tenant = userName.getTenant()) {
-        // Apply TenantID for user to all roles (which are assumed to be part of the same tenant).
-        for (auto& role : directRoles) {
-            role = RoleName(role.getRole(), role.getDB(), tenant);
-        }
-    }
-
     handleAuthLocalGetUserFailPoint(directRoles);
 
     auto data = uassertStatusOK(resolveRoles(opCtx, directRoles, ResolveRoleOption::kAll));
     data.roles->insert(directRoles.cbegin(), directRoles.cend());
-    user.setIndirectRoles(makeRoleNameIteratorForContainer(data.roles.value()));
-    user.addPrivileges(data.privileges.value());
-    user.setIndirectRestrictions(data.restrictions.value());
+    user.setIndirectRoles(makeRoleNameIteratorForContainer(data.roles.get()));
+    user.addPrivileges(data.privileges.get());
+    user.setIndirectRestrictions(data.restrictions.get());
 
     LOGV2_DEBUG(5517200,
                 3,
@@ -396,8 +377,7 @@ Status AuthzManagerExternalStateLocal::getUserDescription(OperationContext* opCt
             return status;
         }
 
-        directRoles = filterAndMapRole(
-            &resultBuilder, userDoc, ResolveRoleOption::kAll, false, userName.getTenant());
+        directRoles = filterAndMapRole(&resultBuilder, userDoc, ResolveRoleOption::kAll, false);
     } else {
         uassert(ErrorCodes::BadValue,
                 "Illegal combination of pre-defined roles with tenant identifier",
@@ -415,13 +395,6 @@ Status AuthzManagerExternalStateLocal::getUserDescription(OperationContext* opCt
             rolesBuilder.append(role.toBSON());
         }
         rolesBuilder.doneFast();
-    }
-
-    if (auto tenant = userName.getTenant()) {
-        // Apply TenantID for user to all roles (which are assumed to be part of the same tenant).
-        for (auto& role : directRoles) {
-            role = RoleName(role.getRole(), role.getDB(), tenant);
-        }
     }
 
     handleAuthLocalGetUserFailPoint(directRoles);
@@ -464,6 +437,7 @@ StatusWith<ResolvedRoleData> AuthzManagerExternalStateLocal::resolveRoles(
     const bool processRests = option & ResolveRoleOption::kRestrictions;
     const bool walkIndirect = (option & ResolveRoleOption::kDirectOnly) == 0;
 
+    auto optTenant = getActiveTenant(opCtx);
     RoleNameSet inheritedRoles;
     PrivilegeVector inheritedPrivileges;
     RestrictionDocuments::sequence_type inheritedRestrictions;
@@ -502,7 +476,7 @@ StatusWith<ResolvedRoleData> AuthzManagerExternalStateLocal::resolveRoles(
                                 << "', expected an array but found " << typeName(elem.type())};
                 }
                 for (const auto& subroleElem : elem.Obj()) {
-                    auto subrole = RoleName::parseFromBSON(subroleElem, role.getTenant());
+                    auto subrole = RoleName::parseFromBSON(subroleElem, optTenant);
                     if (visited.count(subrole) || nextFrontier.count(subrole)) {
                         continue;
                     }
@@ -637,7 +611,7 @@ Status AuthzManagerExternalStateLocal::getRolesDescription(
             }
 
             BSONObjBuilder roleBuilder;
-            auto subRoles = filterAndMapRole(&roleBuilder, roleDoc, option, true, role.getTenant());
+            auto subRoles = filterAndMapRole(&roleBuilder, roleDoc, option, true);
             auto data = uassertStatusOK(resolveRoles(opCtx, subRoles, option));
             data.roles->insert(subRoles.cbegin(), subRoles.cend());
             serializeResolvedRoles(&roleBuilder, data, roleDoc);
@@ -655,7 +629,7 @@ Status AuthzManagerExternalStateLocal::getRolesDescription(
 
 Status AuthzManagerExternalStateLocal::getRoleDescriptionsForDB(
     OperationContext* opCtx,
-    const DatabaseName& dbname,
+    StringData dbname,
     PrivilegeFormat showPrivileges,
     AuthenticationRestrictionsFormat showRestrictions,
     bool showBuiltinRoles,
@@ -705,15 +679,14 @@ Status AuthzManagerExternalStateLocal::getRoleDescriptionsForDB(
     }
 
     return query(opCtx,
-                 getRolesCollection(dbname.tenantId()),
-                 BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << dbname.db()),
+                 getRolesCollection(getActiveTenant(opCtx)),
+                 BSON(AuthorizationManager::ROLE_DB_FIELD_NAME << dbname),
                  BSONObj(),
                  [&](const BSONObj& roleDoc) {
                      try {
                          BSONObjBuilder roleBuilder;
 
-                         auto subRoles = filterAndMapRole(
-                             &roleBuilder, roleDoc, option, true, dbname.tenantId());
+                         auto subRoles = filterAndMapRole(&roleBuilder, roleDoc, option, true);
                          roleBuilder.append("isBuiltin", false);
                          auto data = uassertStatusOK(resolveRoles(opCtx, subRoles, option));
                          data.roles->insert(subRoles.cbegin(), subRoles.cend());
@@ -749,36 +722,45 @@ public:
     };
 
     AuthzCollection() = default;
-    explicit AuthzCollection(const NamespaceString& nss) : _tenant(nss.tenantId()) {
-        // Capture events regardless of what Tenant they occured in,
-        // invalidators will purge cache on a per-tenant basis as needed.
-        auto db = nss.dbName();
-        auto coll = nss.coll();
-        if (db.db() != DatabaseName::kAdmin.db()) {
-            return;
-        }
-
+    explicit AuthzCollection(const NamespaceString& nss) {
         // System-only collections.
-        if (coll == NamespaceString::kServerConfigurationNamespace.coll()) {
+        if (nss == AuthorizationManager::versionCollectionNamespace) {
             _type = AuthzCollectionType::kVersion;
             return;
         }
 
-        if (coll == NamespaceString::kAdminCommandNamespace.coll()) {
+        if (nss == AuthorizationManager::adminCommandNamespace) {
             _type = AuthzCollectionType::kAdmin;
             return;
         }
 
+        auto db = nss.db();
+        auto coll = nss.coll();
         if (coll == NamespaceString::kSystemUsers) {
-            // admin.system.users or {tenantID}_admin.system.users
-            _type = AuthzCollectionType::kUsers;
-            return;
+            if (db == NamespaceString::kAdminDb) {
+                // admin.system.users
+                _type = AuthzCollectionType::kUsers;
+                return;
+            } else if (auto tenant = isAdminDBWithTenant(db)) {
+                // {tenantID}_admin.system.users
+                _type = AuthzCollectionType::kUsers;
+                _tenant = std::move(tenant);
+                return;
+            }
+            return;  // none
         }
 
-        if (coll == NamespaceString::kSystemRoles) {
-            // admin.system.roles or {tenantID}_admin.system.roles
-            _type = AuthzCollectionType::kRoles;
-            return;
+        if (nss == AuthorizationManager::rolesCollectionNamespace) {
+            if (db == NamespaceString::kAdminDb) {
+                // admin.system.roles
+                _type = AuthzCollectionType::kRoles;
+                return;
+            } else if (auto tenant = isAdminDBWithTenant(db)) {
+                // {tenantID}_admin.system.roles
+                _type = AuthzCollectionType::kRoles;
+                _tenant = std::move(tenant);
+            }
+            return;  // none
         }
     }
 
@@ -799,6 +781,39 @@ public:
     }
 
 private:
+    /**
+     * Attempt to parse "{tenant}_admin" into a Tenant ID.
+     * Returns boost::none if the db is not in the above format.
+     *
+     * Temporary fixture pending availability of NamespaceWithTenant.
+     */
+    static boost::optional<TenantId> isAdminDBWithTenant(StringData db) {
+        constexpr std::size_t len =
+            (OID::kOIDSize * 2) + 1 /* '_' */ + NamespaceString::kAdminDb.size();
+        if (db.size() != len) {
+            // Not requisite size.
+            return boost::none;
+        }
+
+        if (db.substr((OID::kOIDSize * 2) + 1) != NamespaceString::kAdminDb) {
+            // Doesn't end with "admin"
+            return boost::none;
+        }
+
+        if (db[OID::kOIDSize * 2] != '_') {
+            // Not delimited by an underscore
+            return boost::none;
+        }
+
+        auto swOID = OID::parse(db.substr(0, OID::kOIDSize * 2));
+        if (!swOID.isOK()) {
+            // Not a valid OID
+            return boost::none;
+        }
+
+        return TenantId(swOID.getValue());
+    }
+
     AuthzCollectionType _type = AuthzCollectionType::kNone;
     boost::optional<TenantId> _tenant;
 };
@@ -833,7 +848,7 @@ void _invalidateUserCache(OperationContext* opCtx,
         UserName userName(id.substr(splitPoint + 1), id.substr(0, splitPoint), coll.getTenant());
         authzManager->invalidateUserByName(opCtx, userName);
     } else if (const auto& tenant = coll.getTenant()) {
-        authzManager->invalidateUsersByTenant(opCtx, tenant.value());
+        authzManager->invalidateUsersByTenant(opCtx, tenant.get());
     } else {
         authzManager->invalidateUserCache(opCtx);
     }
@@ -853,7 +868,7 @@ void AuthzManagerExternalStateLocal::logOp(OperationContext* opCtx,
 
     _invalidateUserCache(opCtx, authzManager, op, coll, o, o2);
 
-    if (coll.isPrivilegeCollection() && (op == kOpInsert)) {
+    if (coll.isPrivilegeCollection() && !coll.getTenant() && (op == kOpInsert)) {
         _hasAnyPrivilegeDocuments.store(true);
     }
 }

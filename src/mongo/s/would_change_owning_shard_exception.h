@@ -35,6 +35,7 @@
 #include "mongo/db/namespace_string.h"
 
 namespace mongo {
+void initMyWouldChangeOwningShardInfo();
 
 /**
  * This error is thrown when an update would cause a document to be owned by a different

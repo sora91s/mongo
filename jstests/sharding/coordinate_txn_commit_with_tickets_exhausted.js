@@ -3,7 +3,6 @@
  * persist its decision.
  *
  * @tags: [
- *   requires_fcv_70,
  *   uses_transactions,
  *   uses_multi_shard_transaction,
  *   uses_prepare_transaction,
@@ -25,8 +24,6 @@ const st = new ShardingTest({
     rs: {nodes: 1},
     rsOptions: {
         setParameter: {
-            // This test requires a fixed ticket pool size.
-            storageEngineConcurrencyAdjustmentAlgorithm: "",
             wiredTigerConcurrentWriteTransactions: kNumWriteTickets,
             // Raise maxTransactionLockRequestTimeoutMillis to prevent the transactions in prepare
             // conflict state from aborting early due to being unable to acquire a write ticket.

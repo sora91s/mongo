@@ -214,7 +214,7 @@ var $config = (function() {
                 for (const shard in inconsistentIndexes) {
                     const shardInconsistentIndexes = inconsistentIndexes[shard];
                     if (shardInconsistentIndexes.length !== 0) {
-                        print(`found inconsistent indexes for ${collName}: ${
+                        print(`found inconsistent indexes for ${thread.collName}: ${
                             tojson(inconsistentIndexes)}`);
                         return false;
                     }

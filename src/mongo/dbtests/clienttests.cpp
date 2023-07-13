@@ -46,12 +46,12 @@ using std::vector;
 
 class Base {
 public:
-    Base(string coll) : _nss("test." + coll) {
+    Base(string coll) : _ns("test." + coll) {
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.dropDatabase({boost::none, "test"});
+        db.dropDatabase("test");
     }
 
     virtual ~Base() {
@@ -59,18 +59,18 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.dropCollection(nss());
+        db.dropCollection(_ns);
     }
 
-    const NamespaceString& nss() {
-        return _nss;
+    const NamespaceString nss() {
+        return NamespaceString(_ns);
     }
 
-    const std::string& ns() {
-        return _nss.toString();
+    const char* ns() {
+        return _ns.c_str();
     }
 
-    const NamespaceString _nss;
+    const string _ns;
 };
 
 
@@ -85,19 +85,19 @@ public:
         const bool includeBuildUUIDs = false;
         const int options = 0;
 
-        db.insert(nss(), BSON("x" << 2));
+        db.insert(ns(), BSON("x" << 2));
         ASSERT_EQUALS(1u, db.getIndexSpecs(nss(), includeBuildUUIDs, options).size());
 
         ASSERT_OK(dbtests::createIndex(&opCtx, ns(), BSON("x" << 1)));
         ASSERT_EQUALS(2u, db.getIndexSpecs(nss(), includeBuildUUIDs, options).size());
 
-        db.dropIndex(nss(), BSON("x" << 1));
+        db.dropIndex(ns(), BSON("x" << 1));
         ASSERT_EQUALS(1u, db.getIndexSpecs(nss(), includeBuildUUIDs, options).size());
 
         ASSERT_OK(dbtests::createIndex(&opCtx, ns(), BSON("x" << 1)));
         ASSERT_EQUALS(2u, db.getIndexSpecs(nss(), includeBuildUUIDs, options).size());
 
-        db.dropIndexes(nss());
+        db.dropIndexes(ns());
         ASSERT_EQUALS(1u, db.getIndexSpecs(nss(), includeBuildUUIDs, options).size());
     }
 };
@@ -116,8 +116,8 @@ public:
         dbtests::WriteContextForTests ctx(&opCtx, ns());
         DBDirectClient db(&opCtx);
 
-        db.insert(nss(), BSON("x" << 1 << "y" << 2));
-        db.insert(nss(), BSON("x" << 2 << "y" << 2));
+        db.insert(ns(), BSON("x" << 1 << "y" << 2));
+        db.insert(ns(), BSON("x" << 2 << "y" << 2));
 
         ASSERT(ctx.getCollection());
         // Helper to refetch the IndexCatalog from the catalog in order to see any changes made to
@@ -129,19 +129,19 @@ public:
         const bool includeBuildUUIDs = false;
         const int options = 0;
 
-        ASSERT_EQUALS(1, indexCatalog()->numIndexesReady());
+        ASSERT_EQUALS(1, indexCatalog()->numIndexesReady(&opCtx));
         // _id index
         ASSERT_EQUALS(1U, db.getIndexSpecs(nss(), includeBuildUUIDs, options).size());
 
         ASSERT_EQUALS(ErrorCodes::DuplicateKey,
                       dbtests::createIndex(&opCtx, ns(), BSON("y" << 1), true));
 
-        ASSERT_EQUALS(1, indexCatalog()->numIndexesReady());
+        ASSERT_EQUALS(1, indexCatalog()->numIndexesReady(&opCtx));
         ASSERT_EQUALS(1U, db.getIndexSpecs(nss(), includeBuildUUIDs, options).size());
 
         ASSERT_OK(dbtests::createIndex(&opCtx, ns(), BSON("x" << 1), true));
 
-        ASSERT_EQUALS(2, indexCatalog()->numIndexesReady());
+        ASSERT_EQUALS(2, indexCatalog()->numIndexesReady(&opCtx));
         ASSERT_EQUALS(2U, db.getIndexSpecs(nss(), includeBuildUUIDs, options).size());
     }
 };
@@ -156,7 +156,7 @@ public:
 
         const string longs(770, 'c');
         for (int i = 0; i < 1111; ++i) {
-            db.insert(nss(), BSON("a" << i << "b" << longs));
+            db.insert(ns(), BSON("a" << i << "b" << longs));
         }
 
         ASSERT_OK(dbtests::createIndex(&opCtx, ns(), BSON("a" << 1 << "b" << 1)));
@@ -177,7 +177,7 @@ public:
         DBDirectClient db(&opCtx);
 
         for (int i = 0; i < 10; ++i) {
-            db.insert(nss(), BSON("i" << i));
+            db.insert(ns(), BSON("i" << i));
         }
 
         FindCommandRequest findRequest{NamespaceString{ns()}};
@@ -223,10 +223,10 @@ public:
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
-        const NamespaceString nss("unittests.clienttests.create");
-        db.createCollection(nss);
+
+        db.createCollection("unittests.clienttests.create");
         BSONObj info;
-        ASSERT(db.runCommand(nss.dbName(),
+        ASSERT(db.runCommand("unittests",
                              BSON("collstats"
                                   << "clienttests.create"),
                              info));
@@ -257,7 +257,7 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.createIndex(nss(), IndexSpec().addKey("aField").version(1));
+        db.createIndex(ns(), IndexSpec().addKey("aField").version(1));
     }
 };
 
@@ -269,7 +269,7 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.createIndex(nss(), IndexSpec().addKey("aField").version(1).name("aFieldV1Index"));
+        db.createIndex(ns(), IndexSpec().addKey("aField").version(1).name("aFieldV1Index"));
     }
 };
 
@@ -281,7 +281,7 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.createIndex(nss(),
+        db.createIndex(ns(),
                        IndexSpec()
                            .addKey("aField")
                            .addKey("bField", IndexSpec::kIndexTypeDescending)
@@ -300,7 +300,7 @@ public:
         DBDirectClient db(&opCtx);
 
         db.createIndex(
-            nss(), IndexSpec().addKey("aField").background().unique().sparse().dropDuplicates());
+            ns(), IndexSpec().addKey("aField").background().unique().sparse().dropDuplicates());
     }
 };
 
@@ -312,7 +312,7 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.createIndex(nss(),
+        db.createIndex(ns(),
                        IndexSpec()
                            .addKey("aField", IndexSpec::kIndexTypeText)
                            .addKey("bField", IndexSpec::kIndexTypeText)
@@ -331,7 +331,7 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.createIndex(nss(),
+        db.createIndex(ns(),
                        IndexSpec()
                            .addKey("aField", IndexSpec::kIndexTypeGeo2D)
                            .geo2DBits(20)
@@ -348,7 +348,7 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.createIndex(nss(),
+        db.createIndex(ns(),
                        IndexSpec()
                            .addKey("aField", IndexSpec::kIndexTypeGeo2DSphere)
                            .geo2DSphereIndexVersion(2));
@@ -363,7 +363,7 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.createIndex(nss(), IndexSpec().addKey("aField", IndexSpec::kIndexTypeHashed));
+        db.createIndex(ns(), IndexSpec().addKey("aField", IndexSpec::kIndexTypeHashed));
     }
 };
 
@@ -375,8 +375,8 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         DBDirectClient db(&opCtx);
 
-        db.createIndex(nss(), IndexSpec().addKey("aField"));
-        ASSERT_THROWS(db.createIndex(nss(), IndexSpec().addKey("aField").unique()),
+        db.createIndex(ns(), IndexSpec().addKey("aField"));
+        ASSERT_THROWS(db.createIndex(ns(), IndexSpec().addKey("aField").unique()),
                       AssertionException);
     }
 };

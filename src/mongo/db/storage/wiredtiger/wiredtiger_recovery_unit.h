@@ -45,8 +45,8 @@
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_begin_transaction_block.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
-#include "mongo/db/storage/wiredtiger/wiredtiger_stats.h"
 #include "mongo/util/timer.h"
+
 namespace mongo {
 
 using RoundUpPreparedTimestamps = WiredTigerBeginTxnBlock::RoundUpPreparedTimestamps;
@@ -55,6 +55,41 @@ using RoundUpReadTimestamp = WiredTigerBeginTxnBlock::RoundUpReadTimestamp;
 extern AtomicWord<std::int64_t> snapshotTooOldErrorCount;
 
 class BSONObjBuilder;
+
+class WiredTigerOperationStats final : public StorageStats {
+public:
+    /**
+     *  There are two types of statistics provided by WiredTiger engine - data and wait.
+     */
+    enum class Section { DATA, WAIT };
+
+    BSONObj toBSON() final;
+
+    StorageStats& operator+=(const StorageStats&) final;
+
+    WiredTigerOperationStats& operator+=(const WiredTigerOperationStats&);
+
+    /**
+     * Fetches an operation's storage statistics from WiredTiger engine.
+     */
+    void fetchStats(WT_SESSION*, const std::string&, const std::string&);
+
+    std::shared_ptr<StorageStats> getCopy() final;
+
+private:
+    /**
+     * Each statistic in WiredTiger has an integer key, which this map associates with a section
+     * (either DATA or WAIT) and user-readable name.
+     */
+    static std::map<int, std::pair<StringData, Section>> _statNameMap;
+
+    /**
+     * Stores the value for each statistic returned by a WiredTiger cursor. Each statistic is
+     * associated with an integer key, which can be mapped to a name and section using the
+     * '_statNameMap'.
+     */
+    std::map<int, long long> _stats;
+};
 
 class WiredTigerRecoveryUnit final : public RecoveryUnit {
 public:
@@ -70,6 +105,7 @@ public:
     WiredTigerRecoveryUnit(WiredTigerSessionCache* sc, WiredTigerOplogManager* oplogManager);
     ~WiredTigerRecoveryUnit();
 
+    void beginUnitOfWork(OperationContext* opCtx) override;
     void prepareUnitOfWork() override;
 
     bool waitUntilDurable(OperationContext* opCtx) override;
@@ -113,12 +149,6 @@ public:
 
     Timestamp getCatalogConflictingTimestamp() const override;
 
-    void allowUntimestampedWrite() override {
-        invariant(!_isActive());
-        _untimestampedWriteAssertion =
-            WiredTigerBeginTxnBlock::UntimestampedWriteAssertion::kSuppress;
-    }
-
     void setTimestampReadSource(ReadSource source,
                                 boost::optional<Timestamp> provided = boost::none) override;
 
@@ -144,7 +174,9 @@ public:
         return _readOnce;
     };
 
-    std::unique_ptr<StorageStats> computeOperationStatisticsSinceLastCall() override;
+    std::shared_ptr<StorageStats> getOperationStatistics() const override;
+
+    void refreshSnapshot() override;
 
     void ignoreAllMultiTimestampConstraints() {
         _multiTimestampConstraintTracker.ignoreAllMultiTimestampConstraints = true;
@@ -200,7 +232,6 @@ public:
     void storeWriteContextForDebugging(const BSONObj& info);
 
 private:
-    void doBeginUnitOfWork() override;
     void doCommitUnitOfWork() override;
     void doAbortUnitOfWork() override;
 
@@ -280,15 +311,11 @@ private:
     boost::optional<Timestamp> _lastTimestampSet;
     Timestamp _readAtTimestamp;
     Timestamp _catalogConflictTimestamp;
-    WiredTigerBeginTxnBlock::UntimestampedWriteAssertion _untimestampedWriteAssertion =
-        WiredTigerBeginTxnBlock::UntimestampedWriteAssertion::kEnforce;
     std::unique_ptr<Timer> _timer;
     bool _isOplogReader = false;
     boost::optional<int64_t> _oplogVisibleTs = boost::none;
     bool _gatherWriteContextForDebugging = false;
     std::vector<BSONObj> _writeContextForDebugging;
-
-    WiredTigerStats _sessionStatsAfterLastOperation;
 };
 
 }  // namespace mongo

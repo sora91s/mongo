@@ -32,6 +32,8 @@
 
 namespace mongo {
 
+void initMyNativeSaslClientSession();
+
 class SaslClientConversation;
 
 /**

@@ -75,9 +75,7 @@ typedef struct {
     /*
      * Configuration values are set at startup.
      */
-    uint32_t cache;       /* This flag determines whether or not we cache the file locally. */
     uint32_t delay_ms;    /* Average length of delay when simulated */
-    uint32_t error_ms;    /* Average length of sleep when simulated */
     uint32_t force_delay; /* Force a simulated network delay every N operations */
     uint32_t force_error; /* Force a simulated network error every N operations */
     uint32_t verbose;     /* Verbose level */
@@ -131,7 +129,7 @@ static int dir_store_configure_int(DIR_STORE *, WT_CONFIG_ARG *, const char *, u
 static int dir_store_delay(DIR_STORE *);
 static int dir_store_err(DIR_STORE *, WT_SESSION *, int, const char *, ...);
 static int dir_store_file_copy(
-  DIR_STORE *, WT_SESSION *, const char *, const char *, WT_FS_OPEN_FILE_TYPE, bool);
+  DIR_STORE *, WT_SESSION *, const char *, const char *, WT_FS_OPEN_FILE_TYPE);
 static int dir_store_get_directory(const char *, const char *, ssize_t len, bool, char **);
 static int dir_store_path(WT_FILE_SYSTEM *, const char *, const char *, char **);
 static int dir_store_stat(
@@ -165,7 +163,6 @@ static int dir_store_fs_terminate(WT_FILE_SYSTEM *, WT_SESSION *);
 static int dir_store_open(WT_FILE_SYSTEM *, WT_SESSION *, const char *,
   WT_FS_OPEN_FILE_TYPE file_type, uint32_t, WT_FILE_HANDLE **);
 static int dir_store_remove(WT_FILE_SYSTEM *, WT_SESSION *, const char *, uint32_t);
-static int dir_store_remove_if_exists(WT_FILE_SYSTEM *, WT_SESSION *, char *, uint32_t);
 static int dir_store_rename(WT_FILE_SYSTEM *, WT_SESSION *, const char *, const char *, uint32_t);
 static int dir_store_size(WT_FILE_SYSTEM *, WT_SESSION *, const char *, wt_off_t *);
 
@@ -197,11 +194,7 @@ dir_store_configure(DIR_STORE *dir_store, WT_CONFIG_ARG *config)
 {
     int ret;
 
-    if ((ret = dir_store_configure_int(dir_store, config, "cache", &dir_store->cache)) != 0)
-        return (ret);
     if ((ret = dir_store_configure_int(dir_store, config, "delay_ms", &dir_store->delay_ms)) != 0)
-        return (ret);
-    if ((ret = dir_store_configure_int(dir_store, config, "error_ms", &dir_store->error_ms)) != 0)
         return (ret);
     if ((ret = dir_store_configure_int(
            dir_store, config, "force_delay", &dir_store->force_delay)) != 0)
@@ -243,27 +236,13 @@ dir_store_configure_int(
 }
 
 /*
- * sleep_ms --
- *     Sleep for the specified milliseconds.
- */
-static void
-sleep_ms(uint32_t ms)
-{
-    struct timeval tv;
-
-    /* Cast needed for some compilers that suspect the calculation can overflow (it can't). */
-    tv.tv_sec = ms / 1000;
-    tv.tv_usec = (suseconds_t)(ms % 1000) * 1000;
-    (void)select(0, NULL, NULL, NULL, &tv);
-}
-
-/*
  * dir_store_delay --
  *     Add any artificial delay or simulated network error during an object transfer.
  */
 static int
 dir_store_delay(DIR_STORE *dir_store)
 {
+    struct timeval tv;
     int ret;
 
     ret = 0;
@@ -273,16 +252,21 @@ dir_store_delay(DIR_STORE *dir_store)
           "Artificial delay %" PRIu32 " milliseconds after %" PRIu64 " object reads, %" PRIu64
           " object writes\n",
           dir_store->delay_ms, dir_store->object_reads, dir_store->object_writes);
-        sleep_ms(dir_store->delay_ms);
+        /*
+         * tv_usec has type suseconds_t, which is signed (hence the s), but ->delay_ms is unsigned.
+         * In both gcc8 and gcc10 with -Wsign-conversion enabled (as we do) this causes a spurious
+         * warning about the implicit conversion possibly changing the value. Hence the explicit
+         * cast. (both struct timeval and suseconds_t are POSIX)
+         */
+        tv.tv_sec = dir_store->delay_ms / 1000;
+        tv.tv_usec = (suseconds_t)(dir_store->delay_ms % 1000) * 1000;
+        (void)select(0, NULL, NULL, NULL, &tv);
     }
     if (dir_store->force_error != 0 &&
       (dir_store->object_reads + dir_store->object_writes) % dir_store->force_error == 0) {
         VERBOSE_LS(dir_store,
-          "Artificial error returned after %" PRIu32 " milliseconds sleep, %" PRIu64
-          " object reads, %" PRIu64 " object writes\n",
-          dir_store->error_ms, dir_store->object_reads, dir_store->object_writes);
-
-        sleep_ms(dir_store->error_ms);
+          "Artificial error returned after %" PRIu64 " object reads, %" PRIu64 " object writes\n",
+          dir_store->object_reads, dir_store->object_writes);
         ret = ENETUNREACH;
     }
 
@@ -333,12 +317,9 @@ dir_store_get_directory(const char *home, const char *s, ssize_t len, bool creat
         dirname = strndup(s, (size_t)len + 1); /* Room for null */
     else {
         buflen = (size_t)len + strlen(home) + 2; /* Room for slash, null */
-        if ((dirname = malloc(buflen)) != NULL) {
-            if (snprintf(dirname, buflen, "%s/%.*s", home, (int)len, s) >= (int)buflen) {
-                free(dirname);
+        if ((dirname = malloc(buflen)) != NULL)
+            if (snprintf(dirname, buflen, "%s/%.*s", home, (int)len, s) >= (int)buflen)
                 return (EINVAL);
-            }
-        }
     }
     if (dirname == NULL)
         return (ENOMEM);
@@ -416,10 +397,8 @@ dir_store_path(WT_FILE_SYSTEM *file_system, const char *dir, const char *name, c
     len = strlen(dir) + strlen(name) + 2;
     if ((p = malloc(len)) == NULL)
         return (dir_store_err(FS2DS(file_system), NULL, ENOMEM, "dir_store_path"));
-    if (snprintf(p, len, "%s/%s", dir, name) >= (int)len) {
-        free(p);
-        return (dir_store_err(FS2DS(file_system), NULL, EINVAL, "overflow snprintf"));
-    }
+    if (snprintf(p, len, "%s/%s", dir, name) >= (int)len)
+        return (dir_store_err(FS2DS(file_system), NULL, EINVAL, "overflow sprintf"));
     *pathp = p;
     return (ret);
 }
@@ -449,7 +428,6 @@ dir_store_stat(WT_FILE_SYSTEM *file_system, WT_SESSION *session, const char *nam
     if (ret != 0 && errno == ENOENT) {
         /* It's not in the cache, try the bucket directory. */
         free(path);
-        path = NULL;
         if ((ret = dir_store_bucket_path(file_system, name, &path)) != 0)
             goto err;
         ret = stat(path, statp);
@@ -578,7 +556,6 @@ dir_store_customize_file_system(WT_STORAGE_SOURCE *storage_source, WT_SESSION *s
           dir_store, session, ret, "%*s: cache directory", (int)cachedir.len, cachedir.str);
         goto err;
     }
-
     fs->file_system.fs_directory_list = dir_store_directory_list;
     fs->file_system.fs_directory_list_single = dir_store_directory_list_single;
     fs->file_system.fs_directory_list_free = dir_store_directory_list_free;
@@ -630,7 +607,7 @@ dir_store_exist(WT_FILE_SYSTEM *file_system, WT_SESSION *session, const char *na
  */
 static int
 dir_store_file_copy(DIR_STORE *dir_store, WT_SESSION *session, const char *src_path,
-  const char *dest_path, WT_FS_OPEN_FILE_TYPE type, bool enoent_okay)
+  const char *dest_path, WT_FS_OPEN_FILE_TYPE type)
 {
     WT_FILE_HANDLE *dest, *src;
     WT_FILE_SYSTEM *wt_fs;
@@ -648,9 +625,6 @@ dir_store_file_copy(DIR_STORE *dir_store, WT_SESSION *session, const char *src_p
             goto err;
         }
 
-    if (tmp_path == NULL)
-        return (ENOMEM);
-
     if ((ret = dir_store->wt_api->file_system_get(dir_store->wt_api, session, &wt_fs)) != 0) {
         ret = dir_store_err(
           dir_store, session, ret, "dir_store_file_system: cannot get WiredTiger file system");
@@ -658,12 +632,7 @@ dir_store_file_copy(DIR_STORE *dir_store, WT_SESSION *session, const char *src_p
     }
     if ((ret = wt_fs->fs_open_file(wt_fs, session, src_path, type, WT_FS_OPEN_READONLY, &src)) !=
       0) {
-        /*
-         * It is normal and possible that the source file was dropped. Don't print out an error
-         * message in that case, but still return the ENOENT error value.
-         */
-        if ((ret == ENOENT && !enoent_okay) || (ret != 0))
-            ret = dir_store_err(dir_store, session, ret, "%s: cannot open for read", src_path);
+        ret = dir_store_err(dir_store, session, ret, "%s: cannot open for read", src_path);
         goto err;
     }
 
@@ -738,7 +707,7 @@ dir_store_flush(WT_STORAGE_SOURCE *storage_source, WT_SESSION *session, WT_FILE_
         goto err;
 
     if ((ret = dir_store_file_copy(
-           dir_store, session, src_path, dest_path, WT_FS_OPEN_FILE_TYPE_DATA, true)) != 0)
+           dir_store, session, src_path, dest_path, WT_FS_OPEN_FILE_TYPE_DATA)) != 0)
         goto err;
 
     dir_store->object_writes++;
@@ -766,9 +735,6 @@ dir_store_flush_finish(WT_STORAGE_SOURCE *storage_source, WT_SESSION *session,
     dir_store = (DIR_STORE *)storage_source;
     ret = 0;
 
-    if (dir_store->cache == 0)
-        return (0);
-
     if (file_system == NULL || source == NULL || object == NULL)
         return dir_store_err(
           dir_store, session, EINVAL, "ss_flush_finish: required arguments missing");
@@ -790,7 +756,7 @@ dir_store_flush_finish(WT_STORAGE_SOURCE *storage_source, WT_SESSION *session,
         goto err;
     }
     /* Set the file to readonly in the cache. */
-    if ((ret = chmod(dest_path, 0444)) < 0)
+    if (ret == 0 && (ret = chmod(dest_path, 0444)) < 0)
         ret =
           dir_store_err(dir_store, session, errno, "%s: ss_flush_finish chmod failed", dest_path);
 err:
@@ -990,6 +956,8 @@ dir_store_open(WT_FILE_SYSTEM *file_system, WT_SESSION *session, const char *nam
     int ret;
     char *bucket_path, *cache_path;
 
+    (void)flags; /* Unused */
+
     ret = 0;
     *file_handlep = NULL;
     dir_store_fh = NULL;
@@ -1022,51 +990,34 @@ dir_store_open(WT_FILE_SYSTEM *file_system, WT_SESSION *session, const char *nam
         ret = ENOMEM;
         goto err;
     }
-    if (dir_store->cache != 0) {
-        if ((ret = dir_store_cache_path(file_system, name, &cache_path)) != 0)
-            goto err;
-        ret = stat(cache_path, &sb);
-        if (ret != 0) {
-            if (errno != ENOENT) {
-                ret =
-                  dir_store_err(dir_store, session, errno, "%s: dir_store_open stat", cache_path);
-                goto err;
-            }
-
-            /*
-             * The file doesn't exist locally, make a copy of it from the cloud.
-             */
-            if ((ret = dir_store_bucket_path(file_system, name, &bucket_path)) != 0)
-                goto err;
-
-            if ((ret = dir_store_delay(dir_store)) != 0)
-                goto err;
-
-            if ((ret = dir_store_file_copy(dir_store, session, bucket_path, cache_path,
-                   WT_FS_OPEN_FILE_TYPE_DATA, false)) != 0)
-                goto err;
-        }
-        if ((ret = wt_fs->fs_open_file(wt_fs, session, cache_path, file_type, flags, &wt_fh)) !=
-          0) {
-            ret = dir_store_err(dir_store, session, ret, "ss_open_object: open: %s", name);
+    if ((ret = dir_store_cache_path(file_system, name, &cache_path)) != 0)
+        goto err;
+    ret = stat(cache_path, &sb);
+    if (ret != 0) {
+        if (errno != ENOENT) {
+            ret = dir_store_err(dir_store, session, errno, "%s: dir_store_open stat", cache_path);
             goto err;
         }
-    } else {
+
+        /*
+         * The file doesn't exist locally, make a copy of it from the cloud.
+         */
         if ((ret = dir_store_bucket_path(file_system, name, &bucket_path)) != 0)
             goto err;
-        ret = stat(bucket_path, &sb);
-        if (ret != 0) {
-            ret = dir_store_err(dir_store, session, errno, "%s: dir_store_open stat", bucket_path);
-            goto err;
-        }
-        if ((ret = wt_fs->fs_open_file(wt_fs, session, bucket_path, file_type, flags, &wt_fh)) !=
-          0) {
-            ret = dir_store_err(dir_store, session, ret, "ss_open_object: open: %s", name);
-            goto err;
-        }
-    }
 
-    dir_store->object_reads++;
+        if ((ret = dir_store_delay(dir_store)) != 0)
+            goto err;
+
+        if ((ret = dir_store_file_copy(
+               dir_store, session, bucket_path, cache_path, WT_FS_OPEN_FILE_TYPE_DATA)) != 0)
+            goto err;
+
+        dir_store->object_reads++;
+    }
+    if ((ret = wt_fs->fs_open_file(wt_fs, session, cache_path, file_type, flags, &wt_fh)) != 0) {
+        ret = dir_store_err(dir_store, session, ret, "ss_open_object: open: %s", name);
+        goto err;
+    }
     dir_store_fh->fh = wt_fh;
     dir_store_fh->dir_store = dir_store;
 
@@ -1114,8 +1065,7 @@ dir_store_open(WT_FILE_SYSTEM *file_system, WT_SESSION *session, const char *nam
 
 err:
     free(bucket_path);
-    if (cache_path != NULL)
-        free(cache_path);
+    free(cache_path);
     if (ret != 0) {
         if (dir_store_fh != NULL)
             dir_store_file_close_internal(dir_store, session, dir_store_fh);
@@ -1140,74 +1090,15 @@ dir_store_rename(WT_FILE_SYSTEM *file_system, WT_SESSION *session, const char *f
 
 /*
  * dir_store_remove --
- *     Calls the corresponding remove method of the file system behind our dir_store storage source.
+ *     POSIX remove, not supported for cloud objects.
  */
 static int
 dir_store_remove(WT_FILE_SYSTEM *file_system, WT_SESSION *session, const char *name, uint32_t flags)
 {
-    DIR_STORE *dir_store;
-    int ret;
-    char *bucket_path, *cache_path;
+    (void)flags; /* unused */
 
-    bucket_path = cache_path = NULL;
-    dir_store = ((DIR_STORE_FILE_SYSTEM *)file_system)->dir_store;
-    ret = 0;
-
-    if (dir_store->cache) {
-        /* Check to see if the file exists in the cache directory before attempting to remove it. */
-        if ((ret = dir_store_cache_path(file_system, name, &cache_path)) != 0)
-            goto err;
-        if ((ret = dir_store_remove_if_exists(file_system, session, cache_path, flags)) != 0)
-            goto err;
-    }
-
-    /* Check to see if the file exists in the bucket directory before attempting to remove it. */
-    if ((ret = dir_store_bucket_path(file_system, name, &bucket_path)) != 0)
-        goto err;
-    if ((ret = dir_store_remove_if_exists(file_system, session, bucket_path, flags)) != 0)
-        goto err;
-
-err:
-    free(bucket_path);
-    if (cache_path != NULL)
-        free(cache_path);
-    return (ret);
-}
-
-/*
- * dir_store_remove_if_exists --
- *     Checks to see if the specified file exists in the directory before attempting to remove it.
- */
-static int
-dir_store_remove_if_exists(
-  WT_FILE_SYSTEM *file_system, WT_SESSION *session, char *file_path, uint32_t flags)
-{
-    struct stat sb;
-    DIR_STORE_FILE_SYSTEM *dir_store_fs;
-    WT_FILE_SYSTEM *wt_fs;
-    int ret;
-
-    dir_store_fs = (DIR_STORE_FILE_SYSTEM *)file_system;
-    wt_fs = dir_store_fs->wt_fs;
-
-    ret = stat(file_path, &sb);
-    if (ret != 0) {
-        if (errno != ENOENT) {
-            ret = dir_store_err(
-              FS2DS(file_system), session, errno, "%s: dir_store_remove stat", file_path);
-            goto err;
-        }
-        ret = 0;
-    } else {
-        if ((ret = wt_fs->fs_remove(wt_fs, session, file_path, flags)) != 0) {
-            ret =
-              dir_store_err(FS2DS(file_system), session, errno, "%s: dir_store_remove", file_path);
-            goto err;
-        }
-    }
-
-err:
-    return (ret);
+    return (dir_store_err(
+      FS2DS(file_system), session, ENOTSUP, "%s: remove of file not supported", name));
 }
 
 /*
@@ -1437,9 +1328,6 @@ wiredtiger_extension_init(WT_CONNECTION *connection, WT_CONFIG_ARG *config)
      * The first reference is implied by the call to add_storage_source.
      */
     dir_store->reference_count = 1;
-
-    /* Cache files locally by default */
-    dir_store->cache = 1;
 
     if ((ret = dir_store_configure(dir_store, config)) != 0) {
         free(dir_store);

@@ -60,12 +60,14 @@ RemoteCommandRequestBase::RemoteCommandRequestBase(RequestId requestId,
                                                    const BSONObj& metadataObj,
                                                    OperationContext* opCtx,
                                                    Milliseconds timeoutMillis,
-                                                   Options options)
+                                                   boost::optional<HedgeOptions> hedgeOptions,
+                                                   FireAndForgetMode fireAndForgetMode)
     : id(requestId),
       dbname(theDbName),
       metadata(metadataObj),
       opCtx(opCtx),
-      options(options),
+      hedgeOptions(hedgeOptions),
+      fireAndForgetMode(fireAndForgetMode),
       timeout(timeoutMillis) {
     // If there is a comment associated with the current operation, append it to the command that we
     // are about to dispatch to the shards.
@@ -80,9 +82,9 @@ RemoteCommandRequestBase::RemoteCommandRequestBase(RequestId requestId,
                           << query_request_helper::kMaxTimeMSOpOnlyField,
             !cmdObj.hasField(query_request_helper::kMaxTimeMSOpOnlyField));
 
-    if (options.hedgeOptions.isHedgeEnabled) {
+    if (hedgeOptions) {
         operationKey.emplace(UUID::gen());
-        cmdObj = cmdObj.addField(BSON("clientOperationKey" << operationKey.value()).firstElement());
+        cmdObj = cmdObj.addField(BSON("clientOperationKey" << operationKey.get()).firstElement());
     }
 
     if (opCtx && APIParameters::get(opCtx).getParamsPassed()) {
@@ -128,9 +130,16 @@ RemoteCommandRequestImpl<T>::RemoteCommandRequestImpl(RequestId requestId,
                                                       const BSONObj& metadataObj,
                                                       OperationContext* opCtx,
                                                       Milliseconds timeoutMillis,
-                                                      Options options)
-    : RemoteCommandRequestBase(
-          requestId, theDbName, theCmdObj, metadataObj, opCtx, timeoutMillis, options),
+                                                      boost::optional<HedgeOptions> hedgeOptions,
+                                                      FireAndForgetMode fireAndForgetMode)
+    : RemoteCommandRequestBase(requestId,
+                               theDbName,
+                               theCmdObj,
+                               metadataObj,
+                               opCtx,
+                               timeoutMillis,
+                               hedgeOptions,
+                               fireAndForgetMode),
       target(theTarget) {
     if constexpr (std::is_same_v<T, std::vector<HostAndPort>>) {
         invariant(!theTarget.empty());
@@ -144,7 +153,8 @@ RemoteCommandRequestImpl<T>::RemoteCommandRequestImpl(const T& theTarget,
                                                       const BSONObj& metadataObj,
                                                       OperationContext* opCtx,
                                                       Milliseconds timeoutMillis,
-                                                      Options options)
+                                                      boost::optional<HedgeOptions> hedgeOptions,
+                                                      FireAndForgetMode fireAndForgetMode)
     : RemoteCommandRequestImpl(requestIdCounter.addAndFetch(1),
                                theTarget,
                                theDbName,
@@ -152,7 +162,8 @@ RemoteCommandRequestImpl<T>::RemoteCommandRequestImpl(const T& theTarget,
                                metadataObj,
                                opCtx,
                                timeoutMillis,
-                               options) {}
+                               hedgeOptions,
+                               fireAndForgetMode) {}
 
 template <typename T>
 std::string RemoteCommandRequestImpl<T>::toString() const {
@@ -169,10 +180,10 @@ std::string RemoteCommandRequestImpl<T>::toString() const {
         out << " expDate:" << (*dateScheduled + timeout).toString();
     }
 
-    if (options.hedgeOptions.isHedgeEnabled) {
+    if (hedgeOptions) {
         invariant(operationKey);
-        out << " options.hedgeCount: " << options.hedgeOptions.hedgeCount;
-        out << " operationKey: " << operationKey.value();
+        out << " hedgeOptions.count: " << hedgeOptions->count;
+        out << " operationKey: " << operationKey.get();
     }
 
     out << " cmd:" << cmdObj.toString();
@@ -197,10 +208,6 @@ bool RemoteCommandRequestImpl<T>::operator!=(const RemoteCommandRequestImpl& rhs
 
 template struct RemoteCommandRequestImpl<HostAndPort>;
 template struct RemoteCommandRequestImpl<std::vector<HostAndPort>>;
-
-void RemoteCommandRequestBase::Options::resetHedgeOptions() {
-    hedgeOptions = {};
-}
 
 }  // namespace executor
 }  // namespace mongo

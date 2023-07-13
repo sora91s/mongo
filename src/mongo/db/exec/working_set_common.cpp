@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -36,8 +37,6 @@
 
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/catalog/health_log_gen.h"
-#include "mongo/db/catalog/health_log_interface.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/query/canonical_query.h"
@@ -45,10 +44,6 @@
 #include "mongo/db/storage/execution_context.h"
 #include "mongo/db/storage/index_entry_comparison.h"
 #include "mongo/logv2/log.h"
-#include "mongo/util/stacktrace.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -111,30 +106,6 @@ bool WorkingSetCommon::fetch(OperationContext* opCtx,
                 builder.append("pattern"_sd, ikd.indexKeyPattern);
                 return builder.obj();
             };
-
-            HealthLogEntry entry;
-            entry.setNss(ns);
-            entry.setTimestamp(Date_t::now());
-            entry.setSeverity(SeverityEnum::Error);
-            entry.setScope(ScopeEnum::Index);
-            entry.setOperation("Index scan");
-            entry.setMsg("Erroneous index key found with reference to non-existent record id");
-
-            BSONObjBuilder bob;
-            bob.append("recordId", member->recordId.toString());
-
-            const BSONArray indexKeyData =
-                logv2::seqLog(
-                    boost::make_transform_iterator(member->keyData.begin(), indexKeyEntryToObjFn),
-                    boost::make_transform_iterator(member->keyData.end(), indexKeyEntryToObjFn))
-                    .toBSONArray();
-            bob.append("indexKeyData", indexKeyData);
-
-            bob.appendElements(getStackTrace().getBSONRepresentation());
-            entry.setData(bob.obj());
-
-            HealthLogInterface::get(opCtx)->log(entry);
-
             LOGV2_ERROR_OPTIONS(
                 4615603,
                 {logv2::UserAssertAfterLog(ErrorCodes::DataCorruptionDetected)},
@@ -143,7 +114,9 @@ bool WorkingSetCommon::fetch(OperationContext* opCtx,
                 "on the collection.",
                 "namespace"_attr = ns,
                 "recordId"_attr = member->recordId,
-                "indexKeyData"_attr = indexKeyData);
+                "indexKeyData"_attr = logv2::seqLog(
+                    boost::make_transform_iterator(member->keyData.begin(), indexKeyEntryToObjFn),
+                    boost::make_transform_iterator(member->keyData.end(), indexKeyEntryToObjFn)));
         }
         return false;
     }
@@ -172,12 +145,7 @@ bool WorkingSetCommon::fetch(OperationContext* opCtx,
             // index to be multikey when ensuring the keyData is still valid.
             KeyStringSet* multikeyMetadataKeys = nullptr;
             MultikeyPaths* multikeyPaths = nullptr;
-            const StringData indexIdent = workingSet->retrieveIndexIdent(memberKey.indexId);
-            auto desc = collection->getIndexCatalog()->findIndexByIdent(opCtx, indexIdent);
-            invariant(desc,
-                      str::stream() << "Index entry not found for index with ident " << indexIdent
-                                    << " on collection " << collection->ns());
-            auto* iam = desc->getEntry()->accessMethod()->asSortedData();
+            auto* iam = workingSet->retrieveIndexAccessMethod(memberKey.indexId)->asSortedData();
             iam->getKeys(opCtx,
                          collection,
                          pool,

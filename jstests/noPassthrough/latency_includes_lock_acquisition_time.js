@@ -6,6 +6,8 @@
 (function() {
 "use strict";
 
+load("jstests/libs/logv2_helpers.js");
+
 /**
  * Configures the server to wait for 'millis' while acquiring locks in the CRUD path, then
  * invokes the no-arguments function 'func', then disables the aforementioned lock wait
@@ -50,7 +52,9 @@ let profileEntry = getLatestProfilerEntry(testDB, {
     "command.insert": testColl.getName(),
 });
 assert.gte(profileEntry.millis, hangMillis - padding);
-checkLog.contains(conn, /"ns":"test.lock_acquisition_time".*"command":{"insert"/);
+checkLog.contains(conn,
+                  !isJsonLog(conn) ? "insert { insert: \"lock_acquisition_time\""
+                                   : /"ns":"test.lock_acquisition_time".*"command":{"insert"/);
 
 // Test that update profiler/logs include lock acquisition time.
 runWithWait(hangMillis, function() {
@@ -61,7 +65,10 @@ profileEntry = getLatestProfilerEntry(testDB, {
     "command.u": {$eq: {$set: {b: 1}}},
 });
 assert.gte(profileEntry.millis, hangMillis - padding);
-checkLog.contains(conn, /"ns":"test.\$cmd".*"command":{"update":"lock_acquisition_time"/);
+checkLog.contains(conn,
+                  !isJsonLog(conn)
+                      ? "update { update: \"lock_acquisition_time\""
+                      : /"ns":"test.\$cmd".*"command":{"update":"lock_acquisition_time"/);
 
 // Test that find profiler/logs include lock acquisition time.
 runWithWait(hangMillis, function() {
@@ -72,7 +79,9 @@ profileEntry = getLatestProfilerEntry(testDB, {
     "command.find": testColl.getName(),
 });
 assert.gte(profileEntry.millis, hangMillis - padding);
-checkLog.contains(conn, '"command":{"find":"lock_acquisition_time"');
+checkLog.contains(conn,
+                  !isJsonLog(conn) ? "find { find: \"lock_acquisition_time\""
+                                   : '"command":{"find":"lock_acquisition_time"');
 
 // Test that getMore profiler/logs include lock acquisition time.
 assert.commandWorked(testColl.insert([{a: 2}, {a: 3}]));
@@ -85,7 +94,9 @@ profileEntry = getLatestProfilerEntry(testDB, {
     "command.getMore": {$exists: true},
 });
 assert.gte(profileEntry.millis, hangMillis - padding);
-checkLog.contains(conn, '"originatingCommand":{"find":"lock_acquisition_time"');
+checkLog.contains(conn,
+                  !isJsonLog(conn) ? "originatingCommand: { find: \"lock_acquisition_time\""
+                                   : '"originatingCommand":{"find":"lock_acquisition_time"');
 assert.commandWorked(testColl.remove({a: {$gt: 1}}));
 
 // Test that aggregate profiler/logs include lock acquisition time.
@@ -97,7 +108,9 @@ profileEntry = getLatestProfilerEntry(testDB, {
     "command.aggregate": testColl.getName(),
 });
 assert.gte(profileEntry.millis, hangMillis - padding);
-checkLog.contains(conn, '"command":{"aggregate":"lock_acquisition_time"');
+checkLog.contains(conn,
+                  !isJsonLog(conn) ? "aggregate { aggregate: \"lock_acquisition_time\""
+                                   : '"command":{"aggregate":"lock_acquisition_time"');
 
 // Test that count profiler/logs include lock acquisition time.
 runWithWait(hangMillis, function() {
@@ -108,7 +121,9 @@ profileEntry = getLatestProfilerEntry(testDB, {
     "command.count": testColl.getName(),
 });
 assert.gte(profileEntry.millis, hangMillis - padding);
-checkLog.contains(conn, '"command":{"count":"lock_acquisition_time"');
+checkLog.contains(conn,
+                  !isJsonLog(conn) ? "count { count: \"lock_acquisition_time\""
+                                   : '"command":{"count":"lock_acquisition_time"');
 
 // Test that distinct profiler/logs include lock acquisition time.
 runWithWait(hangMillis, function() {
@@ -119,7 +134,9 @@ profileEntry = getLatestProfilerEntry(testDB, {
     "command.distinct": testColl.getName(),
 });
 assert.gte(profileEntry.millis, hangMillis - padding);
-checkLog.contains(conn, '"command":{"distinct":"lock_acquisition_time"');
+checkLog.contains(conn,
+                  !isJsonLog(conn) ? "distinct { distinct: \"lock_acquisition_time\""
+                                   : '"command":{"distinct":"lock_acquisition_time"');
 
 // Test that delete profiler/logs include lock acquisition time.
 runWithWait(hangMillis, function() {
@@ -130,7 +147,9 @@ profileEntry = getLatestProfilerEntry(testDB, {
     "command.q": {b: 1},
 });
 assert.gte(profileEntry.millis, hangMillis - padding);
-checkLog.contains(conn, '"command":{"delete":"lock_acquisition_time"');
+checkLog.contains(conn,
+                  !isJsonLog(conn) ? "delete { delete: \"lock_acquisition_time\""
+                                   : '"command":{"delete":"lock_acquisition_time"');
 
 MongoRunner.stopMongod(conn);
 }());

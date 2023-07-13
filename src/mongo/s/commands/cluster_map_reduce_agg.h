@@ -34,7 +34,6 @@
 namespace mongo {
 
 bool runAggregationMapReduce(OperationContext* opCtx,
-                             const DatabaseName& dbName,
                              const BSONObj& cmd,
                              BSONObjBuilder& result,
                              boost::optional<ExplainOptions::Verbosity> verbosity);

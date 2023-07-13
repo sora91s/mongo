@@ -59,8 +59,8 @@ public:
     IndexIteratorTests() {
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
-        Lock::DBLock lk(&opCtx, _nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, _nss);
+        Lock::DBLock lk(&opCtx, _nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, _nss.ns());
         WriteUnitOfWork wuow(&opCtx);
 
         ctx.db()->createCollection(&opCtx, _nss);
@@ -70,8 +70,8 @@ public:
     ~IndexIteratorTests() {
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
-        Lock::DBLock lk(&opCtx, _nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, _nss);
+        Lock::DBLock lk(&opCtx, _nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, _nss.ns());
         WriteUnitOfWork wuow(&opCtx);
 
         ctx.db()->dropCollection(&opCtx, _nss).transitional_ignore();
@@ -83,15 +83,15 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         dbtests::WriteContextForTests ctx(&opCtx, _nss.ns());
 
-        int numFinishedIndexesStart = indexCatalog(&opCtx)->numIndexesReady();
+        int numFinishedIndexesStart = indexCatalog(&opCtx)->numIndexesReady(&opCtx);
 
         dbtests::createIndex(&opCtx, _nss.ns(), BSON("x" << 1)).transitional_ignore();
         dbtests::createIndex(&opCtx, _nss.ns(), BSON("y" << 1)).transitional_ignore();
 
-        ASSERT_TRUE(indexCatalog(&opCtx)->numIndexesReady() == numFinishedIndexesStart + 2);
+        ASSERT_TRUE(indexCatalog(&opCtx)->numIndexesReady(&opCtx) == numFinishedIndexesStart + 2);
 
-        auto ii =
-            indexCatalog(&opCtx)->getIndexIterator(&opCtx, IndexCatalog::InclusionPolicy::kReady);
+        std::unique_ptr<IndexCatalog::IndexIterator> ii =
+            indexCatalog(&opCtx)->getIndexIterator(&opCtx, false);
         int indexesIterated = 0;
         bool foundIndex = false;
         while (ii->more()) {
@@ -107,7 +107,7 @@ public:
             }
         }
 
-        ASSERT_TRUE(indexesIterated == indexCatalog(&opCtx)->numIndexesReady());
+        ASSERT_TRUE(indexesIterated == indexCatalog(&opCtx)->numIndexesReady(&opCtx));
         ASSERT_TRUE(foundIndex);
     }
 };
@@ -117,8 +117,8 @@ public:
     IndexCatalogEntryDroppedTest() {
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
-        Lock::DBLock lk(&opCtx, _nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, _nss);
+        Lock::DBLock lk(&opCtx, _nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, _nss.ns());
         WriteUnitOfWork wuow(&opCtx);
 
         ctx.db()->createCollection(&opCtx, _nss);
@@ -163,8 +163,8 @@ public:
     RefreshEntry() {
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
-        Lock::DBLock lk(&opCtx, _nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, _nss);
+        Lock::DBLock lk(&opCtx, _nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, _nss.ns());
         WriteUnitOfWork wuow(&opCtx);
 
         ctx.db()->createCollection(&opCtx, _nss);
@@ -174,8 +174,8 @@ public:
     ~RefreshEntry() {
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
-        Lock::DBLock lk(&opCtx, _nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, _nss);
+        Lock::DBLock lk(&opCtx, _nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, _nss.ns());
         WriteUnitOfWork wuow(&opCtx);
 
         ctx.db()->dropCollection(&opCtx, _nss).transitional_ignore();
@@ -205,7 +205,7 @@ public:
             CollectionWriter coll(&opCtx, autoColl);
 
             WriteUnitOfWork wuow(&opCtx);
-            coll.getWritableCollection(&opCtx)->updateTTLSetting(&opCtx, "x_1", 10);
+            coll.getWritableCollection()->updateTTLSetting(&opCtx, "x_1", 10);
             wuow.commit();
         }
 
@@ -219,8 +219,8 @@ public:
 
             // Notify the catalog of the change.
             WriteUnitOfWork wuow(&opCtx);
-            desc = coll.getWritableCollection(&opCtx)->getIndexCatalog()->refreshEntry(
-                &opCtx, coll.getWritableCollection(&opCtx), desc, CreateIndexEntryFlags::kIsReady);
+            desc = coll.getWritableCollection()->getIndexCatalog()->refreshEntry(
+                &opCtx, coll.getWritableCollection(), desc, CreateIndexEntryFlags::kIsReady);
             wuow.commit();
         }
 

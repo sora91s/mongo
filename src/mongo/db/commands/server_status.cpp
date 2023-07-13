@@ -27,8 +27,11 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/commands/server_status.h"
 
+#include "mongo/db/commands/server_status_internal.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/version.h"
 

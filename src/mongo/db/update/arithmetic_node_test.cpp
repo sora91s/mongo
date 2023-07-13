@@ -42,7 +42,9 @@
 namespace mongo {
 namespace {
 
-using ArithmeticNodeTest = UpdateTestFixture;
+using ArithmeticNodeTest = UpdateNodeTest;
+using mongo::mutablebson::countChildren;
+using mongo::mutablebson::Element;
 
 DEATH_TEST_REGEX(ArithmeticNodeTest,
                  InitFailsForEmptyElement,
@@ -123,7 +125,6 @@ TEST_F(ArithmeticNodeTest, ApplyIncNoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 5}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -143,7 +144,6 @@ TEST_F(ArithmeticNodeTest, ApplyMulNoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 5}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -163,7 +163,6 @@ TEST_F(ArithmeticNodeTest, ApplyRoundingNoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 6.022e23}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -183,11 +182,10 @@ TEST_F(ArithmeticNodeTest, ApplyEmptyPathToCreate) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 11}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: 11}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 11}}"), fromjson("{$v: 2, diff: {u: {a: 11}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
 }
 
@@ -204,11 +202,11 @@ TEST_F(ArithmeticNodeTest, ApplyCreatePath) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {d: 5, b: {c: 6}}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {i: {b: {c: 6}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b.c': 6}}"),
+                     fromjson("{$v: 2, diff: {sa: {i: {b: {c: 6}}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a.b.c}");
 }
 
@@ -225,7 +223,6 @@ TEST_F(ArithmeticNodeTest, ApplyExtendPath) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {c: 1, b: 2}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
@@ -243,11 +240,10 @@ TEST_F(ArithmeticNodeTest, ApplyCreatePathFromRoot) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{c: 5, a: {b: 6}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {i: {a: {b: 6}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b': 6}}"), fromjson("{$v: 2, diff: {i: {a: {b: 6}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
 }
 
@@ -264,11 +260,11 @@ TEST_F(ArithmeticNodeTest, ApplyPositional) {
     auto result = node.apply(getApplyParams(doc.root()["a"][1]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: [0, 7, 2]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, u1: 7}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.1': 7}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, u1: 7}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a.1}");
 }
 
@@ -303,7 +299,6 @@ TEST_F(ArithmeticNodeTest, ApplyNonViablePathToCreateFromReplicationIsNoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 5}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -323,7 +318,6 @@ TEST_F(ArithmeticNodeTest, ApplyNoIndexDataNoLogBuilder) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 11}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -341,7 +335,6 @@ TEST_F(ArithmeticNodeTest, ApplyDoesNotAffectIndexes) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 11}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -359,7 +352,6 @@ TEST_F(ArithmeticNodeTest, IncTypePromotionIsNotANoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: NumberLong(2)}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -377,7 +369,6 @@ TEST_F(ArithmeticNodeTest, MulTypePromotionIsNotANoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: NumberLong(2)}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -395,11 +386,11 @@ TEST_F(ArithmeticNodeTest, TypePromotionFromIntToDecimalIsNotANoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: NumberDecimal(\"5.0\")}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: NumberDecimal('5.0')}}}"));
+    assertOplogEntry(fromjson("{$set: {a: NumberDecimal('5.0')}}"),
+                     fromjson("{$v: 2, diff: {u: {a: NumberDecimal('5.0')}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
 }
 
@@ -415,11 +406,11 @@ TEST_F(ArithmeticNodeTest, TypePromotionFromLongToDecimalIsNotANoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: NumberDecimal(\"5.0\")}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: NumberDecimal('5.0')}}}"));
+    assertOplogEntry(fromjson("{$set: {a: NumberDecimal('5.0')}}"),
+                     fromjson("{$v: 2, diff: {u: {a: NumberDecimal('5.0')}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
 }
 
@@ -435,11 +426,11 @@ TEST_F(ArithmeticNodeTest, TypePromotionFromDoubleToDecimalIsNotANoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: NumberDecimal(\"5.25\")}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
     assertOplogEntry(
+        fromjson("{$set: {a: NumberDecimal('5.25')}}"),
         fromjson("{$v: 2, diff: {u: {a: NumberDecimal('5.25')}}}"),
         false  // Not checking binary equality because the NumberDecimal in the expected output may
                // not be bitwise identical to the result produced by the update system.
@@ -459,7 +450,6 @@ TEST_F(ArithmeticNodeTest, ApplyPromoteToFloatingPoint) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1.2}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -477,11 +467,11 @@ TEST_F(ArithmeticNodeTest, IncrementedDecimalStaysDecimal) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: NumberDecimal(\"11.5\")}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
     assertOplogEntry(
+        fromjson("{$set: {a: NumberDecimal('11.5')}}"),
         fromjson("{$v: 2, diff: {u: {a: NumberDecimal('11.5')}}}"),
         false  // Not checking binary equality because the NumberDecimal in the expected output may
                // not be bitwise identical to the result produced by the update system.
@@ -503,7 +493,6 @@ TEST_F(ArithmeticNodeTest, OverflowIntToLong) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(mongo::NumberLong, doc.root()["a"].getType());
     ASSERT_EQUALS(BSON("a" << static_cast<long long>(initialValue) + 1), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
@@ -524,7 +513,6 @@ TEST_F(ArithmeticNodeTest, UnderflowIntToLong) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(mongo::NumberLong, doc.root()["a"].getType());
     ASSERT_EQUALS(BSON("a" << static_cast<long long>(initialValue) - 1), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
@@ -544,7 +532,6 @@ TEST_F(ArithmeticNodeTest, IncModeCanBeReused) {
     auto result = node.apply(getApplyParams(doc1.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 2}"), doc1);
     ASSERT_TRUE(doc1.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -555,7 +542,6 @@ TEST_F(ArithmeticNodeTest, IncModeCanBeReused) {
     result = node.apply(getApplyParams(doc2.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 3}"), doc2);
     ASSERT_TRUE(doc1.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -573,7 +559,6 @@ TEST_F(ArithmeticNodeTest, CreatedNumberHasSameTypeAsInc) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{b: 6, a: NumberLong(5)}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -591,7 +576,6 @@ TEST_F(ArithmeticNodeTest, CreatedNumberHasSameTypeAsMul) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{b: 6, a: NumberLong(0)}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -609,7 +593,6 @@ TEST_F(ArithmeticNodeTest, ApplyEmptyDocument) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 2}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -696,7 +679,6 @@ TEST_F(ArithmeticNodeTest, ApplyNewPath) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{b: 1, a: 2}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -714,7 +696,7 @@ TEST_F(ArithmeticNodeTest, ApplyEmptyIndexData) {
     ASSERT_EQUALS(fromjson("{a: 3}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {u: {a: 3}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 3}}"), fromjson("{$v: 2, diff: {u: {a: 3}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
 }
 
@@ -730,7 +712,6 @@ TEST_F(ArithmeticNodeTest, ApplyNoOpDottedPath) {
     auto result = node.apply(getApplyParams(doc.root()["a"]["b"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b : 2}}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
@@ -748,7 +729,6 @@ TEST_F(ArithmeticNodeTest, TypePromotionOnDottedPathIsNotANoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]["b"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b : NumberLong(2)}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
@@ -782,7 +762,6 @@ TEST_F(ArithmeticNodeTest, ApplyInPlaceDottedPath) {
     auto result = node.apply(getApplyParams(doc.root()["a"]["b"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b: 3}}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
@@ -800,7 +779,6 @@ TEST_F(ArithmeticNodeTest, ApplyPromotionDottedPath) {
     auto result = node.apply(getApplyParams(doc.root()["a"]["b"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b: NumberLong(5)}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
@@ -818,7 +796,6 @@ TEST_F(ArithmeticNodeTest, ApplyDottedPathEmptyDoc) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b: 2}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
@@ -836,7 +813,6 @@ TEST_F(ArithmeticNodeTest, ApplyFieldWithDot) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{'a.b':4, a: {b: 2}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
@@ -854,7 +830,6 @@ TEST_F(ArithmeticNodeTest, ApplyNoOpArrayIndex) {
     auto result = node.apply(getApplyParams(doc.root()["a"][2]["b"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: [{b: 0},{b: 1},{b: 2}]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.2.b}");
@@ -873,7 +848,6 @@ TEST_F(ArithmeticNodeTest, TypePromotionInArrayIsNotANoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"][2]["b"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: [{b: 0},{b: 1},{b: NumberLong(2)}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.2.b}");
@@ -907,7 +881,6 @@ TEST_F(ArithmeticNodeTest, ApplyInPlaceArrayIndex) {
     auto result = node.apply(getApplyParams(doc.root()["a"][2]["b"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: [{b: 0},{b: 1},{b: 3}]}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.2.b}");
@@ -926,7 +899,6 @@ TEST_F(ArithmeticNodeTest, ApplyAppendArray) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: [{b: 0},{b: 1},{b: 2}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -945,7 +917,6 @@ TEST_F(ArithmeticNodeTest, ApplyPaddingArray) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: [{b: 0},null,{b: 2}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -964,7 +935,6 @@ TEST_F(ArithmeticNodeTest, ApplyNumericObject) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b: 0, '2': {b: 2}}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.2.b}");
@@ -985,7 +955,6 @@ TEST_F(ArithmeticNodeTest, ApplyNumericField) {
     auto result = node.apply(getApplyParams(doc.root()["a"]["2"]["b"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {'2': {b: 3}}}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.2.b}");
@@ -1006,7 +975,6 @@ TEST_F(ArithmeticNodeTest, ApplyExtendNumericField) {
     auto result = node.apply(getApplyParams(doc.root()["a"]["2"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {'2': {c: 1, b: 2}}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.2.b}");
@@ -1025,7 +993,6 @@ TEST_F(ArithmeticNodeTest, ApplyNumericFieldToEmptyObject) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {'2': {b: 2}}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a.2.b}");
@@ -1044,7 +1011,6 @@ TEST_F(ArithmeticNodeTest, ApplyEmptyArray) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: [null, null, {b: 2}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
@@ -1063,7 +1029,8 @@ TEST_F(ArithmeticNodeTest, ApplyLogDottedPath) {
     ASSERT_EQUALS(fromjson("{a: [{b:0}, {b:1}, {b:2}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, u2: {b: 2}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.2.b': 2}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, u2: {b: 2}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
 }
 
@@ -1080,7 +1047,8 @@ TEST_F(ArithmeticNodeTest, LogEmptyArray) {
     ASSERT_EQUALS(fromjson("{a: [null, null, {b:2}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {a: true, u2: {b: 2}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.2.b': 2}}"),
+                     fromjson("{$v: 2, diff: {sa: {a: true, u2: {b: 2}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a}");
 }
 
@@ -1097,7 +1065,8 @@ TEST_F(ArithmeticNodeTest, LogEmptyObject) {
     ASSERT_EQUALS(fromjson("{a: {'2': {b: 2}}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {i: {'2': {b: 2}}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.2.b': 2}}"),
+                     fromjson("{$v: 2, diff: {sa: {i: {'2': {b: 2}}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a.2.b}");
 }
 
@@ -1115,11 +1084,10 @@ TEST_F(ArithmeticNodeTest, ApplyDeserializedDocNotNoOp) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1, b: NumberInt(0)}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {i: {b: 0}}}"));
+    assertOplogEntry(fromjson("{$set: {b: NumberInt(0)}}"), fromjson("{$v: 2, diff: {i: {b: 0}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{b}");
 }
 
@@ -1137,7 +1105,6 @@ TEST_F(ArithmeticNodeTest, ApplyToDeserializedDocNoOp) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: NumberInt(2)}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -1159,7 +1126,6 @@ TEST_F(ArithmeticNodeTest, ApplyToDeserializedDocNestedNoop) {
     auto result = node.apply(getApplyParams(doc.root()["a"]["b"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b: NumberInt(1)}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
@@ -1181,11 +1147,10 @@ TEST_F(ArithmeticNodeTest, ApplyToDeserializedDocNestedNotNoop) {
     auto result = node.apply(getApplyParams(doc.root()["a"]["b"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b: 3}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v: 2, diff: {sa: {u: {b: 3}}}}"));
+    assertOplogEntry(fromjson("{$set: {'a.b': 3}}"), fromjson("{$v: 2, diff: {sa: {u: {b: 3}}}}"));
     ASSERT_EQUALS(getModifiedPaths(), "{a.b}");
 }
 

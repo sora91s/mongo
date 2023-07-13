@@ -27,5 +27,5 @@ executor:
       set_parameters:
         enableTestCommands: 1
         featureFlagCommonQueryFramework: true
-        internalQueryFrameworkControl: "forceBonsai"
+        internalQueryEnableCascadesOptimizer: true
         internalQueryDefaultDOP: 5

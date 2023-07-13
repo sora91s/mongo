@@ -32,7 +32,7 @@
 #include "mongo/util/text.h"
 
 #include <boost/integer_traits.hpp>
-#include <cerrno>
+#include <errno.h>
 #include <iostream>
 #include <memory>
 #include <sstream>

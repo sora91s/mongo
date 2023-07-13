@@ -59,10 +59,6 @@ public:
                        int currentPrimaryIndex,
                        int currentSyncSourceIndex,
                        std::string currentSyncSourceHost);
-    explicit OplogQueryMetadata(const OplogQueryMetadata&) = default;
-    OplogQueryMetadata(OplogQueryMetadata&&) = default;
-    OplogQueryMetadata& operator=(const OplogQueryMetadata&) = delete;
-    OplogQueryMetadata& operator=(OplogQueryMetadata&&) = default;
 
     /**
      * format:

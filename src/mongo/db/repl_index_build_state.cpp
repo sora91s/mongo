@@ -27,18 +27,15 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl_index_build_state.h"
 
-#include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/tenant_migration_access_blocker_util.h"
 #include "mongo/logv2/log.h"
-#include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
@@ -62,38 +59,17 @@ std::vector<std::string> extractIndexNames(const std::vector<BSONObj>& specs) {
 /**
  * Returns true if the requested IndexBuildState transition is allowed.
  */
-bool checkIfValidTransition(const IndexBuildState::State currentState,
-                            const IndexBuildState::State newState) {
-    switch (currentState) {
-        case IndexBuildState::State::kSetup:
-            return newState == IndexBuildState::State::kPostSetup ||
-                newState == IndexBuildState::State::kAborted ||
-                newState == IndexBuildState::State::kAwaitPrimaryAbort;
-
-        case IndexBuildState::State::kPostSetup:
-            return newState == IndexBuildState::State::kInProgress ||
-                newState == IndexBuildState::State::kAborted ||
-                newState == IndexBuildState::State::kAwaitPrimaryAbort;
-
-        case IndexBuildState::State::kInProgress:
-            return newState == IndexBuildState::State::kAborted ||
-                newState == IndexBuildState::State::kAwaitPrimaryAbort ||
-                newState == IndexBuildState::State::kCommitted ||
-                newState == IndexBuildState::State::kApplyCommitOplogEntry;
-
-        case IndexBuildState::State::kApplyCommitOplogEntry:
-            return newState == IndexBuildState::State::kCommitted;
-
-        case IndexBuildState::State::kAwaitPrimaryAbort:
-            return newState == IndexBuildState::State::kAborted;
-
-        case IndexBuildState::State::kAborted:
-            return false;
-
-        case IndexBuildState::State::kCommitted:
-            return false;
+bool checkIfValidTransition(IndexBuildState::StateFlag currentState,
+                            IndexBuildState::StateFlag newState) {
+    if ((currentState == IndexBuildState::StateFlag::kSetup &&
+         newState == IndexBuildState::StateFlag::kInProgress) ||
+        (currentState == IndexBuildState::StateFlag::kInProgress &&
+         newState != IndexBuildState::StateFlag::kSetup) ||
+        (currentState == IndexBuildState::StateFlag::kPrepareCommit &&
+         newState == IndexBuildState::StateFlag::kCommitted)) {
+        return true;
     }
-    MONGO_UNREACHABLE;
+    return false;
 }
 
 }  // namespace
@@ -121,7 +97,7 @@ std::string indexBuildActionToString(IndexBuildAction action) {
     MONGO_UNREACHABLE;
 }
 
-void IndexBuildState::setState(State state,
+void IndexBuildState::setState(StateFlag state,
                                bool skipCheck,
                                boost::optional<Timestamp> timestamp,
                                boost::optional<Status> abortStatus) {
@@ -134,26 +110,14 @@ void IndexBuildState::setState(State state,
     if (timestamp)
         _timestamp = timestamp;
     if (abortStatus) {
-        invariant(_state == kAborted || _state == kAwaitPrimaryAbort);
+        invariant(_state == kAborted);
         _abortStatus = *abortStatus;
     }
 }
 
-void IndexBuildState::appendBuildInfo(BSONObjBuilder* builder) const {
-    BSONObjBuilder stateBuilder;
-    stateBuilder.append("state", toString());
-    if (auto ts = getTimestamp()) {
-        stateBuilder.append("timestamp", *ts);
-    }
-    if (auto abortStatus = getAbortStatus(); !abortStatus.isOK()) {
-        abortStatus.serializeErrorToBSON(&stateBuilder);
-    }
-    builder->append("replicationState", stateBuilder.obj());
-}
-
 ReplIndexBuildState::ReplIndexBuildState(const UUID& indexBuildUUID,
                                          const UUID& collUUID,
-                                         const DatabaseName& dbName,
+                                         const std::string& dbName,
                                          const std::vector<BSONObj>& specs,
                                          IndexBuildProtocol protocol)
     : buildUUID(indexBuildUUID),
@@ -167,55 +131,18 @@ ReplIndexBuildState::ReplIndexBuildState(const UUID& indexBuildUUID,
         commitQuorumLock.emplace(indexBuildUUID.toString());
 }
 
-void ReplIndexBuildState::onThreadScheduled(OperationContext* opCtx) {
+void ReplIndexBuildState::start(OperationContext* opCtx) {
     stdx::unique_lock<Latch> lk(_mutex);
     _opId = opCtx->getOpID();
-}
-
-void ReplIndexBuildState::completeSetup() {
-    stdx::unique_lock<Latch> lk(_mutex);
-    _indexBuildState.setState(IndexBuildState::kPostSetup, false /* skipCheck */);
-    _cleanUpRequired = true;
-}
-
-Status ReplIndexBuildState::tryStart(OperationContext* opCtx) {
-    stdx::unique_lock<Latch> lk(_mutex);
-    // The index build might have been aborted/interrupted before reaching this point. Trying to
-    // transtion to kInProgress would be an error.
-    auto interruptCheck = opCtx->checkForInterruptNoAssert();
-    if (interruptCheck.isOK()) {
-        _indexBuildState.setState(IndexBuildState::kInProgress, false /* skipCheck */);
-    }
-    return interruptCheck;
+    _indexBuildState.setState(IndexBuildState::kInProgress, false /* skipCheck */);
 }
 
 void ReplIndexBuildState::commit(OperationContext* opCtx) {
     auto skipCheck = _shouldSkipIndexBuildStateTransitionCheck(opCtx);
-    opCtx->recoveryUnit()->onCommit(
-        [this, skipCheck](OperationContext*, boost::optional<Timestamp>) {
-            stdx::unique_lock<Latch> lk(_mutex);
-            _indexBuildState.setState(IndexBuildState::kCommitted, skipCheck);
-        });
-}
-
-void ReplIndexBuildState::requestAbortFromPrimary(const Status& abortStatus) {
-    invariant(protocol == IndexBuildProtocol::kTwoPhase);
-    stdx::unique_lock<Latch> lk(_mutex);
-
-    // It is possible that a 'commitIndexBuild' oplog entry is applied while the index builder is
-    // transitioning to an abort, or even to have been in a state where the oplog applier is already
-    // waiting for the index build to finish. In such instances, the node cannot try to recover by
-    // requesting an abort from the primary, as the commitQuorum already decided to commit.
-    if (_indexBuildState.isApplyingCommitOplogEntry()) {
-        LOGV2_FATAL(7329407,
-                    "Trying to abort an index build while a 'commitIndexBuild' oplog entry is "
-                    "being applied. The primary has already committed the build, but this node is "
-                    "trying to abort it. This is an inconsistent state we cannot recover from.",
-                    "buildUUID"_attr = buildUUID);
-    }
-
-    _indexBuildState.setState(
-        IndexBuildState::kAwaitPrimaryAbort, false /* skipCheck */, boost::none, abortStatus);
+    opCtx->recoveryUnit()->onCommit([this, skipCheck](boost::optional<Timestamp> commitTime) {
+        stdx::unique_lock<Latch> lk(_mutex);
+        _indexBuildState.setState(IndexBuildState::kCommitted, skipCheck);
+    });
 }
 
 Timestamp ReplIndexBuildState::getCommitTimestamp() const {
@@ -225,7 +152,7 @@ Timestamp ReplIndexBuildState::getCommitTimestamp() const {
 
 void ReplIndexBuildState::onOplogCommit(bool isPrimary) const {
     stdx::unique_lock<Latch> lk(_mutex);
-    invariant(!isPrimary && _indexBuildState.isApplyingCommitOplogEntry(),
+    invariant(!isPrimary && _indexBuildState.isCommitPrepared(),
               str::stream() << "Index build: " << buildUUID
                             << ",  index build state: " << _indexBuildState.toString());
 }
@@ -261,15 +188,9 @@ void ReplIndexBuildState::onOplogAbort(OperationContext* opCtx, const NamespaceS
     LOGV2(3856206,
           "Aborting index build from oplog entry",
           "buildUUID"_attr = buildUUID,
-          "abortTimestamp"_attr = _indexBuildState.getTimestamp().value(),
-          "abortReason"_attr = _indexBuildState.getAbortReason().value(),
+          "abortTimestamp"_attr = _indexBuildState.getTimestamp().get(),
+          "abortReason"_attr = _indexBuildState.getAbortReason().get(),
           "collectionUUID"_attr = collectionUUID);
-}
-
-bool ReplIndexBuildState::isAbortCleanUpRequired() const {
-    stdx::unique_lock<Latch> lk(_mutex);
-    // Cleanup is required for external aborts if setup stage completed at some point in the past.
-    return _cleanUpRequired;
 }
 
 bool ReplIndexBuildState::isAborted() const {
@@ -277,14 +198,9 @@ bool ReplIndexBuildState::isAborted() const {
     return _indexBuildState.isAborted();
 }
 
-bool ReplIndexBuildState::isSettingUp() const {
-    stdx::unique_lock<Latch> lk(_mutex);
-    return _indexBuildState.isSettingUp();
-}
-
 std::string ReplIndexBuildState::getAbortReason() const {
     stdx::unique_lock<Latch> lk(_mutex);
-    invariant(_indexBuildState.isAborted() || _indexBuildState.isAwaitingPrimaryAbort(),
+    invariant(_indexBuildState.isAborted(),
               str::stream() << "Index build: " << buildUUID
                             << ",  index build state: " << _indexBuildState.toString());
     auto reason = _indexBuildState.getAbortReason();
@@ -294,7 +210,7 @@ std::string ReplIndexBuildState::getAbortReason() const {
 
 Status ReplIndexBuildState::getAbortStatus() const {
     stdx::unique_lock<Latch> lk(_mutex);
-    invariant(_indexBuildState.isAborted() || _indexBuildState.isAwaitingPrimaryAbort(),
+    invariant(_indexBuildState.isAborted(),
               str::stream() << "Index build: " << buildUUID
                             << ",  index build state: " << _indexBuildState.toString());
     Status abortStatus = _indexBuildState.getAbortStatus();
@@ -343,23 +259,13 @@ void ReplIndexBuildState::setSinglePhaseCommit(OperationContext* opCtx) {
 
 bool ReplIndexBuildState::tryCommit(OperationContext* opCtx) {
     stdx::unique_lock<Latch> lk(_mutex);
-    if (_indexBuildState.isSettingUp() || _indexBuildState.isPostSetup()) {
+    if (_indexBuildState.isSettingUp()) {
         // It's possible that the index build thread has not reached the point where it can be
         // committed yet.
         return false;
     }
-
-    // If the node is secondary, and awaiting a primary abort, the transition is invalid, and the
-    // node should crash.
-    if (_indexBuildState.isAwaitingPrimaryAbort()) {
-        LOGV2_FATAL(7329403,
-                    "Received an index build commit from the primary for an index build that we "
-                    "were unable to build successfully and was waiting for an abort",
-                    "buildUUID"_attr = buildUUID);
-    }
-
     if (_waitForNextAction->getFuture().isReady()) {
-        // If the future wait were uninterruptible, then shutdown could hang. If the
+        // If the future wait were uninterruptible, then shutdown could hang.  If the
         // IndexBuildsCoordinator thread gets interrupted on shutdown, the oplog applier will hang
         // waiting for the promise applying the commitIndexBuild oplog entry.
         const auto nextAction = _waitForNextAction->getFuture().get(opCtx);
@@ -369,10 +275,8 @@ bool ReplIndexBuildState::tryCommit(OperationContext* opCtx) {
         return false;
     }
     auto skipCheck = _shouldSkipIndexBuildStateTransitionCheck(opCtx);
-
-    _indexBuildState.setState(IndexBuildState::kApplyCommitOplogEntry,
-                              skipCheck,
-                              opCtx->recoveryUnit()->getCommitTimestamp());
+    _indexBuildState.setState(
+        IndexBuildState::kPrepareCommit, skipCheck, opCtx->recoveryUnit()->getCommitTimestamp());
     // Promise can be set only once.
     // We can't skip signaling here if a signal is already set because the previous commit or
     // abort signal might have been sent to handle for primary case.
@@ -392,10 +296,6 @@ ReplIndexBuildState::TryAbortResult ReplIndexBuildState::tryAbort(OperationConte
                     "waiting until index build is done setting up before attempting to abort",
                     "buildUUID"_attr = buildUUID);
         return TryAbortResult::kRetry;
-    }
-    if (_indexBuildState.isAborted()) {
-        // Returns if a concurrent operation already aborts the index build.
-        return TryAbortResult::kAlreadyAborted;
     }
     if (_waitForNextAction->getFuture().isReady()) {
         const auto nextAction = _waitForNextAction->getFuture().get(opCtx);
@@ -520,9 +420,9 @@ Status ReplIndexBuildState::onConflictWithNewIndexBuild(const ReplIndexBuildStat
     if (auto ts = existingIndexBuildState.getTimestamp()) {
         ss << ", timestamp: " << ts->toString();
     }
-    if (existingIndexBuildState.isAborted() || existingIndexBuildState.isAwaitingPrimaryAbort()) {
+    if (existingIndexBuildState.isAborted()) {
         if (auto abortReason = existingIndexBuildState.getAbortReason()) {
-            ss << ", abort reason: " << abortReason.value();
+            ss << ", abort reason: " << abortReason.get();
         }
         aborted = true;
     }
@@ -560,21 +460,6 @@ void ReplIndexBuildState::clearLastOpTimeBeforeInterceptors() {
     _lastOpTimeBeforeInterceptors = {};
 }
 
-void ReplIndexBuildState::appendBuildInfo(BSONObjBuilder* builder) const {
-    stdx::unique_lock<Latch> lk(_mutex);
-
-    // This allows listIndexes callers to identify how to kill the index build.
-    // Previously, users have to locate the index build in the currentOp command output
-    // for this information.
-    if (_opId) {
-        builder->append("opid", static_cast<int>(*_opId));
-    }
-
-    builder->append("resumable", !_lastOpTimeBeforeInterceptors.isNull());
-
-    _indexBuildState.appendBuildInfo(builder);
-}
-
 bool ReplIndexBuildState::_shouldSkipIndexBuildStateTransitionCheck(OperationContext* opCtx) const {
     const auto replCoord = repl::ReplicationCoordinator::get(opCtx);
     if (replCoord->isReplEnabled() && protocol == IndexBuildProtocol::kTwoPhase) {
@@ -588,8 +473,7 @@ void ReplIndexBuildState::_setSignalAndCancelVoteRequestCbkIfActive(WithLock lk,
                                                                     IndexBuildAction signal) {
     // set the signal
     _waitForNextAction->emplaceValue(signal);
-    // Cancel the callback, as we are checking if it is valid, this should work even if it is a
-    // loopback command.
+    // Cancel the callback.
     if (_voteCmdCbkHandle.isValid()) {
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);
         replCoord->cancelCbkHandle(_voteCmdCbkHandle);

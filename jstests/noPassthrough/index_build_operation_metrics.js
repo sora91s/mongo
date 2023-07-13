@@ -2,6 +2,7 @@
  * Tests resource consumption metrics for index builds.
  * @tags: [
  *   requires_replication,
+ *   requires_wiredtiger,
  * ]
  */
 (function() {

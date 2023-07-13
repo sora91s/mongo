@@ -36,6 +36,11 @@
 #include "mongo/db/service_context.h"
 
 namespace mongo {
+
+void initMyLDAPCumulativeOperationStats() {
+
+}
+
 namespace {
 /**
  * LDAPOperationStats members

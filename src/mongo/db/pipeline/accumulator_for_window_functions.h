@@ -45,11 +45,9 @@ class AccumulatorForWindowFunctions : public AccumulatorState {
 public:
     AccumulatorForWindowFunctions(ExpressionContext* const expCtx) : AccumulatorState(expCtx) {}
 
-    ExpressionNary::Associativity getAssociativity() const final {
+    bool isAssociative() const final {
         tasserted(5424002,
-                  str::stream() << "Invalid call to getAssociativity() in accumulator "
-                                << getOpName());
-        return ExpressionNary::Associativity::kNone;
+                  str::stream() << "Invalid call to isAssociative in accumulator " << getOpName());
     }
 
     bool isCommutative() const final {

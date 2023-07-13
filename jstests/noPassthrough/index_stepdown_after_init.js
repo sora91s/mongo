@@ -9,6 +9,7 @@
 "use strict";
 
 load('jstests/noPassthrough/libs/index_build.js');
+load("jstests/libs/logv2_helpers.js");
 
 const rst = new ReplSetTest({
     nodes: [
@@ -36,12 +37,18 @@ assert.commandWorked(primary.adminCommand(
 
 const createIdx = IndexBuildTest.startIndexBuild(primary, coll.getFullName(), {a: 1});
 
-checkLog.containsJson(primary, 20384, {
-    namespace: coll.getFullName(),
-    properties: (desc) => {
-        return desc.name === 'a_1';
-    },
-});
+if (isJsonLog(primary)) {
+    checkLog.containsJson(primary, 20384, {
+        namespace: coll.getFullName(),
+        properties: (desc) => {
+            return desc.name === 'a_1';
+        },
+    });
+} else {
+    checkLog.contains(
+        primary,
+        'index build: starting on ' + coll.getFullName() + ' properties: { v: 2, key: { a:');
+}
 
 try {
     // Step down the primary.

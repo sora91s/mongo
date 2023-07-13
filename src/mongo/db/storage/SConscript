@@ -6,11 +6,12 @@ env = env.Clone()
 env.SConscript(
     dirs=[
         'devnull',
+        'ephemeral_for_test',
         'kv',
         'wiredtiger',
     ],
     exports=[
-        'env',
+        'env'
     ],
 )
 
@@ -20,7 +21,8 @@ env.Library(
         'index_entry_comparison.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/namespace_string',
         'duplicate_key_error_info',
         'key_string',
     ],
@@ -31,11 +33,14 @@ env.Library(
     source=[
         'snapshot_helper.cpp',
     ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/namespace_string',
+    ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/concurrency/lock_manager_defs',
         '$BUILD_DIR/mongo/db/repl/read_concern_args',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
-        '$BUILD_DIR/mongo/db/server_base',
         'recovery_unit_base',
     ],
 )
@@ -67,18 +72,12 @@ env.Library(
 env.Library(
     target='record_store_base',
     source=[
-        'collection_markers.cpp',
-        'external_record_store.cpp',
-        'multi_bson_stream_cursor.cpp',
-        'named_pipe_posix.cpp' if not env.TargetOSIs('windows') else [],
-        'named_pipe_windows.cpp' if env.TargetOSIs('windows') else [],
         'record_store.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/query/query_knobs' if not env.TargetOSIs('windows') else [],
         '$BUILD_DIR/mongo/db/service_context',
         'storage_options',
     ],
@@ -94,17 +93,6 @@ env.Library(
     ],
 )
 
-ksdecode = env.Program(
-    target='ksdecode', source=[
-        'key_string_decode.cpp',
-    ], LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/util/options_parser/options_parser',
-        'key_string',
-    ], AIB_COMPONENT='ksdecode', AIB_COMPONENTS_EXTRA=[
-        'dist-test',
-    ])
-
 env.Library(
     target='execution_context',
     source=[
@@ -117,31 +105,18 @@ env.Library(
 )
 
 env.Library(
-    target='capped_snapshots',
-    source=[
-        'capped_snapshots.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/shard_role_api',
-        'recovery_unit_base',
-    ],
-)
-
-env.Library(
     target='bson_collection_catalog_entry',
     source=[
         'bson_collection_catalog_entry.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/catalog/collection_options',
+        '$BUILD_DIR/mongo/db/common',
+        '$BUILD_DIR/mongo/db/service_context',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/common',
         '$BUILD_DIR/mongo/db/multitenancy',
-        '$BUILD_DIR/mongo/db/server_base',
         '$BUILD_DIR/mongo/db/server_options',
-        '$BUILD_DIR/mongo/db/service_context',
     ],
 )
 
@@ -168,14 +143,18 @@ env.Library(
     source=[
         'oplog_cap_maintainer_thread.cpp',
     ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/util/background_job',
+    ],
     LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/catalog/collection',
         '$BUILD_DIR/mongo/db/catalog/collection_catalog',
         '$BUILD_DIR/mongo/db/catalog/database_holder',
+        '$BUILD_DIR/mongo/db/catalog_raii',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
-        '$BUILD_DIR/mongo/db/server_base',
         '$BUILD_DIR/mongo/db/service_context',
-        '$BUILD_DIR/mongo/db/shard_role',
-        '$BUILD_DIR/mongo/util/background_job',
     ],
 )
 
@@ -200,35 +179,27 @@ env.Library(
         'storage_options.cpp',
         'storage_parameters.idl',
     ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/idl/feature_flag',
+    ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/idl/server_parameter',
     ],
 )
 
 env.Library(
     target='storage_engine_parameters',
     source=[
-        'execution_control/throughput_probing.cpp',
-        'execution_control/throughput_probing.idl',
-        'ticketholder_manager.cpp',
-        'ticketholder_monitor.cpp',
+        'ticketholders.cpp',
+        'storage_engine_parameters.cpp',
         'storage_engine_parameters.idl',
     ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/service_context',
-        '$BUILD_DIR/mongo/util/concurrency/ticketholder',
-        'storage_engine_feature_flags',
-    ],
-)
-
-env.Library(
-    target='storage_engine_feature_flags',
-    source=[
-        'storage_engine_feature_flags.idl',
-    ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/idl/feature_flag',
+        '$BUILD_DIR/mongo/idl/server_parameter',
     ],
 )
 
@@ -239,7 +210,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/db/service_context'
     ],
 )
 
@@ -257,21 +228,6 @@ env.Library(
 env.Library(
     target='sorted_data_interface_test_harness',
     source=[
-        'sorted_data_interface_test_harness.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/db/record_id_helpers',
-        '$BUILD_DIR/mongo/db/service_context',
-        '$BUILD_DIR/mongo/db/storage/storage_options',
-        '$BUILD_DIR/mongo/unittest/unittest',
-        'index_entry_comparison',
-        'key_string',
-    ],
-)
-
-env.Library(
-    target='sorted_data_interface_tests',
-    source=[
         'sorted_data_interface_test_bulkbuilder.cpp',
         'sorted_data_interface_test_cursor.cpp',
         'sorted_data_interface_test_cursor_advanceto.cpp',
@@ -281,6 +237,7 @@ env.Library(
         'sorted_data_interface_test_cursor_seek_exact.cpp',
         'sorted_data_interface_test_dupkeycheck.cpp',
         'sorted_data_interface_test_fullvalidate.cpp',
+        'sorted_data_interface_test_harness.cpp',
         'sorted_data_interface_test_insert.cpp',
         'sorted_data_interface_test_isempty.cpp',
         'sorted_data_interface_test_keyformat_string.cpp',
@@ -289,21 +246,14 @@ env.Library(
         'sorted_data_interface_test_unindex.cpp',
     ],
     LIBDEPS=[
-        'sorted_data_interface_test_harness',
-        'storage_options',
+        '$BUILD_DIR/mongo/db/record_id_helpers',
+        '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/db/storage/storage_options',
+        '$BUILD_DIR/mongo/unittest/unittest',
+        'key_string',
     ],
-)
-
-bmEnv = env.Clone()
-bmEnv.InjectThirdParty(libraries=["benchmark"])
-bmEnv.Library(
-    target='sorted_data_interface_bm',
-    source=[
-        'sorted_data_interface_bm_cursor.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/third_party/shim_benchmark',
-        'sorted_data_interface_test_harness',
+    LIBDEPS_PRIVATE=[
+        'index_entry_comparison',
     ],
 )
 
@@ -336,10 +286,11 @@ env.Library(
     ],
 )
 
+
 env.Library(
     target='recovery_unit_test_harness',
     source=[
-        'recovery_unit_test_harness.cpp',
+        'recovery_unit_test_harness.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
@@ -364,7 +315,7 @@ env.Library(
 env.Library(
     target='storage_change_lock',
     source=[
-        'storage_change_lock.cpp',
+        'storage_change_lock.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -375,15 +326,15 @@ env.Library(
     target='storage_engine_common',
     source=[
         'storage_engine_init.cpp',
-        'storage_engine_change_context.cpp',
+        'storage_engine_change_context.cpp'
     ],
-    LIBDEPS=[],
+    LIBDEPS=[
+    ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
         '$BUILD_DIR/mongo/db/service_context',
         'storage_change_lock',
         'storage_control',
-        'storage_engine_feature_flags',
         'storage_engine_lock_file',
         'storage_engine_metadata',
         'storage_options',
@@ -392,25 +343,28 @@ env.Library(
 )
 
 env.Library(
-    target='storage_init_d',
+    target="storage_init_d",
     source=[
-        'storage_init.cpp',
+        "storage_init.cpp",
+    ],
+    LIBDEPS=[
+        "storage_options",
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/commands/server_status_core',
-        'backup_cursor_hooks',
-        'storage_options',
-    ],
+        '$BUILD_DIR/mongo/db/commands/server_status',
+        'backup_cursor_hooks'
+    ]
 )
 
 env.Library(
-    target='historical_ident_tracker',
+    target="historical_ident_tracker",
     source=[
-        'historical_ident_tracker.cpp',
+        "historical_ident_tracker.cpp",
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
-    ],
+        "$BUILD_DIR/mongo/base",
+        '$BUILD_DIR/mongo/db/namespace_string',
+    ]
 )
 
 env.Library(
@@ -420,6 +374,7 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         "$BUILD_DIR/mongo/base",
+        '$BUILD_DIR/mongo/db/batched_write_context',
         "$BUILD_DIR/mongo/db/storage/storage_options",
         '$BUILD_DIR/mongo/util/fail_point',
         'recovery_unit_base',
@@ -432,9 +387,9 @@ env.Library(
         'storage_engine_metadata.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/bson/bson_validate',
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/db/server_options_core',
     ],
 )
 
@@ -455,8 +410,8 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/dbhelpers',
         '$BUILD_DIR/mongo/db/repl/replica_set_messages',
-        '$BUILD_DIR/mongo/db/repl/storage_interface',
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/storage/journal_flusher',
         'storage_file_util',
@@ -466,7 +421,7 @@ env.Library(
 env.Benchmark(
     target='storage_key_string_bm',
     source=[
-        'key_string_bm.cpp',
+        'key_string_bm.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -477,7 +432,7 @@ env.Benchmark(
 env.Benchmark(
     target='storage_record_id_bm',
     source=[
-        'record_id_bm.cpp',
+        'record_id_bm.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -494,7 +449,7 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         'encryption_hooks',
         'storage_options',
-    ],
+    ]
 )
 
 env.Library(
@@ -502,8 +457,8 @@ env.Library(
     source=[
         'flow_control_parameters.idl',
     ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/idl/server_parameter',
     ],
 )
 
@@ -512,11 +467,14 @@ env.Library(
     source=[
         'flow_control.cpp',
     ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/commands/server_status',
+    ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/commands/server_status_core',
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/concurrency/flow_control_ticketholder',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/db/server_options_core',
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/util/background_job',
         '$BUILD_DIR/mongo/util/fail_point',
@@ -527,9 +485,6 @@ env.Library(
 env.CppUnitTest(
     target='db_storage_test',
     source=[
-        'collection_markers_test.cpp',
-        'external_record_store_test.cpp',
-        'disk_space_monitor_test.cpp',
         'flow_control_test.cpp',
         'historical_ident_tracker_test.cpp',
         'index_entry_comparison_test.cpp',
@@ -542,18 +497,19 @@ env.CppUnitTest(
         'storage_repair_observer_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/catalog/catalog_impl',
         '$BUILD_DIR/mongo/db/catalog/catalog_test_fixture',
         '$BUILD_DIR/mongo/db/catalog/collection_options',
+        '$BUILD_DIR/mongo/db/catalog_raii',
         '$BUILD_DIR/mongo/db/concurrency/flow_control_ticketholder',
         '$BUILD_DIR/mongo/db/dbhelpers',
         '$BUILD_DIR/mongo/db/multitenancy',
+        '$BUILD_DIR/mongo/db/namespace_string',
         '$BUILD_DIR/mongo/db/repl/replmocks',
         '$BUILD_DIR/mongo/db/repl/topology_coordinator',
-        '$BUILD_DIR/mongo/db/server_base',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
-        '$BUILD_DIR/mongo/db/shard_role',
         '$BUILD_DIR/mongo/db/storage/devnull/storage_devnull_core',
         '$BUILD_DIR/mongo/db/storage/durable_catalog_impl',
         '$BUILD_DIR/mongo/db/storage/storage_control',
@@ -564,13 +520,11 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/executor/network_interface_factory',
         '$BUILD_DIR/mongo/executor/network_interface_mock',
         '$BUILD_DIR/mongo/util/periodic_runner_factory',
-        'disk_space_monitor',
         'flow_control',
         'flow_control_parameters',
         'historical_ident_tracker',
         'key_string',
         'kv/kv_drop_pending_ident_reaper',
-        'record_store_base',
         'storage_engine_common',
         'storage_engine_lock_file',
         'storage_engine_metadata',
@@ -586,15 +540,19 @@ env.Library(
         '$BUILD_DIR/mongo/bson/util/bson_extract',
         '$BUILD_DIR/mongo/db/catalog/collection_catalog',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
-        '$BUILD_DIR/mongo/db/index/index_access_method',
-        'bson_collection_catalog_entry',
+        '$BUILD_DIR/mongo/db/index/index_descriptor',
+        '$BUILD_DIR/mongo/db/index_names',
+        '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/storage/bson_collection_catalog_entry',
     ],
     LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/catalog/collection',
+        '$BUILD_DIR/mongo/db/concurrency/write_conflict_exception',
         '$BUILD_DIR/mongo/db/multitenancy',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/db/server_options_core',
+        '$BUILD_DIR/mongo/db/storage/storage_options',
         'record_store_base',
-        'storage_options',
     ],
 )
 
@@ -605,22 +563,8 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/multitenancy',
-        '$BUILD_DIR/mongo/db/storage/storage_options',
         'durable_catalog_impl',
         'kv/kv_drop_pending_ident_reaper',
-    ],
-)
-
-env.Library(
-    target='disk_space_monitor',
-    source=[
-        'disk_space_monitor.cpp',
-    ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/commands/server_status_core',
-        '$BUILD_DIR/mongo/db/server_base',
-        '$BUILD_DIR/mongo/db/service_context',
-        'storage_options',
     ],
 )
 
@@ -643,7 +587,7 @@ env.Library(
         'two_phase_index_build_knobs.idl',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/idl/server_parameter',
     ],
 )
 
@@ -653,8 +597,9 @@ env.Library(
         'backup_block.cpp',
     ],
     LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
-        '$BUILD_DIR/mongo/db/server_base',
+        '$BUILD_DIR/mongo/db/namespace_string',
         'historical_ident_tracker',
         'storage_options',
     ],
@@ -667,8 +612,10 @@ env.Library(
         'storage_engine_impl.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/catalog/catalog_control',
-        '$BUILD_DIR/mongo/db/shard_role',
+        '$BUILD_DIR/mongo/db/catalog_raii',
+        '$BUILD_DIR/mongo/db/server_options_core',
         '$BUILD_DIR/mongo/db/storage/durable_catalog_impl',
         '$BUILD_DIR/mongo/db/storage/kv/kv_drop_pending_ident_reaper',
         '$BUILD_DIR/mongo/db/storage/storage_options',
@@ -676,11 +623,9 @@ env.Library(
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/audit',
         '$BUILD_DIR/mongo/db/catalog/catalog_helpers',
-        '$BUILD_DIR/mongo/db/catalog/clustered_collection_options',
         '$BUILD_DIR/mongo/db/catalog/index_catalog',
         '$BUILD_DIR/mongo/db/multitenancy',
         '$BUILD_DIR/mongo/db/resumable_index_builds_idl',
-        '$BUILD_DIR/mongo/db/server_base',
         '$BUILD_DIR/mongo/db/server_feature_flags',
         '$BUILD_DIR/mongo/db/storage/storage_repair_observer',
         '$BUILD_DIR/mongo/db/vector_clock',
@@ -699,7 +644,6 @@ env.CppLibfuzzerTest(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/bson/bson_validate',
         'key_string',
     ],
 )

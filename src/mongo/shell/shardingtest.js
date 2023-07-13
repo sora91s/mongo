@@ -173,13 +173,17 @@ var ShardingTest = function(params) {
                           'Please select a different function name.');
 
             self[fn] = function() {
-                const oldDb = globalThis.db;
-                globalThis.db = self.getDB('test');
+                if (typeof db == "undefined") {
+                    db = undefined;
+                }
+
+                var oldDb = db;
+                db = self.getDB('test');
 
                 try {
                     return sh[fn].apply(sh, arguments);
                 } finally {
-                    globalThis.db = oldDb;
+                    db = oldDb;
                 }
             };
         });
@@ -360,156 +364,10 @@ var ShardingTest = function(params) {
         this.configRS.stopSet(undefined, forRestart, opts);
     };
 
-    /**
-     * Returns boolean for whether the sharding test is compatible to shutdown in parallel.
-     */
-    function isShutdownParallelSupported(opts = {}) {
-        if (!tryLoadParallelTester()) {
-            return false;
-        }
-
-        if (otherParams.useBridge) {
-            // Keep the current behavior of shutting down each replica set shard and the
-            // CSRS individually when otherParams.useBridge === true. There appear to only
-            // be 8 instances of {useBridge: true} with ShardingTest and the implementation
-            // complexity is too high
-            return false;
-        }
-
-        if (otherParams.configOptions && otherParams.configOptions.clusterAuthMode === "x509") {
-            // The mongo shell performing X.509 authentication as a cluster member requires
-            // starting a parallel shell and using the server's (not the client's)
-            // certificate. The ReplSetTest instance constructed in a Thread wouldn't have
-            // copied the path to the server's certificate. We therefore fall back to
-            // initiating the CSRS and replica set shards sequentially when X.509
-            // authentication is being used.
-            return false;
-        }
-
-        if (otherParams.configOptions && otherParams.configOptions.tlsMode === "preferTLS") {
-            return false;
-        }
-
-        if (otherParams.configOptions && otherParams.configOptions.sslMode === "requireSSL") {
-            return false;
-        }
-
-        if (opts.parallelSupported !== undefined && opts.parallelSupported === false) {
-            // The test has chosen to opt out of parallel shutdown
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Returns the replica sets args for sets that are to be terminated in parallel threads.
-     */
-    function replicaSetsToTerminate(shardRS) {
-        const replicaSetsToTerminate = [];
-        [...(shardRS.map(obj => obj.test))].forEach(rst => {
-            // Generating a list of live nodes in the replica set
-            liveNodes = [];
-            pidValues = [];
-            rst.nodes.forEach(function(node) {
-                try {
-                    node.getDB('admin')._helloOrLegacyHello();
-                    liveNodes.push(node);
-                } catch (err) {
-                    // Ignore since the node is not live
-                    print("ShardingTest replicaSetsToTerminate ignoring: " + node.host);
-                    return;
-                }
-
-                if (!node.pid) {
-                    // Getting the pid for the node
-                    rst.keyFile = rst.keyFile ? rst.keyFile : this.keyFile;
-                    if (rst.keyFile) {
-                        serverStatus = authutil.asCluster(node, rst.keyFile, () => {
-                            return node.getDB("admin").serverStatus();
-                        });
-                    } else {
-                        serverStatus = node.getDB("admin").serverStatus();
-                    }
-
-                    if (serverStatus["pid"]) {
-                        node.pid = serverStatus["pid"];
-                    } else {
-                        // Shutdown requires PID values for every node. The case we are
-                        // unable to obtain a PID value is rare, however, should it
-                        // occur, the code will throw this error.
-                        throw 'Could not obtain node PID value. Shutdown failed.';
-                    }
-                }
-                pidValues.push(node.pid.valueOf());
-            });
-
-            if (pidValues.length > 0) {
-                // the number of livenodes must match the number of pidvalues being passed in
-                // rst.Args to ensure the replica set is constructed correctly
-                assert(liveNodes.length == pidValues.length);
-
-                replicaSetsToTerminate.push({
-                    // Arguments for each replica set within parallel threads.
-                    rstArgs: {
-                        name: rst.name,
-                        nodeHosts: liveNodes.map(node => `${node.host}`),
-                        nodeOptions: rst.nodeOptions,
-                        // Mixed-mode SSL tests may specify a keyFile per replica set rather
-                        // than one for the whole cluster.
-                        keyFile: rst.keyFile ? rst.keyFile : this.keyFile,
-                        host: otherParams.useHostname ? hostName : "localhost",
-                        waitForKeys: false,
-                        pidValue: pidValues
-                    },
-                });
-            }
+    this.stopAllShards = function(opts, forRestart = undefined) {
+        this._rs.forEach((rs) => {
+            rs.test.stopSet(15, forRestart, opts);
         });
-        return replicaSetsToTerminate;
-    }
-
-    this.stopAllShards = function(opts = {}, forRestart = undefined) {
-        if (isShutdownParallelSupported(opts)) {
-            const threads = [];
-            try {
-                for (let {rstArgs} of replicaSetsToTerminate(this._rs)) {
-                    const thread = new Thread((rstArgs, signal, forRestart, opts) => {
-                        try {
-                            const rst = new ReplSetTest({rstArgs});
-                            rst.stopSet(signal, forRestart, opts);
-                            return {ok: 1};
-                        } catch (e) {
-                            return {
-                                ok: 0,
-                                hosts: rstArgs.nodeHosts,
-                                name: rstArgs.name,
-                                error: e.toString(),
-                                stack: e.stack,
-                            };
-                        }
-                    }, rstArgs, 15, forRestart, opts);
-
-                    thread.start();
-                    threads.push(thread);
-                }
-            } finally {
-                // Wait for each thread to finish. Throw an error if any thread fails.
-                const returnData = threads.map(thread => {
-                    thread.join();
-                    return thread.returnData();
-                });
-
-                returnData.forEach(res => {
-                    assert.commandWorked(res,
-                                         'terminating shard or config server replica sets failed');
-                });
-            }
-        } else {
-            // The replica sets shutting down serially
-            this._rs.forEach((rs) => {
-                rs.test.stopSet(15, forRestart, opts);
-            });
-        }
     };
 
     this.stopAllMongos = function(opts) {
@@ -522,8 +380,6 @@ var ShardingTest = function(params) {
         this.checkUUIDsConsistentAcrossCluster();
         this.checkIndexesConsistentAcrossCluster();
         this.checkOrphansAreDeleted();
-        this.checkRoutingTableConsistency();
-        this.checkShardFilteringMetadata();
 
         if (jsTestOptions().alwaysUseLogFiles) {
             if (opts.noCleanData === false) {
@@ -540,9 +396,7 @@ var ShardingTest = function(params) {
         print("ShardingTest stopped all shards, took " + (new Date() - startTime) + "ms for " +
               this._connections.length + " shards.");
 
-        if (!isCatalogShardMode) {
-            this.stopAllConfigServers(opts);
-        }
+        this.stopAllConfigServers(opts);
 
         var timeMillis = new Date().getTime() - _startTime.getTime();
 
@@ -614,42 +468,18 @@ var ShardingTest = function(params) {
     };
 
     this.getChunksString = function(ns) {
+        var q = {};
         if (ns) {
-            let query = {};
-            let sorting_criteria = {};
-            const collection = this.config.collections.findOne({_id: ns});
-            if (!collection) {
-                return "";
-            }
-
-            if (collection.timestamp) {
-                const collectionUUID = collection.uuid;
-                assert.neq(collectionUUID, null);
-
-                query.uuid = collectionUUID;
-                sorting_criteria = {uuid: 1, min: 1};
-            } else {
-                query.ns = ns;
-                sorting_criteria = {ns: 1, min: 1};
-            }
-
-            let s = "";
-            this.config.chunks.find(query).sort(sorting_criteria).forEach(function(z) {
-                s += " \t" + z._id + "\t" + z.lastmod.t + "|" + z.lastmod.i + "\t" + tojson(z.min) +
-                    " -> " + tojson(z.max) + " " + z.shard + " " + ns + "\n";
-            });
-
-            return s;
-        } else {
-            // call get chunks String for every namespace in the collections
-            let collections_cursor = this.config.collections.find();
-            let s = "";
-            while (collections_cursor.hasNext()) {
-                var ns = collections_cursor.next()._id;
-                s += this.getChunksString(ns);
-            }
-            return s;
+            q.ns = ns;
         }
+
+        var s = "";
+        this.config.chunks.find(q).sort({ns: 1, min: 1}).forEach(function(z) {
+            s += "  " + z._id + "\t" + z.lastmod.t + "|" + z.lastmod.i + "\t" + tojson(z.min) +
+                " -> " + tojson(z.max) + " " + z.shard + "  " + z.ns + "\n";
+        });
+
+        return s;
     };
 
     this.printChunks = function(ns) {
@@ -826,13 +656,8 @@ var ShardingTest = function(params) {
         var result;
         for (var i = 0; i < 5; i++) {
             var otherShard = this.getOther(this.getPrimaryShard(dbName)).name;
-            let cmd = {movechunk: c, find: move, to: otherShard};
-
-            if (waitForDelete != null) {
-                cmd._waitForDelete = waitForDelete;
-            }
-
-            result = this.s.adminCommand(cmd);
+            result = this.s.adminCommand(
+                {movechunk: c, find: move, to: otherShard, _waitForDelete: waitForDelete});
             if (result.ok)
                 break;
 
@@ -1016,14 +841,12 @@ var ShardingTest = function(params) {
      * @param {int} shard server number (0, 1, 2, ...) to be restarted
      */
     this.restartShardRS = function(n, options, signal, wait) {
-        const prevShardName = this._connections[n].shardName;
         for (let i = 0; i < this["rs" + n].nodeList().length; i++) {
             this["rs" + n].restart(i);
         }
 
         this["rs" + n].awaitSecondaryNodes();
         this._connections[n] = new Mongo(this["rs" + n].getURL());
-        this._connections[n].shardName = prevShardName;
         this["shard" + n] = this._connections[n];
     };
 
@@ -1150,13 +973,6 @@ var ShardingTest = function(params) {
     };
 
     /**
-     * Waits for all operations to fully replicate on all shards.
-     */
-    this.awaitReplicationOnShards = function() {
-        this._rs.forEach(replSet => replSet.test.awaitReplication());
-    };
-
-    /**
      * Returns if there is a new feature compatibility version for the "latest" version. This must
      * be manually changed if and when there is a new feature compatibility version.
      */
@@ -1183,12 +999,7 @@ var ShardingTest = function(params) {
     var numShards = otherParams.hasOwnProperty('shards') ? otherParams.shards : 2;
     var mongosVerboseLevel = otherParams.hasOwnProperty('verbose') ? otherParams.verbose : 1;
     var numMongos = otherParams.hasOwnProperty('mongos') ? otherParams.mongos : 1;
-    const usedDefaultNumConfigs = !otherParams.hasOwnProperty('config');
     var numConfigs = otherParams.hasOwnProperty('config') ? otherParams.config : 3;
-
-    let isCatalogShardMode =
-        otherParams.hasOwnProperty('catalogShard') ? otherParams.catalogShard : false;
-    isCatalogShardMode = isCatalogShardMode || jsTestOptions().catalogShard;
 
     if ("shardAsReplicaSet" in otherParams) {
         throw new Error("Use of deprecated option 'shardAsReplicaSet'");
@@ -1205,6 +1016,7 @@ var ShardingTest = function(params) {
 
     // Allow specifying mixed-type options like this:
     // { mongos : [ { bind_ip : "localhost" } ],
+    //   config : [ { nojournal : "" } ],
     //   shards : { rs : true, d : true } }
     if (Array.isArray(numShards)) {
         for (var i = 0; i < numShards.length; i++) {
@@ -1221,10 +1033,6 @@ var ShardingTest = function(params) {
         }
 
         numShards = tempCount;
-    }
-
-    if (isCatalogShardMode) {
-        assert(numShards > 0, 'Catalog shard mode requires at least one shard');
     }
 
     if (Array.isArray(numMongos)) {
@@ -1244,14 +1052,12 @@ var ShardingTest = function(params) {
     }
 
     if (Array.isArray(numConfigs)) {
-        assert(!usedDefaultNumConfigs);
         for (var i = 0; i < numConfigs.length; i++) {
             otherParams["c" + i] = numConfigs[i];
         }
 
         numConfigs = numConfigs.length;
     } else if (isObject(numConfigs)) {
-        assert(!usedDefaultNumConfigs);
         var tempCount = 0;
         for (var i in numConfigs) {
             otherParams[i] = numConfigs[i];
@@ -1349,18 +1155,9 @@ var ShardingTest = function(params) {
         var rsDefaults = {
             useHostname: otherParams.useHostname,
             oplogSize: 16,
+            shardsvr: '',
             pathOpts: Object.merge(pathOpts, {shard: i}),
         };
-
-        var setIsConfigSvr = false;
-
-        if (isCatalogShardMode && i == 0) {
-            otherParams.configOptions = Object.merge(otherParams.configOptions, {configsvr: ""});
-            rsDefaults = Object.merge(rsDefaults, otherParams.configOptions);
-            setIsConfigSvr = true;
-        } else {
-            rsDefaults.shardsvr = '';
-        }
 
         if (otherParams.rs || otherParams["rs" + i]) {
             if (otherParams.rs) {
@@ -1405,25 +1202,17 @@ var ShardingTest = function(params) {
         delete rsDefaults.settings;
 
         // The number of nodes in the rs field will take priority.
-        let numReplicas;
         if (otherParams.rs || otherParams["rs" + i]) {
-            numReplicas = rsDefaults.nodes || 3;
+            var numReplicas = rsDefaults.nodes || 3;
         } else {
-            numReplicas = 1;
+            var numReplicas = 1;
         }
-
-        // Unless explicitly given a number of config servers, a catalog shard uses the shard's
-        // number of nodes to increase odds of compatibility with test assertions.
-        if (isCatalogShardMode && i == 0 && !usedDefaultNumConfigs) {
-            numReplicas = numConfigs;
-        }
-
         delete rsDefaults.nodes;
 
         var protocolVersion = rsDefaults.protocolVersion;
         delete rsDefaults.protocolVersion;
 
-        const rs = new ReplSetTest({
+        var rs = new ReplSetTest({
             name: setName,
             nodes: numReplicas,
             host: hostName,
@@ -1435,7 +1224,6 @@ var ShardingTest = function(params) {
             waitForKeys: false,
             settings: rsSettings,
             seedRandomNumberGenerator: !randomSeedAlreadySet,
-            isConfigServer: setIsConfigSvr,
         });
 
         print("ShardingTest starting replica set for shard: " + setName);
@@ -1446,62 +1234,56 @@ var ShardingTest = function(params) {
             {setName: setName, test: rs, nodes: rs.startSetAsync(rsDefaults), url: rs.getURL()};
     }
 
-    if (isCatalogShardMode) {
-        this.configRS = this._rs[0].test;
-    } else {
-        //
-        // Start up the config server replica set.
-        //
+    //
+    // Start up the config server replica set.
+    //
 
-        var rstOptions = {
-            useHostName: otherParams.useHostname,
-            host: hostName,
-            useBridge: otherParams.useBridge,
-            bridgeOptions: otherParams.bridgeOptions,
-            keyFile: this.keyFile,
-            waitForKeys: false,
-            name: testName + "-configRS",
-            seedRandomNumberGenerator: !randomSeedAlreadySet,
-            isConfigServer: true,
-        };
+    var rstOptions = {
+        useHostName: otherParams.useHostname,
+        host: hostName,
+        useBridge: otherParams.useBridge,
+        bridgeOptions: otherParams.bridgeOptions,
+        keyFile: this.keyFile,
+        waitForKeys: false,
+        name: testName + "-configRS",
+        seedRandomNumberGenerator: !randomSeedAlreadySet,
+        isConfigServer: true,
+    };
 
-        // always use wiredTiger as the storage engine for CSRS
-        var startOptions = {
-            pathOpts: pathOpts,
-            // Ensure that journaling is always enabled for config servers.
-            configsvr: "",
-            storageEngine: "wiredTiger",
-        };
+    // always use wiredTiger as the storage engine for CSRS
+    var startOptions = {
+        pathOpts: pathOpts,
+        // Ensure that journaling is always enabled for config servers.
+        journal: "",
+        configsvr: "",
+        storageEngine: "wiredTiger",
+    };
 
-        if (otherParams.configOptions && otherParams.configOptions.binVersion) {
-            otherParams.configOptions.binVersion =
-                MongoRunner.versionIterator(otherParams.configOptions.binVersion);
-        }
-
-        startOptions = Object.merge(startOptions, otherParams.configOptions);
-        rstOptions = Object.merge(rstOptions, otherParams.configReplSetTestOptions);
-
-        var nodeOptions = [];
-        for (var i = 0; i < numConfigs; ++i) {
-            nodeOptions.push(otherParams["c" + i] || {});
-        }
-
-        rstOptions.nodes = nodeOptions;
-
-        // Start the config server's replica set without waiting for it to complete. This allows it
-        // to proceed in parallel with the startup of each shard.
-        this.configRS = new ReplSetTest(rstOptions);
-        this.configRS.startSetAsync(startOptions);
+    if (otherParams.configOptions && otherParams.configOptions.binVersion) {
+        otherParams.configOptions.binVersion =
+            MongoRunner.versionIterator(otherParams.configOptions.binVersion);
     }
+
+    startOptions = Object.merge(startOptions, otherParams.configOptions);
+    rstOptions = Object.merge(rstOptions, otherParams.configReplSetTestOptions);
+
+    var nodeOptions = [];
+    for (var i = 0; i < numConfigs; ++i) {
+        nodeOptions.push(otherParams["c" + i] || {});
+    }
+
+    rstOptions.nodes = nodeOptions;
+
+    // Start the config server's replica set without waiting for it to complete. This allows it
+    // to proceed in parallel with the startup of each shard.
+    this.configRS = new ReplSetTest(rstOptions);
+    this.configRS.startSetAsync(startOptions);
 
     //
     // Wait for each shard replica set to finish starting up.
     //
     for (let i = 0; i < numShards; i++) {
         print("Waiting for shard " + this._rs[i].setName + " to finish starting up.");
-        if (isCatalogShardMode && i == 0) {
-            continue;
-        }
         this._rs[i].test.startSetAwait();
     }
 
@@ -1523,14 +1305,7 @@ var ShardingTest = function(params) {
     // set. Whenever possible, in parallel.
     //
     const shardsRS = this._rs.map(obj => obj.test);
-    var replSetToIntiateArr = [];
-    if (isCatalogShardMode) {
-        replSetToIntiateArr = [...shardsRS];
-    } else {
-        replSetToIntiateArr = [...shardsRS, this.configRS];
-    }
-
-    const replicaSetsToInitiate = replSetToIntiateArr.map(rst => {
+    const replicaSetsToInitiate = [...shardsRS, this.configRS].map(rst => {
         const rstConfig = rst.getReplSetConfig();
 
         // The mongo shell cannot authenticate as the internal __system user in tests that use x509
@@ -1570,6 +1345,7 @@ var ShardingTest = function(params) {
 
         // Do replication.
         rst.awaitNodesAgreeOnPrimary();
+        rst.getPrimary().getDB("admin").foo.save({x: 1});
         if (rst.keyFile) {
             authutil.asCluster(rst.nodes, rst.keyFile, function() {
                 rst.awaitReplication();
@@ -1816,41 +1592,15 @@ var ShardingTest = function(params) {
         if (!otherParams.manualAddShard) {
             var testName = this._testName;
             var admin = this.admin;
-            var keyFile = this.keyFile;
 
-            this._connections.forEach(function(z, idx) {
+            this._connections.forEach(function(z) {
                 var n = z.name || z.host || z;
 
-                var name;
-                if (isCatalogShardMode && idx == 0) {
-                    name = "config";
+                print("ShardingTest " + testName + " going to add shard : " + n);
 
-                    print("ShardingTest " + testName + " transitioning to catalog shard");
-
-                    function transitionToCatalogShard() {
-                        return assert.commandWorked(
-                            admin.runCommand({transitionToCatalogShard: 1}));
-                    }
-
-                    // TODO SERVER-74448: Investigate if transitionToCatalogShard should be added to
-                    // the localhost bypass exception like addShard.
-                    if (keyFile) {
-                        authutil.asCluster(admin.getMongo(), keyFile, transitionToCatalogShard);
-                    } else if (mongosOptions[0] && mongosOptions[0].keyFile) {
-                        authutil.asCluster(
-                            admin.getMongo(), mongosOptions[0].keyFile, transitionToCatalogShard);
-                    } else {
-                        transitionToCatalogShard();
-                    }
-
-                    z.shardName = name;
-                } else {
-                    print("ShardingTest " + testName + " going to add shard : " + n);
-
-                    var result = assert.commandWorked(admin.runCommand({addshard: n}),
-                                                      "Failed to add shard " + n);
-                    z.shardName = result.shardAdded;
-                }
+                var result = assert.commandWorked(admin.runCommand({addshard: n}),
+                                                  "Failed to add shard " + n);
+                z.shardName = result.shardAdded;
             });
         }
     } catch (e) {
@@ -1937,12 +1687,4 @@ ShardingTest.prototype.checkIndexesConsistentAcrossCluster = function() {};
 
 ShardingTest.prototype.checkOrphansAreDeleted = function() {
     print("Unhooked function");
-};
-
-ShardingTest.prototype.checkRoutingTableConsistency = function() {
-    print("Unhooked checkRoutingTableConsistency function");
-};
-
-ShardingTest.prototype.checkShardFilteringMetadata = function() {
-    print("Unhooked checkShardFilteringMetadata function");
 };

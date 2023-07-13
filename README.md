@@ -8,12 +8,9 @@ Welcome to MongoDB!
   - `mongos` - Sharding router.
   - `mongo`  - The database shell (uses interactive javascript).
 
+## Utilities
 
-## Download MongoDB
-  - https://www.mongodb.com/try/download/community
-  - Using homebrew `brew tap mongodb/brew`
-  - Using docker image `docker pull mongo`
-
+  `install_compass` - Installs MongoDB Compass for your platform.
 
 ## Building
 
@@ -64,11 +61,9 @@ Welcome to MongoDB!
   Packages are created dynamically by the [buildscripts/packager.py](buildscripts/packager.py) script.
   This will generate RPM and Debian packages.
 
-## Learn MongoDB 
+## Documentation
 
-  Documentation - https://docs.mongodb.com/manual/
-  Developer Center -  https://www.mongodb.com/developer/
-  MongoDB University - https://learn.mongodb.com
+  https://docs.mongodb.com/manual/
 
 ## Cloud Hosted MongoDB
 
@@ -84,6 +79,9 @@ Welcome to MongoDB!
 
       Technical questions about building and developing MongoDB.
 
+## Learn MongoDB
+
+  https://university.mongodb.com/
 
 ## LICENSE
 

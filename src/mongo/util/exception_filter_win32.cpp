@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #ifdef _WIN32
 
@@ -48,8 +49,6 @@
 #include "mongo/util/stacktrace_windows.h"
 #include "mongo/util/text.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 namespace mongo {
 
 namespace {
@@ -63,11 +62,11 @@ void doMinidumpWithException(struct _EXCEPTION_POINTERS* exceptionInfo) {
 
     DWORD ret = GetModuleFileNameW(nullptr, &moduleFileName[0], ARRAYSIZE(moduleFileName));
     if (ret == 0) {
-        auto ec = lastSystemError();
+        int gle = GetLastError();
         LOGV2(23130,
               "GetModuleFileName failed {error}",
               "GetModuleFileName failed",
-              "error"_attr = errorMessage(ec));
+              "error"_attr = errnoWithDescription(gle));
 
         // Fallback name
         wcscpy_s(moduleFileName, L"mongo");
@@ -89,12 +88,12 @@ void doMinidumpWithException(struct _EXCEPTION_POINTERS* exceptionInfo) {
     HANDLE hFile = CreateFileW(
         dumpName.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (INVALID_HANDLE_VALUE == hFile) {
-        auto ec = lastSystemError();
+        DWORD lasterr = GetLastError();
         LOGV2(23131,
               "Failed to open minidump file {dumpName}: {error}",
               "Failed to open minidump file",
               "dumpName"_attr = toUtf8String(dumpName.c_str()),
-              "error"_attr = errorMessage(ec));
+              "error"_attr = errnoWithDescription(lasterr));
         return;
     }
 
@@ -123,11 +122,11 @@ void doMinidumpWithException(struct _EXCEPTION_POINTERS* exceptionInfo) {
                                      nullptr,
                                      nullptr);
     if (FALSE == bstatus) {
-        auto ec = lastSystemError();
+        DWORD lasterr = GetLastError();
         LOGV2(23133,
               "Failed to create minidump: {error}",
               "Failed to create minidump",
-              "error"_attr = errorMessage(ec));
+              "error"_attr = errnoWithDescription(lasterr));
     }
 
     CloseHandle(hFile);
@@ -193,7 +192,7 @@ LONG WINAPI exceptionFilter(struct _EXCEPTION_POINTERS* excPointers) {
     // Don't go through normal shutdown procedure. It may make things worse.
     // Do not go through _exit or ExitProcess(), terminate immediately
     LOGV2_FATAL_CONTINUE(23137, "*** immediate exit due to unhandled exception");
-    TerminateProcess(GetCurrentProcess(), static_cast<UINT>(ExitCode::abrupt));
+    TerminateProcess(GetCurrentProcess(), EXIT_ABRUPT);
 
     // We won't reach here
     return EXCEPTION_EXECUTE_HANDLER;

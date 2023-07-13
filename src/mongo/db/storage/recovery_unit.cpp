@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -37,9 +38,6 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/time_support.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 namespace {
 // SnapshotIds need to be globally unique, as they are used in a WorkingSetMember to
@@ -47,22 +45,14 @@ namespace {
 // so there is a chance the snapshot ID will be reused.
 AtomicWord<unsigned long long> nextSnapshotId{1};
 MONGO_FAIL_POINT_DEFINE(widenWUOWChangesWindow);
-
-SnapshotId getNextSnapshotId() {
-    return SnapshotId(nextSnapshotId.fetchAndAdd(1));
-}
 }  // namespace
 
-RecoveryUnit::RecoveryUnit() : _snapshot(getNextSnapshotId()) {}
-
-RecoveryUnit::Snapshot& RecoveryUnit::getSnapshot() {
-    return _snapshot.get();
+RecoveryUnit::RecoveryUnit() {
+    assignNextSnapshotId();
 }
 
-void RecoveryUnit::assignNextSnapshot() {
-    // The current snapshot's destructor will be called first, followed by the constructors for the
-    // next snapshot.
-    _snapshot.emplace(getNextSnapshotId());
+void RecoveryUnit::assignNextSnapshotId() {
+    _mySnapshotId = nextSnapshotId.fetchAndAdd(1);
 }
 
 void RecoveryUnit::registerPreCommitHook(std::function<void(OperationContext*)> callback) {
@@ -102,48 +92,15 @@ void RecoveryUnit::commitRegisteredChanges(boost::optional<Timestamp> commitTime
     _executeCommitHandlers(commitTimestamp);
 }
 
-void RecoveryUnit::beginUnitOfWork(bool readOnly) {
-    _readOnly = readOnly;
-    if (!_readOnly) {
-        doBeginUnitOfWork();
-    }
-}
-
-void RecoveryUnit::commitUnitOfWork() {
-    invariant(!_readOnly);
-    doCommitUnitOfWork();
-    assignNextSnapshot();
-}
-
-void RecoveryUnit::abortUnitOfWork() {
-    invariant(!_readOnly);
-    doAbortUnitOfWork();
-    assignNextSnapshot();
-}
-
-void RecoveryUnit::endReadOnlyUnitOfWork() {
-    _readOnly = false;
-}
-
-void RecoveryUnit::abandonSnapshot() {
-    doAbandonSnapshot();
-    assignNextSnapshot();
-}
-
-void RecoveryUnit::setOperationContext(OperationContext* opCtx) {
-    _opCtx = opCtx;
-}
-
 void RecoveryUnit::_executeCommitHandlers(boost::optional<Timestamp> commitTimestamp) {
-    invariant(_opCtx);
     for (auto& change : _changes) {
         try {
             // Log at higher level because commits occur far more frequently than rollbacks.
             LOGV2_DEBUG(22244,
                         3,
-                        "Custom commit",
-                        "changeName"_attr = redact(demangleName(typeid(*change))));
-            change->commit(_opCtx, commitTimestamp);
+                        "CUSTOM COMMIT {demangleName_typeid_change}",
+                        "demangleName_typeid_change"_attr = redact(demangleName(typeid(*change))));
+            change->commit(commitTimestamp);
         } catch (...) {
             std::terminate();
         }
@@ -153,10 +110,10 @@ void RecoveryUnit::_executeCommitHandlers(boost::optional<Timestamp> commitTimes
             // Log at higher level because commits occur far more frequently than rollbacks.
             LOGV2_DEBUG(5255701,
                         2,
-                        "Custom commit",
-                        "changeName"_attr =
+                        "CUSTOM COMMIT {demangleName_typeid_change}",
+                        "demangleName_typeid_change"_attr =
                             redact(demangleName(typeid(*_changeForCatalogVisibility))));
-            _changeForCatalogVisibility->commit(_opCtx, commitTimestamp);
+            _changeForCatalogVisibility->commit(commitTimestamp);
         }
     } catch (...) {
         std::terminate();
@@ -173,17 +130,15 @@ void RecoveryUnit::abortRegisteredChanges() {
     _executeRollbackHandlers();
 }
 void RecoveryUnit::_executeRollbackHandlers() {
-    // Make sure we have an OperationContext when executing rollback handlers. Unless we have no
-    // handlers to run, which might be the case in unit tests.
-    invariant(_opCtx || (_changes.empty() && !_changeForCatalogVisibility));
     try {
         if (_changeForCatalogVisibility) {
+
             LOGV2_DEBUG(5255702,
                         2,
-                        "Custom rollback",
-                        "changeName"_attr =
+                        "CUSTOM ROLLBACK {demangleName_typeid_change}",
+                        "demangleName_typeid_change"_attr =
                             redact(demangleName(typeid(*_changeForCatalogVisibility))));
-            _changeForCatalogVisibility->rollback(_opCtx);
+            _changeForCatalogVisibility->rollback();
         }
         for (Changes::const_reverse_iterator it = _changes.rbegin(), end = _changes.rend();
              it != end;
@@ -191,9 +146,9 @@ void RecoveryUnit::_executeRollbackHandlers() {
             Change* change = it->get();
             LOGV2_DEBUG(22245,
                         2,
-                        "Custom rollback",
-                        "changeName"_attr = redact(demangleName(typeid(*change))));
-            change->rollback(_opCtx);
+                        "CUSTOM ROLLBACK {demangleName_typeid_change}",
+                        "demangleName_typeid_change"_attr = redact(demangleName(typeid(*change))));
+            change->rollback();
         }
         _changeForCatalogVisibility.reset();
         _changes.clear();
@@ -202,13 +157,10 @@ void RecoveryUnit::_executeRollbackHandlers() {
     }
 }
 
-void RecoveryUnit::_setState(State newState) {
-    _state = newState;
-}
-
 void RecoveryUnit::validateInUnitOfWork() const {
-    invariant(_inUnitOfWork() || _readOnly,
-              fmt::format("state: {}, readOnly: {}", toString(_getState()), _readOnly));
+    invariant(_inUnitOfWork() || storageGlobalParams.readOnly,
+              fmt::format(
+                  "state: {}, readOnly: {}", toString(_getState()), storageGlobalParams.readOnly));
 }
 
 }  // namespace mongo

@@ -4,16 +4,13 @@ selector:
   roots:
   - jstests/core/**/*.js
   - jstests/fle2/**/*.js
-  - src/mongo/db/modules/*/jstests/fle2/**/*.js
+  - src/mongo/db/modules/*/jstests/fle2/*.js
   exclude_files:
   # This test expects that the connection (i.e. 'threadName') does not change throughout each test
   # case. That is not always true when the test driver use a replica set connection string. As this
   # test sets fail point with error code NotWritablePrimary, the test driver changes its topology to
   # ReplicaSetNoPrimary and create a new connection once it get the primary again.
-  - jstests/core/**/failcommand_failpoint.js
-  # TODO: SERVER-71487 Legacy shell does not carry over encryption information through
-  # getMores in reconfig suites.
-  - src/mongo/db/modules/*/jstests/fle2/query/*getMore*.js
+  - jstests/core/failcommand_failpoint.js
 
   exclude_with_any_tags:
   - assumes_standalone_mongod

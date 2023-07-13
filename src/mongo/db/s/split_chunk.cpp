@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
 #include "mongo/db/s/split_chunk.h"
 
 #include "mongo/base/status_with.h"
@@ -41,15 +43,13 @@
 #include "mongo/db/s/active_migrations_registry.h"
 #include "mongo/db/s/collection_sharding_runtime.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
+#include "mongo/db/s/shard_key_index_util.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/split_chunk_request_type.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/shard_version_factory.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 namespace mongo {
 namespace {
@@ -98,38 +98,35 @@ bool checkMetadataForSuccessfulSplitChunk(OperationContext* opCtx,
                                           const ChunkRange& chunkRange,
                                           const std::vector<BSONObj>& splitPoints) {
     // DBLock and CollectionLock must be used in order to avoid shard version checks
-    Lock::DBLock dbLock(opCtx, nss.dbName(), MODE_IS);
+    Lock::DBLock dbLock(opCtx, nss.db(), MODE_IS);
     Lock::CollectionLock collLock(opCtx, nss, MODE_IS);
 
-    const auto scopedCSR =
-        CollectionShardingRuntime::assertCollectionLockedAndAcquireShared(opCtx, nss);
-    const auto metadataAfterSplit = scopedCSR->getCurrentMetadataIfKnown();
+    const auto metadataAfterSplit =
+        CollectionShardingRuntime::get(opCtx, nss)->getCurrentMetadataIfKnown();
 
     ShardId shardId = ShardingState::get(opCtx)->shardId();
 
     uassert(StaleConfigInfo(nss,
-                            ShardVersion::IGNORED() /* receivedVersion */,
+                            ChunkVersion::IGNORED() /* receivedVersion */,
                             boost::none /* wantedVersion */,
                             shardId),
             str::stream() << "Collection " << nss.ns() << " needs to be recovered",
             metadataAfterSplit);
     uassert(StaleConfigInfo(nss,
-                            ShardVersion::IGNORED() /* receivedVersion */,
-                            ShardVersion::UNSHARDED() /* wantedVersion */,
+                            ChunkVersion::IGNORED() /* receivedVersion */,
+                            ChunkVersion::UNSHARDED() /* wantedVersion */,
                             shardId),
             str::stream() << "Collection " << nss.ns() << " is not sharded",
             metadataAfterSplit->isSharded());
-    const auto placementVersion = metadataAfterSplit->getShardPlacementVersion();
-    const auto epoch = placementVersion.epoch();
+    const auto epoch = metadataAfterSplit->getShardVersion().epoch();
     uassert(StaleConfigInfo(nss,
-                            ShardVersion::IGNORED() /* receivedVersion */,
-                            ShardVersionFactory::make(
-                                *metadataAfterSplit,
-                                scopedCSR->getCollectionIndexes(opCtx)) /* wantedVersion */,
+                            ChunkVersion::IGNORED() /* receivedVersion */,
+                            metadataAfterSplit->getShardVersion() /* wantedVersion */,
                             shardId),
             str::stream() << "Collection " << nss.ns() << " changed since split start",
             epoch == expectedEpoch &&
-                (!expectedTimestamp || placementVersion.getTimestamp() == expectedTimestamp));
+                (!expectedTimestamp ||
+                 metadataAfterSplit->getShardVersion().getTimestamp() == expectedTimestamp));
 
     ChunkType nextChunk;
     for (auto it = splitPoints.begin(); it != splitPoints.end(); ++it) {
@@ -253,14 +250,15 @@ StatusWith<boost::optional<ChunkRange>> splitChunk(
 
     const Shard::CommandResponse& cmdResponse = cmdResponseStatus.getValue();
 
-    boost::optional<ChunkVersion> chunkVersionReceived = [&]() -> boost::optional<ChunkVersion> {
+    boost::optional<ChunkVersion> shardVersionReceived = [&]() -> boost::optional<ChunkVersion> {
         // old versions might not have the shardVersion field
-        if (cmdResponse.response[ChunkVersion::kChunkVersionField]) {
-            return ChunkVersion::parse(cmdResponse.response[ChunkVersion::kChunkVersionField]);
+        if (cmdResponse.response[ChunkVersion::kShardVersionField]) {
+            return ChunkVersion::fromBSONPositionalOrNewerFormat(
+                cmdResponse.response[ChunkVersion::kShardVersionField]);
         }
         return boost::none;
     }();
-    onCollectionPlacementVersionMismatch(opCtx, nss, chunkVersionReceived);
+    onShardVersionMismatch(opCtx, nss, shardVersionReceived);
 
     // Check commandStatus and writeConcernStatus
     auto commandStatus = cmdResponse.commandStatus;

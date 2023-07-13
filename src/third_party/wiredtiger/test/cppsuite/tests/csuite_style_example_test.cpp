@@ -33,15 +33,15 @@
  * test_template.cpp and create_script.sh.
  */
 
-#include "src/common/constants.h"
-#include "src/common/logger.h"
-#include "src/common/random_generator.h"
-#include "src/common/thread_manager.h"
-#include "src/storage/connection_manager.h"
+#include "test_harness/connection_manager.h"
+#include "test_harness/thread_manager.h"
+#include "test_harness/util/api_const.h"
+#include "test_harness/util/logger.h"
+#include "test_harness/util/scoped_connection.h"
+#include "test_harness/workload/random_generator.h"
 
 extern "C" {
 #include "wiredtiger.h"
-#include "test_util.h"
 }
 
 using namespace test_harness;
@@ -79,7 +79,7 @@ read_op(WT_CURSOR *cursor, int key_size)
     while (do_reads) {
         key = random_generator::instance().generate_random_string(key_size);
         cursor->set_key(cursor, key.c_str());
-        WT_IGNORE_RET(cursor->search(cursor));
+        cursor->search(cursor);
     }
 }
 
@@ -99,9 +99,11 @@ main(int argc, char *argv[])
     /* Create a connection, set the cache size and specify the home directory. */
     const std::string conn_config = CONNECTION_CREATE + ",cache_size=500MB";
     const std::string home_dir = std::string(DEFAULT_DIR) + '_' + progname;
-
-    /* Create connection. */
-    connection_manager::instance().create(conn_config, home_dir);
+    /*
+     * A smart pointer is used here so that the connection can automatically be closed by the
+     * scoped_connection's destructor when the test finishes and the pointer goes out of scope.
+     */
+    std::unique_ptr<scoped_connection> scoped_conn(new scoped_connection(conn_config, home_dir));
     WT_CONNECTION *conn = connection_manager::instance().get_connection();
 
     /* Open different sessions. */

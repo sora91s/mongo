@@ -29,14 +29,12 @@
 
 #pragma once
 
-#include "mongo/util/duration.h"
 #include <queue>
 
 #include "mongo/db/exec/sbe/stages/stages.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/pipeline/plan_executor_pipeline.h"
-#include "mongo/db/query/cqf_get_executor.h"
 #include "mongo/db/query/optimizer/explain_interface.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/plan_yield_policy_sbe.h"
@@ -117,11 +115,10 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> make(
     std::unique_ptr<QuerySolution> solution,
     std::pair<std::unique_ptr<sbe::PlanStage>, stage_builder::PlanStageData> root,
     std::unique_ptr<optimizer::AbstractABTPrinter> optimizerData,
+    const MultipleCollectionAccessor& collections,
     size_t plannerOptions,
     NamespaceString nss,
-    std::unique_ptr<PlanYieldPolicySBE> yieldPolicy,
-    bool isFromPlanCache,
-    bool generatedByBonsai);
+    std::unique_ptr<PlanYieldPolicySBE> yieldPolicy);
 
 /**
  * Similar to the factory function above in that it also constructs an executor for the winning SBE

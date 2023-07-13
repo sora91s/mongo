@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/query/plan_executor_sbe.h"
@@ -39,10 +41,6 @@
 #include "mongo/db/query/sbe_stage_builder.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/resharding/resume_token_gen.h"
-#include "mongo/util/duration.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 // This failpoint is defined by the classic executor but is also accessed here.
@@ -55,19 +53,17 @@ PlanExecutorSBE::PlanExecutorSBE(OperationContext* opCtx,
                                  bool returnOwnedBson,
                                  NamespaceString nss,
                                  bool isOpen,
-                                 std::unique_ptr<PlanYieldPolicySBE> yieldPolicy,
-                                 bool generatedByBonsai)
+                                 std::unique_ptr<PlanYieldPolicySBE> yieldPolicy)
     : _state{isOpen ? State::kOpened : State::kClosed},
       _opCtx(opCtx),
       _nss(std::move(nss)),
       _mustReturnOwnedBson(returnOwnedBson),
       _root{std::move(candidates.winner().root)},
-      _rootData{std::move(candidates.winner().data.stageData)},
+      _rootData{std::move(candidates.winner().data)},
       _solution{std::move(candidates.winner().solution)},
       _stash{std::move(candidates.winner().results)},
       _cq{std::move(cq)},
-      _yieldPolicy(std::move(yieldPolicy)),
-      _generatedByBonsai(generatedByBonsai) {
+      _yieldPolicy(std::move(yieldPolicy)) {
     invariant(!_nss.isEmpty());
     invariant(_root);
 
@@ -104,8 +100,9 @@ PlanExecutorSBE::PlanExecutorSBE(OperationContext* opCtx,
         _yieldPolicy->clearRegisteredPlans();
         _yieldPolicy->registerPlan(_root.get());
     }
+
     const auto isMultiPlan = candidates.plans.size() > 1;
-    const auto isCachedCandidate = candidates.winner().isCachedCandidate;
+
     if (!_cq || !_cq->getExpCtx()->explain) {
         // If we're not in explain mode, there is no need to keep rejected candidate plans around.
         candidates.plans.clear();
@@ -124,7 +121,6 @@ PlanExecutorSBE::PlanExecutorSBE(OperationContext* opCtx,
                                                   std::move(optimizerData),
                                                   std::move(candidates.plans),
                                                   isMultiPlan,
-                                                  isCachedCandidate,
                                                   _rootData.debugInfo);
 }
 
@@ -139,11 +135,7 @@ void PlanExecutorSBE::saveState() {
         _opCtx->recoveryUnit()->setAbandonSnapshotMode(RecoveryUnit::AbandonSnapshotMode::kCommit);
         _opCtx->recoveryUnit()->abandonSnapshot();
     } else {
-        // Discard the slots as we won't access them before subsequent PlanExecutorSBE::getNext()
-        // method call.
-        const bool relinquishCursor = true;
-        const bool discardSlotState = true;
-        _root->saveState(relinquishCursor, discardSlotState);
+        _root->saveState(true /* relinquish cursor */);
     }
 
     _yieldPolicy->setYieldable(nullptr);
@@ -252,7 +244,7 @@ PlanExecutor::ExecState PlanExecutorSBE::getNextImpl(ObjectType* out, RecordId* 
             *out = Document{std::move(doc)};
         }
         if (dlOut && recordId) {
-            *dlOut = std::move(*recordId);
+            *dlOut = *recordId;
         }
         _stash.pop_front();
         return PlanExecutor::ExecState::ADVANCED;

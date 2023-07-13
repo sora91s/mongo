@@ -36,6 +36,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/hello_gen.h"
 #include "mongo/db/service_context.h"
+#include "mongo/s/load_balancer_feature_flag_gen.h"
 #include "mongo/s/mongos_server_parameters_gen.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point.h"
@@ -93,6 +94,9 @@ const auto getPerServiceState = ServiceContext::declareDecoration<PerService>();
 const auto getPerClientState = Client::declareDecoration<PerClient>();
 
 bool PerClient::isFromLoadBalancer() const {
+    if (!isEnabled()) {
+        return false;
+    }
     if (MONGO_unlikely(clientIsFromLoadBalancer.shouldFail())) {
         return true;
     }
@@ -104,18 +108,22 @@ bool PerClient::isFromLoadBalancer() const {
 }  // namespace
 
 bool isEnabled() {
-    const auto val = loadBalancerPort.load();
-    return val != 0 || MONGO_unlikely(clientIsFromLoadBalancer.shouldFail());
+    return feature_flags::gFeatureFlagLoadBalancer.isEnabled(
+        serverGlobalParams.featureCompatibility);
 }
 
 boost::optional<int> getLoadBalancerPort() {
-    auto val = loadBalancerPort.load();
-    if (val != 0)
-        return val;
+    if (isEnabled()) {
+        auto val = loadBalancerPort.load();
+        if (val != 0)
+            return val;
+    }
     return {};
 }
 
 void handleHello(OperationContext* opCtx, BSONObjBuilder* result, bool helloHasLoadBalancedOption) {
+    if (!isEnabled())
+        return;
     auto& perClient = getPerClientState(opCtx->getClient());
     if (perClient.didHello() || !perClient.isFromLoadBalancer())
         return;
@@ -130,6 +138,9 @@ void handleHello(OperationContext* opCtx, BSONObjBuilder* result, bool helloHasL
 }
 
 bool isFromLoadBalancer(Client* client) {
+    if (!isEnabled()) {
+        return false;
+    }
     return getPerClientState(client).isFromLoadBalancer();
 }
 

@@ -47,12 +47,9 @@ public:
     static constexpr StringData kInclude = "include"_sd;
     static constexpr StringData kExclude = "exclude"_sd;
     static constexpr StringData kAssumeNoMixedSchemaData = "assumeNoMixedSchemaData"_sd;
-    static constexpr StringData kUsesExtendedRange = "usesExtendedRange"_sd;
     static constexpr StringData kBucketMaxSpanSeconds = "bucketMaxSpanSeconds"_sd;
     static constexpr StringData kIncludeMinTimeAsMetadata = "includeMinTimeAsMetadata"_sd;
     static constexpr StringData kIncludeMaxTimeAsMetadata = "includeMaxTimeAsMetadata"_sd;
-    static constexpr StringData kWholeBucketFilter = "wholeBucketFilter"_sd;
-    static constexpr StringData kEventFilter = "eventFilter"_sd;
 
     static boost::intrusive_ptr<DocumentSource> createFromBsonInternal(
         BSONElement elem, const boost::intrusive_ptr<ExpressionContext>& expCtx);
@@ -62,13 +59,6 @@ public:
     DocumentSourceInternalUnpackBucket(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                        BucketUnpacker bucketUnpacker,
                                        int bucketMaxSpanSeconds,
-                                       bool assumeNoMixedSchemaData = false);
-
-    DocumentSourceInternalUnpackBucket(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                       BucketUnpacker bucketUnpacker,
-                                       int bucketMaxSpanSeconds,
-                                       const boost::optional<BSONObj>& eventFilterBson,
-                                       const boost::optional<BSONObj>& wholeBucketFilterBson,
                                        bool assumeNoMixedSchemaData = false);
 
     const char* getSourceName() const override {
@@ -105,8 +95,6 @@ public:
                                      UnionRequirement::kAllowed,
                                      ChangeStreamRequirement::kDenylist};
         constraints.canSwapWithMatch = true;
-        // The user cannot specify multiple $unpackBucket stages in the pipeline.
-        constraints.canAppearOnlyOnceInPipeline = true;
         return constraints;
     }
 
@@ -117,8 +105,6 @@ public:
         deps->needWholeDocument = true;
         return DepsTracker::State::EXHAUSTIVE_ALL;
     }
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
 
     int getBucketMaxSpanSeconds() const {
         return _bucketMaxSpanSeconds;
@@ -169,7 +155,7 @@ public:
     /**
      * Convenience wrapper around BucketSpec::createPredicatesOnBucketLevelField().
      */
-    BucketSpec::BucketPredicate createPredicatesOnBucketLevelField(
+    std::unique_ptr<MatchExpression> createPredicatesOnBucketLevelField(
         const MatchExpression* matchExpr) const;
 
     /**
@@ -230,13 +216,6 @@ public:
         Pipeline::SourceContainer::iterator itr, Pipeline::SourceContainer* container);
 
     /**
-     * Helper method which checks if we can replace DocumentSourceGroup with
-     * DocumentSourceStreamingGroup. Returns true if the optimization is performed.
-     */
-    bool enableStreamingGroupIfPossible(Pipeline::SourceContainer::iterator itr,
-                                        Pipeline::SourceContainer* container);
-
-    /**
      * If the current aggregation is a lastpoint-type query (ie. with a $sort on meta and time
      * fields, and a $group with a meta _id and only $first or $last accumulators) we can rewrite
      * it to avoid unpacking all buckets.
@@ -261,24 +240,13 @@ public:
 
     GetModPathsReturn getModifiedPaths() const final override;
 
-    DepsTracker getRestPipelineDependencies(Pipeline::SourceContainer::iterator itr,
-                                            Pipeline::SourceContainer* container,
-                                            bool includeEventFilter) const;
-
 private:
     GetNextResult doGetNext() final;
-
-    boost::optional<Document> getNextMatchingMeasure();
-
     bool haveComputedMetaField() const;
 
     // If buckets contained a mixed type schema along some path, we have to push down special
     // predicates in order to ensure correctness.
     bool _assumeNoMixedSchemaData = false;
-
-    // If any bucket contains dates outside the range of 1970-2038, we are unable to rely on
-    // the _id index, as _id is truncates to 32 bits
-    bool _usesExtendedRange = false;
 
     BucketUnpacker _bucketUnpacker;
     int _bucketMaxSpanSeconds;
@@ -286,15 +254,9 @@ private:
     int _bucketMaxCount = 0;
     boost::optional<long long> _sampleSize;
 
-    // Filters pushed from the later $match stages
-    std::unique_ptr<MatchExpression> _eventFilter;
-    BSONObj _eventFilterBson;
-    DepsTracker _eventFilterDeps;
-    std::unique_ptr<MatchExpression> _wholeBucketFilter;
-    BSONObj _wholeBucketFilterBson;
-
-    bool _unpackToBson = false;
-
+    // Used to avoid infinite loops after we step backwards to optimize a $match on bucket level
+    // fields, otherwise we may do an infinite number of $match pushdowns.
+    bool _triedBucketLevelFieldsPredicatesPushdown = false;
     bool _optimizedEndOfPipeline = false;
     bool _triedInternalizeProject = false;
     bool _triedLastpointRewrite = false;

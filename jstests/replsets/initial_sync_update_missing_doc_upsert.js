@@ -48,15 +48,17 @@ assert.commandWorked(coll.update({_id: documentIdCounter}, {x: 1}, {upsert: true
 documentIdCounter++;
 numDocuments++;
 
-function applyOps({documentId, alwaysUpsert}) {
+function applyOps({documentId, alwaysUpsert, allowAtomic}) {
     let command = {
-        applyOps: [
-            {op: "u", ns: coll.getFullName(), o2: {_id: documentId}, o: {$v: 2, diff: {u: {x: 1}}}}
-        ]
+        applyOps: [{op: "u", ns: coll.getFullName(), o2: {_id: documentId}, o: {$set: {x: 1}}}]
     };
 
     if (alwaysUpsert !== null) {
         command['alwaysUpsert'] = alwaysUpsert;
+    }
+
+    if (allowAtomic !== null) {
+        command['allowAtomic'] = allowAtomic;
     }
 
     assert.commandWorked(primary.getDB(dbName).runCommand(command));
@@ -64,24 +66,30 @@ function applyOps({documentId, alwaysUpsert}) {
 
 /* alwaysUpsert is true by default; test with the default value and an explicit value */
 for (let alwaysUpsert of [null, true]) {
-    /* It writes a regular op: 'u' entry. The update is treated as
+    /* If allowAtomic is true (the default), this writes an applyOps oplog entry containing an
+     * op: 'u' sub-entry, otherwise it writes a regular op: 'u' entry. The update is treated as
      * an upsert by the primary. Ensure it is treated that way by the secondary when it applies
      * the oplog entry during initial sync.
      */
-    applyOps({documentId: documentIdCounter, alwaysUpsert: alwaysUpsert});
-    documentIdCounter++;
-    numDocuments++;
+    for (let allowAtomic of [null, true, false]) {
+        applyOps(
+            {documentId: documentIdCounter, alwaysUpsert: alwaysUpsert, allowAtomic: allowAtomic});
+        documentIdCounter++;
+        numDocuments++;
+    }
 }
 
 /* The interesting scenario for alwaysUpsert: false is if the document is deleted on the primary
  * after updating. When the secondary attempts to apply the oplog entry during initial sync,
  * it will fail to update. Ensure that initial sync proceeds anyway.
  */
-coll.insertOne({_id: documentIdCounter});
-applyOps({documentId: documentIdCounter, alwaysUpsert: false});
-coll.deleteOne({_id: documentIdCounter});
-// Don't increment numDocuments, since we deleted the document we just inserted.
-documentIdCounter++;
+for (let allowAtomic of [null, true, false]) {
+    coll.insertOne({_id: documentIdCounter});
+    applyOps({documentId: documentIdCounter, alwaysUpsert: false, allowAtomic: allowAtomic});
+    coll.deleteOne({_id: documentIdCounter});
+    // Don't increment numDocuments, since we deleted the document we just inserted.
+    documentIdCounter++;
+}
 
 jsTestLog("Allow initial sync to finish fetching and replaying oplog");
 

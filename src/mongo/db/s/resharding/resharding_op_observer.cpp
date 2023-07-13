@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/db/s/resharding/resharding_coordinator_service.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
-
-
 namespace mongo {
 
 namespace {
@@ -50,17 +48,19 @@ std::shared_ptr<ReshardingCoordinatorObserver> getReshardingCoordinatorObserver(
     OperationContext* opCtx, const BSONObj& reshardingId) {
     auto registry = repl::PrimaryOnlyServiceRegistry::get(opCtx->getServiceContext());
     auto service = registry->lookupServiceByName(ReshardingCoordinatorService::kServiceName);
-    auto instance = ReshardingCoordinator::lookup(opCtx, service, reshardingId);
+    auto instance =
+        ReshardingCoordinatorService::ReshardingCoordinator::lookup(opCtx, service, reshardingId);
 
-    iassert(5400001, "ReshardingCoordinatorService instance does not exist", instance.has_value());
+    iassert(
+        5400001, "ReshardingCoordinatorService instance does not exist", instance.is_initialized());
 
     return (*instance)->getObserver();
 }
 
 boost::optional<Timestamp> parseNewMinFetchTimestampValue(const BSONObj& obj) {
-    auto doc = ReshardingDonorDocument::parse(IDLParserContext("Resharding"), obj);
+    auto doc = ReshardingDonorDocument::parse(IDLParserErrorContext("Resharding"), obj);
     if (doc.getMutableState().getState() == DonorStateEnum::kDonatingInitialData) {
-        return doc.getMutableState().getMinFetchTimestamp().value();
+        return doc.getMutableState().getMinFetchTimestamp().get();
     } else {
         return boost::none;
     }
@@ -70,9 +70,7 @@ void assertCanExtractShardKeyFromDocs(OperationContext* opCtx,
                                       const NamespaceString& nss,
                                       std::vector<InsertStatement>::const_iterator begin,
                                       std::vector<InsertStatement>::const_iterator end) {
-    auto collDesc = CollectionShardingState::assertCollectionLockedAndAcquire(opCtx, nss)
-                        ->getCollectionDescription(opCtx);
-
+    const auto collDesc = CollectionShardingState::get(opCtx, nss)->getCollectionDescription(opCtx);
     // A user can manually create a 'db.system.resharding.' collection that isn't guaranteed to be
     // sharded outside of running reshardCollection.
     uassert(ErrorCodes::NamespaceNotSharded,
@@ -114,8 +112,8 @@ boost::optional<Timestamp> _calculatePin(OperationContext* opCtx) {
     Timestamp ret = Timestamp::max();
     auto cursor = collection->getCursor(opCtx);
     for (auto doc = cursor->next(); doc; doc = cursor->next()) {
-        if (auto fetchTs = parseNewMinFetchTimestampValue(doc.value().data.toBson()); fetchTs) {
-            ret = std::min(ret, fetchTs.value());
+        if (auto fetchTs = parseNewMinFetchTimestampValue(doc.get().data.toBson()); fetchTs) {
+            ret = std::min(ret, fetchTs.get());
         }
     }
 
@@ -136,7 +134,7 @@ void _doPin(OperationContext* opCtx) {
     }
 
     StatusWith<Timestamp> res = storageEngine->pinOldestTimestamp(
-        opCtx, ReshardingHistoryHook::kName.toString(), pin.value(), false);
+        opCtx, ReshardingHistoryHook::kName.toString(), pin.get(), false);
     if (!res.isOK()) {
         if (replCoord->getReplicationMode() != repl::ReplicationCoordinator::Mode::modeReplSet) {
             // The pin has failed, but we're in standalone mode. Ignore the error.
@@ -155,7 +153,7 @@ void _doPin(OperationContext* opCtx) {
             // is the most robust path forward. Ignore this case.
             LOGV2_WARNING(5384104,
                           "This node is unable to pin history for resharding",
-                          "requestedTs"_attr = pin.value());
+                          "requestedTs"_attr = pin.get());
         } else {
             // For recovery cases we also ignore the error. The expected scenario is the pin
             // request is no longer needed, but the write to delete the pin was rolled
@@ -164,7 +162,7 @@ void _doPin(OperationContext* opCtx) {
             // consequence to observing this error. Ignore this case.
             LOGV2(5384103,
                   "The requested pin was unavailable, but should also be unnecessary",
-                  "requestedTs"_attr = pin.value());
+                  "requestedTs"_attr = pin.get());
         }
     }
 }
@@ -180,12 +178,11 @@ ReshardingOpObserver::ReshardingOpObserver() = default;
 ReshardingOpObserver::~ReshardingOpObserver() = default;
 
 void ReshardingOpObserver::onInserts(OperationContext* opCtx,
-                                     const CollectionPtr& coll,
+                                     const NamespaceString& nss,
+                                     const UUID& uuid,
                                      std::vector<InsertStatement>::const_iterator begin,
                                      std::vector<InsertStatement>::const_iterator end,
                                      bool fromMigrate) {
-    const auto& nss = coll->ns();
-
     if (nss == NamespaceString::kDonorReshardingOperationsNamespace) {
         // If a document is inserted into the resharding donor collection with a
         // `minFetchTimestamp`, we assume the document was inserted as part of initial sync and do
@@ -205,7 +202,7 @@ void ReshardingOpObserver::onInserts(OperationContext* opCtx,
 }
 
 void ReshardingOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArgs& args) {
-    if (args.coll->ns() == NamespaceString::kDonorReshardingOperationsNamespace) {
+    if (args.nss == NamespaceString::kDonorReshardingOperationsNamespace) {
         // Primaries and secondaries should execute pinning logic when observing changes to the
         // donor resharding document.
         _doPin(opCtx);
@@ -217,42 +214,41 @@ void ReshardingOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateEn
         return;
     }
 
-    if (args.coll->ns() == NamespaceString::kConfigReshardingOperationsNamespace) {
+    if (args.nss == NamespaceString::kConfigReshardingOperationsNamespace) {
         auto newCoordinatorDoc = ReshardingCoordinatorDocument::parse(
-            IDLParserContext("reshardingCoordinatorDoc"), args.updateArgs->updatedDoc);
-        opCtx->recoveryUnit()->onCommit(
-            [newCoordinatorDoc = std::move(newCoordinatorDoc)](OperationContext* opCtx,
-                                                               boost::optional<Timestamp>) mutable {
-                try {
-                    // It is possible that the ReshardingCoordinatorService is still being rebuilt.
-                    // We must defer calling ReshardingCoordinator::lookup() until after our storage
-                    // transaction has committed to ensure we aren't holding open an oplog hole and
-                    // preventing replication from making progress while we wait.
-                    auto reshardingId = BSON(ReshardingCoordinatorDocument::kReshardingUUIDFieldName
-                                             << newCoordinatorDoc.getReshardingUUID());
-                    auto observer = getReshardingCoordinatorObserver(opCtx, reshardingId);
-                    observer->onReshardingParticipantTransition(newCoordinatorDoc);
-                } catch (const DBException& ex) {
-                    LOGV2_INFO(6148200,
-                               "Interrupted while waiting for resharding coordinator to be rebuilt;"
-                               " will retry on new primary",
-                               "namespace"_attr = newCoordinatorDoc.getSourceNss(),
-                               "reshardingUUID"_attr = newCoordinatorDoc.getReshardingUUID(),
-                               "error"_attr = redact(ex.toStatus()));
-                }
-            });
-    } else if (args.coll->ns().isTemporaryReshardingCollection()) {
+            IDLParserErrorContext("reshardingCoordinatorDoc"), args.updateArgs->updatedDoc);
+        opCtx->recoveryUnit()->onCommit([opCtx, newCoordinatorDoc = std::move(newCoordinatorDoc)](
+                                            boost::optional<Timestamp> unusedCommitTime) mutable {
+            try {
+                // It is possible that the ReshardingCoordinatorService is still being rebuilt. We
+                // must defer calling ReshardingCoordinator::lookup() until after our storage
+                // transaction has committed to ensure we aren't holding open an oplog hole and
+                // preventing replication from making progress while we wait.
+                auto reshardingId = BSON(ReshardingCoordinatorDocument::kReshardingUUIDFieldName
+                                         << newCoordinatorDoc.getReshardingUUID());
+                auto observer = getReshardingCoordinatorObserver(opCtx, reshardingId);
+                observer->onReshardingParticipantTransition(newCoordinatorDoc);
+            } catch (const DBException& ex) {
+                LOGV2_INFO(6148200,
+                           "Interrupted while waiting for resharding coordinator to be rebuilt;"
+                           " will retry on new primary",
+                           "namespace"_attr = newCoordinatorDoc.getSourceNss(),
+                           "reshardingUUID"_attr = newCoordinatorDoc.getReshardingUUID(),
+                           "error"_attr = redact(ex.toStatus()));
+            }
+        });
+    } else if (args.nss.isTemporaryReshardingCollection()) {
         const std::vector<InsertStatement> updateDoc{InsertStatement{args.updateArgs->updatedDoc}};
-        assertCanExtractShardKeyFromDocs(
-            opCtx, args.coll->ns(), updateDoc.begin(), updateDoc.end());
+        assertCanExtractShardKeyFromDocs(opCtx, args.nss, updateDoc.begin(), updateDoc.end());
     }
 }
 
 void ReshardingOpObserver::onDelete(OperationContext* opCtx,
-                                    const CollectionPtr& coll,
+                                    const NamespaceString& nss,
+                                    const UUID& uuid,
                                     StmtId stmtId,
                                     const OplogDeleteEntryArgs& args) {
-    if (coll->ns() == NamespaceString::kDonorReshardingOperationsNamespace) {
+    if (nss == NamespaceString::kDonorReshardingOperationsNamespace) {
         _doPin(opCtx);
     }
 }

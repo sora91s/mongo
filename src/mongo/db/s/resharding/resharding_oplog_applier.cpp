@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
 
 #include "mongo/platform/basic.h"
 
@@ -36,15 +37,13 @@
 #include "mongo/db/s/resharding/resharding_data_copy_util.h"
 #include "mongo/db/s/resharding/resharding_donor_oplog_iterator.h"
 #include "mongo/db/s/resharding/resharding_future_util.h"
+#include "mongo/db/s/resharding/resharding_metrics.h"
 #include "mongo/db/s/resharding/resharding_util.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/sharding_feature_flags_gen.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/uuid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
-
 
 namespace mongo {
 
@@ -69,7 +68,8 @@ ReshardingOplogApplier::ReshardingOplogApplier(
                        myStashIdx,
                        _sourceId.getShardId(),
                        std::move(sourceChunkMgr),
-                       _env->applierMetrics()},
+                       _env->metrics(),
+                       _env->metricsNew()},
       _sessionApplication{std::move(oplogBufferNss)},
       _batchApplier{_crudApplication, _sessionApplication},
       _oplogIter(std::move(oplogIterator)) {}
@@ -120,9 +120,8 @@ SemiFuture<void> ReshardingOplogApplier::_applyBatch(
             return status;
         })
         .onCompletion([this, latencyTimer](Status status) {
-            _env->applierMetrics()->onOplogLocalBatchApplied(
+            _env->metrics()->onOplogApplierApplyBatch(
                 duration_cast<Milliseconds>(latencyTimer.elapsed()));
-
             return status;
         })
         .semi();
@@ -135,23 +134,18 @@ SemiFuture<void> ReshardingOplogApplier::run(
     CancelableOperationContextFactory factory) {
     struct ChainContext {
         std::unique_ptr<ReshardingDonorOplogIteratorInterface> oplogIter;
-        Timer fetchTimer;
     };
 
     auto chainCtx = std::make_shared<ChainContext>();
     chainCtx->oplogIter = std::move(_oplogIter);
 
     return AsyncTry([this, chainCtx, executor, cancelToken, factory] {
-               chainCtx->fetchTimer.reset();
                return chainCtx->oplogIter->getNextBatch(executor, cancelToken, factory)
                    .thenRunOn(executor)
-                   .then([this, chainCtx, executor, cancelToken, factory](OplogBatch batch) {
+                   .then([this, executor, cancelToken, factory](OplogBatch batch) {
                        LOGV2_DEBUG(5391002, 3, "Starting batch", "batchSize"_attr = batch.size());
-
-                       _env->applierMetrics()->onBatchRetrievedDuringOplogApplying(
-                           duration_cast<Milliseconds>(chainCtx->fetchTimer.elapsed()));
-
                        _currentBatchToApply = std::move(batch);
+
                        return _applyBatch(executor, cancelToken, factory);
                    })
                    .then([this, executor, cancelToken, factory] {
@@ -169,10 +163,8 @@ SemiFuture<void> ReshardingOplogApplier::run(
                    .then([this, factory] {
                        if (_currentBatchToApply.empty()) {
                            // Increment the number of entries applied by 1 in order to account for
-                           // the final oplog entry that the iterator never returns because it's a
-                           // known no-op oplog entry.
-                           _env->applierMetrics()->onOplogEntriesApplied(1);
-
+                           // the final oplog entry.
+                           _env->metrics()->onOplogEntriesApplied(1);
                            return false;
                        }
 
@@ -220,16 +212,16 @@ boost::optional<ReshardingOplogApplierProgress> ReshardingOplogApplier::checkSto
         return boost::none;
     }
 
-    IDLParserContext ctx("ReshardingOplogApplierProgress");
+    IDLParserErrorContext ctx("ReshardingOplogApplierProgress");
     return ReshardingOplogApplierProgress::parse(ctx, doc);
 }
 
 void ReshardingOplogApplier::_clearAppliedOpsAndStoreProgress(OperationContext* opCtx) {
     const auto& lastOplog = _currentBatchToApply.back();
 
-    auto oplogId = ReshardingDonorOplogId::parse(
-        IDLParserContext{"ReshardingOplogApplier::_clearAppliedOpsAndStoreProgress"},
-        lastOplog.get_id()->getDocument().toBson());
+    auto oplogId =
+        ReshardingDonorOplogId::parse({"ReshardingOplogApplier::_clearAppliedOpsAndStoreProgress"},
+                                      lastOplog.get_id()->getDocument().toBson());
 
     PersistentTaskStore<ReshardingOplogApplierProgress> store(
         NamespaceString::kReshardingApplierProgressNamespace);
@@ -241,25 +233,14 @@ void ReshardingOplogApplier::_clearAppliedOpsAndStoreProgress(OperationContext* 
                    BSON(ReshardingOplogApplierProgress::kNumEntriesAppliedFieldName
                         << static_cast<long long>(_currentBatchToApply.size())));
 
-    builder.append("$set",
-                   BSON(ReshardingOplogApplierProgress::kInsertsAppliedFieldName
-                        << _env->applierMetrics()->getInsertsApplied()));
-    builder.append("$set",
-                   BSON(ReshardingOplogApplierProgress::kUpdatesAppliedFieldName
-                        << _env->applierMetrics()->getUpdatesApplied()));
-    builder.append("$set",
-                   BSON(ReshardingOplogApplierProgress::kDeletesAppliedFieldName
-                        << _env->applierMetrics()->getDeletesApplied()));
-    builder.append("$set",
-                   BSON(ReshardingOplogApplierProgress::kWritesToStashCollectionsFieldName
-                        << _env->applierMetrics()->getWritesToStashCollections()));
-
     store.upsert(
         opCtx,
         BSON(ReshardingOplogApplierProgress::kOplogSourceIdFieldName << _sourceId.toBSON()),
         builder.obj());
-
-    _env->applierMetrics()->onOplogEntriesApplied(_currentBatchToApply.size());
+    _env->metrics()->onOplogEntriesApplied(_currentBatchToApply.size());
+    if (ShardingDataTransformMetrics::isEnabled()) {
+        _env->metricsNew()->onOplogEntriesApplied(_currentBatchToApply.size());
+    }
 
     _currentBatchToApply.clear();
     _currentDerivedOpsForCrudWriters.clear();
@@ -271,7 +252,7 @@ NamespaceString ReshardingOplogApplier::ensureStashCollectionExists(
     const UUID& existingUUID,
     const ShardId& donorShardId,
     const CollectionOptions& options) {
-    auto nss = resharding::getLocalConflictStashNamespace(existingUUID, donorShardId);
+    auto nss = getLocalConflictStashNamespace(existingUUID, donorShardId);
 
     resharding::data_copy::ensureCollectionExists(opCtx, nss, options);
     return nss;

@@ -30,7 +30,7 @@ global:
     cpp_namespace: "mongo"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 structs:
     ImportedStableNewFieldReply:
@@ -39,7 +39,7 @@ structs:
         fields:
             stableNewField:
                 type: string
-                stability: unstable
+                unstable: true
 
 commands:
     importCommand:

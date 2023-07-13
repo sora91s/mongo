@@ -41,6 +41,10 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 
 namespace mongo {
+    
+void initMyResolvedView() {
+
+}
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(ResolvedView);
 
@@ -76,8 +80,8 @@ ResolvedView ResolvedView::fromBSON(const BSONObj& commandResponseObj) {
     boost::optional<TimeseriesOptions> timeseriesOptions = boost::none;
     if (auto tsOptionsElt = viewDef[kTimeseriesOptions]) {
         if (tsOptionsElt.isABSONObj()) {
-            timeseriesOptions = TimeseriesOptions::parse(IDLParserContext{"ResolvedView::fromBSON"},
-                                                         tsOptionsElt.Obj());
+            timeseriesOptions =
+                TimeseriesOptions::parse({"ResolvedView::fromBSON"}, tsOptionsElt.Obj());
         }
     }
 
@@ -91,22 +95,11 @@ ResolvedView ResolvedView::fromBSON(const BSONObj& commandResponseObj) {
         mixedSchema = boost::optional<bool>(mixedSchemaElem.boolean());
     }
 
-    boost::optional<bool> usesExtendedRange = boost::none;
-    if (auto usesExtendedRangeElem = viewDef[kTimeseriesUsesExtendedRange]) {
-        uassert(6646910,
-                str::stream() << "view definition must have " << kTimeseriesUsesExtendedRange
-                              << " of type bool or no such field",
-                usesExtendedRangeElem.type() == BSONType::Bool);
-
-        usesExtendedRange = boost::optional<bool>(usesExtendedRangeElem.boolean());
-    }
-
     return {NamespaceString(viewDef["ns"].valueStringData()),
             std::move(pipeline),
             std::move(collationSpec),
             std::move(timeseriesOptions),
-            std::move(mixedSchema),
-            std::move(usesExtendedRange)};
+            std::move(mixedSchema)};
 }
 
 void ResolvedView::serialize(BSONObjBuilder* builder) const {
@@ -120,10 +113,6 @@ void ResolvedView::serialize(BSONObjBuilder* builder) const {
     // Only serialize if it doesn't contain mixed data.
     if ((_timeseriesMayContainMixedData && !(*_timeseriesMayContainMixedData)))
         subObj.append(kTimeseriesMayContainMixedData, *_timeseriesMayContainMixedData);
-
-    if ((_timeseriesUsesExtendedRange && (*_timeseriesUsesExtendedRange)))
-        subObj.append(kTimeseriesUsesExtendedRange, *_timeseriesUsesExtendedRange);
-
     if (!_defaultCollation.isEmpty()) {
         subObj.append("collation", _defaultCollation);
     }
@@ -166,11 +155,12 @@ AggregateCommandRequest ResolvedView::asExpandedViewAggregation(
                 builder.append(elem);
             }
         }
-
         resolvedPipeline[1] =
             BSON(DocumentSourceInternalConvertBucketIndexStats::kStageName << builder.obj());
     } else if (resolvedPipeline.size() >= 1 &&
-               resolvedPipeline[0][DocumentSourceInternalUnpackBucket::kStageNameInternal]) {
+               resolvedPipeline[0][DocumentSourceInternalUnpackBucket::kStageNameInternal] &&
+               serverGlobalParams.featureCompatibility.isGreaterThanOrEqualTo(
+                   multiversion::FeatureCompatibilityVersion::kVersion_5_2)) {
         auto unpackStage = resolvedPipeline[0];
 
         BSONObjBuilder builder;
@@ -180,10 +170,6 @@ AggregateCommandRequest ResolvedView::asExpandedViewAggregation(
         }
         builder.append(DocumentSourceInternalUnpackBucket::kAssumeNoMixedSchemaData,
                        ((_timeseriesMayContainMixedData && !(*_timeseriesMayContainMixedData))));
-
-        builder.append(DocumentSourceInternalUnpackBucket::kUsesExtendedRange,
-                       ((_timeseriesUsesExtendedRange && *_timeseriesUsesExtendedRange)));
-
         resolvedPipeline[0] =
             BSON(DocumentSourceInternalUnpackBucket::kStageNameInternal << builder.obj());
     }

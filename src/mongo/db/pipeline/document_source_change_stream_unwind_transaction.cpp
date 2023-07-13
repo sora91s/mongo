@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -35,10 +36,7 @@
 #include "mongo/db/pipeline/change_stream_filter_helpers.h"
 #include "mongo/db/pipeline/change_stream_rewrite_helpers.h"
 #include "mongo/db/query/query_feature_flags_gen.h"
-#include "mongo/db/transaction/transaction_history_iterator.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
+#include "mongo/db/transaction_history_iterator.h"
 
 namespace mongo {
 
@@ -100,7 +98,7 @@ DocumentSourceChangeStreamUnwindTransaction::createFromBson(
             str::stream() << "the '" << kStageName << "' stage spec must be an object",
             elem.type() == BSONType::Object);
     auto parsedSpec = DocumentSourceChangeStreamUnwindTransactionSpec::parse(
-        IDLParserContext("DocumentSourceChangeStreamUnwindTransactionSpec"), elem.Obj());
+        IDLParserErrorContext("DocumentSourceChangeStreamUnwindTransactionSpec"), elem.Obj());
     return new DocumentSourceChangeStreamUnwindTransaction(parsedSpec.getFilter(), expCtx);
 }
 
@@ -159,7 +157,7 @@ DepsTracker::State DocumentSourceChangeStreamUnwindTransaction::getDependencies(
 
 DocumentSource::GetModPathsReturn DocumentSourceChangeStreamUnwindTransaction::getModifiedPaths()
     const {
-    return {DocumentSource::GetModPathsReturn::Type::kAllPaths, OrderedPathSet{}, {}};
+    return {DocumentSource::GetModPathsReturn::Type::kAllPaths, std::set<std::string>{}, {}};
 }
 
 DocumentSource::GetNextResult DocumentSourceChangeStreamUnwindTransaction::doGetNext() {
@@ -209,7 +207,8 @@ DocumentSource::GetNextResult DocumentSourceChangeStreamUnwindTransaction::doGet
 
 bool DocumentSourceChangeStreamUnwindTransaction::_isTransactionOplogEntry(const Document& doc) {
     auto op = doc[repl::OplogEntry::kOpTypeFieldName];
-    auto opType = repl::OpType_parse(IDLParserContext("ChangeStreamEntry.op"), op.getStringData());
+    auto opType =
+        repl::OpType_parse(IDLParserErrorContext("ChangeStreamEntry.op"), op.getStringData());
     auto commandVal = doc["o"];
 
     if (opType != repl::OpTypeEnum::kCommand ||
@@ -230,16 +229,13 @@ DocumentSourceChangeStreamUnwindTransaction::TransactionOpIterator::TransactionO
     const Document& input,
     const MatchExpression* expression)
     : _mongoProcessInterface(mongoProcessInterface), _expression(expression) {
-
-    // The lsid and txnNumber can be missing in case of batched writes.
     Value lsidValue = input["lsid"];
-    DocumentSourceChangeStream::checkValueTypeOrMissing(lsidValue, "lsid", BSONType::Object);
-    _lsid = lsidValue.missing() ? boost::none : boost::optional<Document>(lsidValue.getDocument());
+    DocumentSourceChangeStream::checkValueType(lsidValue, "lsid", BSONType::Object);
+    _lsid = lsidValue.getDocument();
+
     Value txnNumberValue = input["txnNumber"];
-    DocumentSourceChangeStream::checkValueTypeOrMissing(
-        txnNumberValue, "txnNumber", BSONType::NumberLong);
-    _txnNumber = txnNumberValue.missing() ? boost::none
-                                          : boost::optional<TxnNumber>(txnNumberValue.getLong());
+    DocumentSourceChangeStream::checkValueType(txnNumberValue, "txnNumber", BSONType::NumberLong);
+    _txnNumber = txnNumberValue.getLong();
 
     // We want to parse the OpTime out of this document using the BSON OpTime parser. Instead of
     // converting the entire Document back to BSON, we convert only the fields we need.
@@ -391,9 +387,9 @@ DocumentSourceChangeStreamUnwindTransaction::TransactionOpIterator::_addRequired
     newDoc.addField(DocumentSourceChangeStream::kApplyOpsTsField, Value(applyOpsTs()));
 
     newDoc.addField(repl::OplogEntry::kTimestampFieldName, Value(_clusterTime));
-    newDoc.addField(repl::OplogEntry::kSessionIdFieldName, _lsid ? Value(*_lsid) : Value());
+    newDoc.addField(repl::OplogEntry::kSessionIdFieldName, Value(_lsid));
     newDoc.addField(repl::OplogEntry::kTxnNumberFieldName,
-                    _txnNumber ? Value(static_cast<long long>(*_txnNumber)) : Value());
+                    Value(static_cast<long long>(_txnNumber)));
     newDoc.addField(repl::OplogEntry::kWallClockTimeFieldName, Value(_wallTime));
 
     return newDoc.freeze();

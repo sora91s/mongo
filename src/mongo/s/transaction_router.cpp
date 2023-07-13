@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTransaction
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,10 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/txn_cmds_gen.h"
 #include "mongo/db/commands/txn_two_phase_commit_cmds_gen.h"
+#include "mongo/db/internal_transactions_feature_flag_gen.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/repl/read_concern_args.h"
-#include "mongo/db/session/logical_session_id.h"
 #include "mongo/db/transaction_validation.h"
 #include "mongo/db/txn_retry_counter_too_old_info.h"
 #include "mongo/db/vector_clock.h"
@@ -59,9 +61,6 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/log_with_sampling.h"
 #include "mongo/util/net/socket_utils.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTransaction
-
 
 namespace mongo {
 namespace {
@@ -185,7 +184,7 @@ BSONObj sendCommitDirectlyToShards(OperationContext* opCtx, const std::vector<Sh
     std::vector<AsyncRequestsSender::Request> requests;
     for (const auto& shardId : shardIds) {
         CommitTransaction commitCmd;
-        commitCmd.setDbName(DatabaseName::kAdmin);
+        commitCmd.setDbName(NamespaceString::kAdminDb);
         const auto commitCmdObj = commitCmd.toBSON(
             BSON(WriteConcernOptions::kWriteConcernField << opCtx->getWriteConcern().toBSON()));
         requests.emplace_back(shardId, commitCmdObj);
@@ -195,7 +194,7 @@ BSONObj sendCommitDirectlyToShards(OperationContext* opCtx, const std::vector<Sh
     MultiStatementTransactionRequestsSender ars(
         opCtx,
         Grid::get(opCtx)->getExecutorPool()->getFixedExecutor(),
-        DatabaseName::kAdmin,
+        NamespaceString::kAdminDb,
         requests,
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         Shard::RetryPolicy::kIdempotent);
@@ -409,7 +408,7 @@ void TransactionRouter::Observer::_reportTransactionState(OperationContext* opCt
 }
 
 bool TransactionRouter::Observer::_atClusterTimeHasBeenSet() const {
-    return o().atClusterTime.has_value() && o().atClusterTime->timeHasBeenSet();
+    return o().atClusterTime.is_initialized() && o().atClusterTime->timeHasBeenSet();
 }
 
 const LogicalSessionId& TransactionRouter::Observer::_sessionId() const {
@@ -472,15 +471,18 @@ BSONObj TransactionRouter::Participant::attachTxnFieldsIfNeeded(
         newCmd.append(OperationSessionInfo::kTxnNumberFieldName,
                       sharedOptions.txnNumberAndRetryCounter.getTxnNumber());
     } else {
-        auto osi = OperationSessionInfoFromClient::parse(IDLParserContext{"OperationSessionInfo"},
-                                                         newCmd.asTempObj());
+        auto osi =
+            OperationSessionInfoFromClient::parse("OperationSessionInfo"_sd, newCmd.asTempObj());
         invariant(sharedOptions.txnNumberAndRetryCounter.getTxnNumber() == *osi.getTxnNumber());
     }
 
-    if (auto txnRetryCounter = sharedOptions.txnNumberAndRetryCounter.getTxnRetryCounter();
-        txnRetryCounter && !isDefaultTxnRetryCounter(*txnRetryCounter)) {
-        newCmd.append(OperationSessionInfoFromClient::kTxnRetryCounterFieldName,
-                      *sharedOptions.txnNumberAndRetryCounter.getTxnRetryCounter());
+    if (feature_flags::gFeatureFlagInternalTransactions.isEnabled(
+            serverGlobalParams.featureCompatibility)) {
+        if (auto txnRetryCounter = sharedOptions.txnNumberAndRetryCounter.getTxnRetryCounter();
+            txnRetryCounter && !isDefaultTxnRetryCounter(*txnRetryCounter)) {
+            newCmd.append(OperationSessionInfoFromClient::kTxnRetryCounterFieldName,
+                          *sharedOptions.txnNumberAndRetryCounter.getTxnRetryCounter());
+        }
     }
 
     return newCmd.obj();
@@ -514,7 +516,7 @@ void TransactionRouter::Router::processParticipantResponse(OperationContext* opC
     }
 
     auto txnResponseMetadata =
-        TxnResponseMetadata::parse(IDLParserContext{"processParticipantResponse"}, responseObj);
+        TxnResponseMetadata::parse("processParticipantResponse"_sd, responseObj);
 
     if (txnResponseMetadata.getReadOnly()) {
         if (participant->readOnly == Participant::ReadOnly::kUnset) {
@@ -564,23 +566,6 @@ void TransactionRouter::Router::processParticipantResponse(OperationContext* opC
             p().recoveryShardId = shardId;
         }
     }
-
-    const std::string extraParticipants = "additionalParticipants";
-    if (responseObj.hasField(extraParticipants)) {
-        BSONForEach(e, responseObj.getField(extraParticipants).Array()) {
-            mongo::ShardId addingparticipant = ShardId(
-                std::string(e.Obj().getField(StringData{"shardId"}).checkAndGetStringData()));
-            auto txnPart = _createParticipant(opCtx, addingparticipant);
-            _setReadOnlyForParticipant(
-                opCtx, addingparticipant, Participant::ReadOnly::kNotReadOnly);
-
-            if (!p().isRecoveringCommit) {
-                // Don't update participant stats during recovery since the participant list isn't
-                // known.
-                RouterTransactionsMetrics::get(opCtx)->incrementTotalContactedParticipants();
-            }
-        }
-    }
 }
 
 LogicalTime TransactionRouter::AtClusterTime::getTime() const {
@@ -604,7 +589,7 @@ bool TransactionRouter::AtClusterTime::canChange(StmtId currentStmtId) const {
 }
 
 bool TransactionRouter::Router::mustUseAtClusterTime() const {
-    return o().atClusterTime.has_value();
+    return o().atClusterTime.is_initialized();
 }
 
 LogicalTime TransactionRouter::Router::getSelectedAtClusterTime() const {
@@ -771,7 +756,7 @@ void TransactionRouter::Router::_clearPendingParticipants(OperationContext* opCt
                                             << WriteConcernOptions().toBSON()));
         }
         auto responses = gatherResponses(opCtx,
-                                         DatabaseName::kAdmin.db(),
+                                         NamespaceString::kAdminDb,
                                          ReadPreferenceSetting{ReadPreference::PrimaryOnly},
                                          Shard::RetryPolicy::kIdempotent,
                                          abortRequests);
@@ -975,14 +960,7 @@ void TransactionRouter::Router::_continueTxn(OperationContext* opCtx,
             APIParameters::get(opCtx) = o().apiParameters;
             repl::ReadConcernArgs::get(opCtx) = o().readConcernArgs;
 
-            // Don't increment latestStmtId if no shards have been targeted, since that implies no
-            // statements would have been executed inside this transaction at this point. This can
-            // occur when an internal transaction is invoked within a client's transaction that
-            // hasn't executed any statements yet.
-            if (!o().participants.empty()) {
-                ++p().latestStmtId;
-            }
-
+            ++p().latestStmtId;
             _onContinue(opCtx);
             break;
         }
@@ -1118,9 +1096,7 @@ BSONObj TransactionRouter::Router::_handOffCommitToCoordinator(OperationContext*
     }
 
     CoordinateCommitTransaction coordinateCommitCmd;
-    // Empty tenant id is acceptable here as command's tenant id will not be serialized to BSON.
-    // TODO SERVER-62491: Use system tenant id.
-    coordinateCommitCmd.setDbName(DatabaseName(boost::none, "admin"));
+    coordinateCommitCmd.setDbName("admin");
     coordinateCommitCmd.setParticipants(participantList);
     const auto coordinateCommitCmdObj = coordinateCommitCmd.toBSON(
         BSON(WriteConcernOptions::kWriteConcernField << opCtx->getWriteConcern().toBSON()));
@@ -1138,7 +1114,7 @@ BSONObj TransactionRouter::Router::_handOffCommitToCoordinator(OperationContext*
     MultiStatementTransactionRequestsSender ars(
         opCtx,
         Grid::get(opCtx)->getExecutorPool()->getFixedExecutor(),
-        DatabaseName::kAdmin,
+        NamespaceString::kAdminDb,
         {{*o().coordinatorId, coordinateCommitCmdObj}},
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         Shard::RetryPolicy::kIdempotent);
@@ -1331,7 +1307,7 @@ BSONObj TransactionRouter::Router::abortTransaction(OperationContext* opCtx) {
                 "numParticipantShards"_attr = o().participants.size());
 
     const auto responses = gatherResponses(opCtx,
-                                           DatabaseName::kAdmin.db(),
+                                           NamespaceString::kAdminDb,
                                            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
                                            Shard::RetryPolicy::kIdempotent,
                                            abortRequests);
@@ -1418,7 +1394,7 @@ void TransactionRouter::Router::implicitlyAbortTransaction(OperationContext* opC
     try {
         // Ignore the responses.
         gatherResponses(opCtx,
-                        DatabaseName::kAdmin.db(),
+                        NamespaceString::kAdminDb,
                         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
                         Shard::RetryPolicy::kIdempotent,
                         abortRequests);
@@ -1536,9 +1512,7 @@ BSONObj TransactionRouter::Router::_commitWithRecoveryToken(OperationContext* op
 
     auto coordinateCommitCmd = [&] {
         CoordinateCommitTransaction coordinateCommitCmd;
-        // Empty tenant id is acceptable here as command's tenant id will not be serialized to BSON.
-        // TODO SERVER-62491: Use system tenant id.
-        coordinateCommitCmd.setDbName(DatabaseName(boost::none, "admin"));
+        coordinateCommitCmd.setDbName("admin");
         coordinateCommitCmd.setParticipants({});
 
         auto rawCoordinateCommit = coordinateCommitCmd.toBSON(
@@ -1728,7 +1702,7 @@ void TransactionRouter::Router::_endTransactionTrackingIfNecessary(
     if (shouldLogSlowOpWithSampling(opCtx,
                                     MONGO_LOGV2_DEFAULT_COMPONENT,
                                     opDuration,
-                                    Milliseconds(serverGlobalParams.slowMS.load()))
+                                    Milliseconds(serverGlobalParams.slowMS))
             .first) {
         _logSlowTransaction(opCtx, terminationCause);
     }

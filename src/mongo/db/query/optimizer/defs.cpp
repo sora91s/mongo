@@ -33,8 +33,9 @@
 
 namespace mongo::optimizer {
 
-static ProjectionNameMap<size_t> createMapFromVector(const ProjectionNameVector& v) {
-    ProjectionNameMap<size_t> result;
+static opt::unordered_map<ProjectionName, size_t> createMapFromVector(
+    const ProjectionNameVector& v) {
+    opt::unordered_map<ProjectionName, size_t> result;
     for (size_t i = 0; i < v.size(); i++) {
         result.emplace(v.at(i), i);
     }
@@ -44,6 +45,14 @@ static ProjectionNameMap<size_t> createMapFromVector(const ProjectionNameVector&
 ProjectionNameOrderPreservingSet::ProjectionNameOrderPreservingSet(ProjectionNameVector v)
     : _map(createMapFromVector(v)), _vector(std::move(v)) {}
 
+ProjectionNameOrderPreservingSet::ProjectionNameOrderPreservingSet(
+    const ProjectionNameOrderPreservingSet& other)
+    : _map(other._map), _vector(other._vector) {}
+
+ProjectionNameOrderPreservingSet::ProjectionNameOrderPreservingSet(
+    ProjectionNameOrderPreservingSet&& other) noexcept
+    : _map(std::move(other._map)), _vector(std::move(other._vector)) {}
+
 bool ProjectionNameOrderPreservingSet::operator==(
     const ProjectionNameOrderPreservingSet& other) const {
     return _vector == other._vector;
@@ -51,8 +60,9 @@ bool ProjectionNameOrderPreservingSet::operator==(
 
 std::pair<size_t, bool> ProjectionNameOrderPreservingSet::emplace_back(
     ProjectionName projectionName) {
-    if (const auto index = find(projectionName)) {
-        return {*index, false};
+    auto [index, found] = find(projectionName);
+    if (found) {
+        return {index, false};
     }
 
     const size_t id = _vector.size();
@@ -61,31 +71,31 @@ std::pair<size_t, bool> ProjectionNameOrderPreservingSet::emplace_back(
     return {id, true};
 }
 
-boost::optional<size_t> ProjectionNameOrderPreservingSet::find(
+std::pair<size_t, bool> ProjectionNameOrderPreservingSet::find(
     const ProjectionName& projectionName) const {
     auto it = _map.find(projectionName);
     if (it == _map.end()) {
-        return boost::none;
+        return {0, false};
     }
 
-    return it->second;
+    return {it->second, true};
 }
 
 bool ProjectionNameOrderPreservingSet::erase(const ProjectionName& projectionName) {
-    auto index = find(projectionName);
-    if (!index) {
+    auto [index, found] = find(projectionName);
+    if (!found) {
         return false;
     }
 
-    if (*index < _vector.size() - 1) {
+    if (index < _vector.size() - 1) {
         // Repoint map.
-        _map.at(_vector.back()) = *index;
+        _map.at(_vector.back()) = index;
         // Fill gap with last element.
-        _vector.at(*index) = std::move(_vector.back());
+        _vector.at(index) = std::move(_vector.back());
     }
 
     _map.erase(projectionName);
-    _vector.pop_back();
+    _vector.resize(_vector.size() - 1);
 
     return true;
 }
@@ -94,7 +104,7 @@ bool ProjectionNameOrderPreservingSet::isEqualIgnoreOrder(
     const ProjectionNameOrderPreservingSet& other) const {
     size_t numMatches = 0;
     for (const auto& projectionName : _vector) {
-        if (other.find(projectionName)) {
+        if (other.find(projectionName).second) {
             numMatches++;
         } else {
             return false;
@@ -155,8 +165,16 @@ CostType::CostType(const bool isInfinite, const double cost)
     uassert(6624346, "Cost is negative", _cost >= 0.0);
 }
 
+bool CostType::operator==(const CostType& other) const {
+    return _isInfinite == other._isInfinite && (_isInfinite || _cost == other._cost);
+}
+
+bool CostType::operator!=(const CostType& other) const {
+    return !(*this == other);
+}
+
 bool CostType::operator<(const CostType& other) const {
-    return !_isInfinite && (other._isInfinite || _cost + kPrecision < other._cost);
+    return !_isInfinite && (other._isInfinite || _cost < other._cost);
 }
 
 CostType CostType::operator+(const CostType& other) const {
@@ -164,8 +182,8 @@ CostType CostType::operator+(const CostType& other) const {
 }
 
 CostType CostType::operator-(const CostType& other) const {
-    uassert(6624001, "Cannot subtract an infinite cost", !other.isInfinite());
-    return _isInfinite ? kInfinity : fromDouble(std::max(0.0, _cost - other._cost));
+    uassert(6624001, "Cannot subtract an infinite cost", other != kInfinity);
+    return _isInfinite ? kInfinity : fromDouble(_cost - other._cost);
 }
 
 CostType& CostType::operator+=(const CostType& other) {

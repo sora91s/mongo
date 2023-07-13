@@ -1,8 +1,6 @@
 // Test to guarantee read repeatability, meaning that while in a transaction, we should repeatedly
 // read the same data even if it was modified outside of the transaction.
-// The test runs commands that are not allowed with security token: endSession.
-// @tags: [
-//   not_allowed_with_security_token,uses_transactions, uses_snapshot_read_concern]
+// @tags: [uses_transactions, uses_snapshot_read_concern]
 (function() {
 "use strict";
 

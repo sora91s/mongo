@@ -38,7 +38,7 @@
 namespace mongo {
 
 InternalSchemaFmodMatchExpression::InternalSchemaFmodMatchExpression(
-    boost::optional<StringData> path,
+    StringData path,
     Decimal128 divisor,
     Decimal128 remainder,
     clonable_ptr<ErrorAnnotation> annotation)
@@ -76,9 +76,7 @@ void InternalSchemaFmodMatchExpression::debugString(StringBuilder& debug,
     debug << "\n";
 }
 
-BSONObj InternalSchemaFmodMatchExpression::getSerializedRightHandSide(
-    SerializationOptions opts) const {
-    // TODO SERVER-73678 respect 'replacementForLiteralArgs'.
+BSONObj InternalSchemaFmodMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder objMatchBob;
     BSONArrayBuilder arrBuilder(objMatchBob.subarrayStart("$_internalSchemaFmod"));
     arrBuilder.append(_divisor);

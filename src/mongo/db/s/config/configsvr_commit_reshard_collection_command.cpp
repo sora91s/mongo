@@ -27,22 +27,19 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/repl/primary_only_service.h"
-#include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/s/resharding/resharding_coordinator_service.h"
 #include "mongo/db/s/resharding/resharding_donor_recipient_common.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/commit_reshard_collection_gen.h"
 #include "mongo/s/resharding/resharding_feature_flag_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -52,7 +49,7 @@ UUID retrieveReshardingUUID(OperationContext* opCtx, const NamespaceString& ns) 
     repl::ReadConcernArgs::get(opCtx) =
         repl::ReadConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
 
-    const auto catalogClient = ShardingCatalogManager::get(opCtx)->localCatalogClient();
+    const auto catalogClient = Grid::get(opCtx)->catalogClient();
     const auto collEntry = catalogClient->getCollection(opCtx, ns);
 
     uassert(ErrorCodes::NoSuchReshardCollection,
@@ -77,7 +74,7 @@ public:
                     format(FMT_STRING("{} command not enabled"), definition()->getName()),
                     resharding::gFeatureFlagResharding.isEnabled(
                         serverGlobalParams.featureCompatibility));
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
             uassert(
                 ErrorCodes::IllegalOperation,
                 format(FMT_STRING("{} can only be run on config servers"), definition()->getName()),
@@ -87,10 +84,10 @@ public:
 
             UUID reshardingUUID = retrieveReshardingUUID(opCtx, ns());
 
-            auto machine = resharding::tryGetReshardingStateMachine<ReshardingCoordinatorService,
-                                                                    ReshardingCoordinator,
-                                                                    ReshardingCoordinatorDocument>(
-                opCtx, reshardingUUID);
+            auto machine = resharding::tryGetReshardingStateMachine<
+                ReshardingCoordinatorService,
+                ReshardingCoordinatorService::ReshardingCoordinator,
+                ReshardingCoordinatorDocument>(opCtx, reshardingUUID);
 
             uassert(ErrorCodes::NoSuchReshardCollection,
                     "Could not find in-progress resharding operation to commit",

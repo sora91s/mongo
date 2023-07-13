@@ -189,6 +189,8 @@ std::string mongosVersion(const VersionInfoInterface& provider);
  */
 std::string mongodVersion(const VersionInfoInterface& provider);
 
+void initMyVersion();
+
 }  // namespace mongo
 
 #endif  // UTIL_VERSION_HEADER

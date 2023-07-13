@@ -29,7 +29,6 @@
 
 #pragma once
 
-#include "mongo/util/duration.h"
 #include <queue>
 
 #include "mongo/db/exec/sbe/stages/stages.h"
@@ -51,8 +50,7 @@ public:
                     bool returnOwnedBson,
                     NamespaceString nss,
                     bool isOpen,
-                    std::unique_ptr<PlanYieldPolicySBE> yieldPolicy,
-                    bool generatedByBonsai);
+                    std::unique_ptr<PlanYieldPolicySBE> yieldPolicy);
 
     CanonicalQuery* getCanonicalQuery() const override {
         return _cq.get();
@@ -102,11 +100,6 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    BatchedDeleteStats getBatchedDeleteStats() override {
-        // Using SBE to execute a batched delete command is not yet supported.
-        MONGO_UNREACHABLE;
-    }
-
     void markAsKilled(Status killStatus);
 
     void dispose(OperationContext* opCtx);
@@ -130,8 +123,9 @@ public:
     BSONObj getPostBatchResumeToken() const override;
 
     /**
-     * The caller must acquire a top level AutoGet object outside of this PlanExecutor in order to
-     * open a storage transaction and establish a consistent view of the catalog.
+     * Even though the leaves of '_root' will acquire AutoGet objects, the caller must acquire a top
+     * level AutoGet object outside of this PlanExecutor in order to open a storage transaction and
+     * establish a consistent view of the catalog.
      */
     LockPolicy lockPolicy() const override {
         return LockPolicy::kLockExternally;
@@ -149,15 +143,6 @@ public:
         return _isSaveRecoveryUnitAcrossCommandsEnabled;
     }
 
-    PlanExecutor::QueryFramework getQueryFramework() const override final {
-        return _generatedByBonsai ? PlanExecutor::QueryFramework::kCQF
-                                  : PlanExecutor::QueryFramework::kSBEOnly;
-    }
-
-    void setReturnOwnedData(bool returnOwnedData) override final {
-        _mustReturnOwnedBson = returnOwnedData;
-    }
-
 private:
     template <typename ObjectType>
     ExecState getNextImpl(ObjectType* out, RecordId* dlOut);
@@ -172,7 +157,7 @@ private:
 
     // Vector of secondary namespaces.
     std::vector<NamespaceStringOrUUID> _secondaryNssVector{};
-    bool _mustReturnOwnedBson;
+    const bool _mustReturnOwnedBson;
 
     // CompileCtx owns the instance pointed by _env, so we must keep it around.
     const std::unique_ptr<sbe::PlanStage> _root;
@@ -216,9 +201,6 @@ private:
     bool _isDisposed{false};
 
     bool _isSaveRecoveryUnitAcrossCommandsEnabled = false;
-
-    // Indicates whether this executor was constructed via Bonsai/CQF.
-    bool _generatedByBonsai{false};
 };
 
 /**

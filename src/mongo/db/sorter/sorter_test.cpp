@@ -28,6 +28,7 @@
  */
 
 #include "mongo/db/pipeline/document_source.h"
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -68,9 +69,6 @@ std::string nextFileName() {
 // Need access to internal classes
 #include "mongo/db/sorter/sorter.cpp"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo {
 namespace sorter {
 namespace {
@@ -100,7 +98,6 @@ public:
     IntWrapper getOwned() const {
         return *this;
     }
-    void makeOwned() {}
 
     std::string toString() const {
         return std::to_string(_i);
@@ -118,10 +115,10 @@ enum Direction { ASC = 1, DESC = -1 };
 class IWComparator {
 public:
     IWComparator(Direction dir = ASC) : _dir(dir) {}
-    int operator()(const IntWrapper& lhs, const IntWrapper& rhs) const {
-        if (lhs == rhs)
+    int operator()(const IWPair& lhs, const IWPair& rhs) const {
+        if (lhs.first == rhs.first)
             return 0;
-        if (lhs < rhs)
+        if (lhs.first < rhs.first)
             return -1 * _dir;
         return 1 * _dir;
     }
@@ -332,55 +329,40 @@ class SortedFileWriterAndFileIteratorTests {
 public:
     void run() {
         unittest::TempDir tempDir("sortedFileWriterTests");
-        SorterTracker sorterTracker;
-        SorterFileStats sorterFileStats(&sorterTracker);
+        SorterFileStats sorterFileStats;
         const SortOptions opts = SortOptions().TempDir(tempDir.path()).FileStats(&sorterFileStats);
+        auto makeFile = [&] {
+            return std::make_shared<Sorter<IntWrapper, IntWrapper>::File>(
+                opts.tempDir + "/" + nextFileName(), opts.sorterFileStats);
+        };
 
-        int currentFileSize = 0;
-
-        // small
-        currentFileSize = _appendToFile(&opts, currentFileSize, 5);
+        {  // small
+            SortedFileWriter<IntWrapper, IntWrapper> sorter(opts, makeFile());
+            sorter.addAlreadySorted(0, 0);
+            sorter.addAlreadySorted(1, -1);
+            sorter.addAlreadySorted(2, -2);
+            sorter.addAlreadySorted(3, -3);
+            sorter.addAlreadySorted(4, -4);
+            ASSERT_ITERATORS_EQUIVALENT(std::shared_ptr<IWIterator>(sorter.done()),
+                                        std::make_shared<IntIterator>(0, 5));
+        }
 
         ASSERT_EQ(sorterFileStats.opened.load(), 1);
         ASSERT_EQ(sorterFileStats.closed.load(), 1);
-        ASSERT_LTE(sorterTracker.bytesSpilled.load(), currentFileSize);
 
-        // big
-        currentFileSize = _appendToFile(&opts, currentFileSize, 10 * 1000 * 1000);
+        {  // big
+            SortedFileWriter<IntWrapper, IntWrapper> sorter(opts, makeFile());
+            for (int i = 0; i < 10 * 1000 * 1000; i++)
+                sorter.addAlreadySorted(i, -i);
+
+            ASSERT_ITERATORS_EQUIVALENT(std::shared_ptr<IWIterator>(sorter.done()),
+                                        std::make_shared<IntIterator>(0, 10 * 1000 * 1000));
+        }
 
         ASSERT_EQ(sorterFileStats.opened.load(), 2);
         ASSERT_EQ(sorterFileStats.closed.load(), 2);
-        ASSERT_LTE(sorterTracker.bytesSpilled.load(), currentFileSize);
-        ASSERT_LTE(sorterFileStats.bytesSpilled(), currentFileSize);
 
         ASSERT(boost::filesystem::is_empty(tempDir.path()));
-    }
-
-private:
-    int _appendToFile(const SortOptions* opts, int currentFileSize, int range) {
-        auto makeFile = [&] {
-            return std::make_shared<Sorter<IntWrapper, IntWrapper>::File>(
-                opts->tempDir + "/" + nextFileName(), opts->sorterFileStats);
-        };
-
-        int currentBufSize = 0;
-        SortedFileWriter<IntWrapper, IntWrapper> sorter(*opts, makeFile());
-        for (int i = 0; i < range; ++i) {
-            sorter.addAlreadySorted(i, -i);
-            currentBufSize += sizeof(i) + sizeof(-i);
-
-            if (currentBufSize > static_cast<int>(kSortedFileBufferSize)) {
-                // File size only increases if buffer size exceeds limit and spills. Each spill
-                // includes the buffer and the size of the spill.
-                currentFileSize += currentBufSize + sizeof(uint32_t);
-                currentBufSize = 0;
-            }
-        }
-        ASSERT_ITERATORS_EQUIVALENT(std::shared_ptr<IWIterator>(sorter.done()),
-                                    std::make_shared<IntIterator>(0, range));
-        // Anything left in-memory is spilled to disk when sorter.done().
-        currentFileSize += currentBufSize + sizeof(uint32_t);
-        return currentFileSize;
     }
 };
 
@@ -464,9 +446,7 @@ public:
 
     void run() {
         unittest::TempDir tempDir("sorterTests");
-        SorterTracker sorterTracker;
-        const SortOptions opts =
-            SortOptions().TempDir(tempDir.path()).ExtSortAllowed().Tracker(&sorterTracker);
+        const SortOptions opts = SortOptions().TempDir(tempDir.path()).ExtSortAllowed();
 
         {  // test empty (no limit)
             ASSERT_ITERATORS_EQUIVALENT(done(makeSorter(opts).get()),
@@ -486,7 +466,7 @@ public:
                 std::shared_ptr<IWSorter> sorter = makeSorter(opts, IWComparator(ASC));
                 addData(sorter.get());
                 ASSERT_ITERATORS_EQUIVALENT(done(sorter.get()), correct());
-                ASSERT_EQ(numAdded(), sorter->stats().numSorted());
+                ASSERT_EQ(numAdded(), sorter->numSorted());
                 if (assertRanges) {
                     assertRangeInfo(sorter, opts);
                 }
@@ -495,7 +475,7 @@ public:
                 std::shared_ptr<IWSorter> sorter = makeSorter(opts, IWComparator(DESC));
                 addData(sorter.get());
                 ASSERT_ITERATORS_EQUIVALENT(done(sorter.get()), correctReverse());
-                ASSERT_EQ(numAdded(), sorter->stats().numSorted());
+                ASSERT_EQ(numAdded(), sorter->numSorted());
                 if (assertRanges) {
                     assertRangeInfo(sorter, opts);
                 }
@@ -600,7 +580,7 @@ public:
         return 0;
     }
 
-    virtual size_t correctSpilledRanges() const {
+    virtual size_t correctNumSpills() const {
         return 0;
     }
 
@@ -624,13 +604,13 @@ private:
         if (numRanges == 0)
             return;
 
-        auto numSpilledRangesOccurred = correctSpilledRanges();
+        auto numSpillsOccurred = correctNumSpills();
         auto state = sorter->persistDataForShutdown();
         if (opts.extSortAllowed) {
             ASSERT_NE(state.fileName, "");
         }
         ASSERT_EQ(state.ranges.size(), numRanges);
-        ASSERT_EQ(sorter->stats().spilledRanges(), numSpilledRangesOccurred);
+        ASSERT_EQ(sorter->numSpills(), numSpillsOccurred);
     }
 };
 
@@ -730,7 +710,7 @@ public:
                         static_cast<std::size_t>(2));
     }
 
-    size_t correctSpilledRanges() const override {
+    size_t correctNumSpills() const override {
         // We add 1 to the calculation since the call to persistDataForShutdown() spills the
         // remaining in-memory Sorter data to disk, adding one extra range.
         std::size_t spillsToMerge = NUM_ITEMS * sizeof(IWPair) / MEM_LIMIT + 1;
@@ -875,15 +855,14 @@ DEATH_TEST_F(SorterMakeFromExistingRangesTest, EmptyFileName, "!fileName.empty()
 
 TEST_F(SorterMakeFromExistingRangesTest, SkipFileCheckingOnEmptyRanges) {
     auto fileName = "unused_sorter_file";
-    SorterTracker sorterTracker;
-    auto opts = SortOptions().ExtSortAllowed().TempDir("unused_temp_dir").Tracker(&sorterTracker);
+    auto opts = SortOptions().ExtSortAllowed().TempDir("unused_temp_dir");
     auto sorter = std::unique_ptr<IWSorter>(
         IWSorter::makeFromExistingRanges(fileName, {}, opts, IWComparator(ASC)));
 
-    ASSERT_EQ(0, sorter->stats().spilledRanges());
+    ASSERT_EQ(0, sorter->numSpills());
 
     auto iter = std::unique_ptr<IWIterator>(sorter->done());
-    ASSERT_EQ(0, sorter->stats().numSorted());
+    ASSERT_EQ(0, sorter->numSorted());
 
     iter->openSource();
     ASSERT_FALSE(iter->more());
@@ -926,14 +905,13 @@ TEST_F(SorterMakeFromExistingRangesTest, CorruptedFile) {
         ofs << "invalid sorter data";
     }
     auto fileName = tempFilePath.filename().string();
-    SorterTracker sorterTracker;
-    auto opts = SortOptions().ExtSortAllowed().TempDir(tempDir.path()).Tracker(&sorterTracker);
+    auto opts = SortOptions().ExtSortAllowed().TempDir(tempDir.path());
     auto sorter = std::unique_ptr<IWSorter>(
         IWSorter::makeFromExistingRanges(fileName, makeSampleRanges(), opts, IWComparator(ASC)));
 
     // The number of spills is set when NoLimitSorter is constructed from existing ranges.
-    ASSERT_EQ(makeSampleRanges().size(), sorter->stats().spilledRanges());
-    ASSERT_EQ(0, sorter->stats().numSorted());
+    ASSERT_EQ(makeSampleRanges().size(), sorter->numSpills());
+    ASSERT_EQ(0, sorter->numSorted());
 
     // 16817 - error reading file.
     ASSERT_THROWS_CODE(sorter->done(), DBException, 16817);
@@ -941,13 +919,11 @@ TEST_F(SorterMakeFromExistingRangesTest, CorruptedFile) {
 
 TEST_F(SorterMakeFromExistingRangesTest, RoundTrip) {
     unittest::TempDir tempDir(_agent.getSuiteName() + "_" + _agent.getTestName());
-    SorterTracker sorterTracker;
 
     auto opts = SortOptions()
                     .ExtSortAllowed()
                     .TempDir(tempDir.path())
-                    .MaxMemoryUsageBytes(sizeof(IWSorter::Data))
-                    .Tracker(&sorterTracker);
+                    .MaxMemoryUsageBytes(sizeof(IWSorter::Data));
 
     IWPair pairInsertedBeforeShutdown(1, 100);
 
@@ -963,7 +939,7 @@ TEST_F(SorterMakeFromExistingRangesTest, RoundTrip) {
         state = sorterBeforeShutdown->persistDataForShutdown();
         ASSERT_FALSE(state.fileName.empty());
         ASSERT_EQUALS(1U, state.ranges.size()) << state.ranges.size();
-        ASSERT_EQ(1, sorterBeforeShutdown->stats().numSorted());
+        ASSERT_EQ(1, sorterBeforeShutdown->numSorted());
     }
 
     // On restart, reconstruct sorter from persisted state.
@@ -971,14 +947,14 @@ TEST_F(SorterMakeFromExistingRangesTest, RoundTrip) {
         IWSorter::makeFromExistingRanges(state.fileName, state.ranges, opts, IWComparator(ASC)));
 
     // The number of spills is set when NoLimitSorter is constructed from existing ranges.
-    ASSERT_EQ(state.ranges.size(), sorter->stats().spilledRanges());
+    ASSERT_EQ(state.ranges.size(), sorter->numSpills());
 
     // Ensure that the restored sorter can accept additional data.
     IWPair pairInsertedAfterStartup(2, 200);
     sorter->add(pairInsertedAfterStartup.first, pairInsertedAfterStartup.second);
 
     // Technically this sorter has not sorted anything. It is just merging files.
-    ASSERT_EQ(0, sorter->stats().numSorted());
+    ASSERT_EQ(0, sorter->numSorted());
 
     // Read data from sorter.
     {
@@ -1063,9 +1039,7 @@ public:
      */
     std::vector<Doc> sort(std::vector<Doc> input, int expectedSize = -1) {
         std::vector<Doc> output;
-        auto push = [&](Doc doc) {
-            output.push_back(doc);
-        };
+        auto push = [&](Doc doc) { output.push_back(doc); };
 
         for (auto&& doc : input) {
             sorter->add(doc.time, doc);
@@ -1212,12 +1186,8 @@ TEST_F(BoundedSorterTest, MemoryLimitsNoExtSortAllowed) {
 }
 
 TEST_F(BoundedSorterTest, SpillSorted) {
-    SorterTracker sorterTracker;
-    auto options = SortOptions()
-                       .ExtSortAllowed()
-                       .TempDir("unused_temp_dir")
-                       .MaxMemoryUsageBytes(16)
-                       .Tracker(&sorterTracker);
+    auto options =
+        SortOptions().ExtSortAllowed().TempDir("unused_temp_dir").MaxMemoryUsageBytes(16);
     sorter = makeAsc(options);
 
     auto output = sort({
@@ -1233,7 +1203,7 @@ TEST_F(BoundedSorterTest, SpillSorted) {
     });
     assertSorted(output);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 3);
+    ASSERT_EQ(sorter->numSpills(), 3);
 }
 
 TEST_F(BoundedSorterTest, SpillSortedExceptOne) {
@@ -1255,16 +1225,12 @@ TEST_F(BoundedSorterTest, SpillSortedExceptOne) {
     });
     assertSorted(output);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 3);
+    ASSERT_EQ(sorter->numSpills(), 3);
 }
 
 TEST_F(BoundedSorterTest, SpillAlmostSorted) {
-    SorterTracker sorterTracker;
-    auto options = SortOptions()
-                       .ExtSortAllowed()
-                       .TempDir("unused_temp_dir")
-                       .MaxMemoryUsageBytes(16)
-                       .Tracker(&sorterTracker);
+    auto options =
+        SortOptions().ExtSortAllowed().TempDir("unused_temp_dir").MaxMemoryUsageBytes(16);
     sorter = makeAsc(options);
 
     auto output = sort({
@@ -1282,7 +1248,7 @@ TEST_F(BoundedSorterTest, SpillAlmostSorted) {
     });
     assertSorted(output);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 2);
+    ASSERT_EQ(sorter->numSpills(), 2);
 }
 
 TEST_F(BoundedSorterTest, SpillWrongInput) {
@@ -1316,7 +1282,7 @@ TEST_F(BoundedSorterTest, SpillWrongInput) {
     ASSERT_EQ(output[5].time, 15);
     ASSERT_EQ(output[6].time, 16);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 2);
+    ASSERT_EQ(sorter->numSpills(), 2);
 
     // Test that by default, bad input like this would be detected.
     sorter = makeAsc(options);
@@ -1325,13 +1291,8 @@ TEST_F(BoundedSorterTest, SpillWrongInput) {
 }
 
 TEST_F(BoundedSorterTest, LimitNoSpill) {
-    SorterTracker sorterTracker;
-    auto options = SortOptions()
-                       .ExtSortAllowed()
-                       .TempDir("unused_temp_dir")
-                       .MaxMemoryUsageBytes(40)
-                       .Tracker(&sorterTracker)
-                       .Limit(2);
+    auto options =
+        SortOptions().ExtSortAllowed().TempDir("unused_temp_dir").MaxMemoryUsageBytes(40).Limit(2);
     sorter = makeAsc(options);
 
     auto output = sort(
@@ -1354,17 +1315,12 @@ TEST_F(BoundedSorterTest, LimitNoSpill) {
     ASSERT_EQ(output[0].time, 0);
     ASSERT_EQ(output[1].time, 3);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 0);
+    ASSERT_EQ(sorter->numSpills(), 0);
 }
 
 TEST_F(BoundedSorterTest, LimitSpill) {
-    SorterTracker sorterTracker;
-    auto options = SortOptions()
-                       .ExtSortAllowed()
-                       .TempDir("unused_temp_dir")
-                       .MaxMemoryUsageBytes(40)
-                       .Tracker(&sorterTracker)
-                       .Limit(3);
+    auto options =
+        SortOptions().ExtSortAllowed().TempDir("unused_temp_dir").MaxMemoryUsageBytes(40).Limit(3);
     sorter = makeAsc(options);
 
     auto output = sort(
@@ -1388,7 +1344,7 @@ TEST_F(BoundedSorterTest, LimitSpill) {
     ASSERT_EQ(output[1].time, 3);
     ASSERT_EQ(output[2].time, 10);
 
-    ASSERT_EQ(sorter->stats().spilledRanges(), 1);
+    ASSERT_EQ(sorter->numSpills(), 1);
 }
 
 TEST_F(BoundedSorterTest, DescSorted) {
@@ -1633,26 +1589,22 @@ TEST_F(BoundedSorterTest, CompoundLimit) {
 }
 
 TEST_F(BoundedSorterTest, CompoundSpill) {
-    SorterTracker sorterTracker;
-    auto options = SortOptions()
-                       .ExtSortAllowed()
-                       .TempDir("unused_temp_dir")
-                       .Tracker(&sorterTracker)
-                       .MaxMemoryUsageBytes(40);
+    auto options =
+        SortOptions().ExtSortAllowed().TempDir("unused_temp_dir").MaxMemoryUsageBytes(40);
     sorter = makeAsc(options);
 
     // When each partition is small enough, we don't spill.
-    ASSERT_EQ(sorter->stats().spilledRanges(), 0);
+    ASSERT_EQ(sorter->numSpills(), 0);
     auto output = sort({
         {1001},
         {1007},
     });
     assertSorted(output);
-    ASSERT_EQ(sorter->stats().spilledRanges(), 0);
+    ASSERT_EQ(sorter->numSpills(), 0);
 
     // If any individual partition is large enough, we do spill.
     sorter->restart();
-    ASSERT_EQ(sorter->stats().spilledRanges(), 0);
+    ASSERT_EQ(sorter->numSpills(), 0);
     output = sort({
         {1},
         {5},
@@ -1667,17 +1619,17 @@ TEST_F(BoundedSorterTest, CompoundSpill) {
         {7},
     });
     assertSorted(output);
-    ASSERT_EQ(sorter->stats().spilledRanges(), 1);
+    ASSERT_EQ(sorter->numSpills(), 1);
 
     // If later partitions are small again, they don't spill.
     sorter->restart();
-    ASSERT_EQ(sorter->stats().spilledRanges(), 1);
+    ASSERT_EQ(sorter->numSpills(), 1);
     output = sort({
         {11},
         {17},
     });
     assertSorted(output);
-    ASSERT_EQ(sorter->stats().spilledRanges(), 1);
+    ASSERT_EQ(sorter->numSpills(), 1);
 }
 
 }  // namespace

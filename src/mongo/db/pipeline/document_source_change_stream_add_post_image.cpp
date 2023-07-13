@@ -70,7 +70,7 @@ DocumentSourceChangeStreamAddPostImage::createFromBson(
             str::stream() << "the '" << kStageName << "' stage spec must be an object",
             elem.type() == BSONType::Object);
     auto parsedSpec = DocumentSourceChangeStreamAddPostImageSpec::parse(
-        IDLParserContext("DocumentSourceChangeStreamAddPostImageSpec"), elem.Obj());
+        IDLParserErrorContext("DocumentSourceChangeStreamAddPostImageSpec"), elem.Obj());
     return new DocumentSourceChangeStreamAddPostImage(expCtx, parsedSpec.getFullDocument());
 }
 
@@ -83,6 +83,15 @@ DocumentSource::GetNextResult DocumentSourceChangeStreamAddPostImage::doGetNext(
         input.getDocument(), DocumentSourceChangeStream::kOperationTypeField, BSONType::String);
     if (opTypeVal.getString() != DocumentSourceChangeStream::kUpdateOpType) {
         return input;
+    }
+
+    // TODO SERVER-58584: remove the feature flag.
+    if (_fullDocumentMode != FullDocumentModeEnum::kUpdateLookup) {
+        tassert(5869000,
+                str::stream() << "Feature flag must be enabled for fullDocument: "
+                              << FullDocumentMode_serializer(_fullDocumentMode),
+                feature_flags::gFeatureFlagChangeStreamPreAndPostImages.isEnabled(
+                    serverGlobalParams.featureCompatibility));
     }
 
     // Create a mutable output document from the input document.
@@ -112,7 +121,7 @@ NamespaceString DocumentSourceChangeStreamAddPostImage::assertValidNamespace(
             .getDocument();
     auto dbName = assertFieldHasType(namespaceObject, "db"_sd, BSONType::String);
     auto collectionName = assertFieldHasType(namespaceObject, "coll"_sd, BSONType::String);
-    NamespaceString nss(pExpCtx->ns.tenantId(), dbName.getString(), collectionName.getString());
+    NamespaceString nss(dbName.getString(), collectionName.getString());
 
     // Change streams on an entire database only need to verify that the database names match. If
     // the database is 'admin', then this is a cluster-wide $changeStream and we are permitted to

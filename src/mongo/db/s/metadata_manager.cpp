@@ -27,18 +27,24 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/s/metadata_manager.h"
 
 #include "mongo/base/string_data.h"
+#include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/util/builder.h"
+#include "mongo/db/query/internal_plans.h"
+#include "mongo/db/range_arithmetic.h"
 #include "mongo/db/s/migration_util.h"
-#include "mongo/db/s/range_deleter_service.h"
 #include "mongo/db/s/range_deletion_util.h"
 #include "mongo/db/s/sharding_runtime_d_params_gen.h"
 #include "mongo/logv2/log.h"
-#include "mongo/s/sharding_feature_flags_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+#include "mongo/util/assert_util.h"
+#include "mongo/util/fail_point.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 namespace {
@@ -61,7 +67,7 @@ bool metadataOverlapsRange(const boost::optional<CollectionMetadata>& metadata,
     if (!metadata) {
         return false;
     }
-    return metadataOverlapsRange(metadata.value(), range);
+    return metadataOverlapsRange(metadata.get(), range);
 }
 
 }  // namespace
@@ -97,7 +103,7 @@ public:
     // boost::none
     const CollectionMetadata& get() {
         invariant(_metadataTracker->metadata);
-        return _metadataTracker->metadata.value();
+        return _metadataTracker->metadata.get();
     }
 
 private:
@@ -170,19 +176,19 @@ void MetadataManager::setFilteringMetadata(CollectionMetadata remoteMetadata) {
     invariant(!_metadata.empty());
     // The active metadata should always be available (not boost::none)
     invariant(_metadata.back()->metadata);
-    const auto& activeMetadata = _metadata.back()->metadata.value();
+    const auto& activeMetadata = _metadata.back()->metadata.get();
 
-    const auto remoteCollPlacementVersion = remoteMetadata.getCollPlacementVersion();
-    const auto activeCollPlacementVersion = activeMetadata.getCollPlacementVersion();
+    const auto remoteCollVersion = remoteMetadata.getCollVersion();
+    const auto activeCollVersion = activeMetadata.getCollVersion();
     // Do nothing if the remote version is older than or equal to the current active one
-    if (remoteCollPlacementVersion.isOlderOrEqualThan(activeCollPlacementVersion)) {
+    if (remoteCollVersion.isOlderOrEqualThan(activeCollVersion)) {
         LOGV2_DEBUG(21984,
                     1,
                     "Ignoring incoming metadata update {activeMetadata} for {namespace} because "
                     "the active (current) metadata {remoteMetadata} has the same or a newer "
-                    "collection placement version",
+                    "collection version",
                     "Ignoring incoming metadata update for this namespace because the active "
-                    "(current) metadata has the same or a newer collection placement version",
+                    "(current) metadata has the same or a newer collection version",
                     "namespace"_attr = _nss.ns(),
                     "activeMetadata"_attr = activeMetadata.toStringBasic(),
                     "remoteMetadata"_attr = remoteMetadata.toStringBasic());
@@ -191,9 +197,9 @@ void MetadataManager::setFilteringMetadata(CollectionMetadata remoteMetadata) {
 
     LOGV2(21985,
           "Updating metadata {activeMetadata} for {namespace} because the remote metadata "
-          "{remoteMetadata} has a newer collection placement version",
+          "{remoteMetadata} has a newer collection version",
           "Updating metadata for this namespace because the remote metadata has a newer "
-          "collection placement version",
+          "collection version",
           "namespace"_attr = _nss.ns(),
           "activeMetadata"_attr = activeMetadata.toStringBasic(),
           "remoteMetadata"_attr = remoteMetadata.toStringBasic());
@@ -253,6 +259,7 @@ void MetadataManager::append(BSONObjBuilder* builder) const {
 }
 
 SharedSemiFuture<void> MetadataManager::cleanUpRange(ChunkRange const& range,
+                                                     const UUID& migrationId,
                                                      bool shouldDelayBeforeDeletion) {
     stdx::lock_guard<Latch> lg(_managerLock);
     invariant(!_metadata.empty());
@@ -284,6 +291,7 @@ SharedSemiFuture<void> MetadataManager::cleanUpRange(ChunkRange const& range,
         return _submitRangeForDeletion(lg,
                                        overlapMetadata->onDestructionPromise.getFuture().semi(),
                                        range,
+                                       migrationId,
                                        delayForActiveQueriesOnSecondariesToComplete);
     } else {
         // No running queries can depend on this range, so queue it for deletion immediately.
@@ -294,8 +302,11 @@ SharedSemiFuture<void> MetadataManager::cleanUpRange(ChunkRange const& range,
                       "namespace"_attr = _nss.ns(),
                       "range"_attr = redact(range.toString()));
 
-        return _submitRangeForDeletion(
-            lg, SemiFuture<void>::makeReady(), range, delayForActiveQueriesOnSecondariesToComplete);
+        return _submitRangeForDeletion(lg,
+                                       SemiFuture<void>::makeReady(),
+                                       range,
+                                       migrationId,
+                                       delayForActiveQueriesOnSecondariesToComplete);
     }
 }
 
@@ -319,7 +330,8 @@ size_t MetadataManager::numberOfRangesScheduledForDeletion() const {
     return _rangesScheduledForDeletion.size();
 }
 
-SharedSemiFuture<void> MetadataManager::trackOrphanedDataCleanup(ChunkRange const& range) const {
+boost::optional<SharedSemiFuture<void>> MetadataManager::trackOrphanedDataCleanup(
+    ChunkRange const& range) const {
     stdx::lock_guard<Latch> lg(_managerLock);
     for (const auto& [orphanRange, deletionComplete] : _rangesScheduledForDeletion) {
         if (orphanRange.overlapWith(range)) {
@@ -327,17 +339,7 @@ SharedSemiFuture<void> MetadataManager::trackOrphanedDataCleanup(ChunkRange cons
         }
     }
 
-    return SemiFuture<void>::makeReady().share();
-}
-
-SharedSemiFuture<void> MetadataManager::getOngoingQueriesCompletionFuture(ChunkRange const& range) {
-    stdx::lock_guard<Latch> lg(_managerLock);
-
-    auto* const overlapMetadata = _findNewestOverlappingMetadata(lg, range);
-    if (!overlapMetadata) {
-        return SemiFuture<void>::makeReady().share();
-    }
-    return overlapMetadata->onDestructionPromise.getFuture();
+    return boost::none;
 }
 
 auto MetadataManager::_findNewestOverlappingMetadata(WithLock, ChunkRange const& range)
@@ -369,23 +371,17 @@ SharedSemiFuture<void> MetadataManager::_submitRangeForDeletion(
     const WithLock&,
     SemiFuture<void> waitForActiveQueriesToComplete,
     const ChunkRange& range,
+    const UUID& migrationId,
     Seconds delayForActiveQueriesOnSecondariesToComplete) {
-    auto cleanupComplete = [&]() {
-        const auto collUUID = _metadata.back()->metadata->getChunkManager()->getUUID();
-
-        if (feature_flags::gRangeDeleterService.isEnabledAndIgnoreFCV()) {
-            return RangeDeleterService::get(_serviceContext)
-                ->getOverlappingRangeDeletionsFuture(collUUID, range);
-        }
-
-        return removeDocumentsInRange(_executor,
-                                      std::move(waitForActiveQueriesToComplete),
-                                      _nss,
-                                      collUUID,
-                                      _metadata.back()->metadata->getKeyPattern().getOwned(),
-                                      range,
-                                      delayForActiveQueriesOnSecondariesToComplete);
-    }();
+    auto cleanupComplete =
+        removeDocumentsInRange(_executor,
+                               std::move(waitForActiveQueriesToComplete),
+                               _nss,
+                               _metadata.back()->metadata->getChunkManager()->getUUID(),
+                               _metadata.back()->metadata->getKeyPattern().getOwned(),
+                               range,
+                               migrationId,
+                               delayForActiveQueriesOnSecondariesToComplete);
 
     _rangesScheduledForDeletion.emplace_front(range, cleanupComplete);
     // Attach a continuation so that once the range has been deleted, we will remove the deletion

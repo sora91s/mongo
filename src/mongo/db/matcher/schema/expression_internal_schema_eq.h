@@ -49,7 +49,7 @@ class InternalSchemaEqMatchExpression final : public LeafMatchExpression {
 public:
     static constexpr StringData kName = "$_internalSchemaEq"_sd;
 
-    InternalSchemaEqMatchExpression(boost::optional<StringData> path,
+    InternalSchemaEqMatchExpression(StringData path,
                                     BSONElement rhs,
                                     clonable_ptr<ErrorAnnotation> annotation = nullptr);
 
@@ -59,7 +59,7 @@ public:
 
     void debugString(StringBuilder& debug, int indentationLevel) const final;
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final;
+    BSONObj getSerializedRightHandSide() const final;
 
     bool equivalent(const MatchExpression* other) const final;
 
@@ -68,7 +68,7 @@ public:
     }
 
     MatchExpression* getChild(size_t i) const final {
-        MONGO_UNREACHABLE_TASSERT(6400213);
+        MONGO_UNREACHABLE;
     }
 
     void resetChild(size_t, MatchExpression*) override {
@@ -85,9 +85,7 @@ public:
 
 private:
     ExpressionOptimizerFunc getOptimizer() const final {
-        return [](std::unique_ptr<MatchExpression> expression) {
-            return expression;
-        };
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
     }
 
     UnorderedFieldsBSONElementComparator _eltCmp;

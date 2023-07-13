@@ -45,6 +45,12 @@
 #include "mongo/db/service_context.h"
 
 namespace mongo {
+
+class Collection;
+class CollectionPtr;
+struct CollectionOptions;
+class OperationContext;
+
 namespace repl {
 
 struct TimestampedBSONObj {
@@ -211,6 +217,11 @@ public:
      * Drops all databases except "local".
      */
     virtual Status dropReplicatedDatabases(OperationContext* opCtx) = 0;
+
+    /**
+     * Validates that the admin database is valid during initial sync.
+     */
+    virtual Status isAdminDbValid(OperationContext* opCtx) = 0;
 
     /**
      * Finds at most "limit" documents returned by a collection or index scan on the collection in
@@ -425,7 +436,7 @@ public:
      * Responsible for initializing independent processes for replication that manage
      * and interact with the storage layer.
      *
-     * Initializes the OplogCapMaintainerThread to control deletion of oplog truncate markers.
+     * Initializes the OplogCapMaintainerThread to control deletion of oplog stones.
      */
     virtual void initializeStorageControlsForReplication(ServiceContext* serviceCtx) const = 0;
 

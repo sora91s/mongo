@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/future_util.h"
 #include "mongo/util/static_immortal.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 
@@ -161,7 +159,7 @@ SemiFuture<void> WaitForMajorityService::waitUntilMajority(const repl::OpTime& o
                 scopedClientLock, opCtx, ErrorCodes::WaitForMajorityServiceEarlierOpTimeAvailable);
     }
 
-    _queuedOpTimes.emplace(
+    auto resultIter = _queuedOpTimes.emplace(
         std::piecewise_construct, std::forward_as_tuple(opTime), std::forward_as_tuple(request));
 
 
@@ -170,7 +168,7 @@ SemiFuture<void> WaitForMajorityService::waitUntilMajority(const repl::OpTime& o
         _hasNewOpTimeCV.notifyAllAndReset();
     }
 
-    cancelToken.onCancel().thenRunOn(_pool).getAsync([this, request](Status s) {
+    cancelToken.onCancel().thenRunOn(_pool).getAsync([this, resultIter, request](Status s) {
         if (!s.isOK()) {
             return;
         }
@@ -178,12 +176,7 @@ SemiFuture<void> WaitForMajorityService::waitUntilMajority(const repl::OpTime& o
         if (!request->hasBeenProcessed.swap(true)) {
             request->result.setError(waitUntilMajorityCanceledStatus());
             stdx::lock_guard lk(_mutex);
-            auto it = std::find_if(
-                std::begin(_queuedOpTimes),
-                std::end(_queuedOpTimes),
-                [&request](auto&& requestIter) { return request == requestIter.second; });
-            invariant(it != _queuedOpTimes.end());
-            _queuedOpTimes.erase(it);
+            _queuedOpTimes.erase(resultIter);
         }
     });
     return std::move(future).semi();

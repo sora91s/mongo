@@ -38,7 +38,6 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/pipeline/accumulation_statement.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 #include "mongo/db/query/classic_plan_cache.h"
 #include "mongo/db/query/index_bounds.h"
 #include "mongo/db/query/interval_evaluation_tree.h"
@@ -136,11 +135,13 @@ struct QuerySolutionNode {
     /**
      * Constructs a QuerySolutionNode with a single child.
      */
-    QuerySolutionNode(std::unique_ptr<QuerySolutionNode> child) {
-        children.push_back(std::move(child));
-    }
+    QuerySolutionNode(std::unique_ptr<QuerySolutionNode> child) : children{child.release()} {}
 
-    virtual ~QuerySolutionNode() = default;
+    virtual ~QuerySolutionNode() {
+        for (size_t i = 0; i < children.size(); ++i) {
+            delete children[i];
+        }
+    }
 
     /**
      * Return a std::string representation of this node and any children.
@@ -224,16 +225,32 @@ struct QuerySolutionNode {
     /**
      * Make a deep copy.
      */
-    virtual std::unique_ptr<QuerySolutionNode> clone() const = 0;
+    virtual QuerySolutionNode* clone() const = 0;
+
+    /**
+     * Copy base query solution data from 'this' to 'other'.
+     */
+    void cloneBaseData(QuerySolutionNode* other) const {
+        for (size_t i = 0; i < this->children.size(); i++) {
+            other->children.push_back(this->children[i]->clone());
+        }
+        if (nullptr != this->filter) {
+            other->filter = this->filter->shallowClone();
+        }
+    }
 
     /**
      * Adds a vector of query solution nodes to the list of children of this node.
+     *
+     * TODO SERVER-35512: Once 'children' are held by unique_ptr, this method should no longer be
+     * necessary.
      */
     void addChildren(std::vector<std::unique_ptr<QuerySolutionNode>> newChildren) {
         children.reserve(children.size() + newChildren.size());
-        children.insert(children.end(),
-                        std::make_move_iterator(newChildren.begin()),
-                        std::make_move_iterator(newChildren.end()));
+        std::transform(newChildren.begin(),
+                       newChildren.end(),
+                       std::back_inserter(children),
+                       [](auto& child) { return child.release(); });
     }
 
     bool getScanLimit() {
@@ -265,7 +282,10 @@ struct QuerySolutionNode {
         return _nodeId;
     }
 
-    std::vector<std::unique_ptr<QuerySolutionNode>> children;
+    // These are owned here.
+    //
+    // TODO SERVER-35512: Make this a vector of unique_ptr.
+    std::vector<QuerySolutionNode*> children;
 
     // If a stage has a non-NULL filter all values outputted from that stage must pass that
     // filter.
@@ -284,18 +304,6 @@ protected:
      * properties.
      */
     void addCommon(str::stream* ss, int indent) const;
-
-    /**
-     * Copy base query solution data from 'this' to 'other'.
-     */
-    void cloneBaseData(QuerySolutionNode* other) const {
-        for (size_t i = 0; i < this->children.size(); i++) {
-            other->children.push_back(this->children[i]->clone());
-        }
-        if (nullptr != this->filter) {
-            other->filter = this->filter->shallowClone();
-        }
-    }
 
 private:
     // Allows the QuerySolution constructor to set '_nodeId'.
@@ -404,11 +412,6 @@ public:
     // we would want to fall back on an alternate non-blocking solution.
     bool hasBlockingStage{false};
 
-    // Indicates whether this query solution represents an 'explode for sort' plan when an index
-    // scan over multiple point intervals is 'exploded' into a union of index scans in order to
-    // obtain an indexed sort.
-    bool hasExplodedForSort{false};
-
     // Runner executing this solution might be interested in knowing
     // if the planning process for this solution was based on filtered indices.
     bool indexFilterApplied{false};
@@ -458,7 +461,7 @@ struct CollectionScanNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     // Name of the namespace.
     std::string name;
@@ -489,13 +492,13 @@ struct CollectionScanNode : public QuerySolutionNodeWithSortSet {
     // Should we make a tailable cursor?
     bool tailable;
 
-    // Should we keep track of the timestamp of the latest oplog or change collection entry we've
-    // seen? This information is needed to merge cursors from the oplog in order of operation time
-    // when reading the oplog across a sharded cluster.
+    // Should we keep track of the timestamp of the latest oplog entry we've seen? This information
+    // is needed to merge cursors from the oplog in order of operation time when reading the oplog
+    // across a sharded cluster.
     bool shouldTrackLatestOplogTimestamp = false;
 
-    // Assert that the specified timestamp has not fallen off the oplog or change collection.
-    boost::optional<Timestamp> assertTsHasNotFallenOff = boost::none;
+    // Assert that the specified timestamp has not fallen off the oplog.
+    boost::optional<Timestamp> assertTsHasNotFallenOffOplog = boost::none;
 
     int direction{1};
 
@@ -512,15 +515,13 @@ struct CollectionScanNode : public QuerySolutionNodeWithSortSet {
 
 struct ColumnIndexScanNode : public QuerySolutionNode {
     ColumnIndexScanNode(ColumnIndexEntry,
-                        OrderedPathSet outputFields,
-                        OrderedPathSet matchFields,
-                        OrderedPathSet allFields,
+                        std::set<std::string> outputFields,
+                        std::set<std::string> matchFields,
                         StringMap<std::unique_ptr<MatchExpression>> filtersByPath,
-                        std::unique_ptr<MatchExpression> postAssemblyFilter,
-                        bool extraFieldsPermitted = false);
+                        std::unique_ptr<MatchExpression> postAssemblyFilter);
 
     virtual StageType getType() const {
-        return STAGE_COLUMN_SCAN;
+        return STAGE_COLUMN_IXSCAN;
     }
 
     void appendToString(str::stream* ss, int indent) const override;
@@ -529,8 +530,8 @@ struct ColumnIndexScanNode : public QuerySolutionNode {
         return false;
     }
     FieldAvailability getFieldAvailability(const std::string& field) const {
-        return outputFields.find(field) != outputFields.end() ? FieldAvailability::kFullyProvided
-                                                              : FieldAvailability::kNotProvided;
+        return allFields.find(field) != allFields.end() ? FieldAvailability::kFullyProvided
+                                                        : FieldAvailability::kNotProvided;
     }
     bool sortedByDiskLoc() const {
         return true;
@@ -540,32 +541,26 @@ struct ColumnIndexScanNode : public QuerySolutionNode {
         return kEmptySet;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final {
+    QuerySolutionNode* clone() const {
         StringMap<std::unique_ptr<MatchExpression>> clonedFiltersByPath;
         for (auto&& [path, filter] : filtersByPath) {
             clonedFiltersByPath[path] = filter->shallowClone();
         }
-        return std::make_unique<ColumnIndexScanNode>(indexEntry,
-                                                     outputFields,
-                                                     matchFields,
-                                                     allFields,
-                                                     std::move(clonedFiltersByPath),
-                                                     postAssemblyFilter->shallowClone(),
-                                                     extraFieldsPermitted);
+        return new ColumnIndexScanNode(indexEntry,
+                                       outputFields,
+                                       matchFields,
+                                       std::move(clonedFiltersByPath),
+                                       postAssemblyFilter->shallowClone());
     }
 
     ColumnIndexEntry indexEntry;
 
     // The fields we need to output. Dot separated path names.
-    OrderedPathSet outputFields;
+    std::set<std::string> outputFields;
 
     // The fields which are referenced by any and all filters - either in 'filtersByPath' or
     // 'postAssemblyFilter'.
-    OrderedPathSet matchFields;
-
-    // A cached copy of the union of the above two field sets which we expect to be frequently asked
-    // for.
-    OrderedPathSet allFields;
+    std::set<std::string> matchFields;
 
     // A column scan can apply a filter to the columns directly while scanning, or to a document
     // assembled from the scanned columns.
@@ -578,9 +573,9 @@ struct ColumnIndexScanNode : public QuerySolutionNode {
     // example: {$or: [{a: 2}, {b: 2}]}.
     std::unique_ptr<MatchExpression> postAssemblyFilter;
 
-    // If set to true, we can include extra fields rather than project them out because projection
-    // happens anyway in a later stage (such a group stage).
-    bool extraFieldsPermitted;
+    // A cached copy of the union of the above two field sets which we expect to be frequently asked
+    // for.
+    std::set<std::string> allFields;
 };
 
 /**
@@ -617,7 +612,7 @@ struct VirtualScanNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     // A representation of a collection's documents. Here we use a BSONArray so metadata like a
     // RecordId can be stored alongside of the main document payload. The format of the data in
@@ -662,7 +657,7 @@ struct AndHashNode : public QuerySolutionNode {
         return children.back()->providedSorts();
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 };
 
 struct AndSortedNode : public QuerySolutionNodeWithSortSet {
@@ -681,7 +676,7 @@ struct AndSortedNode : public QuerySolutionNodeWithSortSet {
         return true;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 };
 
 struct OrNode : public QuerySolutionNodeWithSortSet {
@@ -702,7 +697,7 @@ struct OrNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const override;
+    QuerySolutionNode* clone() const;
 
     bool dedup;
 };
@@ -723,7 +718,7 @@ struct MergeSortNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     virtual void computeProperties() {
         for (size_t i = 0; i < children.size(); ++i) {
@@ -760,7 +755,7 @@ struct FetchNode : public QuerySolutionNode {
         return children[0]->providedSorts();
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 };
 
 struct IndexScanNode : public QuerySolutionNodeWithSortSet {
@@ -781,7 +776,7 @@ struct IndexScanNode : public QuerySolutionNodeWithSortSet {
     FieldAvailability getFieldAvailability(const std::string& field) const;
     bool sortedByDiskLoc() const;
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     bool operator==(const IndexScanNode& other) const;
 
@@ -842,7 +837,7 @@ struct ReturnKeyNode : public QuerySolutionNode {
         return children[0]->providedSorts();
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const final;
 
     std::vector<FieldPath> sortKeyMetaFields;
 };
@@ -917,7 +912,7 @@ struct ProjectionNodeDefault final : ProjectionNode {
         return STAGE_PROJECTION_DEFAULT;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    ProjectionNode* clone() const final;
 
     StringData projectionImplementationTypeToString() const final {
         return "DEFAULT"_sd;
@@ -939,7 +934,7 @@ struct ProjectionNodeCovered final : ProjectionNode {
         return STAGE_PROJECTION_COVERED;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    ProjectionNode* clone() const final;
 
     StringData projectionImplementationTypeToString() const final {
         return "COVERED_ONE_INDEX"_sd;
@@ -960,7 +955,7 @@ struct ProjectionNodeSimple final : ProjectionNode {
         return STAGE_PROJECTION_SIMPLE;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    ProjectionNode* clone() const final;
 
     StringData projectionImplementationTypeToString() const final {
         return "SIMPLE_DOC"_sd;
@@ -988,7 +983,7 @@ struct SortKeyGeneratorNode : public QuerySolutionNode {
         return children[0]->providedSorts();
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const final;
 
     void appendToString(str::stream* ss, int indent) const final;
 
@@ -1047,7 +1042,7 @@ struct SortNodeDefault final : public SortNode {
         return STAGE_SORT_DEFAULT;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const override;
 
     StringData sortImplementationTypeToString() const override {
         return "DEFAULT"_sd;
@@ -1065,7 +1060,7 @@ struct SortNodeSimple final : public SortNode {
         return STAGE_SORT_SIMPLE;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const override;
 
     StringData sortImplementationTypeToString() const override {
         return "SIMPLE"_sd;
@@ -1095,7 +1090,7 @@ struct LimitNode : public QuerySolutionNode {
         return children[0]->providedSorts();
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     long long limit;
 };
@@ -1122,7 +1117,7 @@ struct SkipNode : public QuerySolutionNode {
         return children[0]->providedSorts();
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     long long skip;
 };
@@ -1148,7 +1143,7 @@ struct GeoNear2DNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     // Not owned here
     const GeoNearExpression* nq;
@@ -1180,7 +1175,7 @@ struct GeoNear2DSphereNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     // Not owned here
     const GeoNearExpression* nq;
@@ -1223,7 +1218,7 @@ struct ShardingFilterNode : public QuerySolutionNode {
         return children[0]->providedSorts();
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 };
 
 /**
@@ -1257,7 +1252,7 @@ struct DistinctNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     virtual void computeProperties();
 
@@ -1272,7 +1267,8 @@ struct DistinctNode : public QuerySolutionNodeWithSortSet {
 };
 
 /**
- * Some count queries reduce to counting how many keys are between two entries in a Btree.
+ * Some count queries reduce to counting how many keys are between two entries in a
+ * Btree.
  */
 struct CountScanNode : public QuerySolutionNodeWithSortSet {
     CountScanNode(IndexEntry index) : index(std::move(index)) {}
@@ -1294,7 +1290,7 @@ struct CountScanNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 
     IndexEntry index;
 
@@ -1326,7 +1322,7 @@ struct EofNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const;
 };
 
 struct TextOrNode : public OrNode {
@@ -1337,7 +1333,7 @@ struct TextOrNode : public OrNode {
     }
 
     void appendToString(str::stream* ss, int indent) const override;
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const override;
 };
 
 struct TextMatchNode : public QuerySolutionNodeWithSortSet {
@@ -1361,7 +1357,7 @@ struct TextMatchNode : public QuerySolutionNodeWithSortSet {
         return false;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const override;
 
     IndexEntry index;
     std::unique_ptr<fts::FTSQuery> ftsQuery;
@@ -1395,15 +1391,15 @@ struct GroupNode : public QuerySolutionNode {
           shouldProduceBson(shouldProduceBson) {
         // Use the DepsTracker to extract the fields that the 'groupByExpression' and accumulator
         // expressions depend on.
-        DepsTracker deps;
-        expression::addDependencies(groupByExpression.get(), &deps);
-        for (auto&& acc : accumulators) {
-            expression::addDependencies(acc.expr.argument.get(), &deps);
+        for (auto& groupByExprField : groupByExpression->getDependencies().fields) {
+            requiredFields.insert(groupByExprField);
         }
-
-        requiredFields = deps.fields;
-        needWholeDocument = deps.needWholeDocument;
-        needsAnyMetadata = deps.getNeedsAnyMetadata();
+        for (auto&& acc : accumulators) {
+            auto argExpr = acc.expr.argument;
+            for (auto& argExprField : argExpr->getDependencies().fields) {
+                requiredFields.insert(argExprField);
+            }
+        }
     }
 
     StageType getType() const override {
@@ -1428,7 +1424,7 @@ struct GroupNode : public QuerySolutionNode {
         return kEmptySet;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const override;
 
     boost::intrusive_ptr<Expression> groupByExpression;
     std::vector<AccumulationStatement> accumulators;
@@ -1437,9 +1433,7 @@ struct GroupNode : public QuerySolutionNode {
     // Carries the fields this GroupNode depends on. Namely, 'requiredFields' contains the union of
     // the fields in the 'groupByExpressions' and the fields in the input Expressions of the
     // 'accumulators'.
-    OrderedPathSet requiredFields;
-    bool needWholeDocument = false;
-    bool needsAnyMetadata = false;
+    StringSet requiredFields;
 
     // If set to true, generated SBE plan will produce result as BSON object. If false,
     // 'sbe::Object' is produced instead.
@@ -1489,7 +1483,7 @@ struct EqLookupNode : public QuerySolutionNode {
     }
 
     EqLookupNode(std::unique_ptr<QuerySolutionNode> child,
-                 const NamespaceString& foreignCollection,
+                 const std::string& foreignCollection,
                  const FieldPath& joinFieldLocal,
                  const FieldPath& joinFieldForeign,
                  const FieldPath& joinField,
@@ -1529,17 +1523,18 @@ struct EqLookupNode : public QuerySolutionNode {
     }
 
     const ProvidedSortSet& providedSorts() const final {
-        // Right now, we conservatively return kEmptySet. A future optimization could theoretically
-        // take the "joinField" into account when deciding whether this provides a sort or not.
+        // TODO SERVER-62815: The ProvidedSortSet will need to be computed here in order to allow
+        // sort optimization. The "joinField" field overwrites the field in the result outer
+        // document, this can affect the provided sort. For now, use conservative kEmptySet.
         return kEmptySet;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const override;
 
     /**
-     * The foreign (inner) collection namespace string.
+     * The foreign (inner) collection namespace name.
      */
-    NamespaceString foreignCollection;
+    std::string foreignCollection;
 
     /**
      * The local (outer) join field.
@@ -1602,6 +1597,6 @@ struct SentinelNode : public QuerySolutionNode {
         return kEmptySet;
     }
 
-    std::unique_ptr<QuerySolutionNode> clone() const final;
+    QuerySolutionNode* clone() const override;
 };
 }  // namespace mongo

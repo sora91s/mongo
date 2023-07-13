@@ -3,6 +3,7 @@
 // periodic job.
 // @tags: [
 //  requires_fcv_60,
+//  featureFlagChangeStreamPreAndPostImages,
 //  assumes_against_mongod_not_mongos,
 //  change_stream_does_not_expect_txns,
 //  requires_replication,
@@ -79,7 +80,8 @@ function retryOnCappedPositionLostError(func, message) {
 // oplog entries of the previously recorded pre-images. Afterwards two updates are performed and
 // therefore two new pre-images are recorded. The pre-images removal job must remove only the first
 // four recorded pre-images.
-{
+// 'batchedDelete' determines whether pre-images will be removed in batches or document-by-document.
+function testPreImageRemovalJob(batchedDelete) {
     // Roll over the oplog, leading to 'PeriodicChangeStreamExpiredPreImagesRemover' periodic job
     // deleting all pre-images.
     let lastOplogEntryToBeRemoved = getLatestOp(primaryNode);
@@ -88,6 +90,10 @@ function retryOnCappedPositionLostError(func, message) {
             testDB.tmp.insert({long_str: largeStr}, {writeConcern: {w: "majority"}}));
     }
     assert.soon(() => getPreImages(primaryNode).length == 0);
+
+    // Set the 'batchedExpiredChangeStreamPreImageRemoval'.
+    assert.commandWorked(primaryNode.adminCommand(
+        {setParameter: 1, batchedExpiredChangeStreamPreImageRemoval: batchedDelete}));
 
     // Drop and recreate the collections with pre-images recording.
     const collA = assertDropAndRecreateCollection(
@@ -138,24 +144,33 @@ function retryOnCappedPositionLostError(func, message) {
     // Because the pre-images collection is implicitly replicated, validate that writes do not
     // generate oplog entries, with the exception of deletions.
     const preimagesNs = 'config.system.preimages';
-    // Multi-deletes are batched base on time before performing the deletion, therefore the
-    // deleted pre-images can span through multiple applyOps oplog entries.
-    //
-    // As pre-images span two collections, the minimum number of batches is 2, as we perform
-    // the range-deletion per collection. The maximum number of batches is 4 (one per single
-    // pre-image removed).
-    const expectedNumberOfBatchesRange = [2, 3, 4];
-    const serverStatusBatches = testDB.serverStatus()['batchedDeletes']['batches'];
-    const serverStatusDocs = testDB.serverStatus()['batchedDeletes']['docs'];
-    assert.contains(serverStatusBatches, expectedNumberOfBatchesRange);
-    assert.eq(serverStatusDocs, preImagesToExpire);
-    assert.contains(
-        retryOnCappedPositionLostError(
-            () => localDB.oplog.rs
-                      .find({ns: 'admin.$cmd', 'o.applyOps.op': 'd', 'o.applyOps.ns': preimagesNs})
-                      .itcount(),
-            "Failed to fetch oplog entries for pre-image deletes"),
-        expectedNumberOfBatchesRange);
+    if (batchedDelete) {
+        // Multi-deletes are batched base on time before performing the deletion, therefore the
+        // deleted pre-images can span through multiple applyOps oplog entries.
+        //
+        // As pre-images span two collections, the minimum number of batches is 2, as we perform
+        // the range-deletion per collection. The maximum number of batches is 4 (one per single
+        // pre-image removed).
+        const expectedNumberOfBatchesRange = [2, 3, 4];
+        const serverStatusBatches = testDB.serverStatus()['batchedDeletes']['batches'];
+        const serverStatusDocs = testDB.serverStatus()['batchedDeletes']['docs'];
+        assert.contains(serverStatusBatches, expectedNumberOfBatchesRange);
+        assert.eq(serverStatusDocs, preImagesToExpire);
+        assert.contains(
+            retryOnCappedPositionLostError(
+                () =>
+                    localDB.oplog.rs
+                        .find(
+                            {ns: 'admin.$cmd', 'o.applyOps.op': 'd', 'o.applyOps.ns': preimagesNs})
+                        .itcount(),
+                "Failed to fetch oplog entries for pre-image deletes"),
+            expectedNumberOfBatchesRange);
+    } else {
+        assert.eq(preImagesToExpire,
+                  retryOnCappedPositionLostError(
+                      () => localDB.oplog.rs.find({op: 'd', ns: preimagesNs}).itcount(),
+                      "Failed to fetch oplog entries for pre-image deletes"));
+    }
     assert.eq(0,
               retryOnCappedPositionLostError(
                   () => localDB.oplog.rs.find({op: {'$ne': 'd'}, ns: preimagesNs}).itcount(),
@@ -165,6 +180,10 @@ function retryOnCappedPositionLostError(func, message) {
     // secondary.
     rst.awaitReplication();
     assert(bsonWoCompare(getPreImages(primaryNode), getPreImages(rst.getSecondary())) === 0);
+}
+
+for (const batchedDelete of [false, true]) {
+    testPreImageRemovalJob(batchedDelete);
 }
 
 // Increase oplog size on each node to prevent oplog entries from being deleted which removes a

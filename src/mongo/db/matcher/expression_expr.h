@@ -75,9 +75,7 @@ public:
         debug << "$expr " << _expression->serialize(false).toString();
     }
 
-    void serialize(BSONObjBuilder* out, SerializationOptions opts) const final;
-
-    bool isTriviallyTrue() const final;
+    void serialize(BSONObjBuilder* out, bool includePath) const final;
 
     bool equivalent(const MatchExpression* other) const final;
 
@@ -90,7 +88,7 @@ public:
     }
 
     MatchExpression* getChild(size_t i) const final {
-        MONGO_UNREACHABLE_TASSERT(6400207);
+        MONGO_UNREACHABLE;
     }
 
     void resetChild(size_t, MatchExpression*) {
@@ -106,13 +104,6 @@ public:
     }
 
     boost::intrusive_ptr<Expression> getExpression() const {
-        return _expression;
-    }
-
-    /**
-     * Use if the caller needs to modify the expression held by this $expr.
-     */
-    boost::intrusive_ptr<Expression>& getExpressionRef() {
         return _expression;
     }
 
@@ -139,6 +130,12 @@ private:
     ExpressionOptimizerFunc getOptimizer() const final;
 
     void _doSetCollator(const CollatorInterface* collator) final;
+
+    void _doAddDependencies(DepsTracker* deps) const final {
+        if (_expression) {
+            _expression->addDependencies(deps);
+        }
+    }
 
     boost::intrusive_ptr<ExpressionContext> _expCtx;
 

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -43,9 +44,6 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 
@@ -125,8 +123,7 @@ namespace {
 DbResponse loopbackBuildResponse(OperationContext* const opCtx, Message& toSend) {
     DirectClientScope directClientScope(opCtx);
 
-    CurOp curOp;
-    curOp.push(opCtx);
+    CurOp curOp(opCtx);
 
     toSend.header().setId(nextMessageId());
     toSend.header().setResponseToMsgId(0);
@@ -135,10 +132,12 @@ DbResponse loopbackBuildResponse(OperationContext* const opCtx, Message& toSend)
 }
 }  // namespace
 
-void DBDirectClient::_call(Message& toSend, Message& response, string* actualServer) {
+bool DBDirectClient::call(Message& toSend, Message& response, bool assertOk, string* actualServer) {
     auto dbResponse = loopbackBuildResponse(_opCtx, toSend);
     invariant(!dbResponse.response.empty());
     response = std::move(dbResponse.response);
+
+    return true;
 }
 
 void DBDirectClient::say(Message& toSend, bool isRetry, string* actualServer) {
@@ -147,50 +146,33 @@ void DBDirectClient::say(Message& toSend, bool isRetry, string* actualServer) {
 }
 
 std::unique_ptr<DBClientCursor> DBDirectClient::find(FindCommandRequest findRequest,
-                                                     const ReadPreferenceSetting& readPref,
-                                                     ExhaustMode exhaustMode) {
+                                                     const ReadPreferenceSetting& readPref) {
     invariant(!findRequest.getReadConcern(),
               "passing readConcern to DBDirectClient::find() is not supported");
-    return DBClientBase::find(std::move(findRequest), readPref, exhaustMode);
+    return DBClientBase::find(std::move(findRequest), readPref);
 }
 
 write_ops::FindAndModifyCommandReply DBDirectClient::findAndModify(
     const write_ops::FindAndModifyCommandRequest& findAndModify) {
-    auto request = findAndModify.serialize({});
-    if (const auto& tenant = findAndModify.getDbName().tenantId()) {
-        request.setDollarTenant(tenant.value());
-    }
-    auto response = runCommand(std::move(request));
+    auto response = runCommand(findAndModify.serialize({}));
     return FindAndModifyOp::parseResponse(response->getCommandReply());
 }
 
 write_ops::InsertCommandReply DBDirectClient::insert(
     const write_ops::InsertCommandRequest& insert) {
-    auto request = insert.serialize({});
-    if (const auto& tenant = insert.getDbName().tenantId()) {
-        request.setDollarTenant(tenant.value());
-    }
-    auto response = runCommand(request);
+    auto response = runCommand(insert.serialize({}));
     return InsertOp::parseResponse(response->getCommandReply());
 }
 
 write_ops::UpdateCommandReply DBDirectClient::update(
     const write_ops::UpdateCommandRequest& update) {
-    auto request = update.serialize({});
-    if (const auto& tenant = update.getDbName().tenantId()) {
-        request.setDollarTenant(tenant.value());
-    }
-    auto response = runCommand(request);
+    auto response = runCommand(update.serialize({}));
     return UpdateOp::parseResponse(response->getCommandReply());
 }
 
 write_ops::DeleteCommandReply DBDirectClient::remove(
     const write_ops::DeleteCommandRequest& remove) {
-    auto request = remove.serialize({});
-    if (const auto& tenant = remove.getDbName().tenantId()) {
-        request.setDollarTenant(tenant.value());
-    }
-    auto response = runCommand(request);
+    auto response = runCommand(remove.serialize({}));
     return DeleteOp::parseResponse(response->getCommandReply());
 }
 
@@ -201,18 +183,16 @@ long long DBDirectClient::count(const NamespaceStringOrUUID nsOrUuid,
                                 int skip,
                                 boost::optional<BSONObj> readConcernObj) {
     invariant(!readConcernObj, "passing readConcern to DBDirectClient functions is not supported");
+    DirectClientScope directClientScope(_opCtx);
     BSONObj cmdObj = _countCmd(nsOrUuid, query, options, limit, skip, boost::none);
 
-    auto& dbName = (nsOrUuid.uuid() ? nsOrUuid.dbName().value() : (*nsOrUuid.nss()).dbName());
-    auto request = OpMsgRequestBuilder::create(dbName, cmdObj);
+    auto dbName = (nsOrUuid.uuid() ? nsOrUuid.dbname() : (*nsOrUuid.nss()).db().toString());
 
-    // Calls runCommand instead of runCommandDirectly to ensure the tenant inforamtion of this
-    // command gets validated and is used for parsing the command request.
-    auto response = runCommand(request);
-    auto& result = response->getCommandReply();
+    auto result = CommandHelpers::runCommandDirectly(
+        _opCtx, OpMsgRequest::fromDBAndBody(dbName, std::move(cmdObj)));
 
     uassertStatusOK(getStatusFromCommandResult(result));
-    return result["n"].numberLong();
+    return static_cast<unsigned long long>(result["n"].numberLong());
 }
 
 }  // namespace mongo

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/db_raii.h"
@@ -39,13 +40,10 @@
 #include "mongo/logv2/log.h"
 #include "mongo/platform/random.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo {
 namespace {
 
-const NamespaceString kNss = NamespaceString::createNamespaceString_forTest("autosplitDB", "coll");
+const NamespaceString kNss = NamespaceString("autosplitDB", "coll");
 const std::string kPattern = "_id";
 
 /*
@@ -54,16 +52,14 @@ const std::string kPattern = "_id";
  */
 std::pair<std::vector<BSONObj>, bool> autoSplit(OperationContext* opCtx,
                                                 int maxChunkSizeMB,
-                                                boost::optional<int> limit = boost::none,
-                                                bool forward = true) {
+                                                boost::optional<int> limit = boost::none) {
     return autoSplitVector(opCtx,
                            kNss,
                            BSON(kPattern << 1) /* shard key pattern */,
                            BSON(kPattern << 0) /* min */,
                            BSON(kPattern << 1000) /* max */,
                            maxChunkSizeMB * 1024 * 1024 /* max chunk size in bytes*/,
-                           limit,
-                           forward);
+                           limit);
 }
 
 class AutoSplitVectorTest : public ShardServerTestFixture {
@@ -80,12 +76,12 @@ public:
         {
             OperationShardingState::ScopedAllowImplicitCollectionCreate_UNSAFE
                 unsafeCreateCollection(opCtx);
-            uassertStatusOK(
-                createCollection(operationContext(), kNss.dbName(), BSON("create" << kNss.coll())));
+            uassertStatusOK(createCollection(
+                operationContext(), kNss.db().toString(), BSON("create" << kNss.coll())));
         }
 
         DBDirectClient client(opCtx);
-        client.createIndex(kNss, BSON(kPattern << 1));
+        client.createIndex(kNss.ns(), BSON(kPattern << 1));
     }
 
     /*
@@ -102,7 +98,7 @@ public:
             builder.append("str", s);
             BSONObj obj = builder.obj();
             ASSERT(obj.objsize() == 1024 * 1024);  // 1 MB document
-            client.insert(kNss, obj);
+            client.insert(kNss.toString(), obj);
         }
     }
 
@@ -137,15 +133,14 @@ class AutoSplitVectorTest10MB : public AutoSplitVectorTest {
 
 // Throw exception upon calling autoSplitVector on dropped/unexisting collection
 TEST_F(AutoSplitVectorTest, NoCollection) {
-    ASSERT_THROWS_CODE(
-        autoSplitVector(operationContext(),
-                        NamespaceString::createNamespaceString_forTest("dummy", "collection"),
-                        BSON(kPattern << 1) /* shard key pattern */,
-                        BSON(kPattern << kMinBSONKey) /* min */,
-                        BSON(kPattern << kMaxBSONKey) /* max */,
-                        1 * 1024 * 1024 /* max chunk size in bytes*/),
-        DBException,
-        ErrorCodes::NamespaceNotFound);
+    ASSERT_THROWS_CODE(autoSplitVector(operationContext(),
+                                       NamespaceString("dummy", "collection"),
+                                       BSON(kPattern << 1) /* shard key pattern */,
+                                       BSON(kPattern << kMinBSONKey) /* min */,
+                                       BSON(kPattern << kMaxBSONKey) /* max */,
+                                       1 * 1024 * 1024 /* max chunk size in bytes*/),
+                       DBException,
+                       ErrorCodes::NamespaceNotFound);
 }
 
 TEST_F(AutoSplitVectorTest, EmptyCollection) {
@@ -156,20 +151,6 @@ TEST_F(AutoSplitVectorTest, EmptyCollection) {
                         BSON(kPattern << kMinBSONKey) /* min */,
                         BSON(kPattern << kMaxBSONKey) /* max */,
                         1 * 1024 * 1024 /* max chunk size in bytes*/);
-    ASSERT_EQ(0, splitKey.size());
-    ASSERT_FALSE(continuation);
-}
-
-TEST_F(AutoSplitVectorTest, EmptyCollectionBackwards) {
-    const auto [splitKey, continuation] =
-        autoSplitVector(operationContext(),
-                        kNss,
-                        BSON(kPattern << 1) /* shard key pattern */,
-                        BSON(kPattern << kMinBSONKey) /* min */,
-                        BSON(kPattern << kMaxBSONKey) /* max */,
-                        1 * 1024 * 1024 /* max chunk size in bytes*/,
-                        boost::none,
-                        false);
     ASSERT_EQ(0, splitKey.size());
     ASSERT_FALSE(continuation);
 }
@@ -224,16 +205,6 @@ TEST_F(AutoSplitVectorTest10MB, SplitIfDataSlightlyMoreThanThreshold) {
     ASSERT_FALSE(continuation);
 }
 
-TEST_F(AutoSplitVectorTest10MB, SplitIfDataSlightlyMoreThanThresholdBackwards) {
-    const auto surplus = 4;
-    insertNDocsOf1MB(operationContext(), surplus /* nDocs */);
-    auto [splitKeys, continuation] =
-        autoSplit(operationContext(), 10 /* maxChunkSizeMB */, boost::none, false);
-    ASSERT_EQ(splitKeys.size(), 1);
-    ASSERT_EQ(7, splitKeys.front().getIntField(kPattern));
-    ASSERT_FALSE(continuation);
-}
-
 // Split points if `data size > max chunk size * 2` and threshold reached
 TEST_F(AutoSplitVectorTest10MB, SplitIfDataMoreThanThreshold) {
     const auto surplus = 14;
@@ -245,17 +216,6 @@ TEST_F(AutoSplitVectorTest10MB, SplitIfDataMoreThanThreshold) {
     ASSERT_FALSE(continuation);
 }
 
-TEST_F(AutoSplitVectorTest10MB, SplitIfDataMoreThanThresholdBackwards) {
-    const auto surplus = 14;
-    insertNDocsOf1MB(operationContext(), surplus /* nDocs */);
-    auto [splitKeys, continuation] =
-        autoSplit(operationContext(), 10 /* maxChunkSizeMB */, boost::none, false);
-    ASSERT_EQ(splitKeys.size(), 2);
-    ASSERT_EQ(16, splitKeys.front().getIntField(kPattern));
-    ASSERT_EQ(8, splitKeys.back().getIntField(kPattern));
-    ASSERT_FALSE(continuation);
-}
-
 // Split points are not recalculated if the right-most chunk is at least `80% maxChunkSize`
 TEST_F(AutoSplitVectorTest10MB, NoRecalculateIfBigLastChunk) {
     const auto surplus = 8;
@@ -263,16 +223,6 @@ TEST_F(AutoSplitVectorTest10MB, NoRecalculateIfBigLastChunk) {
     auto [splitKeys, continuation] = autoSplit(operationContext(), 10 /* maxChunkSizeMB */);
     ASSERT_EQ(splitKeys.size(), 1);
     ASSERT_EQ(9, splitKeys.front().getIntField(kPattern));
-    ASSERT_FALSE(continuation);
-}
-
-TEST_F(AutoSplitVectorTest10MB, NoRecalculateIfBigLastChunkBackwards) {
-    const auto surplus = 8;
-    insertNDocsOf1MB(operationContext(), surplus /* nDocs */);
-    auto [splitKeys, continuation] =
-        autoSplit(operationContext(), 10 /* maxChunkSizeMB */, boost::none, false);
-    ASSERT_EQ(splitKeys.size(), 1);
-    ASSERT_EQ(8, splitKeys.front().getIntField(kPattern));
     ASSERT_FALSE(continuation);
 }
 
@@ -291,25 +241,6 @@ TEST_F(AutoSplitVectorTest10MB, LimitArgIsRespected) {
     for (auto limit : {1, 2, 3}) {
         const auto [splitKeys, continuation] =
             autoSplit(operationContext(), 2 /* maxChunkSizeMB */, limit);
-        ASSERT_EQ(splitKeys.size(), limit);
-    }
-}
-
-TEST_F(AutoSplitVectorTest10MB, LimitArgIsRespectedBackwards) {
-    const auto surplus = 4;
-    insertNDocsOf1MB(operationContext(), surplus /* nDocs */);
-
-    // Maximum split keys returned (no limit)
-    const auto numPossibleSplitKeys = [&]() {
-        auto [splitKeys, continuation] =
-            autoSplit(operationContext(), 2 /* maxChunkSizeMB */, boost::none, false);
-        return splitKeys.size();
-    }();
-
-    ASSERT_GT(numPossibleSplitKeys, 3);
-    for (auto limit : {1, 2, 3}) {
-        const auto [splitKeys, continuation] =
-            autoSplit(operationContext(), 2 /* maxChunkSizeMB */, limit, false);
         ASSERT_EQ(splitKeys.size(), limit);
     }
 }

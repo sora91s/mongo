@@ -33,7 +33,6 @@
 
 #include "mongo/db/exec/sbe/size_estimator.h"
 #include "mongo/db/exec/sbe/values/bson.h"
-#include "mongo/db/exec/sbe/values/makeobj_spec.h"
 #include "mongo/util/str.h"
 
 namespace mongo::sbe {
@@ -47,11 +46,8 @@ MakeObjStageBase<O>::MakeObjStageBase(std::unique_ptr<PlanStage> input,
                                       value::SlotVector projectVars,
                                       bool forceNewObject,
                                       bool returnOldObject,
-                                      PlanNodeId planNodeId,
-                                      bool participateInTrialRunTracking)
-    : PlanStage(O == MakeObjOutputType::object ? "mkobj"_sd : "mkbson"_sd,
-                planNodeId,
-                participateInTrialRunTracking),
+                                      PlanNodeId planNodeId)
+    : PlanStage(O == MakeObjOutputType::object ? "mkobj"_sd : "mkbson"_sd, planNodeId),
       _objSlot(objSlot),
       _rootSlot(rootSlot),
       _fieldBehavior(fieldBehavior),
@@ -66,29 +62,6 @@ MakeObjStageBase<O>::MakeObjStageBase(std::unique_ptr<PlanStage> input,
 }
 
 template <MakeObjOutputType O>
-MakeObjStageBase<O>::MakeObjStageBase(std::unique_ptr<PlanStage> input,
-                                      value::SlotId objSlot,
-                                      boost::optional<value::SlotId> rootSlot,
-                                      boost::optional<FieldBehavior> fieldBehavior,
-                                      OrderedPathSet fields,
-                                      OrderedPathSet projectFields,
-                                      value::SlotVector projectVars,
-                                      bool forceNewObject,
-                                      bool returnOldObject,
-                                      PlanNodeId planNodeId)
-    : MakeObjStageBase<O>::MakeObjStageBase(
-          std::move(input),
-          objSlot,
-          rootSlot,
-          fieldBehavior,
-          std::vector<std::string>(fields.begin(), fields.end()),
-          std::vector<std::string>(projectFields.begin(), projectFields.end()),
-          std::move(projectVars),
-          forceNewObject,
-          returnOldObject,
-          planNodeId) {}
-
-template <MakeObjOutputType O>
 std::unique_ptr<PlanStage> MakeObjStageBase<O>::clone() const {
     return std::make_unique<MakeObjStageBase<O>>(_children[0]->clone(),
                                                  _objSlot,
@@ -99,8 +72,7 @@ std::unique_ptr<PlanStage> MakeObjStageBase<O>::clone() const {
                                                  _projectVars,
                                                  _forceNewObject,
                                                  _returnOldObject,
-                                                 _commonStats.nodeId,
-                                                 _participateInTrialRunTracking);
+                                                 _commonStats.nodeId);
 }
 
 template <MakeObjOutputType O>
@@ -110,12 +82,18 @@ void MakeObjStageBase<O>::prepare(CompileCtx& ctx) {
     if (_rootSlot) {
         _root = _children[0]->getAccessor(ctx, *_rootSlot);
     }
-
-    _allFieldsMap = value::MakeObjSpec::buildAllFieldsMap(_fields, _projectFields);
+    for (auto& p : _fields) {
+        // Mark the values from _fields with 'std::numeric_limits<size_t>::max()'.
+        auto [it, inserted] = _allFieldsMap.emplace(p, std::numeric_limits<size_t>::max());
+        uassert(4822818, str::stream() << "duplicate field: " << p, inserted);
+    }
 
     for (size_t idx = 0; idx < _projectFields.size(); ++idx) {
-        _projects.emplace_back(_projectFields[idx],
-                               _children[0]->getAccessor(ctx, _projectVars[idx]));
+        auto& p = _projectFields[idx];
+        // Mark the values from _projectFields with their corresponding index.
+        auto [it, inserted] = _allFieldsMap.emplace(p, idx);
+        uassert(4822819, str::stream() << "duplicate field: " << p, inserted);
+        _projects.emplace_back(p, _children[0]->getAccessor(ctx, _projectVars[idx]));
     }
 
     _compiled = true;
@@ -191,7 +169,7 @@ void MakeObjStageBase<MakeObjOutputType::object>::produceObject() {
                 // Skip document length.
                 be += 4;
                 while (*be != 0) {
-                    auto sv = bson::fieldNameAndLength(be);
+                    auto sv = bson::fieldNameView(be);
                     auto key = StringMapHasher{}.hashed_key(StringData(sv));
 
                     if (!isFieldProjectedOrRestricted(key)) {
@@ -268,9 +246,46 @@ void MakeObjStageBase<MakeObjOutputType::bsonObject>::produceObject() {
         auto [tag, val] = _root->getViewOfValue();
 
         size_t nFieldsNeededIfInclusion = _fields.size();
-        if (value::isObject(tag)) {
-            value::MakeObjSpec::keepOrDropFields(
-                tag, val, _fieldBehavior, nFieldsNeededIfInclusion, _allFieldsMap, bob);
+        if (tag == value::TypeTags::bsonObject) {
+            if (!(nFieldsNeededIfInclusion == 0 && _fieldBehavior == FieldBehavior::keep)) {
+                auto be = value::bitcastTo<const char*>(val);
+                // Skip document length.
+                be += 4;
+                while (*be != 0) {
+                    auto sv = bson::fieldNameView(be);
+                    auto key = StringMapHasher{}.hashed_key(StringData(sv));
+
+                    auto nextBe = bson::advance(be, sv.size());
+
+                    if (!isFieldProjectedOrRestricted(key)) {
+                        bob.append(BSONElement(be, sv.size() + 1, nextBe - be));
+                        --nFieldsNeededIfInclusion;
+                    }
+
+                    if (nFieldsNeededIfInclusion == 0 && _fieldBehavior == FieldBehavior::keep) {
+                        break;
+                    }
+
+                    be = nextBe;
+                }
+            }
+        } else if (tag == value::TypeTags::Object) {
+            if (!(nFieldsNeededIfInclusion == 0 && _fieldBehavior == FieldBehavior::keep)) {
+                auto objRoot = value::getObjectView(val);
+                for (size_t idx = 0; idx < objRoot->size(); ++idx) {
+                    auto key = StringMapHasher{}.hashed_key(StringData(objRoot->field(idx)));
+
+                    if (!isFieldProjectedOrRestricted(key)) {
+                        auto [tag, val] = objRoot->getAt(idx);
+                        bson::appendValueToBsonObj(bob, objRoot->field(idx), tag, val);
+                        --nFieldsNeededIfInclusion;
+                    }
+
+                    if (nFieldsNeededIfInclusion == 0 && _fieldBehavior == FieldBehavior::keep) {
+                        break;
+                    }
+                }
+            }
         } else {
             for (size_t idx = 0; idx < _projects.size(); ++idx) {
                 projectField(&bob, idx);
@@ -405,11 +420,11 @@ size_t MakeObjStageBase<O>::estimateCompileTimeSize() const {
 
 template <MakeObjOutputType O>
 void MakeObjStageBase<O>::doSaveState(bool relinquishCursor) {
-    if (!relinquishCursor) {
+    if (!slotsAccessible() || !relinquishCursor) {
         return;
     }
 
-    prepareForYielding(_obj, slotsAccessible());
+    prepareForYielding(_obj);
 }
 
 // Explicit template instantiations.

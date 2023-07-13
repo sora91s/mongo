@@ -146,7 +146,7 @@ function createInterestingCollections() {
     const tsColl = testDB[tsCollName];
 
     const interestingValues = generateInterestingValues();
-    assert.commandWorked(tsColl.insertMany(interestingValues, {ordered: false}));
+    assert.commandWorked(tsColl.insertMany(interestingValues));
 
     // Prepare observer collection.
     const observerCollName = "observer_in";
@@ -159,7 +159,7 @@ function createInterestingCollections() {
     // purposes of this test we don't care about the semantic difference between timeseries
     // collection bucketing and regular collections, only about the accuracy of the lastpoint
     // rewrite.
-    assert.commandWorked(observerColl.insertMany(tsColl.find().toArray(), {ordered: false}));
+    assert.commandWorked(observerColl.insertMany(tsColl.find().toArray()));
 
     return [tsColl, observerColl];
 }

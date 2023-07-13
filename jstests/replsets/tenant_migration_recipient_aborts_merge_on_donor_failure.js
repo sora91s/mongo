@@ -2,20 +2,22 @@
  * Tests that the recipient will abort a shard merge on donor failure
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
- *   featureFlagShardMerge,
  *   requires_majority_read_concern,
  *   requires_persistence,
  *   serverless,
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {isShardMergeEnabled} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 (() => {
     const tenantMigrationTest =
@@ -23,14 +25,14 @@ load("jstests/libs/uuid_util.js");
 
     const recipientPrimary = tenantMigrationTest.getRecipientPrimary();
 
-    if (!isShardMergeEnabled(recipientPrimary.getDB("admin"))) {
+    if (!TenantMigrationUtil.isShardMergeEnabled(recipientPrimary.getDB("admin"))) {
         tenantMigrationTest.stop();
         jsTestLog("Skipping Shard Merge-specific test");
         return;
     }
 
     jsTestLog("Test that a shard merge is aborted in the event of a donor failure");
-    const tenantId = ObjectId().str;
+    const tenantId = "testTenantId";
     const tenantDB = tenantMigrationTest.tenantDB(tenantId, "DB");
     const collName = "testColl";
 
@@ -46,8 +48,8 @@ load("jstests/libs/uuid_util.js");
     const migrationUuid = UUID();
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(migrationUuid),
-        readPreference: {mode: 'primary'},
-        tenantIds: [ObjectId(tenantId)],
+        tenantId,
+        readPreference: {mode: 'primary'}
     };
 
     jsTestLog(`Starting the tenant migration to wait in failpoint: ${failpoint}`);
@@ -75,4 +77,5 @@ load("jstests/libs/uuid_util.js");
         tenantMigrationTest.waitForMigrationToComplete(migrationOpts));
 
     tenantMigrationTest.stop();
+})();
 })();

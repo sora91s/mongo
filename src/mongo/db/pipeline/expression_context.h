@@ -123,8 +123,7 @@ public:
                       std::shared_ptr<MongoProcessInterface> mongoProcessInterface,
                       StringMap<ExpressionContext::ResolvedNamespace> resolvedNamespaces,
                       boost::optional<UUID> collUUID,
-                      bool mayDbProfile = true,
-                      bool allowDiskUseByDefault = false);
+                      bool mayDbProfile = true);
 
     /**
      * Constructs an ExpressionContext to be used for Pipeline parsing and evaluation. This version
@@ -300,14 +299,6 @@ public:
         return tailableMode == TailableModeEnum::kTailableAndAwaitData;
     }
 
-    /**
-     * Returns true if the pipeline is eligible for query sampling. That is, it is not an explain
-     * and either it is not nested or it is nested inside $lookup, $graphLookup and $unionWith.
-     */
-    bool eligibleForSampling() const {
-        return !explain && (subPipelineDepth == 0 || inLookup || inUnionWith);
-    }
-
     void setResolvedNamespaces(StringMap<ResolvedNamespace> resolvedNamespaces) {
         _resolvedNamespaces = std::move(resolvedNamespaces);
     }
@@ -401,11 +392,6 @@ public:
         return _expressionCounters.is_initialized();
     }
 
-    /**
-     * Sets the value of the $$USER_ROLES system variable.
-     */
-    void setUserRoles();
-
     // The explain verbosity requested by the user, or boost::none if no explain was requested.
     boost::optional<ExplainOptions::Verbosity> explain;
 
@@ -452,9 +438,6 @@ public:
 
     // True if this 'ExpressionContext' object is for the inner side of a $lookup or $graphLookup.
     bool inLookup = false;
-
-    // True if this 'ExpressionContext' object is for the inner side of a $unionWith.
-    bool inUnionWith = false;
 
     // If set, this will disallow use of features introduced in versions above the provided version.
     boost::optional<multiversion::FeatureCompatibilityVersion> maxFeatureCompatibilityVersion;
@@ -506,30 +489,6 @@ public:
     // expression counting.
     bool enabledCounters = true;
 
-    // Returns true if we've received a TemporarilyUnavailableException.
-    bool getTemporarilyUnavailableException() {
-        return _gotTemporarilyUnavailableException;
-    }
-
-    // Sets or clears the flag indicating whether we've received a TemporarilyUnavailableException.
-    void setTemporarilyUnavailableException(bool v) {
-        _gotTemporarilyUnavailableException = v;
-    }
-
-    // Sets or clears a flag which tells DocumentSource parsers whether any involved Collection
-    // may contain extended-range dates.
-    void setRequiresTimeseriesExtendedRangeSupport(bool v) {
-        _requiresTimeseriesExtendedRangeSupport = v;
-    }
-    bool getRequiresTimeseriesExtendedRangeSupport() const {
-        return _requiresTimeseriesExtendedRangeSupport;
-    }
-
-    // Returns true if the resolved collation of the context is simple.
-    bool isResolvedCollationSimple() const {
-        return getCollatorBSON().woCompare(CollationSpec::kSimpleSpec) == 0;
-    }
-
 protected:
     static const int kInterruptCheckPeriod = 128;
 
@@ -554,11 +513,8 @@ protected:
 
     bool _isCappedDelete = false;
 
-    bool _requiresTimeseriesExtendedRangeSupport = false;
-
 private:
     boost::optional<ExpressionCounters> _expressionCounters = boost::none;
-    bool _gotTemporarilyUnavailableException = false;
 };
 
 }  // namespace mongo

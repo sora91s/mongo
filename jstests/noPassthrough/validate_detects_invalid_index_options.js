@@ -1,7 +1,7 @@
 /**
  * Tests that the validate command detects invalid index options.
  *
- * @tags: [requires_fsync, requires_wiredtiger, requires_persistence]
+ * @tags: [incompatible_with_eft]
  */
 (function() {
 "use strict";
@@ -29,11 +29,6 @@ fp.off();
 let validateRes = assert.commandWorked(db.runCommand({validate: collName}));
 assert(!validateRes.valid);
 
-// Ensure that $collStats info gets logged when validation fails.
-checkLog.containsJson(conn, 7463200);
-
-// Forces a checkpoint to make the background validation see the data.
-assert.commandWorked(db.adminCommand({fsync: 1}));
 validateRes = assert.commandWorked(db.runCommand({validate: collName, background: true}));
 assert(!validateRes.valid);
 
@@ -44,7 +39,9 @@ assert(!validateRes.valid);
 // Validation of metadata complete for collection. Problems detected.
 checkLog.containsJson(conn, 5980501);
 
-// Cannot use { metadata: true } with any other options.
+// Cannot use { metadata: true } with any other options. Background validation is converted into a
+// foreground validation on the ephemeralForTest storage engine, making it incompatible with this
+// test.
 assert.commandFailedWithCode(db.runCommand({validate: collName, metadata: true, background: true}),
                              ErrorCodes.InvalidOptions);
 assert.commandFailedWithCode(db.runCommand({validate: collName, metadata: true, repair: true}),

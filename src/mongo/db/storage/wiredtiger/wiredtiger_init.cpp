@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #if defined(__linux__)
 #include <sys/vfs.h>
@@ -56,9 +57,6 @@
 #if __has_feature(address_sanitizer)
 #include <sanitizer/lsan_interface.h>
 #endif
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
@@ -119,15 +117,16 @@ public:
             }
         }
         auto kv =
-            std::make_unique<WiredTigerKVEngine>(opCtx,
-                                                 getCanonicalName().toString(),
+            std::make_unique<WiredTigerKVEngine>(getCanonicalName().toString(),
                                                  params.dbpath,
                                                  getGlobalServiceContext()->getFastClockSource(),
                                                  wiredTigerGlobalOptions.engineConfig,
                                                  cacheMB,
                                                  wiredTigerGlobalOptions.getMaxHistoryFileSizeMB(),
+                                                 params.dur,
                                                  params.ephemeral,
-                                                 params.repair);
+                                                 params.repair,
+                                                 params.readOnly);
         kv->setRecordStoreExtraOptions(wiredTigerGlobalOptions.collectionConfig);
         kv->setSortedDataInterfaceExtraOptions(wiredTigerGlobalOptions.indexConfig);
 
@@ -204,7 +203,7 @@ public:
         return builder.obj();
     }
 
-    bool supportsQueryableBackupMode() const final {
+    bool supportsReadOnly() const final {
         return true;
     }
 };

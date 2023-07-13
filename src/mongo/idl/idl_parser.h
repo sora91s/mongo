@@ -39,7 +39,6 @@
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/stdx/type_traits.h"
-#include "mongo/util/serialization_context.h"
 
 namespace mongo {
 
@@ -166,7 +165,7 @@ struct Ordering {
     const T& _v;
 };
 template <typename T>
-Ordering(const T&) -> Ordering<T>;
+Ordering(const T&)->Ordering<T>;
 
 /** fallback case */
 template <typename T>
@@ -212,7 +211,7 @@ struct BasicOrderOps<boost::optional<T>> {
 }  // namespace idl
 
 /**
- * IDLParserContext manages the current parser context for parsing BSON documents.
+ * IDLParserErrorContext manages the current parser context for parsing BSON documents.
  *
  * The class stores the path to the current document to enable it provide more useful error
  * messages. The path is a dot delimited list of field names which is useful for nested struct
@@ -221,12 +220,12 @@ struct BasicOrderOps<boost::optional<T>> {
  * This class is responsible for throwing all error messages the IDL generated parsers throw,
  * and provide utility methods like checking a BSON type or set of BSON types.
  */
-class IDLParserContext {
-    IDLParserContext(const IDLParserContext&) = delete;
-    IDLParserContext& operator=(const IDLParserContext&) = delete;
+class IDLParserErrorContext {
+    IDLParserErrorContext(const IDLParserErrorContext&) = delete;
+    IDLParserErrorContext& operator=(const IDLParserErrorContext&) = delete;
 
     template <typename T>
-    friend void throwComparisonError(IDLParserContext& ctxt,
+    friend void throwComparisonError(IDLParserErrorContext& ctxt,
                                      StringData fieldName,
                                      StringData op,
                                      T actualValue,
@@ -239,32 +238,11 @@ public:
     static constexpr auto kOpMsgDollarDB = "$db"_sd;
     static constexpr auto kOpMsgDollarDBDefault = "admin"_sd;
 
-    explicit IDLParserContext(StringData fieldName) : IDLParserContext{fieldName, false} {}
+    IDLParserErrorContext(StringData fieldName, bool apiStrict = false)
+        : _currentField(fieldName), _apiStrict(apiStrict), _predecessor(nullptr) {}
 
-    IDLParserContext(StringData fieldName, bool apiStrict)
-        : IDLParserContext{fieldName, apiStrict, boost::none} {}
-
-    IDLParserContext(StringData fieldName, bool apiStrict, boost::optional<TenantId> tenantId)
-        : _serializationContext(SerializationContext()),
-          _currentField(fieldName),
-          _apiStrict(apiStrict),
-          _tenantId(std::move(tenantId)),
-          _predecessor(nullptr) {}
-
-    IDLParserContext(StringData fieldName, const IDLParserContext* predecessor)
-        : IDLParserContext(fieldName, predecessor, boost::none, SerializationContext()) {}
-
-    IDLParserContext(StringData fieldName,
-                     const IDLParserContext* predecessor,
-                     boost::optional<TenantId> tenantId,
-                     const SerializationContext& serializationContext)
-        : _serializationContext(serializationContext),
-          _currentField(fieldName),
-          _apiStrict(predecessor->_apiStrict),
-          _tenantId(tenantId),
-          _predecessor(predecessor) {
-        assertTenantIdMatchesPredecessor(predecessor);
-    }
+    IDLParserErrorContext(StringData fieldName, const IDLParserErrorContext* predecessor)
+        : _currentField(fieldName), _predecessor(predecessor) {}
 
     /**
      * Check that BSON element is a given type or whether the field should be skipped.
@@ -362,15 +340,14 @@ public:
      * Equivalent to CommandHelpers::parseNsCollectionRequired.
      * 'allowGlobalCollectionName' allows use of global collection name, e.g. {aggregate: 1}.
      */
-    static NamespaceString parseNSCollectionRequired(const DatabaseName& dbname,
+    static NamespaceString parseNSCollectionRequired(StringData dbName,
                                                      const BSONElement& element,
                                                      bool allowGlobalCollectionName);
 
     /**
      * Equivalent to CommandHelpers::parseNsOrUUID
      */
-    static NamespaceStringOrUUID parseNsOrUUID(const DatabaseName& dbname,
-                                               const BSONElement& element);
+    static NamespaceStringOrUUID parseNsOrUUID(StringData dbname, const BSONElement& element);
 
     /**
      * Take all the well known command generic arguments from commandPassthroughFields, but ignore
@@ -379,10 +356,6 @@ public:
     static void appendGenericCommandArguments(const BSONObj& commandPassthroughFields,
                                               const std::vector<StringData>& knownFields,
                                               BSONObjBuilder* builder);
-
-    const boost::optional<TenantId>& getTenantId() const;
-
-    const SerializationContext& getSerializationContext() const;
 
 private:
     /**
@@ -406,43 +379,28 @@ private:
      */
     bool checkAndAssertBinDataTypeSlowPath(const BSONElement& element, BinDataType type) const;
 
-    void assertTenantIdMatchesPredecessor(const IDLParserContext* predecessor) {
-        if (!_tenantId || predecessor == nullptr) {
-            return;
-        }
-
-        auto& parentTenantId = predecessor->getTenantId();
-        iassert(8423379,
-                str::stream() << "The IDLParserContext tenantId " << _tenantId->toString()
-                              << " must match the predecessor's tenantId "
-                              << parentTenantId->toString(),
-                !parentTenantId || parentTenantId == _tenantId);
-    }
-
 private:
-    // Modifies serialization behavior to match request format, only accessed by IDL generated code
-    const SerializationContext _serializationContext;
-
     // Name of the current field that is being parsed.
     const StringData _currentField;
 
     // Whether the 'apiStrict' parameter is set in the user request.
     const bool _apiStrict = false;
 
-    const boost::optional<TenantId> _tenantId;
-
     // Pointer to a parent parser context.
     // This provides a singly linked list of parent pointers, and use to produce a full path to a
     // field with an error.
-    const IDLParserContext* _predecessor;
+    const IDLParserErrorContext* _predecessor;
 };
 
 /**
  * Throw an error when BSON validation fails during parse.
  */
 template <typename T>
-void throwComparisonError(
-    IDLParserContext& ctxt, StringData fieldName, StringData op, T actualValue, T expectedValue) {
+void throwComparisonError(IDLParserErrorContext& ctxt,
+                          StringData fieldName,
+                          StringData op,
+                          T actualValue,
+                          T expectedValue) {
     std::string path = ctxt.getElementPath(fieldName);
     throwComparisonError(path, op, actualValue, expectedValue);
 }

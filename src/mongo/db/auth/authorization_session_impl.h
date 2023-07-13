@@ -40,6 +40,7 @@
 #include "mongo/db/auth/authz_session_external_state.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/auth/user_name.h"
+#include "mongo/db/auth/user_set.h"
 #include "mongo/db/namespace_string.h"
 
 namespace mongo {
@@ -53,7 +54,7 @@ class Client;
  *
  * An AuthorizationSession object is present within every mongo::Client object.
  *
- * The active _authenticatedUser may get marked as invalid by the AuthorizationManager,
+ * Users in the _authenticatedUsers cache may get marked as invalid by the AuthorizationManager,
  * for instance if their privileges are changed by a user or role modification command.  At the
  * beginning of every user-initiated operation startRequest() gets called which updates
  * the cached information about any users who have been marked as invalid.  This guarantees that
@@ -76,9 +77,7 @@ public:
 
     void startContractTracking() override;
 
-    Status addAndAuthorizeUser(OperationContext* opCtx,
-                               const UserRequest& userRequest,
-                               boost::optional<Date_t> expirationTime) override;
+    Status addAndAuthorizeUser(OperationContext* opCtx, const UserName& userName) override;
 
     User* lookupUser(const UserName& name) override;
 
@@ -86,9 +85,9 @@ public:
 
     bool isAuthenticated() override;
 
-    boost::optional<UserHandle> getAuthenticatedUser() override;
+    User* getSingleUser() override;
 
-    boost::optional<UserName> getAuthenticatedUserName() override;
+    UserNameIterator getAuthenticatedUserNames() override;
 
     RoleNameIterator getAuthenticatedRoleNames() override;
 
@@ -138,10 +137,10 @@ public:
 
     bool isAuthorizedForAnyActionOnResource(const ResourcePattern& resource) override;
 
-    void setImpersonatedUserData(const UserName& username,
+    void setImpersonatedUserData(const std::vector<UserName>& usernames,
                                  const std::vector<RoleName>& roles) override;
 
-    boost::optional<UserName> getImpersonatedUserName() override;
+    UserNameIterator getImpersonatedUserNames() override;
 
     RoleNameIterator getImpersonatedRoleNames() override;
 
@@ -149,7 +148,7 @@ public:
 
     bool isCoauthorizedWithClient(Client* opClient, WithLock opClientLock) override;
 
-    bool isCoauthorizedWith(const boost::optional<UserName>& userName) override;
+    bool isCoauthorizedWith(UserNameIterator userNameIter) override;
 
     bool isImpersonating() const override;
 
@@ -159,10 +158,6 @@ public:
     void verifyContract(const AuthorizationContract* contract) const override;
 
     bool mayBypassWriteBlockingMode() const override;
-
-    bool isExpired() const override;
-
-    BSONArray getUserRoles();
 
 protected:
     friend class AuthorizationSessionImplTestHelper;
@@ -177,8 +172,9 @@ protected:
     // date.
     void _updateInternalAuthorizationState();
 
-    // The User who has been authenticated on this connection.
-    boost::optional<UserHandle> _authenticatedUser;
+
+    // All Users who have been authenticated on this connection.
+    UserSet _authenticatedUsers;
 
     // What authentication mode we're currently operating in.
     AuthenticationMode _authenticationMode = AuthenticationMode::kNone;
@@ -198,8 +194,8 @@ private:
     // lock on the admin database (to update out-of-date user privilege information).
     bool _isAuthorizedForPrivilege(const Privilege& privilege);
 
-    std::tuple<boost::optional<UserName>*, std::vector<RoleName>*> _getImpersonations() override {
-        return std::make_tuple(&_impersonatedUserName, &_impersonatedRoleNames);
+    std::tuple<std::vector<UserName>*, std::vector<RoleName>*> _getImpersonations() override {
+        return std::make_tuple(&_impersonatedUserNames, &_impersonatedRoleNames);
     }
 
 
@@ -215,7 +211,7 @@ private:
 
     // A vector of impersonated UserNames and a vector of those users' RoleNames.
     // These are used in the auditing system. They are not used for authz checks.
-    boost::optional<UserName> _impersonatedUserName;
+    std::vector<UserName> _impersonatedUserNames;
     std::vector<RoleName> _impersonatedRoleNames;
     bool _impersonationFlag;
 
@@ -226,14 +222,5 @@ private:
     AuthorizationContract _contract;
 
     bool _mayBypassWriteBlockingMode;
-
-    // The expiration time for this session, expressed as a Unix timestamp. After this time passes,
-    // the session will be expired and requests will fail until the expiration time is refreshed.
-    // If boost::none, then the session never expires (default behavior).
-    boost::optional<Date_t> _expirationTime;
-
-    // If the session is expired, this represents the UserName that was formerly authenticated on
-    // this connection.
-    boost::optional<UserName> _expiredUserName;
 };
 }  // namespace mongo

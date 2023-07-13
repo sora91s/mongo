@@ -38,8 +38,6 @@
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/s/catalog/type_collection.h"
 
-#include "mongo/logv2/log.h"
-
 namespace mongo {
 
 using boost::intrusive_ptr;
@@ -65,15 +63,6 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceShardedDataDistribution::creat
 
     static const BSONObj kAllCollStatsObj =
         fromjson("{$_internalAllCollectionStats: {stats: {storageStats: {}}}}}");
-    static const BSONObj kProjectObj = fromjson(R"({
-         $project: {
-             "ns": 1,
-             "shard": 1,
-             "storageStats.count": 1, 
-             "storageStats.numOrphanDocs": 1, 
-             "storageStats.avgObjSize": 1 
-         }
-     })");
     static const BSONObj kGroupObj = fromjson(R"({
         $group: {
             _id: "$ns",
@@ -122,7 +111,7 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceShardedDataDistribution::creat
         }
     })");
     static const BSONObj kMatchObj = fromjson("{$match: {matchingShardedCollection: {$ne: []}}}");
-    static const BSONObj kFinalProjectObj = fromjson(R"({
+    static const BSONObj kProjectObj = fromjson(R"({
         $project: {
             _id: 0,
             ns: "$_id",
@@ -132,10 +121,9 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceShardedDataDistribution::creat
 
     return {DocumentSourceInternalAllCollectionStats::createFromBsonInternal(
                 kAllCollStatsObj.firstElement(), expCtx),
-            DocumentSourceProject::createFromBson(kProjectObj.firstElement(), expCtx),
             DocumentSourceGroup::createFromBson(kGroupObj.firstElement(), expCtx),
             DocumentSourceLookUp::createFromBson(kLookupObj.firstElement(), expCtx),
             DocumentSourceMatch::createFromBson(kMatchObj.firstElement(), expCtx),
-            DocumentSourceProject::createFromBson(kFinalProjectObj.firstElement(), expCtx)};
+            DocumentSourceProject::createFromBson(kProjectObj.firstElement(), expCtx)};
 }
 }  // namespace mongo

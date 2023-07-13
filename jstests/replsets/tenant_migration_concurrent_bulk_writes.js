@@ -2,7 +2,10 @@
  * Tests that bulk writes during a tenant migration correctly report write errors and
  * retries writes that returned TenantMigrationCommitted.
  *
+ * Tenant migrations are not expected to be run on servers with ephemeralForTest.
+ *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -10,18 +13,14 @@
  *   serverless,
  * ]
  */
-
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {isShardMergeEnabled} from "jstests/replsets/libs/tenant_migration_util.js";
-import {
-    makeX509OptionsForTest,
-    runMigrationAsync
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+'use strict';
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/uuid_util.js");
-load("jstests/replsets/rslib.js");  // 'createRstArgs'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 const kMaxBatchSize = 2;
 const kCollName = "testColl";
@@ -31,9 +30,14 @@ const kNumWriteBatchesWithoutMigrationConflict =
     2;  // num of write batches we allow to complete before migration blocks writes.
 const kNumUpdatesWithoutMigrationConflict = 2;
 const kMaxSleepTimeMS = 1000;
+const kBatchTypes = {
+    insert: 1,
+    update: 2,
+    remove: 3
+};
 
 function setup() {
-    const migrationX509Options = makeX509OptionsForTest();
+    const migrationX509Options = TenantMigrationUtil.makeX509OptionsForTest();
     const donorRst = new ReplSetTest({
         nodes: 1,
         name: 'donor',
@@ -165,23 +169,12 @@ function bulkMultiUpdateDocsUnordered(primaryHost, dbName, collName, numDocs) {
     return {res: res.getRawResponse ? res.getRawResponse() : res, ops: updateBulk.getOperations()};
 }
 
-function makeTenantId(donorRst) {
-    const isMerge = isShardMergeEnabled(donorRst.getPrimary().getDB("admin"));
-
-    if (isMerge) {
-        return ObjectId().str;
-    } else {
-        // We need to support non-ObjectId tenants until CLOUDP-146505 is merged.
-        return "nonObjectIdTenant";
-    }
-}
-
 (() => {
     jsTestLog("Testing unordered bulk insert against a tenant migration that commits.");
 
     const {tenantMigrationTest, donorRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkUnorderedInserts-committed";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         tenantId,
@@ -232,13 +225,13 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, recipientRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkUnorderedInserts-blocks-committed";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         recipientConnString: recipientRst.getURL(),
         tenantId,
     };
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     const dbName = tenantMigrationTest.tenantDB(tenantId, kTenantDefinedDbName);
     const primary = donorRst.getPrimary();
@@ -252,7 +245,8 @@ function makeTenantId(donorRst) {
         new Thread(bulkInsertDocsUnordered, primary.host, dbName, kCollName, kNumWriteOps);
 
     const blockFp = configureFailPoint(primaryDB, "pauseTenantMigrationBeforeLeavingBlockingState");
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 
     bulkWriteThread.start();
     writeFp.wait();
@@ -296,13 +290,13 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkUnorderedInserts-aborted";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         recipientConnString: tenantMigrationTest.getRecipientConnString(),
         tenantId,
     };
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     const dbName = tenantMigrationTest.tenantDB(tenantId, kTenantDefinedDbName);
     const primary = donorRst.getPrimary();
@@ -321,7 +315,8 @@ function makeTenantId(donorRst) {
     // TenantMigrationConflict in the op observer. Without this failpoint, the migration
     // could have already aborted by the time the write gets to the op observer.
     const blockFp = configureFailPoint(primaryDB, "pauseTenantMigrationBeforeLeavingBlockingState");
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 
     bulkWriteThread.start();
     writeFp.wait();
@@ -366,7 +361,7 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkOrderedInserts-committed";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         tenantId,
@@ -411,13 +406,13 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkOrderedInserts-blocks-committed";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         recipientConnString: tenantMigrationTest.getRecipientConnString(),
         tenantId,
     };
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     const dbName = tenantMigrationTest.tenantDB(tenantId, kTenantDefinedDbName);
     const primary = donorRst.getPrimary();
@@ -431,7 +426,8 @@ function makeTenantId(donorRst) {
         new Thread(bulkInsertDocsOrdered, primary.host, dbName, kCollName, kNumWriteOps);
 
     const blockFp = configureFailPoint(primaryDB, "pauseTenantMigrationBeforeLeavingBlockingState");
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 
     bulkWriteThread.start();
     writeFp.wait();
@@ -467,13 +463,13 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkOrderedInserts-aborted";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         recipientConnString: tenantMigrationTest.getRecipientConnString(),
         tenantId,
     };
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     const dbName = tenantMigrationTest.tenantDB(tenantId, kTenantDefinedDbName);
     const primary = donorRst.getPrimary();
@@ -492,7 +488,8 @@ function makeTenantId(donorRst) {
     // TenantMigrationConflict in the op observer. Without this failpoint, the migration
     // could have already aborted by the time the write gets to the op observer.
     const blockFp = configureFailPoint(primaryDB, "pauseTenantMigrationBeforeLeavingBlockingState");
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 
     bulkWriteThread.start();
     writeFp.wait();
@@ -531,13 +528,13 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, recipientRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkUnorderedMultiUpdates-blocks";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         recipientConnString: recipientRst.getURL(),
         tenantId,
     };
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     const dbName = tenantMigrationTest.tenantDB(tenantId, kTenantDefinedDbName);
     const primary = donorRst.getPrimary();
@@ -551,7 +548,8 @@ function makeTenantId(donorRst) {
         new Thread(bulkMultiUpdateDocsUnordered, primary.host, dbName, kCollName, kNumWriteOps);
 
     const blockFp = configureFailPoint(primaryDB, "pauseTenantMigrationBeforeLeavingBlockingState");
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 
     bulkWriteThread.start();
     writeFp.wait();
@@ -583,13 +581,13 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, recipientRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkOrderedMultiUpdates-blocks";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         recipientConnString: recipientRst.getURL(),
         tenantId,
     };
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     const dbName = tenantMigrationTest.tenantDB(tenantId, kTenantDefinedDbName);
     const primary = donorRst.getPrimary();
@@ -603,7 +601,8 @@ function makeTenantId(donorRst) {
         new Thread(bulkMultiUpdateDocsOrdered, primary.host, dbName, kCollName, kNumWriteOps);
 
     const blockFp = configureFailPoint(primaryDB, "pauseTenantMigrationBeforeLeavingBlockingState");
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 
     bulkWriteThread.start();
     writeFp.wait();
@@ -635,7 +634,7 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkUnorderedMultiUpdates-completed";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         tenantId,
@@ -674,7 +673,7 @@ function makeTenantId(donorRst) {
 
     const {tenantMigrationTest, donorRst, teardown} = setup();
 
-    const tenantId = makeTenantId(donorRst);
+    const tenantId = "bulkOrderedMultiUpdates-completed";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
         tenantId,
@@ -706,4 +705,5 @@ function makeTenantId(donorRst) {
         "Operation interrupted by an internal data migration and could not be automatically retried",
         tojson(bulkWriteRes));
     teardown();
+})();
 })();

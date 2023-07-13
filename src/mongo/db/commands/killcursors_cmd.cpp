@@ -46,12 +46,11 @@ struct KillCursorsCmd {
     static Status doKillCursor(OperationContext* opCtx, const NamespaceString& nss, CursorId id) {
         boost::optional<AutoStatsTracker> statsTracker;
         if (!nss.isCollectionlessCursorNamespace()) {
-            statsTracker.emplace(
-                opCtx,
-                nss,
-                Top::LockType::NotLocked,
-                AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
-                CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(nss.dbName()));
+            statsTracker.emplace(opCtx,
+                                 nss,
+                                 Top::LockType::NotLocked,
+                                 AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
+                                 CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(nss.db()));
         }
 
         auto cursorManager = CursorManager::get(opCtx);

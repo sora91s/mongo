@@ -2,7 +2,7 @@
  * This test serves to ensure that the oplog batcher behavior correctly processes large transactions
  * so that it does not cause any correctness problems.
  *
- * @tags: [requires_replication]
+ * @tags: [requires_journaling]
  */
 (function() {
 "use strict";

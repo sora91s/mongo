@@ -29,12 +29,11 @@
 
 #include "mongo/stdx/exception.h"
 
-#include <cstdlib>
+#include <stdlib.h>
 
 #include <iostream>
 
 #include "mongo/stdx/thread.h"
-#include "mongo/util/exit_code.h"
 
 namespace {
 
@@ -42,7 +41,7 @@ namespace stdx = ::mongo::stdx;
 
 void writeFeedbackAndCleanlyExit() {
     std::cout << "Entered terminate handler." << std::endl;
-    exit(static_cast<int>(mongo::ExitCode::clean));
+    exit(EXIT_SUCCESS);
 }
 
 void testTerminateDispatch() {
@@ -52,12 +51,13 @@ void testTerminateDispatch() {
     stdx::thread{[] {
         std::cout << "Calling terminate from background thread." << std::endl;
         std::terminate();
-    }}.join();
-    exit(static_cast<int>(mongo::ExitCode::fail));
+    }}
+        .join();
+    exit(EXIT_FAILURE);
 }
 }  // namespace
 
 int main() {
     testTerminateDispatch();
-    return static_cast<int>(mongo::ExitCode::fail);
+    return EXIT_FAILURE;
 }

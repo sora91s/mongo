@@ -27,23 +27,23 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/catalog/drop_collection.h"
 
 #include "mongo/db/audit.h"
-#include "mongo/db/catalog/clustered_collection_util.h"
 #include "mongo/db/catalog/collection_catalog.h"
-#include "mongo/db/catalog/collection_catalog_helper.h"
 #include "mongo/db/catalog/collection_uuid_mismatch.h"
 #include "mongo/db/catalog/collection_uuid_mismatch_info.h"
-#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/server_options.h"
@@ -51,32 +51,30 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/fail_point.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 namespace mongo {
 namespace {
 
 MONGO_FAIL_POINT_DEFINE(hangDropCollectionBeforeLockAcquisition);
 MONGO_FAIL_POINT_DEFINE(hangDuringDropCollection);
 
-/**
- * Checks that the collection has the 'expectedUUID' if given.
- * Checks that writes are allowed to 'coll' -- e.g. whether this server is PRIMARY.
- */
-Status _checkUUIDAndReplState(OperationContext* opCtx,
-                              const CollectionPtr& coll,
-                              const NamespaceString& nss,
-                              const boost::optional<UUID>& expectedUUID = boost::none) {
+Status _checkNssAndReplState(OperationContext* opCtx,
+                             const CollectionPtr& coll,
+                             const NamespaceString& nss,
+                             const boost::optional<UUID>& expectedUUID = boost::none) {
     try {
         checkCollectionUUIDMismatch(opCtx, nss, coll, expectedUUID);
     } catch (const DBException& ex) {
         return ex.toStatus();
     }
 
+    if (!coll) {
+        return Status(ErrorCodes::NamespaceNotFound, "ns not found");
+    }
+
     if (opCtx->writesAreReplicated() &&
-        !repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, nss)) {
+        !repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, coll->ns())) {
         return Status(ErrorCodes::NotWritablePrimary,
-                      str::stream() << "Not primary while dropping collection " << nss);
+                      str::stream() << "Not primary while dropping collection " << coll->ns());
     }
 
     return Status::OK();
@@ -103,7 +101,7 @@ void warnEncryptedCollectionsIfNeeded(OperationContext* opCtx, const CollectionP
     }
 
     auto catalog = CollectionCatalog::get(opCtx);
-    auto efc = coll->getCollectionOptions().encryptedFieldConfig.value();
+    auto efc = coll->getCollectionOptions().encryptedFieldConfig.get();
 
     std::vector<std::string> leaked;
 
@@ -125,11 +123,15 @@ Status _dropView(OperationContext* opCtx,
                  const NamespaceString& collectionName,
                  const boost::optional<UUID>& expectedUUID,
                  DropReply* reply) {
-    invariant(db);
+    if (!db) {
+        Status status = Status(ErrorCodes::NamespaceNotFound, "ns not found");
+        audit::logDropView(opCtx->getClient(), collectionName, "", {}, status.code());
+        return status;
+    }
 
     // Views don't have UUIDs so if the expectedUUID is specified, we will always throw.
     try {
-        checkCollectionUUIDMismatch(opCtx, collectionName, CollectionPtr(), expectedUUID);
+        checkCollectionUUIDMismatch(opCtx, collectionName, nullptr, expectedUUID);
     } catch (const DBException& ex) {
         return ex.toStatus();
     }
@@ -137,9 +139,9 @@ Status _dropView(OperationContext* opCtx,
     auto view =
         CollectionCatalog::get(opCtx)->lookupViewWithoutValidatingDurable(opCtx, collectionName);
     if (!view) {
-        audit::logDropView(
-            opCtx->getClient(), collectionName, "", {}, ErrorCodes::NamespaceNotFound);
-        return Status::OK();
+        Status status = Status(ErrorCodes::NamespaceNotFound, "ns not found");
+        audit::logDropView(opCtx->getClient(), collectionName, "", {}, status.code());
+        return status;
     }
 
     // Validates the view or throws an "invalid view" error.
@@ -160,7 +162,7 @@ Status _dropView(OperationContext* opCtx,
         collectionName,
         Top::LockType::NotLocked,
         AutoStatsTracker::LogMode::kUpdateCurOp,
-        CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(collectionName.dbName()));
+        CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(collectionName.db()));
 
     if (opCtx->writesAreReplicated() &&
         !repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, collectionName)) {
@@ -194,22 +196,18 @@ Status _abortIndexBuildsAndDrop(OperationContext* opCtx,
     // We only need to hold an intent lock to send abort signals to the active index builder on this
     // collection.
     boost::optional<AutoGetDb> optionalAutoDb(std::move(autoDb));
-    boost::optional<CollectionNamespaceOrUUIDLock> collLock;
+    boost::optional<Lock::CollectionLock> collLock;
     collLock.emplace(opCtx, startingNss, MODE_IX);
 
     // Abandon the snapshot as the index catalog will compare the in-memory state to the disk state,
     // which may have changed when we released the collection lock temporarily.
     opCtx->recoveryUnit()->abandonSnapshot();
 
-    CollectionPtr coll(
-        CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, startingNss));
-
-    // Even if the collection doesn't exist, UUID mismatches must return an error.
-    Status status = _checkUUIDAndReplState(opCtx, coll, startingNss, expectedUUID);
+    CollectionPtr coll =
+        CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, startingNss);
+    Status status = _checkNssAndReplState(opCtx, coll, startingNss, expectedUUID);
     if (!status.isOK()) {
         return status;
-    } else if (!coll) {
-        return Status::OK();
     }
 
     warnEncryptedCollectionsIfNeeded(opCtx, coll);
@@ -226,15 +224,15 @@ Status _abortIndexBuildsAndDrop(OperationContext* opCtx,
         startingNss,
         Top::LockType::NotLocked,
         AutoStatsTracker::LogMode::kUpdateCurOp,
-        CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(startingNss.dbName()));
+        CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(startingNss.db()));
 
     IndexBuildsCoordinator* indexBuildsCoord = IndexBuildsCoordinator::get(opCtx);
     const UUID collectionUUID = coll->uuid();
     if (dropIfUUIDNotMatching && collectionUUID == *dropIfUUIDNotMatching) {
         return Status::OK();
     }
-    const NamespaceStringOrUUID dbAndUUID{coll->ns().dbName(), coll->uuid()};
-    const int numIndexes = coll->getIndexCatalog()->numIndexesTotal();
+    const NamespaceStringOrUUID dbAndUUID{coll->ns().db().toString(), coll->uuid()};
+    const int numIndexes = coll->getIndexCatalog()->numIndexesTotal(opCtx);
 
     while (true) {
         // Save a copy of the namespace before yielding our locks.
@@ -254,22 +252,17 @@ Status _abortIndexBuildsAndDrop(OperationContext* opCtx,
                                                          << collectionUUID << ") is being dropped");
 
         // Take an exclusive lock to finish the collection drop.
-        optionalAutoDb.emplace(opCtx, startingNss.dbName(), MODE_IX);
+        optionalAutoDb.emplace(opCtx, startingNss.db(), MODE_IX);
         collLock.emplace(opCtx, dbAndUUID, MODE_X);
 
         // Abandon the snapshot as the index catalog will compare the in-memory state to the
         // disk state, which may have changed when we released the collection lock temporarily.
         opCtx->recoveryUnit()->abandonSnapshot();
 
-        coll = CollectionPtr(
-            CollectionCatalog::get(opCtx)->lookupCollectionByUUID(opCtx, collectionUUID));
-
-        // Even if the collection doesn't exist, UUID mismatches must return an error.
-        status = _checkUUIDAndReplState(opCtx, coll, startingNss, expectedUUID);
+        coll = CollectionCatalog::get(opCtx)->lookupCollectionByUUID(opCtx, collectionUUID);
+        status = _checkNssAndReplState(opCtx, coll, startingNss, expectedUUID);
         if (!status.isOK()) {
             return status;
-        } else if (!coll) {
-            return Status::OK();
         }
 
         // Check if any new index builds were started while releasing the collection lock
@@ -289,10 +282,9 @@ Status _abortIndexBuildsAndDrop(OperationContext* opCtx,
 
     // Serialize the drop with refreshes to prevent dropping a collection and creating the same
     // nss as a view while refreshing.
-    CollectionShardingState::assertCollectionLockedAndAcquire(opCtx, resolvedNss)
-        ->checkShardVersionOrThrow(opCtx);
+    CollectionShardingState::get(opCtx, resolvedNss)->checkShardVersionOrThrow(opCtx);
 
-    invariant(coll->getIndexCatalog()->numIndexesInProgress() == 0);
+    invariant(coll->getIndexCatalog()->numIndexesInProgress(opCtx) == 0);
 
     status = dropFn(optionalAutoDb->getDb(), resolvedNss);
     if (!status.isOK()) {
@@ -314,15 +306,11 @@ Status _dropCollectionForApplyOps(OperationContext* opCtx,
                                   DropCollectionSystemCollectionMode systemCollectionMode,
                                   DropReply* reply) {
     Lock::CollectionLock collLock(opCtx, collectionName, MODE_X);
-    CollectionPtr coll(
-        CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, collectionName));
-
-    // Even if the collection doesn't exist, UUID mismatches must return an error.
-    Status status = _checkUUIDAndReplState(opCtx, coll, collectionName);
+    const CollectionPtr& coll =
+        CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, collectionName);
+    Status status = _checkNssAndReplState(opCtx, coll, collectionName);
     if (!status.isOK()) {
         return status;
-    } else if (!coll) {
-        return Status::OK();
     }
 
     if (MONGO_unlikely(hangDuringDropCollection.shouldFail())) {
@@ -337,11 +325,11 @@ Status _dropCollectionForApplyOps(OperationContext* opCtx,
         collectionName,
         Top::LockType::NotLocked,
         AutoStatsTracker::LogMode::kUpdateCurOp,
-        CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(collectionName.dbName()));
+        CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(collectionName.db()));
 
     WriteUnitOfWork wunit(opCtx);
 
-    int numIndexes = coll->getIndexCatalog()->numIndexesTotal();
+    int numIndexes = coll->getIndexCatalog()->numIndexesTotal(opCtx);
     IndexBuildsCoordinator::get(opCtx)->assertNoIndexBuildInProgForCollection(coll->uuid());
     status =
         systemCollectionMode == DropCollectionSystemCollectionMode::kDisallowSystemCollectionDrops
@@ -364,21 +352,20 @@ Status _dropCollection(OperationContext* opCtx,
                        const boost::optional<UUID>& expectedUUID,
                        DropReply* reply,
                        DropCollectionSystemCollectionMode systemCollectionMode,
-                       bool fromMigrate,
                        boost::optional<UUID> dropIfUUIDNotMatching = boost::none) {
 
     try {
         return writeConflictRetry(opCtx, "drop", collectionName.ns(), [&] {
-            AutoGetDb autoDb(opCtx, collectionName.dbName(), MODE_IX);
+            AutoGetDb autoDb(opCtx, collectionName.db(), MODE_IX);
             auto db = autoDb.getDb();
             if (!db) {
                 return expectedUUID
-                    ? Status{CollectionUUIDMismatchInfo(collectionName.dbName(),
+                    ? Status{CollectionUUIDMismatchInfo(collectionName.db().toString(),
                                                         *expectedUUID,
                                                         collectionName.coll().toString(),
                                                         boost::none),
                              "Database does not exist"}
-                    : Status::OK();
+                    : Status(ErrorCodes::NamespaceNotFound, "ns not found");
             }
 
             if (CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, collectionName)) {
@@ -387,14 +374,13 @@ Status _dropCollection(OperationContext* opCtx,
                     std::move(autoDb),
                     collectionName,
                     expectedUUID,
-                    [opCtx, systemCollectionMode, fromMigrate](Database* db,
-                                                               const NamespaceString& resolvedNs) {
+                    [opCtx, systemCollectionMode](Database* db, const NamespaceString& resolvedNs) {
                         WriteUnitOfWork wuow(opCtx);
 
                         auto status = systemCollectionMode ==
                                 DropCollectionSystemCollectionMode::kDisallowSystemCollectionDrops
-                            ? db->dropCollection(opCtx, resolvedNs, {}, fromMigrate)
-                            : db->dropCollectionEvenIfSystem(opCtx, resolvedNs, {}, fromMigrate);
+                            ? db->dropCollection(opCtx, resolvedNs)
+                            : db->dropCollectionEvenIfSystem(opCtx, resolvedNs);
                         if (!status.isOK()) {
                             return status;
                         }
@@ -407,18 +393,14 @@ Status _dropCollection(OperationContext* opCtx,
                     dropIfUUIDNotMatching);
             }
 
-            auto dropTimeseries = [opCtx,
-                                   &expectedUUID,
-                                   &autoDb,
-                                   &collectionName,
-                                   &reply,
-                                   fromMigrate](const NamespaceString& bucketNs, bool dropView) {
+            auto dropTimeseries = [opCtx, &expectedUUID, &autoDb, &collectionName, &reply](
+                                      const NamespaceString& bucketNs, bool dropView) {
                 return _abortIndexBuildsAndDrop(
                     opCtx,
                     std::move(autoDb),
                     bucketNs,
                     expectedUUID,
-                    [opCtx, dropView, &expectedUUID, &collectionName, &reply, fromMigrate](
+                    [opCtx, dropView, &expectedUUID, &collectionName, &reply](
                         Database* db, const NamespaceString& bucketsNs) {
                         // Disallow checking the expectedUUID when dropping time-series collections.
                         uassert(ErrorCodes::InvalidOptions,
@@ -442,13 +424,11 @@ Status _dropCollection(OperationContext* opCtx,
 
                         // Drop the buckets collection in its own writeConflictRetry so that if
                         // it throws a WCE, only the buckets collection drop is retried.
-                        writeConflictRetry(
-                            opCtx, "drop", bucketsNs.ns(), [opCtx, db, &bucketsNs, fromMigrate] {
-                                WriteUnitOfWork wuow(opCtx);
-                                db->dropCollectionEvenIfSystem(opCtx, bucketsNs, {}, fromMigrate)
-                                    .ignore();
-                                wuow.commit();
-                            });
+                        writeConflictRetry(opCtx, "drop", bucketsNs.ns(), [opCtx, db, &bucketsNs] {
+                            WriteUnitOfWork wuow(opCtx);
+                            db->dropCollectionEvenIfSystem(opCtx, bucketsNs).ignore();
+                            wuow.commit();
+                        });
 
                         return Status::OK();
                     },
@@ -466,19 +446,15 @@ Status _dropCollection(OperationContext* opCtx,
                     return dropTimeseries(bucketsNs, false);
                 }
 
-                // There is no collection or view at the namespace. Check whether a UUID was given
-                // and error if so because the caller expects the collection to exist. If no UUID
-                // was given, then it is OK to return success.
                 try {
-                    checkCollectionUUIDMismatch(
-                        opCtx, collectionName, CollectionPtr(), expectedUUID);
+                    checkCollectionUUIDMismatch(opCtx, collectionName, nullptr, expectedUUID);
                 } catch (const DBException& ex) {
                     return ex.toStatus();
                 }
 
-                audit::logDropView(
-                    opCtx->getClient(), collectionName, "", {}, ErrorCodes::NamespaceNotFound);
-                return Status::OK();
+                Status status = Status(ErrorCodes::NamespaceNotFound, "ns not found");
+                audit::logDropView(opCtx->getClient(), collectionName, "", {}, status.code());
+                return status;
             }
             if (view->timeseries() &&
                 CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, view->viewOn())) {
@@ -491,15 +467,9 @@ Status _dropCollection(OperationContext* opCtx,
             return _dropView(opCtx, db, collectionName, expectedUUID, reply);
         });
     } catch (ExceptionFor<ErrorCodes::NamespaceNotFound>&) {
-        // Any unhandled namespace not found errors should be converted into success. Unless the
-        // caller specified a UUID and expects the collection to exist.
-        try {
-            checkCollectionUUIDMismatch(opCtx, collectionName, CollectionPtr(), expectedUUID);
-        } catch (const DBException& ex) {
-            return ex.toStatus();
-        }
-
-        return Status::OK();
+        // The shell requires that NamespaceNotFound error codes return the "ns not found"
+        // string.
+        return Status(ErrorCodes::NamespaceNotFound, "ns not found");
     }
 }
 }  // namespace
@@ -508,8 +478,7 @@ Status dropCollection(OperationContext* opCtx,
                       const NamespaceString& nss,
                       const boost::optional<UUID>& expectedUUID,
                       DropReply* reply,
-                      DropCollectionSystemCollectionMode systemCollectionMode,
-                      bool fromMigrate) {
+                      DropCollectionSystemCollectionMode systemCollectionMode) {
     if (!serverGlobalParams.quiet.load()) {
         LOGV2(518070, "CMD: drop", logAttrs(nss));
     }
@@ -524,22 +493,20 @@ Status dropCollection(OperationContext* opCtx,
     const auto collectionName =
         nss.isTimeseriesBucketsCollection() ? nss.getTimeseriesViewNamespace() : nss;
 
-    return _dropCollection(
-        opCtx, collectionName, expectedUUID, reply, systemCollectionMode, fromMigrate);
+    return _dropCollection(opCtx, collectionName, expectedUUID, reply, systemCollectionMode);
 }
 
 Status dropCollection(OperationContext* opCtx,
                       const NamespaceString& nss,
                       DropReply* reply,
-                      DropCollectionSystemCollectionMode systemCollectionMode,
-                      bool fromMigrate) {
-    return dropCollection(opCtx, nss, boost::none, reply, systemCollectionMode, fromMigrate);
+                      DropCollectionSystemCollectionMode systemCollectionMode) {
+    return dropCollection(opCtx, nss, boost::none, reply, systemCollectionMode);
 }
 
 Status dropCollectionIfUUIDNotMatching(OperationContext* opCtx,
                                        const NamespaceString& ns,
                                        const UUID& expectedUUID) {
-    AutoGetDb autoDb(opCtx, ns.dbName(), MODE_IX);
+    AutoGetDb autoDb(opCtx, ns.db(), MODE_IX);
     if (autoDb.getDb()) {
         {
             Lock::CollectionLock collLock(opCtx, ns, MODE_IS);
@@ -555,7 +522,6 @@ Status dropCollectionIfUUIDNotMatching(OperationContext* opCtx,
                                boost::none,
                                &repl,
                                DropCollectionSystemCollectionMode::kDisallowSystemCollectionDrops,
-                               false /*fromMigrate*/,
                                expectedUUID);
     }
 
@@ -575,14 +541,14 @@ Status dropCollectionForApplyOps(OperationContext* opCtx,
         hangDropCollectionBeforeLockAcquisition.pauseWhileSet();
     }
     return writeConflictRetry(opCtx, "drop", collectionName.ns(), [&] {
-        AutoGetDb autoDb(opCtx, collectionName.dbName(), MODE_IX);
+        AutoGetDb autoDb(opCtx, collectionName.db(), MODE_IX);
         Database* db = autoDb.getDb();
         if (!db) {
-            return Status::OK();
+            return Status(ErrorCodes::NamespaceNotFound, "ns not found");
         }
 
-        CollectionPtr coll(
-            CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, collectionName));
+        const CollectionPtr& coll =
+            CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, collectionName);
 
         DropReply unusedReply;
         if (!coll) {
@@ -593,90 +559,6 @@ Status dropCollectionForApplyOps(OperationContext* opCtx,
                 opCtx, db, collectionName, dropOpTime, systemCollectionMode, &unusedReply);
         }
     });
-}
-
-void checkForIdIndexesAndDropPendingCollections(OperationContext* opCtx,
-                                                const DatabaseName& dbName) {
-    invariant(opCtx->lockState()->isDbLockedForMode(dbName, MODE_IX));
-
-    if (dbName == DatabaseName::kLocal) {
-        // Collections in the local database are not replicated, so we do not need an _id index on
-        // any collection. For the same reason, it is not possible for the local database to contain
-        // any drop-pending collections (drops are effective immediately).
-        return;
-    }
-
-    auto catalog = CollectionCatalog::get(opCtx);
-
-    for (const auto& nss : catalog->getAllCollectionNamesFromDb(opCtx, dbName)) {
-        if (nss.isDropPendingNamespace()) {
-            auto dropOpTime = fassert(40459, nss.getDropPendingNamespaceOpTime());
-            LOGV2(20321,
-                  "Found drop-pending namespace {namespace} with drop optime {dropOpTime}",
-                  "Found drop-pending namespace",
-                  "namespace"_attr = nss,
-                  "dropOpTime"_attr = dropOpTime);
-            repl::DropPendingCollectionReaper::get(opCtx)->addDropPendingNamespace(
-                opCtx, dropOpTime, nss);
-        }
-
-        if (nss.isSystem())
-            continue;
-
-        CollectionPtr coll(catalog->lookupCollectionByNamespace(opCtx, nss));
-        if (!coll)
-            continue;
-
-        if (coll->getIndexCatalog()->findIdIndex(opCtx))
-            continue;
-
-        if (clustered_util::isClusteredOnId(coll->getClusteredInfo())) {
-            continue;
-        }
-
-        LOGV2_OPTIONS(
-            20322,
-            {logv2::LogTag::kStartupWarnings},
-            "Collection lacks a unique index on _id. This index is "
-            "needed for replication to function properly. To fix this, you need to create a unique "
-            "index on _id. See http://dochub.mongodb.org/core/build-replica-set-indexes",
-            "namespace"_attr = nss);
-    }
-}
-
-void clearTempCollections(OperationContext* opCtx, const DatabaseName& dbName) {
-    invariant(opCtx->lockState()->isDbLockedForMode(dbName, MODE_IX));
-
-    auto db = DatabaseHolder::get(opCtx)->getDb(opCtx, dbName);
-    invariant(db);
-
-    CollectionCatalog::CollectionInfoFn callback = [&](const Collection* collection) {
-        try {
-            WriteUnitOfWork wuow(opCtx);
-            Status status = db->dropCollection(opCtx, collection->ns());
-            if (!status.isOK()) {
-                LOGV2_WARNING(20327,
-                              "could not drop temp collection '{namespace}': {error}",
-                              "could not drop temp collection",
-                              "namespace"_attr = collection->ns(),
-                              "error"_attr = redact(status));
-            }
-            wuow.commit();
-        } catch (const WriteConflictException&) {
-            LOGV2_WARNING(
-                20328,
-                "could not drop temp collection '{namespace}' due to WriteConflictException",
-                "could not drop temp collection due to WriteConflictException",
-                "namespace"_attr = collection->ns());
-            opCtx->recoveryUnit()->abandonSnapshot();
-        }
-        return true;
-    };
-
-    catalog::forEachCollectionFromDb(
-        opCtx, dbName, MODE_X, callback, [&](const Collection* collection) {
-            return collection->getCollectionOptions().temp;
-        });
 }
 
 }  // namespace mongo

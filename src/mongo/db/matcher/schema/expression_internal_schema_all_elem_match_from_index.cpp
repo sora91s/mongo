@@ -39,7 +39,7 @@ constexpr StringData InternalSchemaAllElemMatchFromIndexMatchExpression::kName;
 
 InternalSchemaAllElemMatchFromIndexMatchExpression::
     InternalSchemaAllElemMatchFromIndexMatchExpression(
-        boost::optional<StringData> path,
+        StringData path,
         long long index,
         std::unique_ptr<ExpressionWithPlaceholder> expression,
         clonable_ptr<ErrorAnnotation> annotation)
@@ -76,15 +76,13 @@ void InternalSchemaAllElemMatchFromIndexMatchExpression::debugString(StringBuild
     _expression->getFilter()->debugString(debug, indentationLevel + 1);
 }
 
-BSONObj InternalSchemaAllElemMatchFromIndexMatchExpression::getSerializedRightHandSide(
-    SerializationOptions opts) const {
-    // TODO SERVER-73678 respect 'replacementForLiteralArgs'.
+BSONObj InternalSchemaAllElemMatchFromIndexMatchExpression::getSerializedRightHandSide() const {
     BSONObjBuilder allElemMatchBob;
     BSONArrayBuilder subArray(allElemMatchBob.subarrayStart(kName));
     subArray.append(_index);
     {
         BSONObjBuilder eBuilder(subArray.subobjStart());
-        _expression->getFilter()->serialize(&eBuilder, opts);
+        _expression->getFilter()->serialize(&eBuilder, true);
         eBuilder.doneFast();
     }
     subArray.doneFast();

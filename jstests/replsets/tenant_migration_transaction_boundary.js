@@ -13,6 +13,7 @@
  * and trying to recover T would fail because the recipient didn't fetch T's oldest entries.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -21,13 +22,17 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 load("jstests/replsets/rslib.js");
 load("jstests/libs/uuid_util.js");
 
 const tenantMigrationTest = new TenantMigrationTest({name: jsTestName()});
 
-const tenantId = ObjectId().str;
+const tenantId = "testTenantId";
 const tenantDB = tenantMigrationTest.tenantDB(tenantId, "testDB");
 const collName = "testColl";
 const tenantNS = `${tenantDB}.${collName}`;
@@ -81,3 +86,4 @@ TenantMigrationTest.assertCommitted(tenantMigrationTest.waitForMigrationToComple
 assert.eq(recipientPrimary.getCollection(tenantNS).countDocuments({}), 3);
 assert.eq(recipientPrimary.getCollection(tenantNS).count(), 3);
 tenantMigrationTest.stop();
+})();

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -41,14 +42,11 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
-#include "mongo/transport/asio/asio_transport_layer.h"
 #include "mongo/transport/service_executor_synchronous.h"
 #include "mongo/transport/session.h"
+#include "mongo/transport/transport_layer_asio.h"
 #include "mongo/util/net/ssl_types.h"
 #include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo {
 namespace transport {
@@ -63,7 +61,7 @@ void TransportLayerManager::_foreach(Callable&& cb) const {
     }
 }
 
-StatusWith<std::shared_ptr<Session>> TransportLayerManager::connect(
+StatusWith<SessionHandle> TransportLayerManager::connect(
     HostAndPort peer,
     ConnectSSLMode sslMode,
     Milliseconds timeout,
@@ -71,15 +69,13 @@ StatusWith<std::shared_ptr<Session>> TransportLayerManager::connect(
     return _tls.front()->connect(peer, sslMode, timeout, transientSSLParams);
 }
 
-Future<std::shared_ptr<Session>> TransportLayerManager::asyncConnect(
+Future<SessionHandle> TransportLayerManager::asyncConnect(
     HostAndPort peer,
     ConnectSSLMode sslMode,
     const ReactorHandle& reactor,
     Milliseconds timeout,
-    std::shared_ptr<ConnectionMetrics> connectionMetrics,
     std::shared_ptr<const SSLConnectionContext> transientSSLContext) {
-    return _tls.front()->asyncConnect(
-        peer, sslMode, reactor, timeout, connectionMetrics, transientSSLContext);
+    return _tls.front()->asyncConnect(peer, sslMode, reactor, timeout, transientSSLContext);
 }
 
 ReactorHandle TransportLayerManager::getReactor(WhichReactor which) {
@@ -117,14 +113,6 @@ Status TransportLayerManager::setup() {
     return Status::OK();
 }
 
-void TransportLayerManager::appendStatsForServerStatus(BSONObjBuilder* bob) const {
-    _foreach([&](const TransportLayer* tl) { tl->appendStatsForServerStatus(bob); });
-}
-
-void TransportLayerManager::appendStatsForFTDC(BSONObjBuilder& bob) const {
-    _foreach([&](const TransportLayer* tl) { tl->appendStatsForFTDC(bob); });
-}
-
 Status TransportLayerManager::addAndStartTransportLayer(std::unique_ptr<TransportLayer> tl) {
     auto ptr = tl.get();
     {
@@ -135,11 +123,11 @@ Status TransportLayerManager::addAndStartTransportLayer(std::unique_ptr<Transpor
 }
 
 std::unique_ptr<TransportLayer> TransportLayerManager::makeAndStartDefaultEgressTransportLayer() {
-    transport::AsioTransportLayer::Options opts(&serverGlobalParams);
-    opts.mode = transport::AsioTransportLayer::Options::kEgress;
+    transport::TransportLayerASIO::Options opts(&serverGlobalParams);
+    opts.mode = transport::TransportLayerASIO::Options::kEgress;
     opts.ipList.clear();
 
-    auto ret = std::make_unique<transport::AsioTransportLayer>(opts, nullptr);
+    auto ret = std::make_unique<transport::TransportLayerASIO>(opts, nullptr);
     uassertStatusOK(ret->setup());
     uassertStatusOK(ret->start());
     return std::unique_ptr<TransportLayer>(std::move(ret));
@@ -149,9 +137,9 @@ std::unique_ptr<TransportLayer> TransportLayerManager::createWithConfig(
     const ServerGlobalParams* config, ServiceContext* ctx, boost::optional<int> loadBalancerPort) {
     auto sep = ctx->getServiceEntryPoint();
 
-    transport::AsioTransportLayer::Options opts(config, loadBalancerPort);
+    transport::TransportLayerASIO::Options opts(config, loadBalancerPort);
     std::vector<std::unique_ptr<TransportLayer>> retVector;
-    retVector.emplace_back(std::make_unique<transport::AsioTransportLayer>(opts, sep));
+    retVector.emplace_back(std::make_unique<transport::TransportLayerASIO>(opts, sep));
     return std::make_unique<TransportLayerManager>(std::move(retVector));
 }
 

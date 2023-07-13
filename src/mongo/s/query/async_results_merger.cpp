@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -44,9 +45,6 @@
 #include "mongo/executor/remote_command_response.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -104,16 +102,16 @@ AsyncResultsMerger::AsyncResultsMerger(OperationContext* opCtx,
                                        AsyncResultsMergerParams params)
     : _opCtx(opCtx),
       _executor(std::move(executor)),
-      _params(std::move(params)),
       // This strange initialization is to work around the fact that the IDL does not currently
       // support a default value for an enum. The default tailable mode should be 'kNormal', but
       // since that is not supported we treat boost::none (unspecified) to mean 'kNormal'.
-      _tailableMode(_params.getTailableMode().value_or(TailableModeEnum::kNormal)),
+      _tailableMode(params.getTailableMode().value_or(TailableModeEnum::kNormal)),
+      _params(std::move(params)),
       _mergeQueue(MergingComparator(
           _remotes, _params.getSort().value_or(BSONObj()), _params.getCompareWholeSortKey())),
       _promisedMinSortKeys(PromisedMinSortKeyComparator(_params.getSort().value_or(BSONObj()))) {
-    if (_params.getTxnNumber()) {
-        invariant(_params.getSessionId());
+    if (params.getTxnNumber()) {
+        invariant(params.getSessionId());
     }
 
     size_t remoteIndex = 0;
@@ -500,24 +498,11 @@ Status AsyncResultsMerger::_scheduleGetMores(WithLock lk) {
     // Before scheduling more work, check whether the cursor has been invalidated.
     _assertNotInvalidated(lk);
 
-    // Reveal opCtx errors (such as MaxTimeMSExpired) and reflect them in the remote status.
-    invariant(_opCtx, "Cannot schedule a getMore without an OperationContext");
-    const auto interruptStatus = _opCtx->checkForInterruptNoAssert();
-    if (!interruptStatus.isOK()) {
-        for (size_t i = 0; i < _remotes.size(); ++i) {
-            if (!_remotes[i].exhausted()) {
-                _cleanUpFailedBatch(lk, interruptStatus, i);
-            }
-        }
-        return interruptStatus;
-    }
-
     // Schedule remote work on hosts for which we need more results.
     for (size_t i = 0; i < _remotes.size(); ++i) {
         auto& remote = _remotes[i];
 
         if (!remote.status.isOK()) {
-            _cleanUpFailedBatch(lk, remote.status, i);
             return remote.status;
         }
 
@@ -656,7 +641,7 @@ bool AsyncResultsMerger::_checkHighWaterMarkEligibility(WithLock,
                                                         const CursorResponse& response) {
     // If the cursor is not on the "config.shards" namespace, then it is a normal shard cursor.
     // These cursors are always eligible to provide a high water mark resume token.
-    if (remote.cursorNss != NamespaceString::kConfigsvrShardsNamespace) {
+    if (remote.cursorNss != ShardType::ConfigNS) {
         return true;
     }
 
@@ -857,22 +842,16 @@ bool AsyncResultsMerger::_haveOutstandingBatchRequests(WithLock) {
     return false;
 }
 
-void AsyncResultsMerger::_scheduleKillCursors(WithLock lk, OperationContext* opCtx) {
+void AsyncResultsMerger::_scheduleKillCursors(WithLock, OperationContext* opCtx) {
     invariant(_killCompleteInfo);
 
     for (const auto& remote : _remotes) {
-        if (_shouldKillRemote(lk, remote)) {
+        if (remote.status.isOK() && remote.cursorId && !remote.exhausted()) {
             BSONObj cmdObj =
                 KillCursorsCommandRequest(_params.getNss(), {remote.cursorId}).toBSON(BSONObj{});
 
-            executor::RemoteCommandRequest::Options options;
-            options.fireAndForget = true;
-            executor::RemoteCommandRequest request(remote.getTargetHost(),
-                                                   _params.getNss().db().toString(),
-                                                   cmdObj,
-                                                   rpc::makeEmptyMetadata(),
-                                                   opCtx,
-                                                   options);
+            executor::RemoteCommandRequest request(
+                remote.getTargetHost(), _params.getNss().db().toString(), cmdObj, opCtx);
             // The 'RemoteCommandRequest' takes the remaining time from the 'opCtx' parameter. If
             // the cursor was killed due to a maxTimeMs timeout, the remaining time will be 0, and
             // the remote request will not be sent. To avoid this, we remove the timeout for the
@@ -883,12 +862,6 @@ void AsyncResultsMerger::_scheduleKillCursors(WithLock lk, OperationContext* opC
             _executor->scheduleRemoteCommand(request, [](auto const&) {}).getStatus().ignore();
         }
     }
-}
-
-bool AsyncResultsMerger::_shouldKillRemote(WithLock, const RemoteCursorData& remote) {
-    return (remote.status.isOK() || remote.status == ErrorCodes::MaxTimeMSExpired ||
-            remote.status == ErrorCodes::Interrupted) &&
-        remote.cursorId && !remote.exhausted();
 }
 
 stdx::shared_future<void> AsyncResultsMerger::kill(OperationContext* opCtx) {

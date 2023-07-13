@@ -1,19 +1,12 @@
-/**
- * Confirms that profiled find queries and corresponding logs have matching queryHashes.
- * @tags: [
- *  does_not_support_stepdowns,
- *  requires_profiling,
- *  assumes_read_preference_unchanged,
- *  # TODO SERVER-67607: support query hash in slow query log lines.
- *  cqf_incompatible,
- * ]
- */
+// @tags: [does_not_support_stepdowns, requires_profiling, assumes_read_preference_unchanged]
+//
+//  Confirms that profiled find queries and corresponding logs have matching queryHashes.
 (function() {
 "use strict";
 
 // For getLatestProfilerEntry().
 load("jstests/libs/profiler.js");
-load("jstests/libs/sbe_util.js");
+load("jstests/libs/logv2_helpers.js");
 
 // Prevent the mongo shell from gossiping its cluster time, since this will increase the amount
 // of data logged for each op. For some of the testcases below, including the cluster time would
@@ -37,8 +30,12 @@ assert.commandWorked(testDB.setLogLevel(0, "query"));
 // Returns true if the logLine command components correspond to the profile entry. This is
 // sufficient for the purpose of testing query hashes.
 function logMatchesEntry(logLine, profileEntry) {
-    return logLine.indexOf('command":{"find":"test"') >= 0 &&
-        logLine.indexOf(profileEntry["command"]["comment"]) >= 0;
+    if ((!isJsonLogNoConn() ? logLine.indexOf("command: find { find: \"test\"") >= 0
+                            : logLine.indexOf('command":{"find":"test"') >= 0) &&
+        logLine.indexOf(profileEntry["command"]["comment"]) >= 0) {
+        return true;
+    }
+    return false;
 }
 
 // Fetch the log line that corresponds to the profile entry. If there is no such line, return
@@ -110,7 +107,7 @@ const testList = [
         test: function(db, comment) {
             assert.eq(200, db.test.find().comment(comment).itcount());
         },
-        hasPlanCacheKey: checkSBEEnabled(testDB)
+        hasPlanCacheKey: false
     },
     {
         comment: "Test1 find query",

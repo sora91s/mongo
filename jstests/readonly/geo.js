@@ -27,7 +27,7 @@ runReadOnlyTest(function() {
                 {name: "Kinfolk 94", loc: {type: "Point", coordinates: [40.7217058, -73.9605489]}}
             ];
 
-            writableCollection.insertMany(locDocs, {ordered: false});
+            writableCollection.insertMany(locDocs);
         },
         exec: function(readableCollection) {
             const res =

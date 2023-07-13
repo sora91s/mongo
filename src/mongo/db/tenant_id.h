@@ -46,17 +46,21 @@ namespace mongo {
  */
 class TenantId {
 public:
-    static const boost::optional<TenantId>& systemTenantId() {
-        static StaticImmortal<boost::optional<TenantId>> systemTenantId{};
-        return *systemTenantId;
-    }
+    /**
+     * kSystemTenantId must be unique across all possible tenant IDs.
+     * Since the first four bytes of an OID are a unix epoch timestamp,
+     * we can simply select a value prior to the inception of MongoDB,
+     * and be guaranteed to never have a collision with a value
+     * produced by OID::gen().
+     */
+    static const TenantId kSystemTenantId;
 
-    explicit TenantId(const OID& oid) : _oid(oid) {}
+    explicit TenantId(const OID& oid) : _oid(oid), _idStr(oid.toString()) {}
 
     TenantId() = delete;
 
-    std::string toString() const {
-        return _oid.toString();
+    const std::string& toString() const {
+        return _idStr;
     }
 
     /**
@@ -85,7 +89,7 @@ public:
      */
     template <typename H>
     friend H AbslHashValue(H h, const TenantId& tenantId) {
-        return H::combine(std::move(h), tenantId._oid);
+        return H::combine(std::move(h), tenantId.hash());
     }
 
     /**
@@ -101,6 +105,7 @@ public:
 
 private:
     OID _oid;
+    std::string _idStr;
 };
 
 inline bool operator==(const TenantId& lhs, const TenantId& rhs) {

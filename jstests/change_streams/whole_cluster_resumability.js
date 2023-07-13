@@ -17,7 +17,7 @@ let resumeCursor = cst.startWatchingAllChangesForCluster();
 // Insert a document in the first database and save the resulting change stream.
 assert.commandWorked(db1Coll.insert({_id: 1}));
 const firstInsertChangeDoc = cst.getOneChange(resumeCursor);
-assert.docEq({_id: 1}, firstInsertChangeDoc.fullDocument);
+assert.docEq(firstInsertChangeDoc.fullDocument, {_id: 1});
 
 // Test resume after the first insert.
 resumeCursor = cst.startWatchingChanges({
@@ -30,12 +30,12 @@ resumeCursor = cst.startWatchingChanges({
 // Write the next document into the second database.
 assert.commandWorked(db2Coll.insert({_id: 2}));
 const secondInsertChangeDoc = cst.getOneChange(resumeCursor);
-assert.docEq({_id: 2}, secondInsertChangeDoc.fullDocument);
+assert.docEq(secondInsertChangeDoc.fullDocument, {_id: 2});
 
 // Write the third document into the first database again.
 assert.commandWorked(db1Coll.insert({_id: 3}));
 const thirdInsertChangeDoc = cst.getOneChange(resumeCursor);
-assert.docEq({_id: 3}, thirdInsertChangeDoc.fullDocument);
+assert.docEq(thirdInsertChangeDoc.fullDocument, {_id: 3});
 
 // Test resuming after the first insert again.
 resumeCursor = cst.startWatchingChanges({
@@ -44,8 +44,8 @@ resumeCursor = cst.startWatchingChanges({
     collection: 1,
     aggregateOptions: {cursor: {batchSize: 0}},
 });
-assert.docEq(secondInsertChangeDoc, cst.getOneChange(resumeCursor));
-assert.docEq(thirdInsertChangeDoc, cst.getOneChange(resumeCursor));
+assert.docEq(cst.getOneChange(resumeCursor), secondInsertChangeDoc);
+assert.docEq(cst.getOneChange(resumeCursor), thirdInsertChangeDoc);
 
 // Test resume after second insert.
 resumeCursor = cst.startWatchingChanges({
@@ -54,7 +54,7 @@ resumeCursor = cst.startWatchingChanges({
     collection: 1,
     aggregateOptions: {cursor: {batchSize: 0}},
 });
-assert.docEq(thirdInsertChangeDoc, cst.getOneChange(resumeCursor));
+assert.docEq(cst.getOneChange(resumeCursor), thirdInsertChangeDoc);
 
 // Rename the collection and obtain a resume token from the 'rename' notification. Skip this
 // test when running on a sharded collection, since these cannot be renamed.

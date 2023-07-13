@@ -56,7 +56,7 @@ bool OperationShardingState::isComingFromRouter(OperationContext* opCtx) {
 
 void OperationShardingState::setShardRole(OperationContext* opCtx,
                                           const NamespaceString& nss,
-                                          const boost::optional<ShardVersion>& shardVersion,
+                                          const boost::optional<ChunkVersion>& shardVersion,
                                           const boost::optional<DatabaseVersion>& databaseVersion) {
     auto& oss = OperationShardingState::get(opCtx);
 
@@ -86,23 +86,7 @@ void OperationShardingState::setShardRole(OperationContext* opCtx,
     }
 }
 
-void OperationShardingState::unsetShardRoleForLegacyDDLOperationsSentWithShardVersionIfNeeded(
-    OperationContext* opCtx, const NamespaceString& nss) {
-    auto& oss = OperationShardingState::get(opCtx);
-
-    auto it = oss._shardVersions.find(nss.ns());
-    if (it != oss._shardVersions.end()) {
-        auto& tracker = it->second;
-        tassert(6848500,
-                "DDL operation should not recursively use the shard role",
-                --tracker.recursion == 0);
-        if (tracker.recursion == 0)
-            oss._shardVersions.erase(it);
-    }
-    return;
-}
-
-boost::optional<ShardVersion> OperationShardingState::getShardVersion(const NamespaceString& nss) {
+boost::optional<ChunkVersion> OperationShardingState::getShardVersion(const NamespaceString& nss) {
     const auto it = _shardVersions.find(nss.ns());
     if (it != _shardVersions.end()) {
         return it->second.v;
@@ -187,23 +171,12 @@ ScopedAllowImplicitCollectionCreate_UNSAFE::~ScopedAllowImplicitCollectionCreate
 
 ScopedSetShardRole::ScopedSetShardRole(OperationContext* opCtx,
                                        NamespaceString nss,
-                                       boost::optional<ShardVersion> shardVersion,
+                                       boost::optional<ChunkVersion> shardVersion,
                                        boost::optional<DatabaseVersion> databaseVersion)
     : _opCtx(opCtx),
       _nss(std::move(nss)),
       _shardVersion(std::move(shardVersion)),
       _databaseVersion(std::move(databaseVersion)) {
-    // "Fixed" dbVersions are only used for dbs that don't have the sharding infrastructure set up
-    // to handle real database or shard versions (like config and admin), so we ignore them.
-    if (_databaseVersion && _databaseVersion->isFixed()) {
-        uassert(7331300,
-                "A 'fixed' dbVersion should only be used with an unsharded shard version or none "
-                "at all",
-                !_shardVersion || _shardVersion == ShardVersion::UNSHARDED());
-        _databaseVersion.reset();
-        _shardVersion.reset();
-    }
-
     OperationShardingState::setShardRole(_opCtx, _nss, _shardVersion, _databaseVersion);
 }
 

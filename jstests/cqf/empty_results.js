@@ -14,5 +14,5 @@ assert.commandWorked(t.insert([{a: 1}, {a: 2}]));
 
 const res = t.explain("executionStats").aggregate([{$match: {'a': 2}}, {$limit: 1}, {$skip: 10}]);
 assert.eq(0, res.executionStats.nReturned);
-assertValueOnPlanPath("CoScan", res, "child.child.child.nodeType");
+assert.eq("CoScan", res.queryPlanner.winningPlan.optimizerPlan.child.child.child.nodeType);
 }());

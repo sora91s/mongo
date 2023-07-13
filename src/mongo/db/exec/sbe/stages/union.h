@@ -53,8 +53,7 @@ public:
     UnionStage(PlanStage::Vector inputStages,
                std::vector<value::SlotVector> inputVals,
                value::SlotVector outputVals,
-               PlanNodeId planNodeId,
-               bool participateInTrialRunTracking = true);
+               PlanNodeId planNodeId);
 
     std::unique_ptr<PlanStage> clone() const final;
 
@@ -71,12 +70,13 @@ public:
 
 private:
     struct UnionBranch {
-        PlanStage* const stage{nullptr};
+        PlanStage* stage{nullptr};
+        const bool reOpen{false};
         bool isOpen{false};
 
         void open() {
             if (!isOpen) {
-                stage->open(false /*reOpen*/);
+                stage->open(reOpen);
                 isOpen = true;
             }
         }

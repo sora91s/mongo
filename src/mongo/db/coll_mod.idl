@@ -33,7 +33,7 @@ global:
 imports:
     - "mongo/db/auth/action_type.idl"
     - "mongo/db/auth/access_checks.idl"
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
     - "mongo/db/catalog/collection_options.idl"
     - "mongo/db/timeseries/timeseries.idl"
     - "mongo/db/pipeline/change_stream_pre_and_post_images_options.idl"
@@ -46,69 +46,68 @@ structs:
             name:
                 optional: true
                 type: string
-                stability: stable
+                unstable: false
             keyPattern:
                 optional: true
                 type: object
-                stability: stable
+                unstable: false
             expireAfterSeconds:
                 optional: true
                 type: safeInt
-                stability: stable
+                unstable: false
             hidden:
                 optional: true
                 type: safeBool
-                stability: stable
+                unstable: false
             unique:
                 optional: true
                 type: safeBool
-                stability: unstable
+                unstable: true
             prepareUnique:
                 optional: true
                 type: safeBool
-                stability: unstable
+                unstable: true
             forceNonUnique:
                 optional: true
                 type: safeBool
-                stability: unstable
+                unstable: true
 
     CollModReply:
         description: "The collMod command's reply."
         strict: true
-        is_command_reply: true
         fields:
             expireAfterSeconds_old:
                 optional: true
                 type: safeInt
-                stability: stable
+                unstable: false
             expireAfterSeconds_new:
                 optional: true
                 type: safeInt
-                stability: stable
+                unstable: false
             hidden_old:
                 optional: true
                 type: safeBool
-                stability: stable
+                unstable: false
             hidden_new:
                 optional: true
                 type: safeBool
-                stability: stable
+                unstable: false
             unique_new:
                 optional: true
                 type: safeBool
-                stability: unstable
+                unstable: true
             prepareUnique_old:
                 optional: true
                 type: safeBool
-                stability: unstable
+                unstable: true
             prepareUnique_new:
                 optional: true
                 type: safeBool
-                stability: unstable
+                unstable: true
             forceNonUnique_new:
                 optional: true
                 type: safeBool
-                stability: unstable
+                unstable: true
 
     CollModRequest:
         description: "The collMod command's request."
@@ -118,32 +117,32 @@ structs:
                 description: "Index to be modified."
                 optional: true
                 type: CollModIndex
-                stability: stable
+                unstable: false
             validator:
                 description: "Specify validation rules or expressions for the collection."
                 type: object
                 optional: true
-                stability: stable
+                unstable: false
             validationLevel:
                 description: "Determines how strictly to apply the validation rules to existing
                               documents during an update.
                               Can be one of following values: 'off', 'strict' or 'moderate'."
                 type: ValidationLevel
                 optional: true
-                stability: stable
+                unstable: false
             validationAction:
                 description: "Determines whether to error on invalid documents or just warn about
                               the violations but allow invalid documents to be inserted.
                               Can be either 'warn' or 'error'."
                 type: ValidationAction
                 optional: true
-                stability: stable
+                unstable: false
             viewOn:
                 description: "The name of the source collection or view that
                               'namespace' is based off of."
                 type: string
                 optional: true
-                stability: stable
+                unstable: false
                 validator:
                     callback: create_command_validation::validateViewOnNotEmpty
             pipeline:
@@ -152,36 +151,51 @@ structs:
                               view."
                 type: array<object>
                 optional: true
-                stability: stable
+                unstable: false
+            recordPreImages:
+                description: "Sets whether updates/deletes should store the pre-image of the
+                              document in the oplog"
+                optional: true
+                type: safeBool
+                unstable: true
             changeStreamPreAndPostImages:
                 description: "The options for point-in-time pre- and post-images in change streams opened on this collection."
                 type: ChangeStreamPreAndPostImagesOptions
                 optional: true
-                stability: unstable
+                unstable: true
             expireAfterSeconds:
                 description: "The number of seconds after which old data should be deleted. This can
                               be disabled by passing in 'off' as a value"
                 optional: true
-                stability: stable
+                unstable: false
                 type:
                     variant: [string, safeInt64]
             timeseries:
                 description: "Adjusts parameters for timeseries collections"
                 optional: true
                 type: CollModTimeseries
-                stability: stable
+                unstable: false
+            # TODO (SERVER-61685): `isTimeseriesNamespace` is not needed for the collMod command but kept
+            # for backward compatibility. Remove this flag after 6.0 branching.
+            isTimeseriesNamespace:
+                description: "This flag is set to true when the command was originally sent to
+                              mongos on the time-series view, but got rewritten to target
+                              time-series buckets namespace before being sent to shards."
+                optional: true
+                type: bool
+                unstable: false
             dryRun:
                 description: "Runs the requested modification without modifying any database state.
                               This can be used to determine in advance if a particular collMod
                               request can be completed without errors."
                 optional: true
                 type: safeBool
-                stability: unstable
+                unstable: true
             collectionUUID:
                 description: "The expected UUID of the collection."
                 type: uuid
                 optional: true
-                stability: unstable
+                unstable: true
             cappedSize:
                 description: "Update the maximum size in bytes for the capped collection."
                 type: safeInt64
@@ -189,14 +203,14 @@ structs:
                 validator:
                     gte: 1
                     lte: 1125899906842624  # 1 PB
-                stability: stable
+                unstable: false
             cappedMax:
                 description: "Update the maximum number of documents allowed in the capped collection."
                 type: safeInt64
                 optional: true
                 validator:
                     lt: 2147483648  # 2^31
-                stability: stable
+                unstable: false
 
 commands:
     collMod:

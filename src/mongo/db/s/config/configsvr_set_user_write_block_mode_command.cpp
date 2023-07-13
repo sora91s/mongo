@@ -27,19 +27,19 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/s/config/configsvr_coordinator_service.h"
 #include "mongo/db/s/config/set_user_write_block_mode_coordinator.h"
+#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -63,6 +63,13 @@ public:
             const auto startBlocking = request().getGlobal();
 
             const auto coordinatorCompletionFuture = [&]() -> SharedSemiFuture<void> {
+                // TODO SERVER-65010 Remove FCV guard once 6.0 has branched out
+                FixedFCVRegion fixedFcvRegion(opCtx);
+                uassert(ErrorCodes::IllegalOperation,
+                        "featureFlagUserWriteBlocking not enabled",
+                        gFeatureFlagUserWriteBlocking.isEnabled(
+                            serverGlobalParams.featureCompatibility));
+
                 SetUserWriteBlockModeCoordinatorDocument coordinatorDoc{startBlocking};
                 coordinatorDoc.setConfigsvrCoordinatorMetadata(
                     {ConfigsvrCoordinatorTypeEnum::kSetUserWriteBlockMode});

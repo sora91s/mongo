@@ -27,13 +27,13 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/storage/kv/kv_engine_test_harness.h"
 
 #include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
 #include <boost/filesystem/path.hpp>
 #include <memory>
 
@@ -54,16 +54,13 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source_mock.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo {
 namespace {
 
 class WiredTigerKVHarnessHelper : public KVHarnessHelper {
 public:
     WiredTigerKVHarnessHelper(ServiceContext* svcCtx, bool forRepair = false)
-        : _svcCtx(svcCtx), _dbpath("wt-kv-harness"), _forRepair(forRepair), _engine(makeEngine()) {
+        : _dbpath("wt-kv-harness"), _forRepair(forRepair), _engine(makeEngine()) {
         // Faitfhully simulate being in replica set mode for timestamping tests which requires
         // parity for journaling settings.
         repl::ReplSettings replSettings;
@@ -94,19 +91,18 @@ private:
         // Use a small journal for testing to account for the unlikely event that the underlying
         // filesystem does not support fast allocation of a file of zeros.
         std::string extraStrings = "log=(file_max=1m,prealloc=false)";
-        auto client = _svcCtx->makeClient("opCtx");
-        return std::make_unique<WiredTigerKVEngine>(client->makeOperationContext().get(),
-                                                    kWiredTigerEngineName,
+        return std::make_unique<WiredTigerKVEngine>(kWiredTigerEngineName,
                                                     _dbpath.path(),
                                                     _cs.get(),
                                                     extraStrings,
                                                     1,
                                                     0,
+                                                    true,
                                                     false,
-                                                    _forRepair);
+                                                    _forRepair,
+                                                    false);
     }
 
-    ServiceContext* _svcCtx;
     const std::unique_ptr<ClockSource> _cs = std::make_unique<ClockSourceMock>();
     unittest::TempDir _dbpath;
     bool _forRepair;
@@ -140,7 +136,7 @@ public:
 TEST_F(WiredTigerKVEngineRepairTest, OrphanedDataFilesCanBeRecovered) {
     auto opCtxPtr = _makeOperationContext();
 
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("a.b");
+    NamespaceString nss("a.b");
     std::string ident = "collection-1234";
     std::string record = "abcd";
     CollectionOptions defaultCollectionOptions;
@@ -174,10 +170,6 @@ TEST_F(WiredTigerKVEngineRepairTest, OrphanedDataFilesCanBeRecovered) {
         _engine->recoverOrphanedIdent(opCtxPtr.get(), nss, ident, defaultCollectionOptions);
     ASSERT_EQ(ErrorCodes::CommandNotSupported, status.code());
 #else
-
-    // Dropping a collection might fail if we haven't checkpointed the data.
-    _engine->checkpoint(opCtxPtr.get());
-
     // Move the data file out of the way so the ident can be dropped. This not permitted on Windows
     // because the file cannot be moved while it is open. The implementation for orphan recovery is
     // also not implemented on Windows for this reason.
@@ -201,7 +193,7 @@ TEST_F(WiredTigerKVEngineRepairTest, OrphanedDataFilesCanBeRecovered) {
 TEST_F(WiredTigerKVEngineRepairTest, UnrecoverableOrphanedDataFilesAreRebuilt) {
     auto opCtxPtr = _makeOperationContext();
 
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("a.b");
+    NamespaceString nss("a.b");
     std::string ident = "collection-1234";
     std::string record = "abcd";
     CollectionOptions defaultCollectionOptions;
@@ -226,9 +218,6 @@ TEST_F(WiredTigerKVEngineRepairTest, UnrecoverableOrphanedDataFilesAreRebuilt) {
     ASSERT(dataFilePath);
 
     ASSERT(boost::filesystem::exists(*dataFilePath));
-
-    // Dropping a collection might fail if we haven't checkpointed the data
-    _engine->checkpoint(opCtxPtr.get());
 
     ASSERT_OK(_engine->dropIdent(opCtxPtr.get()->recoveryUnit(), ident));
 
@@ -323,7 +312,7 @@ TEST_F(WiredTigerKVEngineTest, TestOplogTruncation) {
         // to 10 seconds to observe an asynchronous update that iterates once per second.
         for (auto iterations = 0; iterations < 100; ++iterations) {
             if (_engine->getPinnedOplog() >= newPinned) {
-                ASSERT_TRUE(_engine->getOplogNeededForCrashRecovery().value() >= newPinned);
+                ASSERT_TRUE(_engine->getOplogNeededForCrashRecovery().get() >= newPinned);
                 return;
             }
 
@@ -360,7 +349,7 @@ TEST_F(WiredTigerKVEngineTest, TestOplogTruncation) {
     _engine->setStableTimestamp(Timestamp(40, 1), false);
     // Await a new checkpoint. Oplog needed for rollback does not advance.
     sleepmillis(1100);
-    ASSERT_EQ(_engine->getOplogNeededForCrashRecovery().value(), Timestamp(30, 1));
+    ASSERT_EQ(_engine->getOplogNeededForCrashRecovery().get(), Timestamp(30, 1));
     _engine->setStableTimestamp(Timestamp(30, 1), false);
     callbackShouldFail.store(false);
     assertPinnedMovesSoon(Timestamp(40, 1));
@@ -376,7 +365,7 @@ TEST_F(WiredTigerKVEngineTest, IdentDrop) {
 
     auto opCtxPtr = _makeOperationContext();
 
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("a.b");
+    NamespaceString nss("a.b");
     std::string ident = "collection-1234";
     CollectionOptions defaultCollectionOptions;
 
@@ -525,38 +514,36 @@ TEST_F(WiredTigerKVEngineTest, WiredTigerDowngrade) {
 
     // (Generic FCV reference): When FCV is kLatest, no downgrade is necessary.
     serverGlobalParams.mutableFeatureCompatibility.setVersion(multiversion::GenericFCV::kLatest);
-    ASSERT_FALSE(version.shouldDowngrade(/*hasRecoveryTimestamp=*/false));
+    ASSERT_FALSE(version.shouldDowngrade(/*readOnly=*/false, /*hasRecoveryTimestamp=*/false));
     ASSERT_EQ(WiredTigerFileVersion::kLatestWTRelease, version.getDowngradeString());
 
     // (Generic FCV reference): When FCV is kLastContinuous or kLastLTS, a downgrade may be needed.
     serverGlobalParams.mutableFeatureCompatibility.setVersion(
         multiversion::GenericFCV::kLastContinuous);
-    ASSERT_TRUE(version.shouldDowngrade(/*hasRecoveryTimestamp=*/false));
+    ASSERT_TRUE(version.shouldDowngrade(/*readOnly=*/false, /*hasRecoveryTimestamp=*/false));
     ASSERT_EQ(WiredTigerFileVersion::kLastContinuousWTRelease, version.getDowngradeString());
 
     serverGlobalParams.mutableFeatureCompatibility.setVersion(multiversion::GenericFCV::kLastLTS);
-    ASSERT_TRUE(version.shouldDowngrade(/*hasRecoveryTimestamp=*/false));
+    ASSERT_TRUE(version.shouldDowngrade(/*readOnly=*/false, /*hasRecoveryTimestamp=*/false));
     ASSERT_EQ(WiredTigerFileVersion::kLastLTSWTRelease, version.getDowngradeString());
 
     // (Generic FCV reference): While we're in a semi-downgraded state, we shouldn't try downgrading
     // the WiredTiger compatibility version.
     serverGlobalParams.mutableFeatureCompatibility.setVersion(
         multiversion::GenericFCV::kDowngradingFromLatestToLastContinuous);
-    ASSERT_FALSE(version.shouldDowngrade(/*hasRecoveryTimestamp=*/false));
+    ASSERT_FALSE(version.shouldDowngrade(/*readOnly=*/false, /*hasRecoveryTimestamp=*/false));
     ASSERT_EQ(WiredTigerFileVersion::kLatestWTRelease, version.getDowngradeString());
 
     serverGlobalParams.mutableFeatureCompatibility.setVersion(
         multiversion::GenericFCV::kDowngradingFromLatestToLastLTS);
-    ASSERT_FALSE(version.shouldDowngrade(/*hasRecoveryTimestamp=*/false));
+    ASSERT_FALSE(version.shouldDowngrade(/*readOnly=*/false, /*hasRecoveryTimestamp=*/false));
     ASSERT_EQ(WiredTigerFileVersion::kLatestWTRelease, version.getDowngradeString());
 }
 
 TEST_F(WiredTigerKVEngineTest, TestReconfigureLog) {
     // Perform each test in their own limited scope in order to establish different
     // severity levels.
-
     {
-        auto opCtxRaii = _makeOperationContext();
         // Set the WiredTiger Checkpoint LOGV2 component severity to the Log level.
         auto severityGuard = unittest::MinimumLoggedSeverityGuard{
             logv2::LogComponent::kWiredTigerCheckpoint, logv2::LogSeverity::Log()};
@@ -566,14 +553,14 @@ TEST_F(WiredTigerKVEngineTest, TestReconfigureLog) {
         // Perform a checkpoint. The goal here is create some activity in WiredTiger in order
         // to generate verbose messages (we don't really care about the checkpoint itself).
         startCapturingLogMessages();
-        _engine->checkpoint(opCtxRaii.get());
+        _engine->checkpoint();
         stopCapturingLogMessages();
         // In this initial case, we don't expect to capture any debug checkpoint messages. The
         // base severity for the checkpoint component should be at Log().
         bool foundWTCheckpointMessage = false;
         for (auto&& bson : getCapturedBSONFormatLogMessages()) {
             if (bson["c"].String() == "WTCHKPT" &&
-                bson["attr"]["message"]["verbose_level"].String() == "DEBUG_1" &&
+                bson["attr"]["message"]["verbose_level"].String() == "DEBUG" &&
                 bson["attr"]["message"]["category"].String() == "WT_VERB_CHECKPOINT") {
                 foundWTCheckpointMessage = true;
             }
@@ -581,24 +568,23 @@ TEST_F(WiredTigerKVEngineTest, TestReconfigureLog) {
         ASSERT_FALSE(foundWTCheckpointMessage);
     }
     {
-        auto opCtxRaii = _makeOperationContext();
-        // Set the WiredTiger Checkpoint LOGV2 component severity to the Debug(2) level.
+        // Set the WiredTiger Checkpoint LOGV2 component severity to the Debug(1) level.
         auto severityGuard = unittest::MinimumLoggedSeverityGuard{
-            logv2::LogComponent::kWiredTigerCheckpoint, logv2::LogSeverity::Debug(2)};
+            logv2::LogComponent::kWiredTigerCheckpoint, logv2::LogSeverity::Debug(1)};
         ASSERT_OK(_engine->reconfigureLogging());
-        ASSERT_EQ(logv2::LogSeverity::Debug(2),
+        ASSERT_EQ(logv2::LogSeverity::Debug(1),
                   unittest::getMinimumLogSeverity(logv2::LogComponent::kWiredTigerCheckpoint));
 
         // Perform another checkpoint.
         startCapturingLogMessages();
-        _engine->checkpoint(opCtxRaii.get());
+        _engine->checkpoint();
         stopCapturingLogMessages();
 
         // This time we expect to detect WiredTiger checkpoint Debug() messages.
         bool foundWTCheckpointMessage = false;
         for (auto&& bson : getCapturedBSONFormatLogMessages()) {
             if (bson["c"].String() == "WTCHKPT" &&
-                bson["attr"]["message"]["verbose_level"].String() == "DEBUG_1" &&
+                bson["attr"]["message"]["verbose_level"].String() == "DEBUG" &&
                 bson["attr"]["message"]["category"].String() == "WT_VERB_CHECKPOINT") {
                 foundWTCheckpointMessage = true;
             }

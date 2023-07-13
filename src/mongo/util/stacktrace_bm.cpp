@@ -76,9 +76,7 @@ void BM_Baseline(benchmark::State& state) {
     RecursionParam param;
     size_t i = 0;
     param.n = state.range(0);
-    param.f = [&] {
-        ++i;
-    };
+    param.f = [&] { ++i; };
     for (auto _ : state) {
         benchmark::DoNotOptimize(recursionTest(param));
         ++items;

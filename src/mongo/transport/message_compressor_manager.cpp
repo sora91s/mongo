@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 #include "mongo/rpc/message.h"
 #include "mongo/transport/message_compressor_registry.h"
 #include "mongo/transport/session.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo {
 namespace {
@@ -322,7 +320,7 @@ void MessageCompressorManager::serverNegotiate(
 }
 
 MessageCompressorManager& MessageCompressorManager::forSession(
-    const std::shared_ptr<transport::Session>& session) {
+    const transport::SessionHandle& session) {
     return getForSession(session.get());
 }
 

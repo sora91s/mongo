@@ -75,7 +75,7 @@ public:
      * This stage does not modify anything.
      */
     GetModPathsReturn getModifiedPaths() const override {
-        return {GetModPathsReturn::Type::kFiniteSet, OrderedPathSet{}, {}};
+        return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>{}, {}};
     }
 
     /**
@@ -101,8 +101,6 @@ public:
     void push_back(const GetNextResult& result) {
         _queue.push_back(result);
     }
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
 
     static boost::intrusive_ptr<DocumentSource> createFromBson(
         BSONElement elem, const boost::intrusive_ptr<ExpressionContext>& expCtx);

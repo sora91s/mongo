@@ -32,7 +32,7 @@ global:
    cpp_namespace: "mongo"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 enums:
     ExchangePolicy:
@@ -50,25 +50,25 @@ structs:
       policy:
         type: ExchangePolicy
         description: A string indicating a policy of how documents are distributed to consumers.
-        stability: stable
+        unstable: false
       consumers:
         type: int
         description: Number of consumers.
-        stability: stable
+        unstable: false
       orderPreserving:
         type: bool
         default: false
         description: A flag indicating documents are merged while preserving the order.
-        stability: stable
+        unstable: false
       bufferSize:
         type: int
         default: 16777216
         description: The size of exchange buffers.
-        stability: stable
+        unstable: false
       key:
         type: object
         default: "BSONObj()"
-        stability: stable
+        unstable: false
         description: A key used for document distribution to consumers. The same description as
                      sorting/sharding. If the document entering the exchange does not have every
                      field listed here, or if any prefix of any path is multikey (i.e. an array is
@@ -78,10 +78,10 @@ structs:
         type: array<object>
         optional: true
         description: Range/hash split points.
-        stability: stable
+        unstable: false
       consumerIds:
         type: array<int>
         optional: true
         description: Mapping from a range index to a consumer id.
-        stability: stable
+        unstable: false
 

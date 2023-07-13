@@ -47,7 +47,7 @@ MongoRunner.stopMongod(conn);
 
 //
 
-conn = MongoRunner.runMongod({auth: ""});
+conn = MongoRunner.runMongod({auth: "", nojournal: ""});
 admin = conn.getDB("admin");
 
 // test that we can't run startSession unauthenticated when the server is running with --auth

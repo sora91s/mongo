@@ -12,13 +12,11 @@ import ExpandMoreIcon from "@material-ui/icons/ExpandMore";
 import MuiAccordion from "@material-ui/core/Accordion";
 import MuiAccordionSummary from "@material-ui/core/AccordionSummary";
 import MuiAccordionDetails from "@material-ui/core/AccordionDetails";
+import { socket } from "./connect";
 import useResizeAware from "react-resize-aware";
 
 import { getSelected } from "./redux/store";
 import { selectedGraphPaths, setSelectedPath } from "./redux/graphPaths";
-import { setGraphData } from "./redux/graphData";
-import { setLinks } from "./redux/links";
-import { setLinksTrans } from "./redux/linksTrans";
 
 import OverflowTooltip from "./OverflowTooltip";
 
@@ -65,21 +63,7 @@ const AccordionDetails = withStyles((theme) => ({
   },
 }))(MuiAccordionDetails);
 
-const GraphPaths = ({
-  nodes,
-  selectedGraph,
-  selectedNodes,
-  graphPaths,
-  setSelectedPath,
-  width,
-  selectedGraphPaths,
-  setGraphData,
-  setLinks,
-  setLinksTrans,
-  showTransitive,
-  transPathFrom,
-  transPathTo
-}) => {
+const GraphPaths = ({ selectedNodes, graphPaths, setSelectedPath, width }) => {
   const [fromNode, setFromNode] = React.useState("");
   const [toNode, setToNode] = React.useState("");
   const [fromNodeId, setFromNodeId] = React.useState(0);
@@ -105,72 +89,6 @@ const GraphPaths = ({
     },
   }));
   const classes = useStyles();
-  
-  React.useEffect(() => {
-    setFromNode(transPathFrom);
-    setFromNodeExpanded(false);
-    setToNode(transPathFrom);
-    setToNodeExpanded(false);
-    setPaneSize("50%");
-    if (transPathFrom != '' && transPathTo != '') {
-      getGraphPaths(transPathFrom, transPathTo);
-    } else {
-      selectedGraphPaths({
-        fromNode: '',
-        toNode: '',
-        paths: [],
-        selectedPath: -1
-      });
-    }
-  }, [transPathFrom, transPathTo]);
-
-  function getGraphPaths(fromNode, toNode) {
-    let gitHash = selectedGraph;
-    if (gitHash) {
-      let postData = {
-        "fromNode": fromNode,
-        "toNode": toNode
-      };
-      fetch('/api/graphs/' + gitHash + '/paths', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(postData)
-      })
-        .then(response => response.json())
-        .then(data => {
-          selectedGraphPaths(data);
-          let postData = {
-            "selected_nodes": nodes.filter(node => node.selected == true).map(node => node.node),
-            "extra_nodes": data.extraNodes,
-            "transitive_edges": showTransitive
-          };
-          fetch('/api/graphs/' + gitHash + '/d3', {
-              method: 'POST',
-              headers: {
-              'Content-Type': 'application/json'
-              },
-              body: JSON.stringify(postData)
-          })
-              .then(response => response.json())
-              .then(data => {
-                  setGraphData(data.graphData);
-                  setLinks(
-                    data.graphData.links.map((link) => {
-                      if (link.source == fromNode && link.target == toNode) {
-                        link.selected = true;
-                      } else {
-                        link.selected = false;
-                      }
-                      return link;
-                    })
-                  );
-                  setLinksTrans(data.graphData.links_trans);
-              });
-        });
-      }
-  }
 
   function toNodeRow({ index, style, data }) {
     return (
@@ -184,7 +102,11 @@ const GraphPaths = ({
           setToNodeExpanded(false);
           setPaneSize("50%");
           if (fromNode != "" && data[fromNodeId]) {
-            getGraphPaths(data[fromNodeId].node, data[index].node);
+            const nodes = {
+              fromNode: data[fromNodeId].node,
+              toNode: data[index].node,
+            };
+            socket.emit("receive_graph_paths", nodes);
           }
         }}
       >
@@ -206,7 +128,11 @@ const GraphPaths = ({
           setPaneSize("50%");
 
           if (toNode != "" && data[toNodeId]) {
-            getGraphPaths(data[fromNodeId].node, data[index].node);
+            const nodes = {
+              fromNode: data[index].node,
+              toNode: data[toNodeId].node,
+            };
+            socket.emit("receive_graph_paths", nodes);
           }
         }}
       >
@@ -363,6 +289,6 @@ const GraphPaths = ({
   );
 };
 
-export default connect(getSelected, { selectedGraphPaths, setSelectedPath, setGraphData, setLinks, setLinksTrans })(
+export default connect(getSelected, { selectedGraphPaths, setSelectedPath })(
   GraphPaths
 );

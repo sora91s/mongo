@@ -29,14 +29,13 @@
 
 #pragma once
 
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/s/migration_coordinator_document_gen.h"
-#include "mongo/db/session/logical_session_id.h"
 #include "mongo/s/catalog/type_chunk.h"
-#include "mongo/util/future.h"
 
 namespace mongo {
-namespace migrationutil {
 
+namespace migrationutil {
 /**
  * Manages the migration commit/abort process, including updates to config.rangeDeletions on the
  * donor and the recipient, and updates to the routing table on the config server.
@@ -50,9 +49,7 @@ public:
                          UUID collectionUuid,
                          ChunkRange range,
                          ChunkVersion preMigrationChunkVersion,
-                         const KeyPattern& shardKeyPattern,
                          bool waitForDelete);
-
     MigrationCoordinator(const MigrationCoordinatorDocument& doc);
     MigrationCoordinator(const MigrationCoordinator&) = delete;
     MigrationCoordinator& operator=(const MigrationCoordinator&) = delete;
@@ -90,7 +87,8 @@ public:
      * If the decision was to commit, returns a future that is set when range deletion for
      * the donated range completes.
      */
-    boost::optional<SharedSemiFuture<void>> completeMigration(OperationContext* opCtx);
+    boost::optional<SemiFuture<void>> completeMigration(OperationContext* opCtx,
+                                                        bool acquireCSOnRecipient);
 
     /**
      * Deletes the persistent state for this migration from config.migrationCoordinators.
@@ -110,24 +108,25 @@ private:
      * the donor as ready to be processed. Returns a future that is set when range deletion for
      * the donated range completes.
      */
-    SharedSemiFuture<void> _commitMigrationOnDonorAndRecipient(OperationContext* opCtx);
+    SemiFuture<void> _commitMigrationOnDonorAndRecipient(OperationContext* opCtx,
+                                                         bool acquireCSOnRecipient);
 
     /**
      * Deletes the range deletion task from the donor node and marks the range deletion task on the
      * recipient node as ready to be processed.
      */
-    void _abortMigrationOnDonorAndRecipient(OperationContext* opCtx);
+    void _abortMigrationOnDonorAndRecipient(OperationContext* opCtx, bool acquireCSOnRecipient);
 
     /**
-     * Waits for the completion of _releaseRecipientCriticalSectionFuture and ignores ShardNotFound
-     * exceptions.
+     * Waits for the completion of _releaseRecipientCriticalSectionFuture
      */
-    void _waitForReleaseRecipientCriticalSectionFutureIgnoreShardNotFound(OperationContext* opCtx);
+    void waitForReleaseRecipientCriticalSectionFuture(OperationContext* opCtx);
 
     MigrationCoordinatorDocument _migrationInfo;
-    boost::optional<KeyPattern> _shardKeyPattern;
     bool _waitForDelete = false;
     boost::optional<ExecutorFuture<void>> _releaseRecipientCriticalSectionFuture;
+    const bool _recoveringMigration =
+        false;  // TODO: SERVER-62316: Can be removed after 6.0 branches out
 };
 
 }  // namespace migrationutil

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -41,8 +42,6 @@
 #include "mongo/util/options_parser/startup_options.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 
@@ -52,27 +51,25 @@ namespace unittest {
 namespace moe = mongo::optionenvironment;
 
 namespace {
-boost::filesystem::path tempPathRoot;
+boost::filesystem::path defaultRoot;
 
-void setTempPathRoot(boost::filesystem::path root) {
-    if (!boost::filesystem::exists(root)) {
+MONGO_INITIALIZER(SetTempDirDefaultRoot)(InitializerContext* context) {
+    if (moe::startupOptionsParsed.count("tempPath")) {
+        defaultRoot = moe::startupOptionsParsed["tempPath"].as<string>();
+    } else {
+        defaultRoot = boost::filesystem::temp_directory_path();
+    }
+
+    if (!boost::filesystem::exists(defaultRoot)) {
         uasserted(ErrorCodes::BadValue,
-                  str::stream() << "Attempted to use a tempPath (" << root.string()
+                  str::stream() << "Attempted to use a tempPath (" << defaultRoot.string()
                                 << ") that doesn't exist");
     }
 
-    if (!boost::filesystem::is_directory(root)) {
+    if (!boost::filesystem::is_directory(defaultRoot)) {
         uasserted(ErrorCodes::BadValue,
-                  str::stream() << "Attempted to use a tempPath (" << root.string()
+                  str::stream() << "Attempted to use a tempPath (" << defaultRoot.string()
                                 << ") that exists, but isn't a directory");
-    }
-    tempPathRoot = std::move(root);
-}
-
-
-MONGO_INITIALIZER(SetTempDirDefaultRoot)(InitializerContext*) {
-    if (tempPathRoot.empty()) {
-        setTempPathRoot(boost::filesystem::temp_directory_path());
     }
 }
 }  // namespace
@@ -84,7 +81,7 @@ TempDir::TempDir(const std::string& namePrefix) {
     const boost::filesystem::path dirName =
         boost::filesystem::unique_path(namePrefix + "-%%%%-%%%%-%%%%-%%%%");
 
-    _path = (tempPathRoot / dirName).string();
+    _path = (defaultRoot / dirName).string();
 
     bool createdNewDirectory = boost::filesystem::create_directory(_path);
     if (!createdNewDirectory) {
@@ -92,13 +89,10 @@ TempDir::TempDir(const std::string& namePrefix) {
         fassertFailed(17147);
     }
 
-    LOGV2_DEBUG(23051, 1, "Created temporary directory: {path}", "path"_attr = _path);
+    LOGV2(23051, "Created temporary directory: {path}", "path"_attr = _path);
 }
 
 TempDir::~TempDir() {
-    if (_path.empty())
-        return;
-
     try {
         boost::filesystem::remove_all(_path);
     } catch (const std::exception& e) {
@@ -111,7 +105,8 @@ TempDir::~TempDir() {
 }
 
 void TempDir::setTempPath(string tempPath) {
-    setTempPathRoot(std::move(tempPath));
+    invariant(defaultRoot.empty());
+    defaultRoot = std::move(tempPath);
 }
 
 }  // namespace unittest

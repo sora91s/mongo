@@ -30,7 +30,6 @@
 #pragma once
 
 #include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
 #include <memory>
 #include <vector>
 
@@ -160,7 +159,7 @@ private:
     /**
      * Put all results from a query batch into a buffer, and schedule it to be written to disk.
      */
-    void handleNextBatch(DBClientCursor& cursor);
+    void handleNextBatch(DBClientCursorBatchIterator& iter);
 
     /**
      * Called whenever there is a new batch of documents ready from the DBClientConnection.

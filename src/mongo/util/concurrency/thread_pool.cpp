@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kExecutor
 
 #include "mongo/platform/basic.h"
 
@@ -47,9 +48,6 @@
 #include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/hierarchical_acquisition.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kExecutor
-
 
 namespace mongo {
 
@@ -465,9 +463,7 @@ void ThreadPool::Impl::_consumeTasks() {
                         "minThreads"_attr = _options.minThreads);
         }
 
-        auto wake = [&] {
-            return _state != running || !_pendingTasks.empty();
-        };
+        auto wake = [&] { return _state != running || !_pendingTasks.empty(); };
         MONGO_IDLE_THREAD_BLOCK;
         if (waitDeadline) {
             _workAvailable.wait_until(lk, waitDeadline->toSystemTimePoint(), wake);

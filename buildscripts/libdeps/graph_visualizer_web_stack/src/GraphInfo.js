@@ -9,7 +9,6 @@ import TableRow from "@material-ui/core/TableRow";
 import Paper from "@material-ui/core/Paper";
 import { connect } from "react-redux";
 import { getCounts } from "./redux/store";
-import { setCounts } from "./redux/counts";
 
 const columns = [
   { id: "ID", field: "type", headerName: "Count Type", width: 50 },
@@ -22,18 +21,7 @@ const useStyles = makeStyles({
   },
 });
 
-const GraphInfo = ({ selectedGraph, counts, datawidth, setCounts }) => {
-  React.useEffect(() => {
-    let gitHash = selectedGraph;
-    if (gitHash) {
-      fetch('/api/graphs/' + gitHash + '/analysis')
-        .then(response => response.json())
-        .then(data => {
-          setCounts(data.results);
-        });
-    }
-  }, [selectedGraph]);
-  
+const GraphInfo = ({ counts, datawidth }) => {
   const classes = useStyles();
 
   return (
@@ -61,4 +49,4 @@ const GraphInfo = ({ selectedGraph, counts, datawidth, setCounts }) => {
   );
 };
 
-export default connect(getCounts, { setCounts })(GraphInfo);
+export default connect(getCounts)(GraphInfo);

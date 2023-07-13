@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kExecutor
 
 #include "mongo/platform/basic.h"
 
@@ -35,14 +36,15 @@
 #include "mongo/db/server_options.h"
 #include "mongo/logv2/log.h"
 #include "mongo/stdx/thread.h"
+#include "mongo/transport/service_executor_gen.h"
 #include "mongo/transport/service_executor_utils.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/thread_safety_context.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kExecutor
-
-
 namespace mongo {
+void initMyServiceExecutorReserved() {
+    
+}
 namespace transport {
 namespace {
 
@@ -68,6 +70,7 @@ const auto serviceExecutorReservedRegisterer = ServiceContext::ConstructorAction
 }  // namespace
 
 thread_local std::deque<ServiceExecutor::Task> ServiceExecutorReserved::_localWorkQueue = {};
+thread_local int ServiceExecutorReserved::_localRecursionDepth = 0;
 thread_local int64_t ServiceExecutorReserved::_localThreadIdleCounter = 0;
 
 ServiceExecutorReserved::ServiceExecutorReserved(ServiceContext* ctx,
@@ -142,7 +145,8 @@ Status ServiceExecutorReserved::_startWorker() {
 
             _localWorkQueue.emplace_back(std::move(task));
             while (!_localWorkQueue.empty() && _stillRunning.loadRelaxed()) {
-                _localWorkQueue.front()(Status::OK());
+                _localRecursionDepth = 1;
+                _localWorkQueue.front()();
                 _localWorkQueue.pop_front();
             }
 
@@ -186,20 +190,31 @@ Status ServiceExecutorReserved::shutdown(Milliseconds timeout) {
                  "reserved executor couldn't shutdown all worker threads within time limit.");
 }
 
-void ServiceExecutorReserved::_schedule(Task task) {
+Status ServiceExecutorReserved::scheduleTask(Task task, ScheduleFlags flags) {
     if (!_stillRunning.load()) {
-        task(Status(ErrorCodes::ShutdownInProgress, "Executor is not running"));
-        return;
+        return Status{ErrorCodes::ShutdownInProgress, "Executor is not running"};
     }
 
     if (!_localWorkQueue.empty()) {
-        _localWorkQueue.emplace_back(std::move(task));
-        return;
+        // Execute task directly (recurse) if allowed by the caller as it produced better
+        // performance in testing. Try to limit the amount of recursion so we don't blow up the
+        // stack, even though this shouldn't happen with this executor that uses blocking
+        // network I/O.
+        if (((flags & ScheduleFlags::kMayRecurse) != ScheduleFlags{}) &&
+            (_localRecursionDepth < reservedServiceExecutorRecursionLimit.loadRelaxed())) {
+            ++_localRecursionDepth;
+            task();
+        } else {
+            _localWorkQueue.emplace_back(std::move(task));
+        }
+        return Status::OK();
     }
 
     stdx::lock_guard<Latch> lk(_mutex);
     _readyTasks.push_back(std::move(task));
     _threadWakeup.notify_one();
+
+    return Status::OK();
 }
 
 void ServiceExecutorReserved::appendStats(BSONObjBuilder* bob) const {
@@ -228,44 +243,9 @@ void ServiceExecutorReserved::appendStats(BSONObjBuilder* bob) const {
     subbob.append(kClientsWaiting, statlet.waiting);
 }
 
-/**
- * Schedules task immediately, on the assumption that The task will block to
- * receive the next message and we don't mind blocking on this dedicated
- * worker thread.
- */
-void ServiceExecutorReserved::_runOnDataAvailable(const std::shared_ptr<Session>& session,
-                                                  Task task) {
-    invariant(session);
-    _schedule([this, session, callback = std::move(task)](Status status) {
-        yieldIfAppropriate();
-        if (!status.isOK()) {
-            callback(std::move(status));
-            return;
-        }
-        callback(session->waitForData());
-    });
-}
-
-auto ServiceExecutorReserved::makeTaskRunner() -> std::unique_ptr<TaskRunner> {
-    iassert(ErrorCodes::ShutdownInProgress, "Executor is not running", _stillRunning.load());
-
-    /** Schedules on this. */
-    class ForwardingTaskRunner : public TaskRunner {
-    public:
-        explicit ForwardingTaskRunner(ServiceExecutorReserved* e) : _e{e} {}
-
-        void schedule(Task task) override {
-            _e->_schedule(std::move(task));
-        }
-
-        void runOnDataAvailable(std::shared_ptr<Session> session, Task task) override {
-            _e->_runOnDataAvailable(std::move(session), std::move(task));
-        }
-
-    private:
-        ServiceExecutorReserved* _e;
-    };
-    return std::make_unique<ForwardingTaskRunner>(this);
+void ServiceExecutorReserved::runOnDataAvailable(const SessionHandle& session,
+                                                 OutOfLineExecutor::Task onCompletionCallback) {
+    scheduleCallbackOnDataAvailable(session, std::move(onCompletionCallback), this);
 }
 
 }  // namespace transport

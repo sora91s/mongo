@@ -9,6 +9,7 @@
  *   reads with atClusterTime < rejectReadsBeforeTimestamp until the state doc is garbage collected.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -17,13 +18,15 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {runMigrationAsync} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+'use strict';
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/uuid_util.js");
-load("jstests/replsets/rslib.js");  // 'createRstArgs'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
+load("jstests/replsets/rslib.js");
 
 const kCollName = "testColl";
 const kTenantDefinedDbName = "0";
@@ -67,8 +70,9 @@ function testRejectAllReadsAfterCloningDone({testCase, dbName, collName, tenantM
     let beforeFetchingTransactionsFp = configureFailPoint(
         recipientPrimary, "fpBeforeFetchingCommittedTransactions", {action: "hang"});
 
-    const donorRstArgs = createRstArgs(donorRst);
-    const runMigrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
+    const runMigrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
     runMigrationThread.start();
     beforeFetchingTransactionsFp.wait();
 
@@ -115,8 +119,9 @@ function testRejectOnlyReadsWithAtClusterTimeLessThanRejectReadsBeforeTimestamp(
     let waitForRejectReadsBeforeTsFp = configureFailPoint(
         recipientPrimary, "fpAfterWaitForRejectReadsBeforeTimestamp", {action: "hang"});
 
-    const donorRstArgs = createRstArgs(donorRst);
-    const runMigrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
+    const runMigrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
     runMigrationThread.start();
     waitForRejectReadsBeforeTsFp.wait();
 
@@ -127,7 +132,7 @@ function testRejectOnlyReadsWithAtClusterTimeLessThanRejectReadsBeforeTimestamp(
 
     const recipientDoc =
         recipientPrimary.getCollection(TenantMigrationTest.kConfigRecipientsNS).findOne({
-            _id: UUID(migrationOpts.migrationIdString),
+            tenantId: tenantId
         });
     assert.lt(preMigrationTimestamp, recipientDoc.rejectReadsBeforeTimestamp);
 
@@ -272,7 +277,7 @@ function testDoNotRejectReadsAfterMigrationAbortedAfterReachingRejectReadsBefore
 
     const recipientDoc =
         recipientPrimary.getCollection(TenantMigrationTest.kConfigRecipientsNS).findOne({
-            _id: UUID(migrationOpts.migrationIdString),
+            tenantId: tenantId
         });
 
     const nodes = testCase.isSupportedOnSecondaries ? recipientRst.nodes : [recipientPrimary];
@@ -417,9 +422,8 @@ const tenantMigrationTest = new TenantMigrationTest({
 });
 for (const [testName, testFunc] of Object.entries(testFuncs)) {
     for (const [testCaseName, testCase] of Object.entries(testCases)) {
-        let tenantId = ObjectId().str;
-        jsTest.log("Testing " + testName + " with testCase " + testCaseName + " with tenantId " +
-                   tenantId);
+        jsTest.log("Testing " + testName + " with testCase " + testCaseName);
+        let tenantId = `${testCaseName}-${testName}`;
         let migrationDb = `${tenantId}_test`;
         tenantMigrationTest.insertDonorDB(migrationDb, "test");
         let dbName = `${tenantId}_${kTenantDefinedDbName}`;
@@ -442,3 +446,4 @@ for (const [testName, testFunc] of Object.entries(testFuncs)) {
     }
 }
 tenantMigrationTest.stop();
+})();

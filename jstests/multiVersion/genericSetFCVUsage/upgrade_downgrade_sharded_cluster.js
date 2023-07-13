@@ -18,6 +18,12 @@ load("jstests/libs/feature_flag_util.js");
 
 const dbName = jsTestName();
 
+var orphansTrackingFeatureFlagEnabled;
+
+const kRangeDeletionNs = "config.rangeDeletions";
+const testOrphansTrackingNS = dbName + '.testOrphansTracking';
+const numOrphanedDocs = 10;
+
 function setupClusterAndDatabase(binVersion) {
     const st = new ShardingTest({
         mongos: 1,
@@ -28,8 +34,10 @@ function setupClusterAndDatabase(binVersion) {
             configOptions: {binVersion: binVersion},
             rsOptions: {
                 binVersion: binVersion,
+                setParameter: {disableResumableRangeDeleter: true},
             },
             rs: {nodes: 2},
+            enableBalancer: false
         }
     });
     st.configRS.awaitReplication();
@@ -37,41 +45,33 @@ function setupClusterAndDatabase(binVersion) {
     assert.commandWorked(
         st.s.adminCommand({enableSharding: dbName, primaryShard: st.shard0.shardName}));
 
+    orphansTrackingFeatureFlagEnabled =
+        FeatureFlagUtil.isEnabled(st.configRS.getPrimary().getDB('admin'), "OrphanTracking");
+
+    if (orphansTrackingFeatureFlagEnabled) {
+        TestData.skipCheckOrphans = true;
+        // - Shard collection (one big chunk on shard0)
+        // - Insert data in range [0, MaxKey)
+        // - Split chunk at 0
+        // - Move chunks [0, MaxKey] on shard1
+        assert.commandWorked(
+            st.s.adminCommand({shardCollection: testOrphansTrackingNS, key: {_id: 1}}));
+        var batch = st.s.getCollection(testOrphansTrackingNS).initializeOrderedBulkOp();
+        for (var i = 0; i < numOrphanedDocs; i++) {
+            batch.insert({_id: i});
+        }
+        assert.commandWorked(batch.execute());
+        assert.commandWorked(st.splitAt(testOrphansTrackingNS, {_id: 0}));
+        st.s.adminCommand(
+            {moveChunk: testOrphansTrackingNS, find: {_id: 0}, to: st.shard1.shardName});
+    }
+
     return st;
 }
 
 function getNodeName(node) {
     const info = node.adminCommand({hello: 1});
     return info.setName + '_' + (info.secondary ? 'secondary' : 'primary');
-}
-
-function checkConfigVersionDoc() {
-    // TODO: SERVER-68889 remove this function once 7.0 becomes last LTS
-    const versionDoc = st.s.getCollection('config.version').findOne();
-
-    if (FeatureFlagUtil.isPresentAndEnabled(st.s, "StopUsingConfigVersion")) {
-        // Check that the version doc doesn't contain any of the deprecatedFields
-        const deprecatedFields = [
-            "excluding",
-            "upgradeId",
-            "upgradeState",
-            "currentVersion",
-            "minCompatibleVersion",
-        ];
-
-        deprecatedFields.forEach(deprecatedField => {
-            assert(!versionDoc.hasOwnProperty(deprecatedField),
-                   `Found deprecated field '${deprecatedField}' in version document ${
-                       tojson(versionDoc)}`);
-        });
-    } else {
-        assert.eq(versionDoc.minCompatibleVersion,
-                  5,
-                  "Version doc does not contain expected value for minCompatibleVersion field");
-        assert.eq(versionDoc.currentVersion,
-                  6,
-                  "Version doc does not contain expected value for currentVersion field");
-    }
 }
 
 function checkConfigAndShardsFCV(expectedFCV) {
@@ -96,25 +96,31 @@ function checkConfigAndShardsFCV(expectedFCV) {
 
 function checkClusterBeforeUpgrade(fcv) {
     checkConfigAndShardsFCV(fcv);
-    checkConfigVersionDoc();
 }
 
 function checkClusterAfterBinaryUpgrade() {
-    checkConfigVersionDoc();
+    // To implement in the future, if necessary.
 }
 
 function checkClusterAfterFCVUpgrade(fcv) {
     checkConfigAndShardsFCV(fcv);
-    checkConfigVersionDoc();
+    assert(orphansTrackingFeatureFlagEnabled != undefined);
+    if (orphansTrackingFeatureFlagEnabled) {
+        var doc = st.shard0.getCollection(kRangeDeletionNs).findOne({nss: testOrphansTrackingNS});
+        assert.eq(numOrphanedDocs, doc.numOrphanDocs);
+    }
 }
 
 function checkClusterAfterFCVDowngrade() {
-    checkConfigVersionDoc();
+    assert(orphansTrackingFeatureFlagEnabled != undefined);
+    if (orphansTrackingFeatureFlagEnabled) {
+        var doc = st.shard0.getCollection(kRangeDeletionNs).findOne({nss: testOrphansTrackingNS});
+        assert.eq(undefined, doc.numOrphanDocs);
+    }
 }
 
 function checkClusterAfterBinaryDowngrade(fcv) {
     checkConfigAndShardsFCV(fcv);
-    checkConfigVersionDoc();
 }
 
 for (const oldVersion of [lastLTSFCV, lastContinuousFCV]) {
@@ -148,7 +154,7 @@ for (const oldVersion of [lastLTSFCV, lastContinuousFCV]) {
     checkClusterAfterFCVDowngrade();
 
     jsTest.log('Downgrading binaries to version ' + oldVersion);
-    st.downgradeCluster(oldVersion);
+    st.upgradeCluster(oldVersion);
 
     checkClusterAfterBinaryDowngrade(oldVersion);
 

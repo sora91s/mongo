@@ -214,7 +214,8 @@ public:
 
     /**
      * Verifies that the pipeline contains valid stages. Optionally calls
-     * 'validatePipelineStagesforAPIVersion' with 'opCtx'.
+     * 'validatePipelineStagesforAPIVersion' with 'opCtx', and throws UserException if there is
+     * more than one $_internalUnpackBucket stage in the pipeline.
      */
     void validate(const OperationContext* opCtx, bool performApiVersionChecks = true) const;
 

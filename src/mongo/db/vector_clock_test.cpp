@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -43,14 +44,10 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source_mock.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo {
 namespace {
 
-const NamespaceString kDummyNamespaceString =
-    NamespaceString::createNamespaceString_forTest("test", "foo");
+const NamespaceString kDummyNamespaceString("test", "foo");
 
 using VectorClockTest = VectorClockTestFixture;
 
@@ -147,7 +144,7 @@ TEST_F(VectorClockTest, WritesToOplogAdvanceClusterTime) {
     VectorClockMutable::get(getServiceContext())->tickClusterTimeTo(initialTime);
     ASSERT_EQ(getClusterTime(), initialTime);
 
-    getDBClient()->insert(kDummyNamespaceString, BSON("x" << 1));
+    getDBClient()->insert(kDummyNamespaceString.ns(), BSON("x" << 1));
     ASSERT_GT(getClusterTime(), initialTime);
     ASSERT_EQ(getClusterTime().asTimestamp(),
               replicationCoordinator()->getMyLastAppliedOpTime().getTimestamp());
@@ -172,7 +169,7 @@ TEST_F(VectorClockTest, WallClockSetTooFarInPast) {
 
     // If cluster time is either uninitialized or even farther in the past, a write would set
     // cluster time more than maxAcceptableLogicalClockDriftSecs in the past.
-    getDBClient()->insert(kDummyNamespaceString, BSON("x" << 1));
+    getDBClient()->insert(kDummyNamespaceString.ns(), BSON("x" << 1));
     ASSERT_LT(getClusterTime(),
               LogicalTime(
                   Timestamp(currentSecs - Seconds(kMaxAcceptableLogicalClockDriftSecsDefault), 0)));
@@ -203,7 +200,7 @@ TEST_F(VectorClockTest, WallClockSetTooFarInFuture) {
 
     // A write gets through and advances cluster time more than maxAcceptableLogicalClockDriftSecs
     // in the future.
-    getDBClient()->insert(kDummyNamespaceString, BSON("x" << 1));
+    getDBClient()->insert(kDummyNamespaceString.ns(), BSON("x" << 1));
     ASSERT_GT(getClusterTime(),
               LogicalTime(
                   Timestamp(currentSecs + Seconds(kMaxAcceptableLogicalClockDriftSecsDefault), 0)));

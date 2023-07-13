@@ -31,7 +31,6 @@
 
 #include "mongo/db/exec/sbe/stages/merge_join.h"
 
-#include "mongo/db/exec/sbe/expressions/compile_ctx.h"
 #include "mongo/db/exec/sbe/expressions/expression.h"
 #include "mongo/db/exec/sbe/size_estimator.h"
 #include "mongo/util/str.h"
@@ -77,9 +76,8 @@ MergeJoinStage::MergeJoinStage(std::unique_ptr<PlanStage> outer,
                                value::SlotVector innerKeys,
                                value::SlotVector innerProjects,
                                std::vector<value::SortDirection> sortDirs,
-                               PlanNodeId planNodeId,
-                               bool participateInTrialRunTracking)
-    : PlanStage("mj"_sd, planNodeId, participateInTrialRunTracking),
+                               PlanNodeId planNodeId)
+    : PlanStage("mj"_sd, planNodeId),
       _outerKeys(std::move(outerKeys)),
       _outerProjects(std::move(outerProjects)),
       _innerKeys(std::move(innerKeys)),
@@ -106,8 +104,7 @@ std::unique_ptr<PlanStage> MergeJoinStage::clone() const {
                                             _innerKeys,
                                             _innerProjects,
                                             _dirs,
-                                            _commonStats.nodeId,
-                                            _participateInTrialRunTracking);
+                                            _commonStats.nodeId);
 }
 
 void MergeJoinStage::prepare(CompileCtx& ctx) {
@@ -326,13 +323,13 @@ void MergeJoinStage::close() {
 }
 
 void MergeJoinStage::doSaveState(bool relinquishCursor) {
-    if (!relinquishCursor) {
+    if (!slotsAccessible() || !relinquishCursor) {
         return;
     }
 
     // We only have to save shallow non-owning materialized rows.
-    prepareForYielding(_currentOuterKey, true);
-    prepareForYielding(_currentInnerKey, true);
+    prepareForYielding(_currentOuterKey);
+    prepareForYielding(_currentInnerKey);
 }
 
 std::unique_ptr<PlanStageStats> MergeJoinStage::getStats(bool includeDebugInfo) const {

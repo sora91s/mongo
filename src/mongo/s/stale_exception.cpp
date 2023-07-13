@@ -30,10 +30,12 @@
 #include "mongo/s/stale_exception.h"
 
 #include "mongo/base/init.h"
-#include "mongo/s/shard_version.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
+void initMyStaleException() {
+    
+}
 namespace {
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(StaleConfigInfo);
@@ -44,27 +46,36 @@ MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(StaleDbRoutingVersion);
 
 void StaleConfigInfo::serialize(BSONObjBuilder* bob) const {
     bob->append("ns", _nss.ns());
-    _received.serialize("vReceived", bob);
-    if (_wanted)
-        _wanted->serialize("vWanted", bob);
+    _received.appendLegacyWithField(bob, "vReceived");
+    if (_wanted) {
+        _wanted->appendLegacyWithField(bob, "vWanted");
+    }
 
     invariant(_shardId != "");
     bob->append("shardId", _shardId.toString());
 }
 
 std::shared_ptr<const ErrorExtraInfo> StaleConfigInfo::parse(const BSONObj& obj) {
-    auto shardId = obj["shardId"].String();
+    const auto shardId = obj["shardId"].String();
     uassert(ErrorCodes::NoSuchKey, "The shardId field is missing", !shardId.empty());
+
+    auto extractOptionalChunkVersion = [&obj](StringData field) -> boost::optional<ChunkVersion> {
+        try {
+            return ChunkVersion::fromBSONLegacyOrNewerFormat(obj, field);
+        } catch (const DBException& ex) {
+            auto status = ex.toStatus();
+            if (status != ErrorCodes::NoSuchKey) {
+                throw;
+            }
+        }
+        return boost::none;
+    };
 
     return std::make_shared<StaleConfigInfo>(
         NamespaceString(obj["ns"].String()),
-        ShardVersion::parse(obj["vReceived"]),
-        [&] {
-            if (auto vWantedElem = obj["vWanted"])
-                return boost::make_optional(ShardVersion::parse(vWantedElem));
-            return boost::optional<ShardVersion>();
-        }(),
-        ShardId(std::move(shardId)));
+        ChunkVersion::fromBSONLegacyOrNewerFormat(obj, "vReceived"),
+        extractOptionalChunkVersion("vWanted"),
+        ShardId(shardId));
 }
 
 void StaleEpochInfo::serialize(BSONObjBuilder* bob) const {

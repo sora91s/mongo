@@ -28,8 +28,6 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/bson/bson_validate',
-        '$BUILD_DIR/mongo/bson/util/bson_column',
     ],
 )
 
@@ -40,7 +38,6 @@ env.Benchmark(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/bson/bson_validate',
     ],
 )
 
@@ -52,12 +49,8 @@ env.CppLibfuzzerTest(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/bson/bson_validate',
     ],
 )
-
-env.Library(target='bson_validate', source=['bson_validate.cpp'],
-            LIBDEPS_PRIVATE=['$BUILD_DIR/mongo/bson/util/bson_column'])
 
 asioEnv = env.Clone()
 asioEnv.InjectThirdParty('asio')
@@ -65,7 +58,7 @@ asioEnv.InjectThirdParty('asio')
 asioEnv.CppIntegrationTest(
     target='bson_integration_test',
     source=[
-        'ugly_bson_integration_test.cpp',
+        'ugly_bson_integration_test.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/executor/network_interface',

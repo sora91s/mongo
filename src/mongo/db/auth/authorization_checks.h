@@ -32,6 +32,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/auth/user_set.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/write_ops.h"
@@ -78,7 +79,7 @@ Status checkAuthForDelete(AuthorizationSession* authSession,
 // identifier.
 Status checkAuthForKillCursors(AuthorizationSession* authSession,
                                const NamespaceString& cursorNss,
-                               const boost::optional<UserName>& cursorOwner);
+                               UserNameIterator cursorOwner);
 
 // Attempts to get the privileges necessary to run the aggregation pipeline specified in
 // 'request' on the namespace 'ns' either directly on mongoD or via mongoS.
@@ -89,15 +90,13 @@ StatusWith<PrivilegeVector> getPrivilegesForAggregate(AuthorizationSession* auth
 
 // Checks if this connection has the privileges necessary to create 'ns' with the options
 // supplied in 'cmdObj' either directly on mongoD or via mongoS.
-Status checkAuthForCreate(OperationContext* opCtx,
-                          AuthorizationSession* authSession,
+Status checkAuthForCreate(AuthorizationSession* authSession,
                           const CreateCommand& cmd,
                           bool isMongos);
 
 // Checks if this connection has the privileges necessary to modify 'ns' with the options
 // supplied in 'cmdObj' either directly on mongoD or via mongoS.
-Status checkAuthForCollMod(OperationContext* opCtx,
-                           AuthorizationSession* authSession,
+Status checkAuthForCollMod(AuthorizationSession* authSession,
                            const NamespaceString& ns,
                            const BSONObj& cmdObj,
                            bool isMongos);

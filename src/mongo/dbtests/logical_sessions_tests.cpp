@@ -33,17 +33,17 @@
 
 #include "mongo/client/index_spec.h"
 #include "mongo/db/dbdirectclient.h"
+#include "mongo/db/logical_session_id.h"
+#include "mongo/db/logical_session_id_helpers.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/session/logical_session_id.h"
-#include "mongo/db/session/logical_session_id_helpers.h"
-#include "mongo/db/session/sessions_collection_standalone.h"
+#include "mongo/db/sessions_collection_standalone.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
 namespace {
 
-const NamespaceString kTestNS("config.system.sessions");
+constexpr StringData kTestNS = "config.system.sessions"_sd;
 
 LogicalSessionRecord makeRecord(Date_t time = Date_t::now()) {
     auto record = makeLogicalSessionRecordForTest();
@@ -53,14 +53,14 @@ LogicalSessionRecord makeRecord(Date_t time = Date_t::now()) {
 
 Status insertRecord(OperationContext* opCtx, LogicalSessionRecord record) {
     DBDirectClient client(opCtx);
-    auto response = client.insertAcknowledged(kTestNS, {record.toBSON()});
+    auto response = client.insertAcknowledged(kTestNS.toString(), {record.toBSON()});
     return getStatusFromWriteCommandReply(response);
 }
 
 StatusWith<LogicalSessionRecord> fetchRecord(OperationContext* opCtx,
                                              const LogicalSessionId& lsid) {
     DBDirectClient client(opCtx);
-    FindCommandRequest findRequest{kTestNS};
+    FindCommandRequest findRequest{NamespaceString{kTestNS}};
     findRequest.setFilter(BSON(LogicalSessionRecord::kIdFieldName << lsid.toBSON()));
     findRequest.setLimit(1);
     auto cursor = client.find(std::move(findRequest));
@@ -69,7 +69,7 @@ StatusWith<LogicalSessionRecord> fetchRecord(OperationContext* opCtx,
     }
 
     try {
-        IDLParserContext ctx("LogicalSessionRecord");
+        IDLParserErrorContext ctx("LogicalSessionRecord");
         return LogicalSessionRecord::parse(ctx, cursor->next());
     } catch (...) {
         return exceptionToStatus();
@@ -82,12 +82,12 @@ public:
         : _collection(std::make_unique<SessionsCollectionStandalone>()) {
         _opCtx = cc().makeOperationContext();
         DBDirectClient db(opCtx());
-        db.remove(nss(), BSONObj());
+        db.remove(ns(), BSONObj());
     }
 
     virtual ~SessionsCollectionStandaloneTest() {
         DBDirectClient db(opCtx());
-        db.remove(nss(), BSONObj());
+        db.remove(ns(), BSONObj());
         _opCtx.reset();
     }
 
@@ -99,8 +99,8 @@ public:
         return _opCtx.get();
     }
 
-    const NamespaceString& nss() const {
-        return NamespaceString::kLogicalSessionsNamespace;
+    const std::string& ns() const {
+        return NamespaceString::kLogicalSessionsNamespace.ns();
     }
 
 private:
@@ -155,7 +155,7 @@ public:
         ASSERT_GTE(swRecord.getValue().getLastUse(), now);
 
         // Clear the collection.
-        db.remove(nss(), BSONObj());
+        db.remove(ns(), BSONObj());
 
         // Attempt to refresh a record that is not present, should upsert it.
         auto record2 = makeRecord(thePast);
@@ -165,7 +165,7 @@ public:
         ASSERT(swRecord.isOK());
 
         // Clear the collection.
-        db.remove(nss(), BSONObj());
+        db.remove(ns(), BSONObj());
 
         // Attempt a refresh of many records, split into batches.
         LogicalSessionRecordSet toRefresh;
@@ -187,7 +187,7 @@ public:
         collection()->refreshSessions(opCtx(), toRefresh);
 
         // Ensure that the right number of timestamps were updated.
-        auto n = db.count(nss(), BSON("lastUse" << now));
+        auto n = db.count(NamespaceString(ns()), BSON("lastUse" << now));
         ASSERT_EQ(n, notRefreshed);
     }
 };

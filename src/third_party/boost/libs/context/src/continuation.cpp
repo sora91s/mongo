@@ -8,6 +8,8 @@
 #include "boost/context/continuation_ucontext.hpp"
 #elif defined(BOOST_USE_WINFIB)
 #include "boost/context/continuation_winfib.hpp"
+#else
+#include "boost/context/execution_context.hpp"
 #endif
 
 #include <boost/config.hpp>

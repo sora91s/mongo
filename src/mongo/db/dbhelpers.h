@@ -88,7 +88,8 @@ struct Helpers {
      * Returns true if a matching document was found.
      */
     static bool findById(OperationContext* opCtx,
-                         const NamespaceString& nss,
+                         Database* db,
+                         StringData ns,
                          BSONObj query,
                          BSONObj& result,
                          bool* nsFound = nullptr,
@@ -110,18 +111,18 @@ struct Helpers {
      *
      * Returns false if there is no such object.
      */
-    static bool getSingleton(OperationContext* opCtx, const NamespaceString& nss, BSONObj& result);
+    static bool getSingleton(OperationContext* opCtx, const char* ns, BSONObj& result);
 
     /**
      * Same as getSingleton, but with a reverse natural-order scan on "ns".
      */
-    static bool getLast(OperationContext* opCtx, const NamespaceString& nss, BSONObj& result);
+    static bool getLast(OperationContext* opCtx, const char* ns, BSONObj& result);
 
     /**
      * Performs an upsert of "obj" into the collection "ns", with an empty update predicate.
      * Callers must have "ns" locked.
      */
-    static void putSingleton(OperationContext* opCtx, const NamespaceString& nss, BSONObj obj);
+    static void putSingleton(OperationContext* opCtx, const char* ns, BSONObj obj);
 
     /**
      * Callers are expected to hold the collection lock.
@@ -129,7 +130,7 @@ struct Helpers {
      * o has to have an _id field or will assert
      */
     static UpdateResult upsert(OperationContext* opCtx,
-                               const NamespaceString& nss,
+                               const std::string& ns,
                                const BSONObj& o,
                                bool fromMigrate = false);
 
@@ -140,7 +141,7 @@ struct Helpers {
      * on the same storage snapshot.
      */
     static UpdateResult upsert(OperationContext* opCtx,
-                               const NamespaceString& nss,
+                               const std::string& ns,
                                const BSONObj& filter,
                                const BSONObj& updateMod,
                                bool fromMigrate = false);
@@ -152,7 +153,7 @@ struct Helpers {
      * on the same storage snapshot.
      */
     static void update(OperationContext* opCtx,
-                       const NamespaceString& nss,
+                       const std::string& ns,
                        const BSONObj& filter,
                        const BSONObj& updateMod,
                        bool fromMigrate = false);

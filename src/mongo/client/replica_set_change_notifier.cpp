@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/stacktrace.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo {
 
@@ -62,7 +60,7 @@ void ReplicaSetChangeNotifier::onFoundSet(const std::string& name) noexcept {
     auto listeners = _listeners;
     lk.unlock();
 
-    for (const auto& listener : listeners) {
+    for (auto listener : listeners) {
         if (auto l = listener.lock()) {
             l->onFoundSet(name);
         }
@@ -93,7 +91,7 @@ void ReplicaSetChangeNotifier::onPossibleSet(ConnectionString connectionString) 
     auto listeners = _listeners;
     lk.unlock();
 
-    for (const auto& listener : listeners) {
+    for (auto listener : listeners) {
         if (auto l = listener.lock()) {
             l->onPossibleSet(state);
         }
@@ -127,7 +125,7 @@ void ReplicaSetChangeNotifier::onConfirmedSet(ConnectionString connectionString,
     auto listeners = _listeners;
     lk.unlock();
 
-    for (const auto& listener : listeners) {
+    for (auto listener : listeners) {
         if (auto l = listener.lock()) {
             l->onConfirmedSet(state);
         }
@@ -154,7 +152,7 @@ void ReplicaSetChangeNotifier::onDroppedSet(const std::string& name) noexcept {
     auto listeners = _listeners;
     lk.unlock();
 
-    for (const auto& listener : listeners) {
+    for (auto listener : listeners) {
         if (auto l = listener.lock()) {
             l->onDroppedSet(name);
         }

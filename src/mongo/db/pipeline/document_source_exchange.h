@@ -247,11 +247,6 @@ public:
         return _consumerId;
     }
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {
-        // Any correlation analysis should have happened before this stage was created.
-        MONGO_UNREACHABLE;
-    }
-
 private:
     GetNextResult doGetNext() final;
 

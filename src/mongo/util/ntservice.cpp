@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #if defined(_WIN32)
 
@@ -42,14 +43,11 @@
 #include "mongo/stdx/thread.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/exit.h"
-#include "mongo/util/exit_code.h"
 #include "mongo/util/options_parser/environment.h"
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/signal_handlers.h"
 #include "mongo/util/text.h"
 #include "mongo/util/winutil.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 using std::string;
 using std::wstring;
@@ -113,12 +111,12 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23287,
                   "--install cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         if (!params.count("systemLog.destination") ||
             params["systemLog.destination"].as<std::string>() != "file") {
             LOGV2(23288, "--install has to be used with a log file for server output");
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         installService = true;
     }
@@ -127,12 +125,12 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23289,
                   "--reinstall cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         if (!params.count("systemLog.destination") ||
             params["systemLog.destination"].as<std::string>() != "file") {
             LOGV2(23290, "--reinstall has to be used with a log file for server output");
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         reinstallService = true;
     }
@@ -141,7 +139,7 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23291,
                   "--remove cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         removeService = true;
     }
@@ -150,7 +148,7 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23292,
                   "--service cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         _startService = true;
     }
@@ -160,7 +158,7 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23293,
                   "--serviceName cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         _serviceName = toWideString(
             params["processManagement.windowsService.serviceName"].as<string>().c_str());
@@ -170,7 +168,7 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23294,
                   "--serviceDisplayName cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         windowsServiceDisplayName = toWideString(
             params["processManagement.windowsService.displayName"].as<string>().c_str());
@@ -180,7 +178,7 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23295,
                   "--serviceDescription cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         windowsServiceDescription = toWideString(
             params["processManagement.windowsService.description"].as<string>().c_str());
@@ -190,7 +188,7 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23296,
                   "--serviceUser cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         windowsServiceUser = toWideString(
             params["processManagement.windowsService.serviceUser"].as<string>().c_str());
@@ -200,7 +198,7 @@ void configureService(ServiceCallback serviceCallback,
             LOGV2(23297,
                   "--servicePassword cannot be used with option",
                   "option"_attr = disallowedOptions[badOption]);
-            quickExit(ExitCode::badOptions);
+            quickExit(EXIT_BADOPTIONS);
         }
         windowsServicePassword = toWideString(
             params["processManagement.windowsService.servicePassword"].as<string>().c_str());
@@ -218,10 +216,10 @@ void configureService(ServiceCallback serviceCallback,
                             windowsServicePassword,
                             argv,
                             reinstallService);
-        quickExit(ExitCode::clean);
+        quickExit(EXIT_CLEAN);
     } else if (removeService) {
         removeServiceOrDie(_serviceName);
-        quickExit(ExitCode::clean);
+        quickExit(EXIT_CLEAN);
     }
 }
 
@@ -311,7 +309,7 @@ void installServiceOrDie(const wstring& serviceName,
         LOGV2(23299,
               "Error connecting to the Service Control Manager",
               "__error__"_attr = windows::GetErrMsg(err));
-        quickExit(ExitCode::ntServiceError);
+        quickExit(EXIT_NTSERVICE_ERROR);
     }
 
     SC_HANDLE schService = nullptr;
@@ -337,7 +335,7 @@ void installServiceOrDie(const wstring& serviceName,
             }
 
             ::CloseServiceHandle(schSCManager);
-            quickExit(ExitCode::ntServiceError);
+            quickExit(EXIT_NTSERVICE_ERROR);
         } else {
             break;
         }
@@ -363,7 +361,7 @@ void installServiceOrDie(const wstring& serviceName,
         DWORD err = ::GetLastError();
         LOGV2(23301, "Error creating service", "__error__"_attr = windows::GetErrMsg(err));
         ::CloseServiceHandle(schSCManager);
-        quickExit(ExitCode::ntServiceError);
+        quickExit(EXIT_NTSERVICE_ERROR);
     }
 
     LOGV2(23302,
@@ -457,10 +455,10 @@ void installServiceOrDie(const wstring& serviceName,
     BOOL ret = ::ChangeServiceConfig2(
         schService, SERVICE_CONFIG_PRESHUTDOWN_INFO, &servicePreshutdownInfo);
     if (!ret) {
-        auto ec = lastSystemError();
+        DWORD gle = ::GetLastError();
         LOGV2_ERROR(23317,
                     "Failed to set timeout for pre-shutdown notification",
-                    "__error__"_attr = errorMessage(ec));
+                    "__error__"_attr = errnoWithDescription(gle));
         serviceInstalled = false;
     }
 
@@ -468,7 +466,7 @@ void installServiceOrDie(const wstring& serviceName,
     ::CloseServiceHandle(schSCManager);
 
     if (!serviceInstalled)
-        quickExit(ExitCode::ntServiceError);
+        quickExit(EXIT_NTSERVICE_ERROR);
 }
 
 void removeServiceOrDie(const wstring& serviceName) {
@@ -480,7 +478,7 @@ void removeServiceOrDie(const wstring& serviceName) {
         LOGV2(23308,
               "Error connecting to the Service Control Manager",
               "__error__"_attr = windows::GetErrMsg(err));
-        quickExit(ExitCode::ntServiceError);
+        quickExit(EXIT_NTSERVICE_ERROR);
     }
 
     SC_HANDLE schService = ::OpenService(schSCManager, serviceName.c_str(), SERVICE_ALL_ACCESS);
@@ -489,7 +487,7 @@ void removeServiceOrDie(const wstring& serviceName) {
               "Could not find a service named to remove",
               "serviceName"_attr = toUtf8String(serviceName));
         ::CloseServiceHandle(schSCManager);
-        quickExit(ExitCode::ntServiceError);
+        quickExit(EXIT_NTSERVICE_ERROR);
     }
 
     SERVICE_STATUS serviceStatus;
@@ -521,7 +519,7 @@ void removeServiceOrDie(const wstring& serviceName) {
     }
 
     if (!serviceRemoved)
-        quickExit(ExitCode::ntServiceError);
+        quickExit(EXIT_NTSERVICE_ERROR);
 }
 
 bool reportStatus(DWORD reportState, DWORD waitHint, DWORD exitCode) {
@@ -550,7 +548,7 @@ bool reportStatus(DWORD reportState, DWORD waitHint, DWORD exitCode) {
     ssStatus.dwCurrentState = reportState;
 
     // Only report ERROR_SERVICE_SPECIFIC_ERROR when the exit is not clean
-    if (reportState == SERVICE_STOPPED && exitCode != static_cast<DWORD>(ExitCode::clean))
+    if (reportState == SERVICE_STOPPED && exitCode != EXIT_CLEAN)
         ssStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
     else
         ssStatus.dwWin32ExitCode = NO_ERROR;
@@ -606,7 +604,7 @@ static void WINAPI initService(DWORD argc, LPTSTR* argv) {
     //
     serviceStop();
 
-    reportStatus(SERVICE_STOPPED, 0, static_cast<DWORD>(exitCode));
+    reportStatus(SERVICE_STOPPED, 0, exitCode);
 }
 
 static void serviceShutdown(const char* controlCodeName) {
@@ -662,9 +660,9 @@ void startService() {
     LOGV2(
         23316, "Trying to start Windows service", "serviceName"_attr = toUtf8String(_serviceName));
     if (StartServiceCtrlDispatcherW(dispTable)) {
-        quickExit(ExitCode::clean);
+        quickExit(EXIT_CLEAN);
     } else {
-        ::exit(static_cast<int>(ExitCode::ntServiceError));
+        ::exit(EXIT_NTSERVICE_ERROR);
     }
 }
 

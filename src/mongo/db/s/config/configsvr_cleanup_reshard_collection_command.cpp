@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/cleanup_reshard_collection_gen.h"
 #include "mongo/s/resharding/resharding_feature_flag_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -90,7 +88,7 @@ public:
             repl::ReadConcernArgs::get(opCtx) =
                 repl::ReadConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
 
-            const auto catalogClient = ShardingCatalogManager::get(opCtx)->localCatalogClient();
+            const auto catalogClient = Grid::get(opCtx)->catalogClient();
             auto collEntry = catalogClient->getCollection(opCtx, ns());
             if (!collEntry.getReshardingFields()) {
                 // If the collection entry doesn't have resharding fields, we assume that the
@@ -102,13 +100,12 @@ public:
                 ns(), collEntry.getReshardingFields()->getReshardingUUID());
             cleaner.clean(opCtx);
 
-            ShardingCatalogManager::get(opCtx)
-                ->bumpCollectionPlacementVersionAndChangeMetadataInTxn(
-                    opCtx, ns(), [&](OperationContext* opCtx, TxnNumber txnNumber) {
-                        auto update = constructFinalMetadataRemovalUpdateOperation(opCtx, ns());
-                        auto res = ShardingCatalogManager::get(opCtx)->writeToConfigDocumentInTxn(
-                            opCtx, CollectionType::ConfigNS, update, txnNumber);
-                    });
+            ShardingCatalogManager::get(opCtx)->bumpCollectionVersionAndChangeMetadataInTxn(
+                opCtx, ns(), [&](OperationContext* opCtx, TxnNumber txnNumber) {
+                    auto update = constructFinalMetadataRemovalUpdateOperation(opCtx, ns());
+                    auto res = ShardingCatalogManager::get(opCtx)->writeToConfigDocumentInTxn(
+                        opCtx, CollectionType::ConfigNS, update, txnNumber);
+                });
 
             collEntry = catalogClient->getCollection(opCtx, ns());
 

@@ -5,6 +5,7 @@
  * requireApiVersion is true.
  *
  * @tags: [
+ *   requires_journaling,
  *   requires_replication,
  *   requires_transactions,
  * ]

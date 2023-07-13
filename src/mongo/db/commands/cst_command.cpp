@@ -54,14 +54,14 @@ public:
     // Test commands should never be enabled in production, but we try to require auth on new
     // test commands anyway, just in case someone enables them by mistake.
     Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbname,
-                                 const BSONObj&) const override {
+                                 const std::string& dbname,
+                                 const BSONObj& cmdObj) const override {
         AuthorizationSession* authSession = AuthorizationSession::get(opCtx->getClient());
         // This auth check is more restrictive than necessary, to make it simpler.
         // The CST command constructs a Pipeline, which might hold execution resources.
         // We could do fine-grained permission checking similar to the find or aggregate commands,
         // but that seems more complicated than necessary since this is only a test command.
-        if (!authSession->isAuthorizedForAnyActionOnAnyResourceInDB(dbname.db())) {
+        if (!authSession->isAuthorizedForAnyActionOnAnyResourceInDB(dbname)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
@@ -72,7 +72,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
 
@@ -87,7 +87,7 @@ public:
         }
         result.append("cst", BSONArray(pipelineCst.toBson()));
 
-        auto nss = NamespaceString{dbName, ""};
+        auto nss = NamespaceString{dbname, ""};
         auto expCtx = make_intrusive<ExpressionContext>(opCtx, nullptr /*collator*/, nss);
         auto pipeline = cst_pipeline_translation::translatePipeline(pipelineCst, expCtx);
         result.append("ds", pipeline->serializeToBson());

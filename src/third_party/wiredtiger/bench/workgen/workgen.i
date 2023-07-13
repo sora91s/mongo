@@ -122,7 +122,6 @@ InterruptableFunction(workgen::Workload::run)
 
 %template(OpList) std::vector<workgen::Operation>;
 %template(ThreadList) std::vector<workgen::Thread>;
-%template(StringList) std::vector<std::string>;
 %array_class(uint32_t, uint32Array);
 %array_class(long, longArray);
 
@@ -185,8 +184,6 @@ WorkgenFrozenClass(WorkloadOptions)
             if not self.args.keep:
                 shutil.rmtree(self.args.home, True)
                 os.mkdir(self.args.home)
-            if self.args.verbose:
-                self._verbose = True;
         return self
 %}
 };
@@ -213,7 +210,7 @@ Context.__init__ = Context.Xinit
 
     def __add__(self, other):
         if not isinstance(other, Operation):
-            raise Exception('Operation.__add__ requires an Operation')
+            raise Exception('Operation.__sum__ requires an Operation')
         if not self.combinable():
             op = Operation()
             op._group = OpList([self, other])
@@ -236,7 +233,7 @@ Context.__init__ = Context.Xinit
 
     def __add__(self, other):
         if type(self) != type(other):
-            raise Exception('Thread.__add__ requires a Thread')
+            raise Exception('Thread.__sum__ requires an Thread')
         return ThreadListWrapper(ThreadList([self, other]))
 %}
 };
@@ -259,7 +256,7 @@ Context.__init__ = Context.Xinit
         elif isinstance(other, Thread):
             tlw.append(other)
         else:
-            raise Exception('ThreadList.__add__ requires a Thread or ThreadList')
+            raise Exception('ThreadList.__sum__ requires an Thread or ThreadList')
         return tlw
 %}
 };

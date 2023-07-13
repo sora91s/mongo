@@ -35,6 +35,10 @@
 #include "mongo/db/jsobj.h"
 
 namespace mongo {
+    
+void initMyErrorExtraInfo() {
+
+}
 
 bool ErrorExtraInfoExample::isParserEnabledForTest = false;
 bool OptionalErrorExtraInfoExample::isParserEnabledForTest = false;

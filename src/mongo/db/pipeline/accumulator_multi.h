@@ -85,7 +85,7 @@ public:
      */
     static void serializeHelper(const boost::intrusive_ptr<Expression>& initializer,
                                 const boost::intrusive_ptr<Expression>& argument,
-                                SerializationOptions options,
+                                bool explain,
                                 MutableDocument& md);
 
 protected:
@@ -136,13 +136,12 @@ public:
 
     Document serialize(boost::intrusive_ptr<Expression> initializer,
                        boost::intrusive_ptr<Expression> argument,
-                       bool explain,
-                       SerializationOptions options = {}) const final;
+                       bool explain) const final;
 
     void reset() final;
 
-    ExpressionNary::Associativity getAssociativity() const final {
-        return ExpressionNary::Associativity::kFull;
+    bool isAssociative() const final {
+        return true;
     }
 
     bool isCommutative() const final {
@@ -208,13 +207,12 @@ public:
 
     Document serialize(boost::intrusive_ptr<Expression> initializer,
                        boost::intrusive_ptr<Expression> argument,
-                       bool explain,
-                       SerializationOptions options = {}) const final;
+                       bool explain) const final;
 
     void reset() final;
 
-    ExpressionNary::Associativity getAssociativity() const final {
-        return ExpressionNary::Associativity::kFull;
+    bool isAssociative() const final {
+        return true;
     }
 
     bool isCommutative() const final {
@@ -324,13 +322,12 @@ public:
 
     Document serialize(boost::intrusive_ptr<Expression> initializer,
                        boost::intrusive_ptr<Expression> argument,
-                       bool explain,
-                       SerializationOptions options = {}) const final;
+                       bool explain) const final;
 
     void reset() final;
 
-    ExpressionNary::Associativity getAssociativity() const final {
-        return ExpressionNary::Associativity::kFull;
+    bool isAssociative() const final {
+        return true;
     }
 
     /**
@@ -338,7 +335,7 @@ public:
      */
     void remove(const Value& val);
 
-    SortPattern getSortPattern() const {
+    const SortPattern getSortPattern() const {
         return _sortPattern;
     }
 

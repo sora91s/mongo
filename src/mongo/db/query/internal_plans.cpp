@@ -120,7 +120,7 @@ CollectionScanParams createCollectionScanParams(
     WorkingSet* ws,
     const CollectionPtr* coll,
     InternalPlanner::Direction direction,
-    const boost::optional<RecordId>& resumeAfterRecordId,
+    boost::optional<RecordId> resumeAfterRecordId,
     boost::optional<RecordIdBound> minRecord,
     boost::optional<RecordIdBound> maxRecord,
     CollectionScanParams::ScanBoundInclusion boundInclusion,
@@ -150,7 +150,7 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::collection
     const CollectionPtr* coll,
     PlanYieldPolicy::YieldPolicy yieldPolicy,
     const Direction direction,
-    const boost::optional<RecordId>& resumeAfterRecordId,
+    boost::optional<RecordId> resumeAfterRecordId,
     boost::optional<RecordIdBound> minRecord,
     boost::optional<RecordIdBound> maxRecord,
     CollectionScanParams::ScanBoundInclusion boundInclusion,
@@ -222,7 +222,7 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::deleteWith
     boost::optional<RecordIdBound> minRecord,
     boost::optional<RecordIdBound> maxRecord,
     CollectionScanParams::ScanBoundInclusion boundInclusion,
-    std::unique_ptr<BatchedDeleteStageParams> batchedDeleteParams,
+    std::unique_ptr<BatchedDeleteStageBatchParams> batchedDeleteParams,
     const MatchExpression* filter,
     bool shouldReturnEofOnFilterMismatch) {
     const auto& collection = *coll;
@@ -323,8 +323,7 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::deleteWith
     const BSONObj& endKey,
     BoundInclusion boundInclusion,
     PlanYieldPolicy::YieldPolicy yieldPolicy,
-    Direction direction,
-    std::unique_ptr<BatchedDeleteStageParams> batchedDeleteParams) {
+    Direction direction) {
     const auto& collection = *coll;
     invariant(collection);
     auto ws = std::make_unique<WorkingSet>();
@@ -342,17 +341,8 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::deleteWith
                                                  direction,
                                                  InternalPlanner::IXSCAN_FETCH);
 
-    if (batchedDeleteParams) {
-        root = std::make_unique<BatchedDeleteStage>(expCtx.get(),
-                                                    std::move(params),
-                                                    std::move(batchedDeleteParams),
-                                                    ws.get(),
-                                                    collection,
-                                                    root.release());
-    } else {
-        root = std::make_unique<DeleteStage>(
-            expCtx.get(), std::move(params), ws.get(), collection, root.release());
-    }
+    root = std::make_unique<DeleteStage>(
+        expCtx.get(), std::move(params), ws.get(), collection, root.release());
 
     auto executor = plan_executor_factory::make(expCtx,
                                                 std::move(ws),

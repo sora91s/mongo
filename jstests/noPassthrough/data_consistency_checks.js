@@ -7,6 +7,7 @@
  *   requires_sharding,
  * ]
  */
+load("jstests/libs/logv2_helpers.js");
 
 // The global 'db' variable is used by the data consistency hooks.
 var db;
@@ -20,16 +21,27 @@ TestData.skipCollectionAndIndexValidation = true;
 TestData.skipCheckDBHashes = true;
 
 function makePatternForDBHash(dbName) {
+    if (isJsonLogNoConn()) {
+        return new RegExp(
+            `Slow query.*"ns":"${dbName}\\.\\$cmd","appName":"MongoDB Shell","command":{"db[Hh]ash`,
+            "g");
+    }
     return new RegExp(
-        `Slow query.*"ns":"${dbName}\\.\\$cmd","appName":"MongoDB Shell","command":{"db[Hh]ash`,
+        "COMMAND.*command " + dbName + "\\.\\$cmd appName: \"MongoDB Shell\" command: db[Hh]ash",
         "g");
 }
 
 function makePatternForValidate(dbName, collName) {
-    return new RegExp(
-        `Slow query.*"ns":"${dbName}\\.\\$cmd","appName":"MongoDB Shell","command":{"validate":"${
-            collName}"`,
-        "g");
+    if (isJsonLogNoConn()) {
+        return new RegExp(
+            `Slow query.*"ns":"${
+                dbName}\\.\\$cmd","appName":"MongoDB Shell","command":{"validate":"${collName}"`,
+            "g");
+    }
+    return new RegExp("COMMAND.*command " + dbName +
+                          "\\.\\$cmd appName: \"MongoDB Shell\" command: validate { validate: \"" +
+                          collName + "\"",
+                      "g");
 }
 
 function countMatches(pattern, output) {

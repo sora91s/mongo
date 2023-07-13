@@ -104,6 +104,7 @@ public:
     // DBClientBase methods
     //
     using DBClientBase::find;
+    using DBClientBase::query_DEPRECATED;
 
     bool connect(const char* hostName, StringData applicationName, std::string& errmsg);
 
@@ -121,26 +122,40 @@ public:
     std::pair<rpc::UniqueReply, DBClientBase*> runCommandWithTarget(OpMsgRequest request) override;
 
     std::unique_ptr<DBClientCursor> find(FindCommandRequest findRequest,
-                                         const ReadPreferenceSetting& /*unused*/,
-                                         ExhaustMode /*unused*/) override;
+                                         const ReadPreferenceSetting& readPref) override;
+
+    std::unique_ptr<mongo::DBClientCursor> query_DEPRECATED(
+        const NamespaceStringOrUUID& nsOrUuid,
+        const BSONObj& filter = BSONObj{},
+        const Query& querySettings = Query(),
+        int limit = 0,
+        int nToSkip = 0,
+        const mongo::BSONObj* fieldsToReturn = nullptr,
+        int queryOptions = 0,
+        int batchSize = 0,
+        boost::optional<BSONObj> readConcernObj = boost::none) override;
 
     uint64_t getSockCreationMicroSec() const override;
 
-    void insert(const NamespaceString& nss,
+    void insert(const std::string& ns,
                 BSONObj obj,
                 bool ordered = true,
                 boost::optional<BSONObj> writeConcernObj = boost::none) override;
 
-    void insert(const NamespaceString& nss,
+    void insert(const std::string& ns,
                 const std::vector<BSONObj>& objList,
                 bool ordered = true,
                 boost::optional<BSONObj> writeConcernObj = boost::none) override;
 
-    void remove(const NamespaceString& nss,
+    void remove(const std::string& ns,
                 const BSONObj& filter,
                 bool removeMany = true,
                 boost::optional<BSONObj> writeConcernObj = boost::none) override;
 
+    bool call(mongo::Message& toSend,
+              mongo::Message& response,
+              bool assertOk,
+              std::string* actualServer) override;
     Status recv(mongo::Message& m, int lastRequestId) override;
 
     void shutdown() override;
@@ -177,9 +192,6 @@ public:
              std::string* actualServer = nullptr) override;
 
 private:
-    void _call(mongo::Message& toSend,
-               mongo::Message& response,
-               std::string* actualServer) override;
     void checkConnection() override;
 
     std::unique_ptr<DBClientCursor> bsonArrayToCursor(BSONArray results,

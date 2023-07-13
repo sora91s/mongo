@@ -30,13 +30,15 @@
 #pragma once
 
 #include "mongo/db/service_context_test_fixture.h"
-#include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/util/tick_source_mock.h"
 
 namespace mongo {
 
+/**
+ * Test fixture class for tests that use the "ephemeralForTest" storage engine.
+ */
 class ServiceContextMongoDTest : public virtual ServiceContextTest {
 public:
     constexpr static StorageEngineInitFlags kDefaultStorageEngineInitFlags =
@@ -65,9 +67,8 @@ protected:
             _useReplSettings = useReplSettings;
             return std::move(*this);
         }
-        Options useMockClock(bool useMockClock, Milliseconds autoAdvance = Milliseconds{0}) {
+        Options useMockClock(bool useMockClock) {
             _useMockClock = useMockClock;
-            _autoAdvancingMockClockIncrement = autoAdvance;
             return std::move(*this);
         }
         template <class D = Milliseconds>
@@ -77,18 +78,9 @@ protected:
             }
             return std::move(*this);
         }
-        Options useJournalListener(std::unique_ptr<JournalListener> journalListener) {
-            _journalListener = std::move(journalListener);
-            return std::move(*this);
-        }
 
         Options ephemeral(bool ephemeral) {
             _ephemeral = ephemeral;
-            return std::move(*this);
-        }
-
-        Options forceDisableTableLogging() {
-            _forceDisableTableLogging = true;
             return std::move(*this);
         }
 
@@ -101,10 +93,7 @@ protected:
         StorageEngineInitFlags _initFlags = kDefaultStorageEngineInitFlags;
         bool _useReplSettings = false;
         bool _useMockClock = false;
-        Milliseconds _autoAdvancingMockClockIncrement{0};
         std::unique_ptr<TickSource> _mockTickSource;
-        std::unique_ptr<JournalListener> _journalListener;
-        bool _forceDisableTableLogging = false;
 
         friend class ServiceContextMongoDTest;
     };
@@ -114,9 +103,6 @@ protected:
     virtual ~ServiceContextMongoDTest();
 
     void tearDown() override;
-
-    // The JournalListener must stay alive as long as the storage engine is running.
-    std::unique_ptr<JournalListener> _journalListener;
 
 private:
     struct {

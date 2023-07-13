@@ -1,7 +1,7 @@
 /*
  * Test that $group and $setWindowFields spill to the WT RecordStore on secondaries with
  * writeConcern greater than w:1.
- * @tags: [requires_replication, requires_majority_read_concern, requires_persistence]
+ * @tags: [requires_replication, requires_majority_read_concern]
  */
 (function() {
 "use strict";
@@ -9,9 +9,8 @@
 load("jstests/libs/sbe_explain_helpers.js");  // For getSbePlanStages.
 load("jstests/libs/sbe_util.js");             // For checkSBEEnabled.
 
-const kNumNodes = 3;
 const replTest = new ReplSetTest({
-    nodes: kNumNodes,
+    nodes: 3,
 });
 
 replTest.startSet();
@@ -21,25 +20,22 @@ replTest.initiate();
  * Setup the primary and secondary collections.
  */
 let primary = replTest.getPrimary();
-let bulk = primary.getDB("test").foo.initializeUnorderedBulkOp();
+const insertColl = primary.getDB("test").foo;
 const cRecords = 50;
 for (let i = 0; i < cRecords; ++i) {
     // We'll be using a unique 'key' field for group & lookup, but we cannot use '_id' for this,
     // because '_id' is indexed and would trigger Indexed Loop Join instead of Hash Join.
-    bulk.insert({key: i, string: "test test test"});
+    assert.commandWorked(insertColl.insert({key: i, string: "test test test"}));
 }
-assert.commandWorked(bulk.execute({w: kNumNodes, wtimeout: 5000}));
 
 let secondary = replTest.getSecondary();
-// Wait for the insertion to be visible on 'secondary'.
-replTest.awaitLastOpCommitted(null, [secondary]);
 const readColl = secondary.getDB("test").foo;
 
 /**
  * Test spilling of $group, when explicitly run on a secondary.
  */
 (function testGroupSpilling() {
-    if (!checkSBEEnabled(secondary.getDB("test"))) {
+    if (!checkSBEEnabled(secondary.getDB("test"), ["featureFlagSBEGroupPushdown"])) {
         jsTestLog("Skipping test for HashAgg stage: $group lowering into SBE isn't enabled");
         return;
     }
@@ -78,7 +74,7 @@ const readColl = secondary.getDB("test").foo;
             writeConcern: {"w": "majority"}
         };
         const res = readColl.aggregate(pipeline, aggOptions).toArray();
-        assert.eq(res.length, cRecords, res);  // the group-by key is unique
+        assert.eq(res.length, cRecords);  // the group-by key is unique
 
         // In SBE also check the statistics for disk usage. Note: 'explain()' doesn't support the
         // 'writeConcern' option so we test spilling on the secondary but without using the concern.
@@ -91,10 +87,7 @@ const readColl = secondary.getDB("test").foo;
         assert(hashAggGroup.hasOwnProperty("usedDisk"), hashAggGroup);
         assert(hashAggGroup.usedDisk, hashAggGroup);
         assert.eq(hashAggGroup.spilledRecords, expectedSpilledRecords, hashAggGroup);
-        // We expect each record to be individually spilled, so the number of spill events and the
-        // number of spilled records should be equal.
-        assert.eq(hashAggGroup.spills, hashAggGroup.spilledRecords, hashAggGroup);
-        assert.gt(hashAggGroup.spilledDataStorageSize, expectedSpilledBytesAtLeast, hashAggGroup);
+        assert.gte(hashAggGroup.spilledBytesApprox, expectedSpilledBytesAtLeast, hashAggGroup);
     } finally {
         assert.commandWorked(secondary.adminCommand({
             setParameter: 1,
@@ -107,7 +100,7 @@ const readColl = secondary.getDB("test").foo;
  * Test spilling of $lookup when explicitly run on a secondary.
  */
 (function testLookupSpillingInSbe() {
-    if (!checkSBEEnabled(secondary.getDB("test"))) {
+    if (!checkSBEEnabled(secondary.getDB("test"), ["featureFlagSBELookupPushdown"])) {
         jsTestLog("Skipping test for HashLookup stage: $lookup lowering into SBE isn't enabled");
         return;
     }

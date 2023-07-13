@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 #include "mongo/stdx/future.h"
 #include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/fail_point.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
@@ -94,9 +92,9 @@ void JournalFlusher::run() {
         _uniqueCtx.emplace(tc->makeOperationContext());
 
         // Updates to a non-replicated collection, oplogTruncateAfterPoint, are made by this thread.
-        // As this operation is critical for data durability we mark it as having Immediate priority
-        // to skip ticket and flow control.
-        _uniqueCtx.get()->lockState()->setAdmissionPriority(AdmissionContext::Priority::kImmediate);
+        // Non-replicated writes will not contribute to replication lag and can be safely excluded
+        // from Flow Control.
+        _uniqueCtx->get()->setShouldParticipateInFlowControl(false);
 
         // The journal flusher should not conflict with the setFCV command.
         _uniqueCtx->get()->lockState()->setShouldConflictWithSetFeatureCompatibilityVersion(false);
@@ -231,6 +229,14 @@ void JournalFlusher::resume() {
         _flushJournalNowCV.notify_one();
     }
     LOGV2(5142503, "Resumed journal flusher thread");
+}
+
+void JournalFlusher::triggerJournalFlush() {
+    stdx::lock_guard<Latch> lk(_stateMutex);
+    if (!_flushJournalNow) {
+        _flushJournalNow = true;
+        _flushJournalNowCV.notify_one();
+    }
 }
 
 void JournalFlusher::waitForJournalFlush() {

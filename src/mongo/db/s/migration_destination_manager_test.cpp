@@ -129,9 +129,7 @@ TEST_F(MigrationDestinationManagerTest, CloneDocumentsThrowsFetchErrors) {
         return nextBatch->getField("objects").Obj().isEmpty();
     };
 
-    auto insertBatchFn = [&](OperationContext* opCtx, BSONObj docs) {
-        return true;
-    };
+    auto insertBatchFn = [&](OperationContext* opCtx, BSONObj docs) { return true; };
 
     ASSERT_THROWS_CODE_AND_WHAT(MigrationDestinationManager::fetchAndApplyBatch(
                                     operationContext(), insertBatchFn, fetchBatchFn),
@@ -174,7 +172,7 @@ using MigrationDestinationManagerNetworkTest = CatalogCacheTestFixture;
 // manager and won't include a read concern without afterClusterTime.
 TEST_F(MigrationDestinationManagerNetworkTest,
        MigrationDestinationManagerGetIndexesAndCollectionsNoVersionsOrReadConcern) {
-    const NamespaceString nss = NamespaceString::createNamespaceString_forTest("db.foo");
+    const NamespaceString nss("db.foo");
 
     // Shard nss by _id with chunks [minKey, 0), [0, maxKey] on shards "0" and "1" respectively.
     // ShardId("1") is the primary shard for the database.

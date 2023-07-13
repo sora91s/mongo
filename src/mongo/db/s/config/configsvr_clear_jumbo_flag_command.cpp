@@ -27,16 +27,18 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
+#include "mongo/platform/basic.h"
+
+#include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
+#include "mongo/db/s/dist_lock_manager.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -63,7 +65,15 @@ public:
             repl::ReadConcernArgs::get(opCtx) =
                 repl::ReadConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
 
-            const auto catalogClient = ShardingCatalogManager::get(opCtx)->localCatalogClient();
+            const auto catalogClient = Grid::get(opCtx)->catalogClient();
+
+            // Acquire distlocks on the namespace's database and collection.
+            DistLockManager::ScopedDistLock dbDistLock(
+                uassertStatusOK(DistLockManager::get(opCtx)->lock(
+                    opCtx, nss.db(), "clearJumboFlag", DistLockManager::kDefaultLockTimeout)));
+            DistLockManager::ScopedDistLock collDistLock(
+                uassertStatusOK(DistLockManager::get(opCtx)->lock(
+                    opCtx, nss.ns(), "clearJumboFlag", DistLockManager::kDefaultLockTimeout)));
 
             CollectionType collType;
             try {

@@ -2,6 +2,7 @@
  * Tests that reconfigs cause tenant migrations to fail cleanly when issued between
  * donor commands sent to the recipient, and that they succeed in all other cases.
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -10,14 +11,18 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");  // for 'extractUUIDFromObject'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 function runTest({failPoint, shouldFail = false}) {
     const tenantMigrationTest = new TenantMigrationTest({name: jsTestName()});
 
-    const tenantId = ObjectId().str;
+    const tenantId = "testTenantId";
     const dbName = tenantMigrationTest.tenantDB(tenantId, "testDB");
 
     const donorRst = tenantMigrationTest.getDonorRst();
@@ -79,3 +84,4 @@ runTest({failPoint: "pauseTenantMigrationAfterPersistingInitialDonorStateDoc", s
 
 jsTestLog("[4] Testing reconfig before fetching keys.");
 runTest({failPoint: "pauseTenantMigrationBeforeFetchingKeys", shouldFail: false});
+})();

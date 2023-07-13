@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/logv2/log.h"
 
@@ -34,11 +35,7 @@
 #include "mongo/db/commands/shutdown.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/exit_code.h"
 #include "mongo/util/fail_point.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -80,8 +77,9 @@ void finishShutdown(OperationContext* opCtx,
                 return;
             }
 #endif
-            shutdown(ExitCode::clean, shutdownArgs);  // this never returns
-        }).detach();
+            shutdown(EXIT_CLEAN, shutdownArgs);  // this never returns
+        })
+            .detach();
     }
 
     // Client expects the shutdown command to abruptly close the socket as part of exiting.

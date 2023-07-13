@@ -29,7 +29,6 @@
 
 #include "mongo/platform/compiler.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/exit_code.h"
 #include "mongo/util/testing_proctor.h"
 
 namespace mongo {
@@ -47,18 +46,14 @@ namespace mongo {
  *  inline wrapper around quickExitWithoutLogging - the pre-exit checks and logging need to refer
  *  to mongo symbols, which aren't permitted in quick_exit.cpp.
  */
-MONGO_COMPILER_NORETURN void quickExitWithoutLogging(ExitCode);
+MONGO_COMPILER_NORETURN void quickExitWithoutLogging(int);
 
-MONGO_COMPILER_NORETURN inline void quickExit(ExitCode code) {
+MONGO_COMPILER_NORETURN inline void quickExit(int code) {
     warnIfTripwireAssertionsOccurred();
-    if (code == ExitCode::clean) {
+    if (code == EXIT_CLEAN) {
         TestingProctor::instance().exitAbruptlyIfDeferredErrors(false);
     }
     quickExitWithoutLogging(code);
 }
-
-MONGO_COMPILER_NORETURN inline void quickExit(int code) {
-    quickExit(static_cast<ExitCode>(code));
-}
-
+void quickExitLock();
 }  // namespace mongo

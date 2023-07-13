@@ -36,6 +36,7 @@
 #include <boost/predef/hardware/simd.h>
 #include <cstdint>
 #include <ostream>
+#include <pcre.h>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,18 +44,14 @@
 #include "mongo/base/data_type_endian.h"
 #include "mongo/base/data_view.h"
 #include "mongo/bson/ordering.h"
-#include "mongo/config.h"
 #include "mongo/db/exec/shard_filterer.h"
 #include "mongo/db/fts/fts_matcher.h"
-#include "mongo/db/matcher/expression.h"
 #include "mongo/db/query/bson_typemask.h"
 #include "mongo/db/query/collation/collator_interface.h"
-#include "mongo/db/query/index_bounds.h"
 #include "mongo/platform/bits.h"
 #include "mongo/platform/decimal128.h"
 #include "mongo/platform/endian.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/pcre.h"
 #include "mongo/util/represent_as.h"
 
 namespace mongo {
@@ -72,34 +69,13 @@ class TimeZoneDatabase;
 class JsFunction;
 
 namespace sbe {
-
-/**
- * Trivially copyable variation on a tuple theme. This allow us to return tuples through registers.
- */
-template <typename...>
-struct FastTuple;
-
-template <typename... Ts>
-FastTuple(Ts...) -> FastTuple<Ts...>;
-
-template <typename A, typename B, typename C>
-struct FastTuple<A, B, C> {
-    A a;
-    B b;
-    C c;
-};
-
 using FrameId = int64_t;
 using SpoolId = int64_t;
-
-static constexpr int64_t kInvalidId = LLONG_MIN;
 
 using IndexKeysInclusionSet = std::bitset<Ordering::kMaxCompoundIndexKeys>;
 
 namespace value {
 class SortSpec;
-class MakeObjSpec;
-struct CsiCell;
 
 static constexpr size_t kNewUUIDLength = 16;
 
@@ -114,6 +90,7 @@ enum class TypeTags : uint8_t {
     NumberInt32,
     NumberInt64,
     NumberDouble,
+    NumberDecimal,
 
     // Date data types.
     Date,
@@ -122,20 +99,6 @@ enum class TypeTags : uint8_t {
     Boolean,
     Null,
     StringSmall,
-
-    MinKey,
-    MaxKey,
-
-    // Pointer to a struct with data necessary to read values from a columnstore index cell. The
-    // values of this type are fully owned by the column_scan stage and are never created, cloned or
-    // destroyed by SBE.
-    csiCell,
-
-    // Special marker
-    EndOfShallowValues = csiCell,
-
-    // Heap values
-    NumberDecimal,
     StringBig,
     Array,
     ArraySet,
@@ -143,6 +106,9 @@ enum class TypeTags : uint8_t {
 
     ObjectId,
     RecordId,
+
+    MinKey,
+    MaxKey,
 
     // Raw bson values.
     bsonObject,
@@ -186,11 +152,11 @@ enum class TypeTags : uint8_t {
     // Pointer to a SortSpec object.
     sortSpec,
 
-    // Pointer to a MakeObjSpec object.
-    makeObjSpec,
-
     // Pointer to a IndexBounds object.
     indexBounds,
+
+    // Pointer to a classic engine match expression.
+    classicMatchExpresion,
 };
 
 inline constexpr bool isNumber(TypeTags tag) noexcept {
@@ -209,10 +175,6 @@ inline constexpr bool isObject(TypeTags tag) noexcept {
 
 inline constexpr bool isArray(TypeTags tag) noexcept {
     return tag == TypeTags::Array || tag == TypeTags::ArraySet || tag == TypeTags::bsonArray;
-}
-
-inline constexpr bool isNullish(TypeTags tag) noexcept {
-    return tag == TypeTags::Nothing || tag == TypeTags::Null || tag == TypeTags::bsonUndefined;
 }
 
 inline constexpr bool isObjectId(TypeTags tag) noexcept {
@@ -243,11 +205,8 @@ inline constexpr bool isCollatableType(TypeTags tag) noexcept {
     return isString(tag) || isArray(tag) || isObject(tag);
 }
 
-inline constexpr bool isShallowType(TypeTags tag) noexcept {
-    return tag <= TypeTags::EndOfShallowValues;
-}
-
 BSONType tagToType(TypeTags tag) noexcept;
+bool isShallowType(TypeTags tag) noexcept;
 
 /**
  * This function takes an SBE TypeTag, looks up the corresponding BSONType t, and then returns a
@@ -273,27 +232,11 @@ enum class SortDirection : uint8_t { Descending, Ascending };
 /**
  * Forward declarations.
  */
-
-/**
- * Releases memory allocated for the value. If the value does not have any memory allocated for it,
- * does nothing.
- *
- * NOTE: This function is intentionally marked as 'noexcept' and must not throw. It is used in the
- *       destructors of several classes to implement RAII concept for values.
- */
-void releaseValueDeep(TypeTags tag, Value val) noexcept;
+void releaseValue(TypeTags tag, Value val) noexcept;
 std::pair<TypeTags, Value> copyValue(TypeTags tag, Value val);
 std::size_t hashValue(TypeTags tag,
                       Value val,
                       const CollatorInterface* collator = nullptr) noexcept;
-
-inline void releaseValue(TypeTags tag, Value val) noexcept {
-    if (!isShallowType(tag)) {
-        releaseValueDeep(tag, val);
-    } else {
-        // No action is needed to release "shallow" values.
-    }
-}
 
 /**
  * Overloads for writing values and tags to stream.
@@ -313,9 +256,9 @@ std::pair<TypeTags, Value> compareValue(
     Value rhsValue,
     const StringData::ComparatorInterface* comparator = nullptr);
 
-bool isNaN(TypeTags tag, Value val) noexcept;
+bool isNaN(TypeTags tag, Value val);
 
-bool isInfinity(TypeTags tag, Value val) noexcept;
+bool isInfinity(TypeTags tag, Value val);
 
 /**
  * A simple hash combination.
@@ -333,15 +276,13 @@ inline std::size_t hashCombine(std::size_t state, std::size_t val) noexcept {
  */
 class ValueGuard {
 public:
-    MONGO_COMPILER_ALWAYS_INLINE ValueGuard(const std::pair<TypeTags, Value> typedValue)
+    ValueGuard(const std::pair<TypeTags, Value> typedValue)
         : ValueGuard(typedValue.first, typedValue.second) {}
-    MONGO_COMPILER_ALWAYS_INLINE ValueGuard(TypeTags tag, Value val) : _tag(tag), _value(val) {}
-    MONGO_COMPILER_ALWAYS_INLINE ValueGuard(bool owned, TypeTags tag, Value val)
-        : ValueGuard(owned ? tag : TypeTags::Nothing, owned ? val : 0) {}
+    ValueGuard(TypeTags tag, Value val) : _tag(tag), _value(val) {}
     ValueGuard() = delete;
     ValueGuard(const ValueGuard&) = delete;
     ValueGuard(ValueGuard&& other) = delete;
-    MONGO_COMPILER_ALWAYS_INLINE ~ValueGuard() {
+    ~ValueGuard() {
         releaseValue(_tag, _value);
     }
 
@@ -754,10 +695,6 @@ public:
         return {TypeTags::Nothing, 0};
     }
 
-    bool contains(StringData field) const {
-        return std::find(_names.begin(), _names.end(), field) != _names.end();
-    }
-
     auto size() const noexcept {
         return _values.size();
     }
@@ -907,14 +844,7 @@ public:
         }
     }
 
-    /**
-     * Adds the given SBE value to the set if an equal value is not already present. Assumes
-     * ownership of the given value.
-     *
-     * Returns true if the value was newly inserted, otherwise returns false to indicate that an
-     * equal value was already present in the set.
-     */
-    bool push_back(TypeTags tag, Value val);
+    void push_back(TypeTags tag, Value val);
 
     auto& values() const noexcept {
         return _values;
@@ -939,6 +869,68 @@ private:
 
 bool operator==(const ArraySet& lhs, const ArraySet& rhs);
 bool operator!=(const ArraySet& lhs, const ArraySet& rhs);
+
+/**
+ * Implements a wrapper of PCRE regular expression.
+ * Storing the pattern and the options allows for copying of the sbe::value::PcreRegex expression,
+ * which includes recompilation.
+ * The compiled expression pcre* allows for direct usage of the pcre C library functionality.
+ */
+class PcreRegex {
+public:
+    PcreRegex(StringData pattern, StringData options) : _pattern(pattern), _options(options) {
+        _compile();
+    }
+
+    PcreRegex(const PcreRegex& other) : PcreRegex(other._pattern, other._options) {}
+
+    PcreRegex& operator=(const PcreRegex& other) {
+        if (this != &other) {
+            (*pcre_free)(_pcrePtr);
+            _pattern = other._pattern;
+            _options = other._options;
+            _compile();
+        }
+        return *this;
+    }
+
+    ~PcreRegex() {
+        (*pcre_free)(_pcrePtr);
+    }
+
+    const std::string& pattern() const {
+        return _pattern;
+    }
+
+    const std::string& options() const {
+        return _options;
+    }
+
+    /**
+     * Wrapper function for pcre_exec().
+     * - input: The input string.
+     * - startPos: The position from where the search should start.
+     * - buf: Array populated with the found matched string and capture groups.
+     * Returns the number of matches or an error code:
+     *         < -1 error
+     *         = -1 no match
+     *         = 0  there was a match, but not enough space in the buffer
+     *         > 0  the number of matches
+     */
+    int execute(StringData input, int startPos, std::vector<int>& buf);
+
+    size_t getNumberCaptures() const;
+
+    size_t getApproximateSize() const;
+
+private:
+    void _compile();
+
+    std::string _pattern;
+    std::string _options;
+
+    pcre* _pcrePtr = nullptr;
+};
 
 constexpr size_t kSmallStringMaxLength = 7;
 using ObjectIdType = std::array<uint8_t, 12>;
@@ -1028,22 +1020,6 @@ inline size_t getStringLength(TypeTags tag, const Value& val) noexcept {
     MONGO_UNREACHABLE;
 }
 
-/*
- * Using MONGO_COMPILER_ALWAYS_INLINE on a free function does not always play well between
- * compilers because some require the 'inline' keyword be used while others prohibit it. To get
- * around this, we wrap the custom strlen() function in a struct.
- */
-struct TinyStrHelpers {
-    // Often calling the shared library strlen() function is more expensive than a small loop
-    // for small strings.
-    MONGO_COMPILER_ALWAYS_INLINE static size_t strlen(const char* s) {
-        const char* begin = s;
-        while (*s++)
-            ;
-        return s - begin - 1;
-    }
-};
-
 /**
  * getStringView() should be preferred over getRawStringView() where possible.
  */
@@ -1064,9 +1040,7 @@ inline size_t getBSONBinDataSize(TypeTags tag, Value val) {
 
 inline BinDataType getBSONBinDataSubtype(TypeTags tag, Value val) {
     invariant(tag == TypeTags::bsonBinData);
-    uint8_t subtype =
-        ConstDataView(getRawPointerView(val) + sizeof(uint32_t)).read<LittleEndian<uint8_t>>();
-    return static_cast<BinDataType>(subtype);
+    return static_cast<BinDataType>((getRawPointerView(val) + sizeof(uint32_t))[0]);
 }
 
 inline uint8_t* getBSONBinData(TypeTags tag, Value val) {
@@ -1240,10 +1214,10 @@ inline KeyString::Value* getKeyStringView(Value val) noexcept {
 
 std::pair<TypeTags, Value> makeNewPcreRegex(StringData pattern, StringData options);
 
-std::pair<TypeTags, Value> makeCopyPcreRegex(const pcre::Regex& regex);
+std::pair<TypeTags, Value> makeCopyPcreRegex(const PcreRegex& regex);
 
-inline pcre::Regex* getPcreRegexView(Value val) noexcept {
-    return reinterpret_cast<pcre::Regex*>(val);
+inline PcreRegex* getPcreRegexView(Value val) noexcept {
+    return reinterpret_cast<PcreRegex*>(val);
 }
 
 inline JsFunction* getJsFunctionView(Value val) noexcept {
@@ -1270,16 +1244,12 @@ inline SortSpec* getSortSpecView(Value val) noexcept {
     return reinterpret_cast<SortSpec*>(val);
 }
 
-inline MakeObjSpec* getMakeObjSpecView(Value val) noexcept {
-    return reinterpret_cast<MakeObjSpec*>(val);
-}
-
 inline IndexBounds* getIndexBoundsView(Value val) noexcept {
     return reinterpret_cast<IndexBounds*>(val);
 }
 
-inline sbe::value::CsiCell* getCsiCellView(Value val) noexcept {
-    return reinterpret_cast<sbe::value::CsiCell*>(val);
+inline MatchExpression* getClassicMatchExpressionView(Value val) noexcept {
+    return reinterpret_cast<MatchExpression*>(val);
 }
 
 /**
@@ -1400,25 +1370,18 @@ std::pair<TypeTags, Value> makeCopyFtsMatcher(const fts::FTSMatcher&);
 
 std::pair<TypeTags, Value> makeCopySortSpec(const SortSpec&);
 
-std::pair<TypeTags, Value> makeCopyMakeObjSpec(const MakeObjSpec&);
-
 std::pair<TypeTags, Value> makeCopyCollator(const CollatorInterface& collator);
 
 std::pair<TypeTags, Value> makeCopyIndexBounds(const IndexBounds& collator);
 
-#if defined(MONGO_CONFIG_DEBUG_BUILD)
 /**
- * Returns a poison value that should never be encountered in production.
- * Used by asserts/invariants to invalidate values that should never be accessed.
+ * Releases memory allocated for the value. If the value does not have any memory allocated for it,
+ * does nothing.
+ *
+ * NOTE: This function is intentionally marked as 'noexcept' and must not throw. It is used in the
+ *       destructors of several classes to implement RAII concept for values.
  */
-inline std::pair<TypeTags, Value> getPoisonValue() {
-    return {TypeTags::Nothing, (uint64_t)-1};
-}
-
-inline bool isPoisonValue(TypeTags tag, Value val) {
-    return tag == TypeTags::Nothing && val == (uint64_t)-1;
-}
-#endif
+void releaseValue(TypeTags tag, Value val) noexcept;
 
 inline std::pair<TypeTags, Value> copyValue(TypeTags tag, Value val) {
     switch (tag) {
@@ -1486,54 +1449,21 @@ inline std::pair<TypeTags, Value> copyValue(TypeTags tag, Value val) {
             return makeCopyFtsMatcher(*getFtsMatcherView(val));
         case TypeTags::sortSpec:
             return makeCopySortSpec(*getSortSpecView(val));
-        case TypeTags::makeObjSpec:
-            return makeCopyMakeObjSpec(*getMakeObjSpecView(val));
         case TypeTags::collator:
             return makeCopyCollator(*getCollatorView(val));
         case TypeTags::indexBounds:
             return makeCopyIndexBounds(*getIndexBoundsView(val));
+        case TypeTags::classicMatchExpresion:
+            // Beware: "shallow cloning" a match expression does not copy the underlying BSON. The
+            // original BSON must remain alive for both the original MatchExpression and the clone.
+            return {TypeTags::classicMatchExpresion,
+                    bitcastFrom<const MatchExpression*>(
+                        getClassicMatchExpressionView(val)->shallowClone().release())};
         default:
             break;
     }
 
     return {tag, val};
-}
-
-/**
- * Implicit conversion from any type to a boolean value.
- */
-inline std::pair<TypeTags, Value> coerceToBool(TypeTags tag, Value val) {
-    switch (tag) {
-        case value::TypeTags::Nothing: {
-            return {value::TypeTags::Nothing, 0};
-        }
-        case value::TypeTags::Null:
-        case value::TypeTags::bsonUndefined: {
-            return {value::TypeTags::Boolean, value::bitcastFrom<bool>(false)};
-        }
-        case value::TypeTags::Boolean: {
-            return {tag, val};
-        }
-        case value::TypeTags::NumberInt32: {
-            bool isNotZero = (value::bitcastTo<int32_t>(val) != 0);
-            return {value::TypeTags::Boolean, value::bitcastFrom<bool>(isNotZero)};
-        }
-        case value::TypeTags::NumberInt64: {
-            bool isNotZero = (value::bitcastTo<int64_t>(val) != 0);
-            return {value::TypeTags::Boolean, value::bitcastFrom<bool>(isNotZero)};
-        }
-        case value::TypeTags::NumberDouble: {
-            bool isNotZero = (value::bitcastTo<double>(val) != 0.0);
-            return {value::TypeTags::Boolean, value::bitcastFrom<bool>(isNotZero)};
-        }
-        case value::TypeTags::NumberDecimal: {
-            bool isNotZero = !value::bitcastTo<Decimal128>(val).isZero();
-            return {value::TypeTags::Boolean, value::bitcastFrom<bool>(isNotZero)};
-        }
-        default: {
-            return {value::TypeTags::Boolean, value::bitcastFrom<bool>(true)};
-        }
-    }
 }
 
 /**
@@ -1575,7 +1505,7 @@ inline T numericCast(TypeTags tag, Value val) noexcept {
  * TypeTag. In the case that a conversion is lossy, we return Nothing.
  */
 template <typename T>
-inline FastTuple<bool, value::TypeTags, value::Value> numericConvLossless(
+inline std::tuple<bool, value::TypeTags, value::Value> numericConvLossless(
     T value, value::TypeTags targetTag) {
     switch (targetTag) {
         case value::TypeTags::NumberInt32: {
@@ -1674,9 +1604,6 @@ private:
 /**
  * Holds a view of an array-like type (e.g. TypeTags::Array or TypeTags::bsonArray), and provides an
  * iterface to iterate over the values that are the elements of the array.
- *
- * This is a general purpose iterator. If you need to do a simple walk over the entire array in one
- * go, not saving the place across function calls etc, prefer walkArray().
  */
 class ArrayEnumerator {
 public:
@@ -1703,9 +1630,6 @@ public:
                 auto bson = getRawPointerView(val);
                 _arrayCurrent = bson + 4;
                 _arrayEnd = bson + ConstDataView(bson).read<LittleEndian<uint32_t>>();
-                if (_arrayCurrent != _arrayEnd - 1) {
-                    _fieldNameSize = strlen(_arrayCurrent + 1);
-                }
             } else {
                 MONGO_UNREACHABLE;
             }
@@ -1724,7 +1648,7 @@ public:
         } else if (_arraySet) {
             return _iter == _arraySet->values().end();
         } else {
-            return _arrayCurrent == _arrayEnd - 1;
+            return *_arrayCurrent == 0;
         }
     }
 
@@ -1745,7 +1669,6 @@ private:
     // bsonArray
     const char* _arrayCurrent{nullptr};
     const char* _arrayEnd{nullptr};
-    size_t _fieldNameSize = 0;
 };
 
 /**

@@ -256,11 +256,11 @@ TEST(JSONSchemaObjectKeywordTest, SharedJsonAndBsonTypeAliasesTranslateIdentical
         ASSERT_OK(bsonTypeResult.getStatus());
 
         BSONObjBuilder typeBuilder;
-        MatchExpression::optimize(std::move(typeResult.getValue()))->serialize(&typeBuilder, {});
+        MatchExpression::optimize(std::move(typeResult.getValue()))->serialize(&typeBuilder, true);
 
         BSONObjBuilder bsonTypeBuilder;
         MatchExpression::optimize(std::move(bsonTypeResult.getValue()))
-            ->serialize(&bsonTypeBuilder, {});
+            ->serialize(&bsonTypeBuilder, true);
 
         ASSERT_BSONOBJ_EQ(typeBuilder.obj(), bsonTypeBuilder.obj());
     }

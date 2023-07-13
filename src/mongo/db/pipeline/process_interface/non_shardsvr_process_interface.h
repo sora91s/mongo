@@ -58,16 +58,21 @@ public:
 
     BSONObj preparePipelineAndExplain(Pipeline* ownedPipeline, ExplainOptions::Verbosity verbosity);
 
-    boost::optional<ShardVersion> refreshAndGetCollectionVersion(
+    std::unique_ptr<ShardFilterer> getShardFilterer(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx) const override {
+        // We'll never do shard filtering on a standalone.
+        return nullptr;
+    }
+
+    boost::optional<ChunkVersion> refreshAndGetCollectionVersion(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
         const NamespaceString& nss) const final {
         return boost::none;  // Nothing is sharded here.
     }
 
-    virtual void checkRoutingInfoEpochOrThrow(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        const NamespaceString& nss,
-        ChunkVersion targetCollectionPlacementVersion) const override {
+    virtual void checkRoutingInfoEpochOrThrow(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                              const NamespaceString& nss,
+                                              ChunkVersion targetCollectionVersion) const override {
         uasserted(51020, "unexpected request to consult sharding catalog on non-shardsvr");
     }
 
@@ -87,12 +92,6 @@ public:
                   const WriteConcernOptions& wc,
                   boost::optional<OID> targetEpoch) override;
 
-    Status insertTimeseries(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                            const NamespaceString& ns,
-                            std::vector<BSONObj>&& objs,
-                            const WriteConcernOptions& wc,
-                            boost::optional<OID> targetEpoch) override;
-
     StatusWith<UpdateResult> update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                     const NamespaceString& ns,
                                     BatchedObjects&& batch,
@@ -103,22 +102,14 @@ public:
 
     void renameIfOptionsAndIndexesHaveNotChanged(
         OperationContext* opCtx,
-        const NamespaceString& sourceNs,
+        const BSONObj& renameCommandObj,
         const NamespaceString& targetNs,
-        bool dropTarget,
-        bool stayTemp,
-        bool allowBuckets,
         const BSONObj& originalCollectionOptions,
         const std::list<BSONObj>& originalIndexes) override;
 
     void createCollection(OperationContext* opCtx,
-                          const DatabaseName& dbName,
+                          const std::string& dbName,
                           const BSONObj& cmdObj) override;
-
-    void createTimeseries(OperationContext* opCtx,
-                          const NamespaceString& ns,
-                          const BSONObj& options,
-                          bool createView) override;
 
     void dropCollection(OperationContext* opCtx, const NamespaceString& collection) override;
 

@@ -30,6 +30,7 @@
 #include "mongo/util/options_parser/startup_option_init.h"
 
 #include <stack>
+#include <iostream>
 
 #include "mongo/util/assert_util.h"
 
@@ -37,9 +38,10 @@
  * These are the initializer groups for command line and config file option registration, parsing,
  * validation, and storage
  */
+using namespace std;
 
 namespace mongo {
-namespace {
+// namespace {
 
 std::string makeInitializer(const std::string& name,
                             const std::vector<std::string>& after,
@@ -88,7 +90,7 @@ void StaticInit() {
     }
 }
 
-const int dummy = (StaticInit(), 0);
+// const int dummy = (StaticInit(), 0);
 
-}  // namespace
+// }  // namespace
 }  // namespace mongo

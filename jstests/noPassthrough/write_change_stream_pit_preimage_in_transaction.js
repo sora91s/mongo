@@ -1,8 +1,9 @@
 /**
  * Tests that pre-images are written to the pre-images collection on updates and deletes in
- * transactions and for "applyOps" command.
+ * transactions and for non-atomic "applyOps" command.
  * @tags: [
  *  requires_fcv_60,
+ *  featureFlagChangeStreamPreAndPostImages,
  *  requires_replication,
  *  no_selinux,
  *  requires_majority_read_concern,
@@ -13,8 +14,12 @@
 
 load("jstests/core/txns/libs/prepare_helpers.js");  // For PrepareHelpers.prepareTransaction.
 load("jstests/libs/collection_drop_recreate.js");   // For assertDropAndRecreateCollection.
-load("jstests/libs/change_stream_util.js");         // For preImagesForOps.
-load("jstests/libs/transactions_util.js");          // For TransactionsUtil.runInTransaction.
+load(
+    "jstests/libs/change_stream_util.js");  // For
+                                            // assertChangeStreamPreAndPostImagesCollectionOptionIsEnabled,
+                                            // assertChangeStreamPreAndPostImagesCollectionOptionIsAbsent,
+                                            // preImagesForOps.
+load("jstests/libs/transactions_util.js");  // For TransactionsUtil.runInTransaction.
 
 const rst = new ReplSetTest({
     nodes: [
@@ -120,7 +125,7 @@ function assertDocumentInsertedAtTimestamp(commitTimestamp, insertedDocumentId) 
 // collection 'coll' was written at timestamp 'commitTimestamp'.
 function assertDocumentPreImageWrittenAtTimestamp(commitTimestamp, modifiedDocumentId) {
     const beforeCommitTimestamp = getPreviousTimestampValue(commitTimestamp);
-    const preImagesCollection = getPreImagesCollection(testDB.getMongo());
+    const preImagesCollection = getPreImagesCollection(testDB);
     assert.eq(0,
               preImagesCollection.find({"preImage._id": modifiedDocumentId})
                   .readConcern("snapshot", beforeCommitTimestamp)
@@ -200,11 +205,11 @@ function getCollections(db) {
     assert.commandWorked(coll.deleteMany({}));
     assert.commandWorked(coll.insert([{_id: 1, a: 1}, {_id: 2, a: 1}]));
 
-    // Verify that pre-images are written correctly for the "applyOps" command.
+    // Verify that pre-images are written correctly for the non-atomic "applyOps" command.
     assertPreImagesWrittenForOps(testDB, function() {
         assert.commandWorked(testDB.runCommand({
             applyOps: [
-                {op: "u", ns: coll.getFullName(), o2: {_id: 1}, o: {$v: 2, diff: {u: {a: 2}}}},
+                {op: "u", ns: coll.getFullName(), o2: {_id: 1}, o: {$set: {a: 2}}},
                 {op: "d", ns: coll.getFullName(), o: {_id: 2}}
             ],
             allowAtomic: false,

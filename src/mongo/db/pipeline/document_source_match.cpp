@@ -43,7 +43,6 @@
 #include "mongo/db/matcher/expression_leaf.h"
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
-#include "mongo/db/matcher/match_expression_dependencies.h"
 #include "mongo/db/pipeline/document_path_support.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
@@ -70,7 +69,9 @@ const char* DocumentSourceMatch::getSourceName() const {
 
 Value DocumentSourceMatch::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
     if (explain) {
-        return Value(DOC(getSourceName() << Document(_expression->serialize())));
+        BSONObjBuilder builder;
+        _expression->serialize(&builder);
+        return Value(DOC(getSourceName() << Document(builder.obj())));
     }
     return Value(DOC(getSourceName() << Document(getQuery())));
 }
@@ -92,12 +93,11 @@ DocumentSource::GetNextResult DocumentSourceMatch::doGetNext() {
     auto nextInput = pSource->getNext();
     for (; nextInput.isAdvanced(); nextInput = pSource->getNext()) {
         // MatchExpression only takes BSON documents, so we have to make one. As an optimization,
-        // only serialize the fields we need to do the match. Specify BSONObj::LargeSizeTrait so
-        // that matching against a large document mid-pipeline does not throw a BSON max-size error.
+        // only serialize the fields we need to do the match.
         BSONObj toMatch = _dependencies.needWholeDocument
-            ? nextInput.getDocument().toBson<BSONObj::LargeSizeTrait>()
-            : document_path_support::documentToBsonWithPaths<BSONObj::LargeSizeTrait>(
-                  nextInput.getDocument(), _dependencies.fields);
+            ? nextInput.getDocument().toBson()
+            : document_path_support::documentToBsonWithPaths(nextInput.getDocument(),
+                                                             _dependencies.fields);
 
         if (_expression->matchesBSON(toMatch)) {
             return nextInput;
@@ -410,13 +410,13 @@ void DocumentSourceMatch::joinMatchWith(intrusive_ptr<DocumentSourceMatch> other
 }
 
 pair<intrusive_ptr<DocumentSourceMatch>, intrusive_ptr<DocumentSourceMatch>>
-DocumentSourceMatch::splitSourceBy(const OrderedPathSet& fields,
+DocumentSourceMatch::splitSourceBy(const std::set<std::string>& fields,
                                    const StringMap<std::string>& renames) && {
     return std::move(*this).splitSourceByFunc(fields, renames, expression::isIndependentOf);
 }
 
 pair<intrusive_ptr<DocumentSourceMatch>, intrusive_ptr<DocumentSourceMatch>>
-DocumentSourceMatch::splitSourceByFunc(const OrderedPathSet& fields,
+DocumentSourceMatch::splitSourceByFunc(const std::set<std::string>& fields,
                                        const StringMap<std::string>& renames,
                                        expression::ShouldSplitExprFunc func) && {
     pair<unique_ptr<MatchExpression>, unique_ptr<MatchExpression>> newExpr(
@@ -448,11 +448,15 @@ DocumentSourceMatch::splitSourceByFunc(const OrderedPathSet& fields,
     // the corresponding BSONObj may not exist. Therefore, we take each of these expressions,
     // serialize them, and then re-parse them, constructing new BSON that is owned by the
     // DocumentSourceMatch.
-    auto firstMatch = DocumentSourceMatch::create(newExpr.first->serialize(), pExpCtx);
+    BSONObjBuilder firstBob;
+    newExpr.first->serialize(&firstBob);
+    auto firstMatch = DocumentSourceMatch::create(firstBob.obj(), pExpCtx);
 
     intrusive_ptr<DocumentSourceMatch> secondMatch;
     if (newExpr.second) {
-        secondMatch = DocumentSourceMatch::create(newExpr.second->serialize(), pExpCtx);
+        BSONObjBuilder secondBob;
+        newExpr.second->serialize(&secondBob);
+        secondMatch = DocumentSourceMatch::create(secondBob.obj(), pExpCtx);
     }
 
     return {std::move(firstMatch), std::move(secondMatch)};
@@ -485,7 +489,9 @@ boost::intrusive_ptr<DocumentSourceMatch> DocumentSourceMatch::descendMatchOnPat
         }
     });
 
-    return new DocumentSourceMatch(matchExpr->serialize(), expCtx);
+    BSONObjBuilder query;
+    matchExpr->serialize(&query);
+    return new DocumentSourceMatch(query.obj(), expCtx);
 }
 
 std::pair<boost::intrusive_ptr<DocumentSourceMatch>, boost::intrusive_ptr<DocumentSourceMatch>>
@@ -493,7 +499,7 @@ DocumentSourceMatch::splitMatchByModifiedFields(
     const boost::intrusive_ptr<DocumentSourceMatch>& match,
     const DocumentSource::GetModPathsReturn& modifiedPathsRet) {
     // Attempt to move some or all of this $match before this stage.
-    OrderedPathSet modifiedPaths;
+    std::set<std::string> modifiedPaths;
     switch (modifiedPathsRet.type) {
         case DocumentSource::GetModPathsReturn::Type::kNotSupported:
             // We don't know what paths this stage might modify, so refrain from swapping.
@@ -542,7 +548,7 @@ BSONObj DocumentSourceMatch::getQuery() const {
 
 DepsTracker::State DocumentSourceMatch::getDependencies(DepsTracker* deps) const {
     // Get all field or variable dependencies.
-    match_expression::addDependencies(_expression.get(), deps);
+    _expression->addDependencies(deps);
 
     if (isTextQuery()) {
         // A $text aggregation field should return EXHAUSTIVE_FIELDS, since we don't necessarily
@@ -553,10 +559,6 @@ DepsTracker::State DocumentSourceMatch::getDependencies(DepsTracker* deps) const
     }
 
     return DepsTracker::State::SEE_NEXT;
-}
-
-void DocumentSourceMatch::addVariableRefs(std::set<Variables::Id>* refs) const {
-    match_expression::addVariableRefs(_expression.get(), refs);
 }
 
 DocumentSourceMatch::DocumentSourceMatch(const BSONObj& query,

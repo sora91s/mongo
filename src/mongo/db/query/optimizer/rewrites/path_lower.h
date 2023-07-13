@@ -71,9 +71,7 @@ public:
 
     // The tree is passed in as NON-const reference as we will be updating it.
     // Returns true if the tree changed.
-    // If 'rebuild' is set to false will assume the caller will rebuild the VariableEnvironment and
-    // so will skip the rebuild on the passed in ABT.
-    bool optimize(ABT& n, bool rebuild = true);
+    bool optimize(ABT& n);
 
 private:
     // We don't own these.
@@ -121,9 +119,7 @@ public:
 
     // The tree is passed in as NON-const reference as we will be updating it.
     // Returns true if the tree changed.
-    // If 'rebuild' is set to false will assume the caller will rebuild the VariableEnvironment and
-    // so will skip the rebuild on the passed in ABT.
-    bool optimize(ABT& n, bool rebuild = true);
+    bool optimize(ABT& n);
 
 private:
     // We don't own these.

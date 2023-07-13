@@ -27,21 +27,18 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/commands/set_cluster_parameter_invocation.h"
 
-#include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/vector_clock.h"
 #include "mongo/idl/cluster_server_parameter_gen.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -51,46 +48,18 @@ bool SetClusterParameterInvocation::invoke(OperationContext* opCtx,
                                            const WriteConcernOptions& writeConcern) {
 
     BSONObj cmdParamObj = cmd.getCommandParameter();
-    StringData parameterName = cmdParamObj.firstElement().fieldName();
-    ServerParameter* serverParameter = _sps->get(parameterName);
-    auto tenantId = cmd.getDbName().tenantId();
-
-    auto [query, update] =
-        normalizeParameter(opCtx,
-                           cmdParamObj,
-                           paramTime,
-                           serverParameter,
-                           parameterName,
-                           tenantId,
-                           serverGlobalParams.clusterRole.isExclusivelyShardRole());
-
-    BSONObjBuilder oldValueBob;
-    serverParameter->append(opCtx, &oldValueBob, parameterName.toString(), tenantId);
-    audit::logSetClusterParameter(opCtx->getClient(), oldValueBob.obj(), update, tenantId);
-
-    LOGV2_DEBUG(
-        6432603, 2, "Updating cluster parameter on-disk", "clusterParameter"_attr = parameterName);
-
-    return uassertStatusOK(
-        _dbService.updateParameterOnDisk(opCtx, query, update, writeConcern, tenantId));
-}
-
-std::pair<BSONObj, BSONObj> SetClusterParameterInvocation::normalizeParameter(
-    OperationContext* opCtx,
-    BSONObj cmdParamObj,
-    const boost::optional<Timestamp>& paramTime,
-    ServerParameter* sp,
-    StringData parameterName,
-    const boost::optional<TenantId>& tenantId,
-    bool skipValidation) {
     BSONElement commandElement = cmdParamObj.firstElement();
-    uassert(ErrorCodes::BadValue,
+    StringData parameterName = commandElement.fieldName();
+
+    const ServerParameter* serverParameter = _sps->getIfExists(parameterName);
+
+    uassert(ErrorCodes::IllegalOperation,
+            str::stream() << "Unknown Cluster Parameter " << parameterName,
+            serverParameter != nullptr);
+
+    uassert(ErrorCodes::IllegalOperation,
             "Cluster parameter value must be an object",
             BSONType::Object == commandElement.type());
-
-    uassert(ErrorCodes::BadValue,
-            str::stream() << "Server parameter: '" << sp->name() << "' is disabled",
-            skipValidation || sp->isEnabled());
 
     Timestamp clusterTime = paramTime ? *paramTime : _dbService.getUpdateClusterTime(opCtx);
 
@@ -101,11 +70,12 @@ std::pair<BSONObj, BSONObj> SetClusterParameterInvocation::normalizeParameter(
     BSONObj query = BSON("_id" << parameterName);
     BSONObj update = updateBuilder.obj();
 
-    if (!skipValidation) {
-        uassertStatusOK(sp->validate(update, tenantId));
-    }
+    uassertStatusOK(serverParameter->validate(update));
 
-    return {query, update};
+    LOGV2_DEBUG(
+        6432603, 2, "Updating cluster parameter on-disk", "clusterParameter"_attr = parameterName);
+
+    return uassertStatusOK(_dbService.updateParameterOnDisk(opCtx, query, update, writeConcern));
 }
 
 Timestamp ClusterParameterDBClientService::getUpdateClusterTime(OperationContext* opCtx) {
@@ -117,8 +87,7 @@ StatusWith<bool> ClusterParameterDBClientService::updateParameterOnDisk(
     OperationContext* opCtx,
     BSONObj query,
     BSONObj update,
-    const WriteConcernOptions& writeConcern,
-    const boost::optional<TenantId>& tenantId) {
+    const WriteConcernOptions& writeConcern) {
     BSONObj res;
 
     BSONObjBuilder set;
@@ -129,10 +98,11 @@ StatusWith<bool> ClusterParameterDBClientService::updateParameterOnDisk(
         BSON(WriteConcernOptions::kWriteConcernField << writeConcern.toBSON());
 
     try {
-        auto opMsgRequest = OpMsgRequestBuilder::create(
-            NamespaceString::makeClusterParametersNSS(tenantId).dbName(), [&] {
+        _dbClient.runCommand(
+            NamespaceString::kConfigDb.toString(),
+            [&] {
                 write_ops::UpdateCommandRequest updateOp(
-                    NamespaceString::makeClusterParametersNSS(tenantId));
+                    NamespaceString::kClusterParametersNamespace);
                 updateOp.setUpdates({[&] {
                     write_ops::UpdateOpEntry entry;
                     entry.setQ(query);
@@ -143,8 +113,8 @@ StatusWith<bool> ClusterParameterDBClientService::updateParameterOnDisk(
                 }()});
 
                 return updateOp.toBSON(writeConcernObj);
-            }());
-        res = _dbClient.runCommand(opMsgRequest)->getCommandReply();
+            }(),
+            res);
     } catch (const DBException& ex) {
         return ex.toStatus();
     }
@@ -159,7 +129,7 @@ StatusWith<bool> ClusterParameterDBClientService::updateParameterOnDisk(
     return response.getNModified() > 0 || response.getN() > 0;
 }
 
-ServerParameter* ClusterParameterService::get(StringData name) {
-    return ServerParameterSet::getClusterParameterSet()->get(name);
+const ServerParameter* ClusterParameterService::getIfExists(StringData name) {
+    return ServerParameterSet::getClusterParameterSet()->getIfExists(name);
 }
 }  // namespace mongo

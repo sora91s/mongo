@@ -8,15 +8,19 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-load("jstests/libs/fail_point_util.js");
-load("jstests/libs/uuid_util.js");       // for 'extractUUIDFromObject'
-load("jstests/libs/parallelTester.js");  // for 'Thread'
+(function() {
+"use strict";
 
 function runTest(downgradeFCV) {
+    load("jstests/libs/fail_point_util.js");
+    load("jstests/libs/uuid_util.js");       // for 'extractUUIDFromObject'
+    load("jstests/libs/parallelTester.js");  // for 'Thread'
+    load("jstests/replsets/libs/tenant_migration_test.js");
+    load("jstests/replsets/libs/tenant_migration_util.js");
+
     const tenantMigrationTest = new TenantMigrationTest({name: jsTestName()});
 
-    const tenantId = ObjectId().str;
+    const tenantId = "testTenantId";
     const dbName = tenantMigrationTest.tenantDB(tenantId, "testDB");
     const collName = "testColl";
 
@@ -69,3 +73,4 @@ runTest(lastContinuousFCV);
 if (lastContinuousFCV != lastLTSFCV) {
     runTest(lastLTSFCV);
 }
+})();

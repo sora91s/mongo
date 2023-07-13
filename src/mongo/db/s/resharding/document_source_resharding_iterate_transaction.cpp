@@ -27,16 +27,14 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/s/resharding/document_source_resharding_iterate_transaction.h"
 
 #include "mongo/db/commands/txn_cmds_gen.h"
-#include "mongo/db/transaction/transaction_history_iterator.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
+#include "mongo/db/transaction_history_iterator.h"
 
 namespace mongo {
 namespace {
@@ -136,7 +134,7 @@ DepsTracker::State DocumentSourceReshardingIterateTransaction::getDependencies(
 
 DocumentSource::GetModPathsReturn DocumentSourceReshardingIterateTransaction::getModifiedPaths()
     const {
-    return {DocumentSource::GetModPathsReturn::Type::kAllPaths, OrderedPathSet{}, {}};
+    return {DocumentSource::GetModPathsReturn::Type::kAllPaths, std::set<std::string>{}, {}};
 }
 
 DocumentSource::GetNextResult DocumentSourceReshardingIterateTransaction::doGetNext() {
@@ -192,7 +190,8 @@ DocumentSource::GetNextResult DocumentSourceReshardingIterateTransaction::doGetN
 
 bool DocumentSourceReshardingIterateTransaction::_isTransactionOplogEntry(const Document& doc) {
     auto op = doc[repl::OplogEntry::kOpTypeFieldName];
-    auto opType = repl::OpType_parse(IDLParserContext("ReshardingEntry.op"), op.getStringData());
+    auto opType =
+        repl::OpType_parse(IDLParserErrorContext("ReshardingEntry.op"), op.getStringData());
     auto commandVal = doc["o"];
 
     if (opType != repl::OpTypeEnum::kCommand || doc["txnNumber"].missing() ||

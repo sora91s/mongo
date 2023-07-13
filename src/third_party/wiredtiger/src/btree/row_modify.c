@@ -42,7 +42,12 @@ err:
  */
 int
 __wt_row_modify(WT_CURSOR_BTREE *cbt, const WT_ITEM *key, const WT_ITEM *value, WT_UPDATE *upd_arg,
-  u_int modify_type, bool exclusive, bool restore)
+  u_int modify_type, bool exclusive
+#ifdef HAVE_DIAGNOSTIC
+  ,
+  bool restore
+#endif
+)
 {
     WT_DECL_RET;
     WT_INSERT *ins;
@@ -64,7 +69,6 @@ __wt_row_modify(WT_CURSOR_BTREE *cbt, const WT_ITEM *key, const WT_ITEM *value, 
     upd = upd_arg;
     prev_upd_ts = WT_TS_NONE;
     added_to_txn = inserted_to_update_chain = false;
-    upd_size = 0;
 
     /*
      * We should have one of the following:
@@ -128,8 +132,8 @@ __wt_row_modify(WT_CURSOR_BTREE *cbt, const WT_ITEM *key, const WT_ITEM *value, 
             WT_ASSERT(session,
               !WT_IS_HS(S2BT(session)->dhandle) ||
                 (*upd_entry == NULL ||
-                  ((*upd_entry)->type == WT_UPDATE_TOMBSTONE &&
-                    (*upd_entry)->txnid == WT_TXN_NONE && (*upd_entry)->start_ts == WT_TS_NONE)) ||
+                  ((*upd_entry)->type == WT_UPDATE_TOMBSTONE && (*upd_entry)->txnid == WT_TS_NONE &&
+                    (*upd_entry)->start_ts == WT_TS_NONE)) ||
                 (upd_arg->type == WT_UPDATE_TOMBSTONE && upd_arg->start_ts == WT_TS_NONE &&
                   upd_arg->next == NULL) ||
                 (upd_arg->type == WT_UPDATE_TOMBSTONE && upd_arg->next != NULL &&
@@ -146,8 +150,7 @@ __wt_row_modify(WT_CURSOR_BTREE *cbt, const WT_ITEM *key, const WT_ITEM *value, 
              * If we restore an update chain in update restore eviction, there should be no update
              * on the existing update chain.
              */
-            WT_ASSERT_ALWAYS(session, !restore || *upd_entry == NULL,
-              "Update found on the existing update chain during an update restore eviction");
+            WT_ASSERT(session, !restore || *upd_entry == NULL);
 
             /*
              * We can either put multiple new updates or a single update on the update chain.
@@ -336,7 +339,7 @@ __wt_row_insert_alloc(WT_SESSION_IMPL *session, const WT_ITEM *key, u_int skipde
  * __wt_update_obsolete_check --
  *     Check for obsolete updates and force evict the page if the update list is too long.
  */
-void
+WT_UPDATE *
 __wt_update_obsolete_check(
   WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt, WT_UPDATE *upd, bool update_accounting)
 {
@@ -350,10 +353,6 @@ __wt_update_obsolete_check(
     next = NULL;
     page = cbt->ref->page;
     txn_global = &S2C(session)->txn_global;
-
-    /* If we can't lock it, don't scan, that's okay. */
-    if (WT_PAGE_TRYLOCK(session, page) != 0)
-        return;
 
     upd_seen = upd_unstable = 0;
     oldest = txn_global->has_oldest_timestamp ? txn_global->oldest_timestamp : WT_TS_NONE;
@@ -385,10 +384,6 @@ __wt_update_obsolete_check(
             if (upd->start_ts != WT_TS_NONE && upd->start_ts >= oldest && upd->start_ts < stable)
                 ++upd_unstable;
         }
-
-        /* Cannot truncate the updates if we need to remove the updates from the history store. */
-        if (F_ISSET(upd, WT_UPDATE_TO_DELETE_FROM_HS))
-            first = NULL;
     }
 
     /*
@@ -396,13 +391,8 @@ __wt_update_obsolete_check(
      * subsequent to it, other threads of control will terminate their walk in this element. Save a
      * reference to the list we will discard, and terminate the list.
      */
-    if (first != NULL && (next = first->next) != NULL) {
-        /*
-         * No need to use a compare and swap because we have obtained a lock at the start of the
-         * function.
-         */
-        first->next = NULL;
-
+    if (first != NULL && (next = first->next) != NULL &&
+      __wt_atomic_cas_ptr(&first->next, next, NULL)) {
         /*
          * Decrement the dirty byte count while holding the page lock, else we can race with
          * checkpoints cleaning a page.
@@ -427,19 +417,18 @@ __wt_update_obsolete_check(
     }
 
     if (next != NULL)
-        __wt_free_update_list(session, &next);
-    else {
-        /*
-         * If the list is long, don't retry checks on this page until the transaction state has
-         * moved forwards. This function is used to trim update lists independently of the page
-         * state, ensure there is a modify structure.
-         */
-        if (count > 20 && page->modify != NULL) {
-            page->modify->obsolete_check_txn = txn_global->last_running;
-            if (txn_global->has_pinned_timestamp)
-                page->modify->obsolete_check_timestamp = txn_global->pinned_timestamp;
-        }
+        return (next);
+
+    /*
+     * If the list is long, don't retry checks on this page until the transaction state has moved
+     * forwards. This function is used to trim update lists independently of the page state, ensure
+     * there is a modify structure.
+     */
+    if (count > 20 && page->modify != NULL) {
+        page->modify->obsolete_check_txn = txn_global->last_running;
+        if (txn_global->has_pinned_timestamp)
+            page->modify->obsolete_check_timestamp = txn_global->pinned_timestamp;
     }
 
-    WT_PAGE_UNLOCK(session, page);
+    return (NULL);
 }

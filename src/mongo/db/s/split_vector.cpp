@@ -27,23 +27,31 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/s/split_vector.h"
 
+#include "mongo/base/status_with.h"
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/dbhelpers.h"
+#include "mongo/db/exec/working_set_common.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/keypattern.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/query/plan_executor.h"
+#include "mongo/db/s/collection_sharding_runtime.h"
+#include "mongo/db/s/shard_key_index_util.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 namespace mongo {
 namespace {
 
 const int kMaxObjectPerChunk{250000};
-const int kEstimatedAdditionalBytesPerItemInBSONArray{2};
+const int estimatedAdditionalBytesPerItemInBSONArray{2};
 
 BSONObj prettyKey(const BSONObj& keyPattern, const BSONObj& key) {
     return key.replaceFieldNames(keyPattern).clientReadable();
@@ -80,6 +88,9 @@ std::vector<BSONObj> splitVector(OperationContext* opCtx,
 
     {
         AutoGetCollection collection(opCtx, nss, MODE_IS);
+
+        CollectionShardingState::get(opCtx, nss)->checkShardVersionOrThrow(opCtx);
+
         uassert(ErrorCodes::NamespaceNotFound, "ns not found", collection);
 
         // Allow multiKey based on the invariant that shard keys must be single-valued. Therefore,
@@ -121,12 +132,12 @@ std::vector<BSONObj> splitVector(OperationContext* opCtx,
         }
 
         // We need a maximum size for the chunk.
-        if (!maxChunkSizeBytes || maxChunkSizeBytes.value() <= 0) {
+        if (!maxChunkSizeBytes || maxChunkSizeBytes.get() <= 0) {
             uasserted(ErrorCodes::InvalidOptions, "need to specify the desired max chunk size");
         }
 
         // If there's not enough data for more than one chunk, no point continuing.
-        if (dataSize < maxChunkSizeBytes.value() || recCount == 0) {
+        if (dataSize < maxChunkSizeBytes.get() || recCount == 0) {
             std::vector<BSONObj> emptyVector;
             return emptyVector;
         }
@@ -143,18 +154,18 @@ std::vector<BSONObj> splitVector(OperationContext* opCtx,
         // maxChunkObjects, if provided.
         const long long avgRecSize = dataSize / recCount;
 
-        long long keyCount = maxChunkSizeBytes.value() / (2 * avgRecSize);
+        long long keyCount = maxChunkSizeBytes.get() / (2 * avgRecSize);
 
-        if (maxChunkObjects.value() && (maxChunkObjects.value() < keyCount)) {
+        if (maxChunkObjects.get() && (maxChunkObjects.get() < keyCount)) {
             LOGV2(22108,
                   "Limiting the number of documents per chunk to {maxChunkObjects} based "
                   "on the maxChunkObjects parameter for split vector command (compared to maximum "
                   "possible: {maxPossibleDocumentsPerChunk})",
                   "Limiting the number of documents per chunk for split vector command based on "
                   "the maxChunksObject parameter",
-                  "maxChunkObjects"_attr = maxChunkObjects.value(),
+                  "maxChunkObjects"_attr = maxChunkObjects.get(),
                   "maxPossibleDocumentsPerChunk"_attr = keyCount);
-            keyCount = maxChunkObjects.value();
+            keyCount = maxChunkObjects.get();
         }
 
         //
@@ -239,7 +250,7 @@ std::vector<BSONObj> splitVector(OperationContext* opCtx,
                         tooFrequentKeys.insert(currKey.getOwned());
                     } else {
                         auto additionalKeySize =
-                            currKey.objsize() + kEstimatedAdditionalBytesPerItemInBSONArray;
+                            currKey.objsize() + estimatedAdditionalBytesPerItemInBSONArray;
                         if (splitVectorResponseSize + additionalKeySize > BSONObjMaxUserSize) {
                             if (splitKeys.empty()) {
                                 // Keep trying until we get at least one split point that isn't
@@ -274,8 +285,7 @@ std::vector<BSONObj> splitVector(OperationContext* opCtx,
                 }
 
                 // Stop if we have enough split points.
-                if (maxSplitPoints && maxSplitPoints.value() &&
-                    (numChunks >= maxSplitPoints.value())) {
+                if (maxSplitPoints && maxSplitPoints.get() && (numChunks >= maxSplitPoints.get())) {
                     LOGV2(22111,
                           "Max number of requested split points reached ({numSplitPoints}) before "
                           "the end of chunk {namespace} {minKey} -->> {maxKey}",
@@ -336,8 +346,8 @@ std::vector<BSONObj> splitVector(OperationContext* opCtx,
         // Remove the sentinel at the beginning before returning
         splitKeys.erase(splitKeys.begin());
 
-        if (timer.millis() > serverGlobalParams.slowMS.load()) {
-            LOGV2_INFO(
+        if (timer.millis() > serverGlobalParams.slowMS) {
+            LOGV2_WARNING(
                 22115,
                 "Finding the split vector for {namespace} over {keyPattern} keyCount: {keyCount} "
                 "numSplits: {numSplits} lookedAt: {currCount} took {duration}",

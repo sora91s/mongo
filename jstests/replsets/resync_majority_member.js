@@ -7,6 +7,7 @@
  *
  * @tags: [
  *   multiversion_incompatible,
+ *   live_record_incompatible,
  * ]
  */
 

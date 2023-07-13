@@ -30,12 +30,13 @@
 #pragma once
 
 #include <algorithm>
-#include <atomic>
 #include <functional>
 #include <utility>
 #include <vector>
 
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/commands.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -50,9 +51,7 @@ namespace mongo {
  * in the (-inf, x) interval if z < x, and in the [y, inf) interval if z >= y. If no partitions are
  * provided, z will be counted in the sole (-inf, inf) interval.
  */
-template <typename T,
-          typename Cmp = std::less<T>,
-          typename Counter = std::atomic_int64_t>  // NOLINT
+template <typename T, typename Cmp = std::less<T>>
 class Histogram {
     struct AtEnd {};
 
@@ -75,7 +74,7 @@ public:
         auto i = std::upper_bound(_partitions.begin(), _partitions.end(), data, _comparator) -
             _partitions.begin();
 
-        ++_counts[i];
+        _counts[i].addAndFetch(1);
     }
 
     const std::vector<T>& getPartitions() const {
@@ -84,7 +83,8 @@ public:
 
     std::vector<int64_t> getCounts() const {
         std::vector<int64_t> r(_counts.size());
-        std::transform(_counts.begin(), _counts.end(), r.begin(), [](auto&& x) { return x; });
+        std::transform(
+            _counts.begin(), _counts.end(), r.begin(), [](auto&& x) { return x.load(); });
         return r;
     }
 
@@ -112,7 +112,7 @@ public:
         iterator(const Histogram* hist, AtEnd) : _h{hist}, _pos{_h->_counts.size()} {}
 
         reference operator*() const {
-            _b.count = _h->_counts[_pos];
+            _b.count = _h->_counts[_pos].load();
             _b.lower = (_pos == 0) ? nullptr : &_h->_partitions[_pos - 1];
             _b.upper = (_pos == _h->_counts.size() - 1) ? nullptr : &_h->_partitions[_pos];
             return _b;
@@ -155,9 +155,9 @@ public:
         return iterator(this, AtEnd{});
     }
 
-protected:
+private:
     std::vector<T> _partitions;
-    std::vector<Counter> _counts;
+    std::vector<AtomicWord<int64_t>> _counts;
     Cmp _comparator;
 };
 
@@ -166,8 +166,8 @@ protected:
  * BSON object builder. `histKey` is used as the field name for the appended BSON object containing
  * the data.
  */
-template <typename... Ts>
-void appendHistogram(BSONObjBuilder& bob, const Histogram<Ts...>& hist, const StringData histKey) {
+template <typename T>
+void appendHistogram(BSONObjBuilder& bob, const Histogram<T>& hist, const StringData histKey) {
     BSONObjBuilder histBob(bob.subobjStart(histKey));
     long long totalCount = 0;
 
@@ -183,5 +183,49 @@ void appendHistogram(BSONObjBuilder& bob, const Histogram<Ts...>& hist, const St
     }
     histBob.append("totalCount", totalCount);
 }
+
+namespace histogram_detail {
+/**
+ * Append the histogram as an array of {bound: <lower>, count: <count>} objects.
+ */
+template <typename T>
+void appendHistogramAsArray(const Histogram<T>& hist,
+                            const StringData histKey,
+                            bool includeFirstBucket,
+                            BSONObjBuilder& bob) {
+    BSONArrayBuilder histBob(bob.subarrayStart(histKey));
+
+    for (auto&& [count, lower, upper] : hist) {
+        // First bucket is indicated by 'lower' = nullptr.
+        if (lower) {
+            histBob.append(
+                BSON("lowerBound" << static_cast<long long>(*lower) << "count" << count));
+        } else if (includeFirstBucket) {
+            histBob.append(BSON("lowerBound"
+                                << "-INF"
+                                << "count" << count));
+        }
+    }
+}
+}  // namespace histogram_detail
+
+/**
+ * A metric reported in serverStatus with type histogram. This is a partial specialization of
+ * ServerStatusMetricField<T>. We cannot include it there due to cyclic header dependency via
+ * "commands.h".
+ */
+template <typename T>
+class ServerStatusMetricField<Histogram<T>> : public ServerStatusMetric {
+public:
+    ServerStatusMetricField(const std::string& name, const Histogram<T>& t)
+        : ServerStatusMetric(name), _hist(t) {}
+
+    virtual void appendAtLeaf(BSONObjBuilder& b) const {
+        histogram_detail::appendHistogramAsArray(_hist, _leafName, false, b);
+    }
+
+private:
+    const Histogram<T>& _hist;
+};
 
 }  // namespace mongo

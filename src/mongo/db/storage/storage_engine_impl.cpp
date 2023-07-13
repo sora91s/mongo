@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/db/storage/storage_engine_impl.h"
 
@@ -34,13 +35,11 @@
 
 #include "mongo/db/audit.h"
 #include "mongo/db/catalog/catalog_control.h"
-#include "mongo/db/catalog/clustered_collection_util.h"
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/collection_catalog_helper.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/global_settings.h"
 #include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/multitenancy.h"
 #include "mongo/db/operation_context.h"
@@ -50,7 +49,6 @@
 #include "mongo/db/storage/durable_history_pin.h"
 #include "mongo/db/storage/historical_ident_tracker.h"
 #include "mongo/db/storage/kv/kv_engine.h"
-#include "mongo/db/storage/storage_parameters_gen.h"
 #include "mongo/db/storage/storage_repair_observer.h"
 #include "mongo/db/storage/storage_util.h"
 #include "mongo/db/storage/two_phase_index_build_knobs_gen.h"
@@ -60,9 +58,6 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 #define LOGV2_FOR_RECOVERY(ID, DLEVEL, MESSAGE, ...) \
     LOGV2_DEBUG_OPTIONS(ID, DLEVEL, {logv2::LogComponent::kStorageRecovery}, MESSAGE, ##__VA_ARGS__)
@@ -95,19 +90,6 @@ StorageEngineImpl::StorageEngineImpl(OperationContext* opCtx,
           [serviceContext = opCtx->getServiceContext()](Timestamp timestamp) {
               HistoricalIdentTracker::get(serviceContext).removeEntriesOlderThan(timestamp);
           }),
-      _collectionCatalogCleanupTimestampListener(
-          TimestampMonitor::TimestampType::kOldest,
-          [serviceContext = opCtx->getServiceContext()](Timestamp timestamp) {
-              // The global lock is held by the timestamp monitor while callbacks are executed, so
-              // there can be no batched CollectionCatalog writer and we are thus safe to write
-              // using the service context.
-              if (CollectionCatalog::latest(serviceContext)
-                      ->needsCleanupForOldestTimestamp(timestamp)) {
-                  CollectionCatalog::write(serviceContext, [timestamp](CollectionCatalog& catalog) {
-                      catalog.cleanupForOldestTimestampAdvanced(timestamp);
-                  });
-              }
-          }),
       _supportsCappedCollections(_engine->supportsCappedCollections()) {
     uassert(28601,
             "Storage engine does not support --directoryperdb",
@@ -129,14 +111,11 @@ StorageEngineImpl::StorageEngineImpl(OperationContext* opCtx,
     invariant(!opCtx->lockState()->isLocked() || opCtx->lockState()->isW());
     Lock::GlobalWrite globalLk(opCtx);
     loadCatalog(opCtx,
-                _engine->getRecoveryTimestamp(),
                 _options.lockFileCreatedByUncleanShutdown ? LastShutdownState::kUnclean
                                                           : LastShutdownState::kClean);
 }
 
-void StorageEngineImpl::loadCatalog(OperationContext* opCtx,
-                                    boost::optional<Timestamp> stableTs,
-                                    LastShutdownState lastShutdownState) {
+void StorageEngineImpl::loadCatalog(OperationContext* opCtx, LastShutdownState lastShutdownState) {
     bool catalogExists = _engine->hasIdent(opCtx, kCatalogInfo);
     if (_options.forRepair && catalogExists) {
         auto repairObserver = StorageRepairObserver::get(getGlobalServiceContext());
@@ -183,8 +162,7 @@ void StorageEngineImpl::loadCatalog(OperationContext* opCtx,
     std::vector<std::string> identsKnownToStorageEngine = _engine->getAllIdents(opCtx);
     std::sort(identsKnownToStorageEngine.begin(), identsKnownToStorageEngine.end());
 
-    std::vector<DurableCatalog::EntryIdentifier> catalogEntries =
-        _catalog->getAllCatalogEntries(opCtx);
+    std::vector<DurableCatalog::Entry> catalogEntries = _catalog->getAllCatalogEntries(opCtx);
 
     // Perform a read on the catalog at the `oldestTimestamp` and record the record stores (via
     // their catalogId) that existed.
@@ -197,7 +175,7 @@ void StorageEngineImpl::loadCatalog(OperationContext* opCtx,
                            kCatalogLogLevel.toInt(),
                            "Catalog entries at the oldest timestamp",
                            "oldestTimestamp"_attr = _engine->getOldestTimestamp());
-        for (const auto& entry : entriesAtOldest) {
+        for (auto entry : entriesAtOldest) {
             existedAtOldestTs.insert(entry.catalogId);
             LOGV2_FOR_RECOVERY(5380109,
                                kCatalogLogLevel.toInt(),
@@ -215,45 +193,27 @@ void StorageEngineImpl::loadCatalog(OperationContext* opCtx,
         // will be dropped in reconcileCatalogAndIdents().
         for (const auto& ident : identsKnownToStorageEngine) {
             if (_catalog->isCollectionIdent(ident)) {
-                bool isOrphan = !std::any_of(catalogEntries.begin(),
-                                             catalogEntries.end(),
-                                             [this, &ident](DurableCatalog::EntryIdentifier entry) {
-                                                 return entry.ident == ident;
-                                             });
+                bool isOrphan = !std::any_of(
+                    catalogEntries.begin(),
+                    catalogEntries.end(),
+                    [this, &ident](DurableCatalog::Entry entry) { return entry.ident == ident; });
                 if (isOrphan) {
                     // If the catalog does not have information about this
                     // collection, we create an new entry for it.
                     WriteUnitOfWork wuow(opCtx);
-
-                    auto keyFormat = _engine->getKeyFormat(opCtx, ident);
-                    bool isClustered = keyFormat == KeyFormat::String;
-                    CollectionOptions optionsWithUUID;
-                    optionsWithUUID.uuid.emplace(UUID::gen());
-                    if (isClustered) {
-                        optionsWithUUID.clusteredIndex =
-                            clustered_util::makeDefaultClusteredIdIndex();
-                    }
-
-                    StatusWith<std::string> statusWithNs =
-                        _catalog->newOrphanedIdent(opCtx, ident, optionsWithUUID);
-
+                    StatusWith<std::string> statusWithNs = _catalog->newOrphanedIdent(opCtx, ident);
                     if (statusWithNs.isOK()) {
                         wuow.commit();
                         auto orphanCollNs = statusWithNs.getValue();
                         LOGV2(22247,
                               "Successfully created an entry in the catalog for orphaned "
                               "collection",
-                              "namespace"_attr = orphanCollNs,
-                              "options"_attr = optionsWithUUID);
+                              "namespace"_attr = orphanCollNs);
+                        LOGV2_WARNING(22265,
+                                      "Collection does not have an _id index. Please manually "
+                                      "build the index",
+                                      "namespace"_attr = orphanCollNs);
 
-                        if (!isClustered) {
-                            // The _id index is already implicitly created on collections clustered
-                            // by _id.
-                            LOGV2_WARNING(22265,
-                                          "Collection does not have an _id index. Please manually "
-                                          "build the index",
-                                          "namespace"_attr = orphanCollNs);
-                        }
                         StorageRepairObserver::get(getGlobalServiceContext())
                             ->benignModification(str::stream() << "Orphan collection created: "
                                                                << statusWithNs.getValue());
@@ -279,15 +239,7 @@ void StorageEngineImpl::loadCatalog(OperationContext* opCtx,
     const auto loadingFromUncleanShutdownOrRepair =
         lastShutdownState == LastShutdownState::kUnclean || _options.forRepair;
     BatchedCollectionCatalogWriter catalogBatchWriter{opCtx};
-    // Use the stable timestamp as minValid. We know for a fact that the collection exist at
-    // this point and is in sync. If we use an earlier timestamp than replication rollback we
-    // may be out-of-order for the collection catalog managing this namespace.
-    Timestamp minValidTs = stableTs ? *stableTs : Timestamp::min();
-    CollectionCatalog::write(opCtx, [&minValidTs](CollectionCatalog& catalog) {
-        // Let the CollectionCatalog know that we are maintaining timestamps from minValidTs
-        catalog.cleanupForCatalogReopen(minValidTs);
-    });
-    for (DurableCatalog::EntryIdentifier entry : catalogEntries) {
+    for (DurableCatalog::Entry entry : catalogEntries) {
         if (_options.forRestore) {
             // When restoring a subset of user collections from a backup, the collections not
             // restored are in the catalog but are unknown to the storage engine. The catalog
@@ -379,7 +331,7 @@ void StorageEngineImpl::loadCatalog(OperationContext* opCtx,
             // `recoveryTimestamp`. Choose the `oldestTimestamp` for collections that existed at the
             // `oldestTimestamp` and conservatively choose the `recoveryTimestamp` for everything
             // else.
-            minVisibleTs = recoveryTs.value();
+            minVisibleTs = recoveryTs.get();
             if (existedAtOldestTs.find(entry.catalogId) != existedAtOldestTs.end()) {
                 // Collections found at the `oldestTimestamp` on startup can have their minimum
                 // visible timestamp pulled back to that value.
@@ -396,8 +348,7 @@ void StorageEngineImpl::loadCatalog(OperationContext* opCtx,
                 });
         }
 
-        _initCollection(
-            opCtx, entry.catalogId, entry.nss, _options.forRepair, minVisibleTs, minValidTs);
+        _initCollection(opCtx, entry.catalogId, entry.nss, _options.forRepair, minVisibleTs);
 
         if (entry.nss.isOrphanCollection()) {
             LOGV2(22248, "Orphaned collection found", logAttrs(entry.nss));
@@ -411,8 +362,7 @@ void StorageEngineImpl::_initCollection(OperationContext* opCtx,
                                         RecordId catalogId,
                                         const NamespaceString& nss,
                                         bool forRepair,
-                                        Timestamp minVisibleTs,
-                                        Timestamp minValidTs) {
+                                        Timestamp minVisibleTs) {
     auto md = _catalog->getMetaData(opCtx, catalogId);
     uassert(ErrorCodes::MustDowngrade,
             str::stream() << "Collection does not have UUID in KVCatalog. Collection: " << nss,
@@ -435,8 +385,7 @@ void StorageEngineImpl::_initCollection(OperationContext* opCtx,
     collection->setMinimumVisibleSnapshot(minVisibleTs);
 
     CollectionCatalog::write(opCtx, [&](CollectionCatalog& catalog) {
-        catalog.registerCollection(
-            opCtx, md->options.uuid.value(), std::move(collection), /*commitTime*/ minValidTs);
+        catalog.registerCollection(opCtx, md->options.uuid.get(), std::move(collection));
     });
 }
 
@@ -447,9 +396,8 @@ void StorageEngineImpl::closeCatalog(OperationContext* opCtx) {
         _dumpCatalog(opCtx);
     }
 
-    CollectionCatalog::write(opCtx, [opCtx](CollectionCatalog& catalog) {
-        catalog.deregisterAllCollectionsAndViews(opCtx->getServiceContext());
-    });
+    CollectionCatalog::write(
+        opCtx, [&](CollectionCatalog& catalog) { catalog.deregisterAllCollectionsAndViews(); });
 
     _catalog.reset();
     _catalogRecordStore.reset();
@@ -488,7 +436,7 @@ Status StorageEngineImpl::_recoverOrphanedCollection(OperationContext* opCtx,
 
 void StorageEngineImpl::_checkForIndexFiles(
     OperationContext* opCtx,
-    const DurableCatalog::EntryIdentifier& entry,
+    const DurableCatalog::Entry& entry,
     std::vector<std::string>& identsKnownToStorageEngine) const {
     std::vector<std::string> indexIdents = _catalog->getIndexIdents(opCtx, entry.catalogId);
     for (const std::string& indexIdent : indexIdents) {
@@ -538,7 +486,7 @@ bool StorageEngineImpl::_handleInternalIdent(OperationContext* opCtx,
     auto cursor = rs->getCursor(opCtx);
     auto record = cursor->next();
     if (record) {
-        auto doc = record.value().data.toBson();
+        auto doc = record.get().data.toBson();
 
         // Parse the documents here so that we can restart the build if the document doesn't
         // contain all the necessary information to be able to resume building the index.
@@ -549,7 +497,7 @@ bool StorageEngineImpl::_handleInternalIdent(OperationContext* opCtx,
                           "failToParseResumeIndexInfo fail point is enabled");
             }
 
-            resumeInfo = ResumeIndexInfo::parse(IDLParserContext("ResumeIndexInfo"), doc);
+            resumeInfo = ResumeIndexInfo::parse(IDLParserErrorContext("ResumeIndexInfo"), doc);
         } catch (const DBException& e) {
             LOGV2(4916300, "Failed to parse resumable index info", "error"_attr = e.toStatus());
 
@@ -590,7 +538,7 @@ bool StorageEngineImpl::_handleInternalIdent(OperationContext* opCtx,
  * rebuild the index.
  */
 StatusWith<StorageEngine::ReconcileResult> StorageEngineImpl::reconcileCatalogAndIdents(
-    OperationContext* opCtx, Timestamp stableTs, LastShutdownState lastShutdownState) {
+    OperationContext* opCtx, LastShutdownState lastShutdownState) {
     // Gather all tables known to the storage engine and drop those that aren't cross-referenced
     // in the _mdb_catalog. This can happen for two reasons.
     //
@@ -657,33 +605,19 @@ StatusWith<StorageEngine::ReconcileResult> StorageEngineImpl::reconcileCatalogAn
         }
 
         const auto& toRemove = it;
-        Timestamp identDropTs = feature_flags::gPointInTimeCatalogLookups.isEnabledAndIgnoreFCV()
-            ? stableTs
-            : Timestamp::min();
-        LOGV2(22251, "Dropping unknown ident", "ident"_attr = toRemove, "ts"_attr = identDropTs);
-        if (!identDropTs.isNull()) {
-            addDropPendingIdent(identDropTs, std::make_shared<Ident>(toRemove), /*onDrop=*/nullptr);
-        } else {
-            WriteUnitOfWork wuow(opCtx);
-            Status status = _engine->dropIdent(opCtx->recoveryUnit(), toRemove);
-            if (!status.isOK()) {
-                // A concurrent operation, such as a checkpoint could be holding an open data handle
-                // on the ident. Handoff the ident drop to the ident reaper to retry later.
-                addDropPendingIdent(
-                    identDropTs, std::make_shared<Ident>(toRemove), /*onDrop=*/nullptr);
-            }
-            wuow.commit();
-        }
+        LOGV2(22251, "Dropping unknown ident", "ident"_attr = toRemove);
+        WriteUnitOfWork wuow(opCtx);
+        fassert(40591, _engine->dropIdent(opCtx->recoveryUnit(), toRemove));
+        wuow.commit();
     }
 
     // Scan all collections in the catalog and make sure their ident is known to the storage
     // engine. An omission here is fatal. A missing ident could mean a collection drop was rolled
     // back. Note that startup already attempts to open tables; this should only catch errors in
     // other contexts such as `recoverToStableTimestamp`.
-    std::vector<DurableCatalog::EntryIdentifier> catalogEntries =
-        _catalog->getAllCatalogEntries(opCtx);
+    std::vector<DurableCatalog::Entry> catalogEntries = _catalog->getAllCatalogEntries(opCtx);
     if (!_options.forRepair) {
-        for (const DurableCatalog::EntryIdentifier& entry : catalogEntries) {
+        for (DurableCatalog::Entry entry : catalogEntries) {
             if (engineIdents.find(entry.ident) == engineIdents.end()) {
                 return {ErrorCodes::UnrecoverableRollbackError,
                         str::stream() << "Expected collection does not exist. Collection: "
@@ -697,10 +631,10 @@ StatusWith<StorageEngine::ReconcileResult> StorageEngineImpl::reconcileCatalogAn
     //
     // Also, remove unfinished builds except those that were background index builds started on a
     // secondary.
-    for (const DurableCatalog::EntryIdentifier& entry : catalogEntries) {
+    for (DurableCatalog::Entry entry : catalogEntries) {
         std::shared_ptr<BSONCollectionCatalogEntry::MetaData> metaData =
             _catalog->getMetaData(opCtx, entry.catalogId);
-        NamespaceString nss(metaData->nss);
+        NamespaceString nss(metaData->ns);
 
         // Batch up the indexes to remove them from `metaData` outside of the iterator.
         std::vector<std::string> indexesToDrop;
@@ -731,19 +665,21 @@ StatusWith<StorageEngine::ReconcileResult> StorageEngineImpl::reconcileCatalogAn
                     logAttrs(nss));
             }
 
-            if (!engineIdents.count(indexIdent)) {
-                // There are cetain cases where the catalog entry may reference an index ident which
-                // is no longer present. One example of this is when an unclean shutdown occurs
-                // before a checkpoint is taken during startup recovery. Since we drop the index
-                // ident without a timestamp when restarting the index build for startup recovery,
-                // the subsequent startup recovery can see the now-dropped ident referenced by the
-                // old index catalog entry.
-                LOGV2(6386500,
-                      "Index catalog entry ident not found",
-                      "ident"_attr = indexIdent,
-                      "entry"_attr = indexMetaData.spec,
-                      logAttrs(nss));
-            }
+            // Two-phase index drop ensures that the underlying data table for an index in the
+            // catalog is not dropped until the index removal from the catalog has been majority
+            // committed and become part of the latest checkpoint. Therefore, there should almost
+            // never be a case where the index catalog entry remains but the index table (identified
+            // by ident) has been removed.
+            //
+            // There is an exception to this due to the fact that we drop the index ident without a
+            // timestamp when restarting an index build for startup recovery. Then, if we experience
+            // an unclean shutdown before a checkpoint is taken, the subsequent startup recovery can
+            // see the now-dropped ident referenced by the old index catalog entry.
+            invariant(engineIdents.find(indexIdent) != engineIdents.end() ||
+                          lastShutdownState == LastShutdownState::kUnclean,
+                      str::stream() << "Failed to find an index data table matching " << indexIdent
+                                    << " for durable index catalog entry " << indexMetaData.spec
+                                    << " in collection " << nss.ns());
 
             // Any index build with a UUID is an unfinished two-phase build and must be restarted.
             // There are no special cases to handle on primaries or secondaries. An index build may
@@ -789,27 +725,16 @@ StatusWith<StorageEngine::ReconcileResult> StorageEngineImpl::reconcileCatalogAn
                 continue;
             }
 
-            // The last anomaly is when the index build did not complete. This implies the index
-            // build was on a standalone and the `createIndexes` command never successfully
-            // returned. In this case the index entry in the catalog should be dropped.
-            if (!indexMetaData.ready) {
-                // Index builds on a secondary node are built using the two-phase protocol on
-                // non-empty collections. On empty collections, the index is built atomically during
-                // oplog application so we should never see an index with {ready: false} in this
-                // case.
-                invariant(!indexMetaData.isBackgroundSecondaryBuild);
-                invariant(!getGlobalReplSettings().usingReplSets());
-
+            // The last anomaly is when the index build did not complete, nor was the index build
+            // a secondary background index build. This implies the index build was on a primary
+            // and the `createIndexes` command never successfully returned, or the index build was
+            // a foreground secondary index build, meaning replication recovery will build the
+            // index when it replays the oplog. In these cases the index entry in the catalog
+            // should be dropped.
+            if (!indexMetaData.ready && !indexMetaData.isBackgroundSecondaryBuild) {
                 LOGV2(22256, "Dropping unfinished index", logAttrs(nss), "index"_attr = indexName);
                 // Ensure the `ident` is dropped while we have the `indexIdent` value.
-                Status status = _engine->dropIdent(opCtx->recoveryUnit(), indexIdent);
-                if (!status.isOK()) {
-                    // A concurrent operation, such as a checkpoint could be holding an open data
-                    // handle on the ident. Handoff the ident drop to the ident reaper to retry
-                    // later.
-                    addDropPendingIdent(
-                        Timestamp::min(), std::make_shared<Ident>(indexIdent), /*onDrop=*/nullptr);
-                }
+                fassert(50713, _engine->dropIdent(opCtx->recoveryUnit(), indexIdent));
                 indexesToDrop.push_back(indexName.toString());
                 continue;
             }
@@ -839,31 +764,26 @@ StatusWith<StorageEngine::ReconcileResult> StorageEngineImpl::reconcileCatalogAn
     for (auto&& temp : internalIdentsToDrop) {
         LOGV2(22257, "Dropping internal ident", "ident"_attr = temp);
         WriteUnitOfWork wuow(opCtx);
-        Status status = _engine->dropIdent(opCtx->recoveryUnit(), temp);
-        if (!status.isOK()) {
-            // A concurrent operation, such as a checkpoint could be holding an open data handle on
-            // the ident. Handoff the ident drop to the ident reaper to retry later.
-            addDropPendingIdent(
-                Timestamp::min(), std::make_shared<Ident>(temp), /*onDrop=*/nullptr);
-        }
+        fassert(51067, _engine->dropIdent(opCtx->recoveryUnit(), temp));
         wuow.commit();
     }
 
     return reconcileResult;
 }
 
-std::string StorageEngineImpl::getFilesystemPathForDb(const DatabaseName& dbName) const {
-    return _catalog->getFilesystemPathForDb(dbName.toString());
+std::string StorageEngineImpl::getFilesystemPathForDb(
+    const TenantDatabaseName& tenantDbName) const {
+    return _catalog->getFilesystemPathForDb(tenantDbName.dbName());
 }
 
-void StorageEngineImpl::cleanShutdown(ServiceContext* svcCtx) {
+void StorageEngineImpl::cleanShutdown() {
     if (_timestampMonitor) {
         _timestampMonitor->clearListeners();
     }
 
-    CollectionCatalog::write(svcCtx, [svcCtx](CollectionCatalog& catalog) {
+    CollectionCatalog::write(getGlobalServiceContext(), [](CollectionCatalog& catalog) {
         catalog.onCloseCatalog();
-        catalog.deregisterAllCollectionsAndViews(svcCtx);
+        catalog.deregisterAllCollectionsAndViews();
     });
 
     _catalog.reset();
@@ -878,6 +798,10 @@ void StorageEngineImpl::cleanShutdown(ServiceContext* svcCtx) {
 StorageEngineImpl::~StorageEngineImpl() {}
 
 void StorageEngineImpl::startTimestampMonitor() {
+    if (storageGlobalParams.readOnly) {
+        return;
+    }
+
     // Unless explicitly disabled, all storage engines should create a TimestampMonitor for
     // drop-pending internal idents, even if they do not support pending drops for collections
     // and indexes.
@@ -886,7 +810,6 @@ void StorageEngineImpl::startTimestampMonitor() {
 
     _timestampMonitor->addListener(&_minOfCheckpointAndOldestTimestampListener);
     _timestampMonitor->addListener(&_historicalIdentTimestampListener);
-    _timestampMonitor->addListener(&_collectionCatalogCleanupTimestampListener);
 }
 
 void StorageEngineImpl::notifyStartupComplete() {
@@ -901,24 +824,27 @@ RecoveryUnit* StorageEngineImpl::newRecoveryUnit() {
     return _engine->newRecoveryUnit();
 }
 
-std::vector<DatabaseName> StorageEngineImpl::listDatabases(
-    boost::optional<TenantId> tenantId) const {
-    auto res = tenantId
-        ? CollectionCatalog::latest(getGlobalServiceContext())->getAllDbNamesForTenant(tenantId)
-        : CollectionCatalog::latest(getGlobalServiceContext())->getAllDbNames();
-    return res;
+std::vector<TenantDatabaseName> StorageEngineImpl::listDatabases() const {
+    return CollectionCatalog::get(getGlobalServiceContext())->getAllDbNames();
 }
 
-Status StorageEngineImpl::dropDatabase(OperationContext* opCtx, const DatabaseName& dbName) {
+Status StorageEngineImpl::closeDatabase(OperationContext* opCtx,
+                                        const TenantDatabaseName& tenantDbName) {
+    // This is ok to be a no-op as there is no database layer in kv.
+    return Status::OK();
+}
+
+Status StorageEngineImpl::dropDatabase(OperationContext* opCtx,
+                                       const TenantDatabaseName& tenantDbName) {
     auto catalog = CollectionCatalog::get(opCtx);
     {
-        auto dbNames = catalog->getAllDbNames();
-        if (std::count(dbNames.begin(), dbNames.end(), dbName) == 0) {
+        auto tenantDbNames = catalog->getAllDbNames();
+        if (std::count(tenantDbNames.begin(), tenantDbNames.end(), tenantDbName) == 0) {
             return Status(ErrorCodes::NamespaceNotFound, "db not found to drop");
         }
     }
 
-    std::vector<UUID> toDrop = catalog->getAllCollectionUUIDsFromDb(dbName);
+    std::vector<UUID> toDrop = catalog->getAllCollectionUUIDsFromDb(tenantDbName);
 
     // Do not timestamp any of the following writes. This will remove entries from the catalog as
     // well as drop any underlying tables. It's not expected for dropping tables to be reversible
@@ -951,9 +877,6 @@ Status StorageEngineImpl::_dropCollectionsNoTimestamp(OperationContext* opCtx,
         }
     });
 
-    // This code makes untimestamped writes to the _mdb_catalog.
-    opCtx->recoveryUnit()->allowUntimestampedWrite();
-
     Status firstError = Status::OK();
     WriteUnitOfWork untimestampedDropWuow(opCtx);
     auto collectionCatalog = CollectionCatalog::get(opCtx);
@@ -962,33 +885,26 @@ Status StorageEngineImpl::_dropCollectionsNoTimestamp(OperationContext* opCtx,
 
         // No need to remove the indexes from the IndexCatalog because eliminating the Collection
         // will have the same effect.
-        auto ii = coll->getIndexCatalog()->getIndexIterator(
-            opCtx,
-            IndexCatalog::InclusionPolicy::kReady | IndexCatalog::InclusionPolicy::kUnfinished |
-                IndexCatalog::InclusionPolicy::kFrozen);
+        auto ii =
+            coll->getIndexCatalog()->getIndexIterator(opCtx, true /* includeUnfinishedIndexes */);
         while (ii->more()) {
             const IndexCatalogEntry* ice = ii->next();
 
             audit::logDropIndex(opCtx->getClient(), ice->descriptor()->indexName(), coll->ns());
 
-            catalog::removeIndex(opCtx,
-                                 ice->descriptor()->indexName(),
-                                 coll,
-                                 coll->getIndexCatalog()->getEntryShared(ice->descriptor()));
+            catalog::removeIndex(
+                opCtx, ice->descriptor()->indexName(), coll, ice->getSharedIdent());
         }
 
         audit::logDropCollection(opCtx->getClient(), coll->ns());
 
-        if (auto sharedIdent = coll->getSharedIdent()) {
-            Status result =
-                catalog::dropCollection(opCtx, coll->ns(), coll->getCatalogId(), sharedIdent);
-            if (!result.isOK() && firstError.isOK()) {
-                firstError = result;
-            }
+        Status result = catalog::dropCollection(
+            opCtx, coll->ns(), coll->getCatalogId(), coll->getSharedIdent());
+        if (!result.isOK() && firstError.isOK()) {
+            firstError = result;
         }
 
-        CollectionCatalog::get(opCtx)->dropCollection(
-            opCtx, coll, opCtx->getServiceContext()->getStorageEngine()->supportsPendingDrops());
+        CollectionCatalog::get(opCtx)->dropCollection(opCtx, coll);
     }
 
     untimestampedDropWuow.commit();
@@ -1035,8 +951,8 @@ StatusWith<std::deque<std::string>> StorageEngineImpl::extendBackupCursor(Operat
     return _engine->extendBackupCursor(opCtx);
 }
 
-bool StorageEngineImpl::supportsCheckpoints() const {
-    return _engine->supportsCheckpoints();
+bool StorageEngineImpl::isDurable() const {
+    return _engine->isDurable();
 }
 
 bool StorageEngineImpl::isEphemeral() const {
@@ -1066,14 +982,13 @@ Status StorageEngineImpl::repairRecordStore(OperationContext* opCtx,
 
     // After repairing, re-initialize the collection with a valid RecordStore.
     CollectionCatalog::write(opCtx, [&](CollectionCatalog& catalog) {
-        auto uuid = catalog.lookupUUIDByNSS(opCtx, nss).value();
-        catalog.deregisterCollection(
-            opCtx, uuid, /*isDropPending=*/false, /*commitTime*/ boost::none);
+        auto uuid = catalog.lookupUUIDByNSS(opCtx, nss).get();
+        catalog.deregisterCollection(opCtx, uuid);
     });
 
     // When repairing a record store, keep the existing behavior of not installing a minimum visible
     // timestamp.
-    _initCollection(opCtx, catalogId, nss, false, Timestamp::min(), Timestamp::min());
+    _initCollection(opCtx, catalogId, nss, false, Timestamp::min());
 
     return status;
 }
@@ -1157,7 +1072,8 @@ StatusWith<Timestamp> StorageEngineImpl::recoverToStableTimestamp(OperationConte
 
     // SERVER-58311: Reset the recovery unit to unposition storage engine cursors. This allows WT to
     // assert it has sole access when performing rollback_to_stable().
-    opCtx->replaceRecoveryUnit();
+    auto recovUnit = opCtx->releaseAndReplaceRecoveryUnit();
+    recovUnit.reset();
 
     StatusWith<Timestamp> swTimestamp = _engine->recoverToStableTimestamp(opCtx);
     if (!swTimestamp.isOK()) {
@@ -1189,8 +1105,8 @@ bool StorageEngineImpl::supportsReadConcernMajority() const {
     return _engine->supportsReadConcernMajority();
 }
 
-bool StorageEngineImpl::supportsOplogTruncateMarkers() const {
-    return _engine->supportsOplogTruncateMarkers();
+bool StorageEngineImpl::supportsOplogStones() const {
+    return _engine->supportsOplogStones();
 }
 
 bool StorageEngineImpl::supportsResumableIndexBuilds() const {
@@ -1244,16 +1160,8 @@ void StorageEngineImpl::addDropPendingIdent(const Timestamp& dropTimestamp,
     _dropPendingIdentReaper.addDropPendingIdent(dropTimestamp, ident, std::move(onDrop));
 }
 
-void StorageEngineImpl::dropIdentsOlderThan(OperationContext* opCtx, const Timestamp& ts) {
-    _dropPendingIdentReaper.dropIdentsOlderThan(opCtx, ts);
-}
-
-std::shared_ptr<Ident> StorageEngineImpl::markIdentInUse(StringData ident) {
-    return _dropPendingIdentReaper.markIdentInUse(ident);
-}
-
-void StorageEngineImpl::checkpoint(OperationContext* opCtx) {
-    _engine->checkpoint(opCtx);
+void StorageEngineImpl::checkpoint() {
+    _engine->checkpoint();
 }
 
 void StorageEngineImpl::_onMinOfCheckpointAndOldestTimestampChanged(const Timestamp& timestamp) {
@@ -1272,7 +1180,7 @@ void StorageEngineImpl::_onMinOfCheckpointAndOldestTimestampChanged(const Timest
 }
 
 StorageEngineImpl::TimestampMonitor::TimestampMonitor(KVEngine* engine, PeriodicRunner* runner)
-    : _engine(engine), _periodicRunner(runner) {
+    : _engine(engine), _running(false), _periodicRunner(runner) {
     _startup();
 }
 
@@ -1352,20 +1260,20 @@ void StorageEngineImpl::TimestampMonitor::_startup() {
                     }
                 }
 
-            } catch (const ExceptionFor<ErrorCodes::Interrupted>&) {
-                LOGV2(6183600, "Timestamp monitor got interrupted, retrying");
-                return;
-            } catch (const ExceptionFor<ErrorCodes::InterruptedAtShutdown>& ex) {
-                if (_shuttingDown) {
+            } catch (const ExceptionForCat<ErrorCategory::Interruption>& ex) {
+                if (ex.code() == ErrorCodes::Interrupted) {
+                    LOGV2(6183600, "Timestamp monitor got interrupted, retrying");
                     return;
                 }
-                _shuttingDown = true;
+                if (!ErrorCodes::isCancellationError(ex))
+                    throw;
+                // If we're interrupted at shutdown or after PeriodicRunner's client has been
+                // killed, it's fine to give up on future notifications.
                 LOGV2(22263, "Timestamp monitor is stopping", "error"_attr = ex);
-            } catch (const ExceptionForCat<ErrorCategory::CancellationError>&) {
                 return;
             } catch (const DBException& ex) {
                 // Logs and rethrows the exceptions of other types.
-                LOGV2_ERROR(5802500, "Timestamp monitor threw an exception", "error"_attr = ex);
+                LOGV2_ERROR(5802500, "Timestamp monitor throws an exception", "error"_attr = ex);
                 throw;
             }
         },
@@ -1398,15 +1306,14 @@ void StorageEngineImpl::TimestampMonitor::clearListeners() {
     _listeners.clear();
 }
 
-int64_t StorageEngineImpl::sizeOnDiskForDb(OperationContext* opCtx, const DatabaseName& dbName) {
+int64_t StorageEngineImpl::sizeOnDiskForDb(OperationContext* opCtx,
+                                           const TenantDatabaseName& tenantDbName) {
     int64_t size = 0;
 
-    auto perCollectionWork = [&](const Collection* collection) {
+    auto perCollectionWork = [&](const CollectionPtr& collection) {
         size += collection->getRecordStore()->storageSize(opCtx);
 
-        auto it = collection->getIndexCatalog()->getIndexIterator(
-            opCtx,
-            IndexCatalog::InclusionPolicy::kReady | IndexCatalog::InclusionPolicy::kUnfinished);
+        auto it = collection->getIndexCatalog()->getIndexIterator(opCtx, true);
         while (it->more()) {
             size += _engine->getIdentSize(opCtx, it->next()->getIdent());
         }
@@ -1416,12 +1323,13 @@ int64_t StorageEngineImpl::sizeOnDiskForDb(OperationContext* opCtx, const Databa
 
     if (opCtx->isLockFreeReadsOp()) {
         auto collectionCatalog = CollectionCatalog::get(opCtx);
-        for (auto it = collectionCatalog->begin(opCtx, dbName); it != collectionCatalog->end(opCtx);
+        for (auto it = collectionCatalog->begin(opCtx, tenantDbName);
+             it != collectionCatalog->end(opCtx);
              ++it) {
             perCollectionWork(*it);
         }
     } else {
-        catalog::forEachCollectionFromDb(opCtx, dbName, MODE_IS, perCollectionWork);
+        catalog::forEachCollectionFromDb(opCtx, tenantDbName, MODE_IS, perCollectionWork);
     };
 
     return size;
@@ -1450,11 +1358,6 @@ DurableCatalog* StorageEngineImpl::getCatalog() {
 
 const DurableCatalog* StorageEngineImpl::getCatalog() const {
     return _catalog.get();
-}
-
-StatusWith<BSONObj> StorageEngineImpl::getSanitizedStorageOptionsForSecondaryReplication(
-    const BSONObj& options) const {
-    return _engine->getSanitizedStorageOptionsForSecondaryReplication(options);
 }
 
 void StorageEngineImpl::dump() const {

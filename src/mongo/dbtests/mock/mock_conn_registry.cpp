@@ -73,7 +73,8 @@ bool MockConnRegistry::removeServer(const std::string& hostName) {
     return _registry.erase(hostName) == 1;
 }
 
-MockRemoteDBServer* MockConnRegistry::getMockRemoteDBServer(const std::string& hostName) const {
+MockRemoteDBServer* const MockConnRegistry::getMockRemoteDBServer(
+    const std::string& hostName) const {
     stdx::lock_guard lk(_registryMutex);
     auto iter = _registry.find(hostName);
     if (iter == _registry.end())

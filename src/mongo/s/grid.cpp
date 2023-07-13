@@ -27,15 +27,13 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/s/grid.h"
 
 #include "mongo/db/operation_context.h"
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -77,7 +75,7 @@ void Grid::init(std::unique_ptr<ShardingCatalogClient> catalogClient,
     _executorPool = std::move(executorPool);
     _network = network;
 
-    _shardRegistry->init();
+    _shardRegistry->init(grid.owner(this));
 }
 
 bool Grid::isShardingInitialized() const {

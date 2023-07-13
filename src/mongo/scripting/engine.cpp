@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -46,9 +47,6 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/file.h"
 #include "mongo/util/text.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 
@@ -220,8 +218,8 @@ bool Scope::execFile(const string& filename, bool printResult, bool reportError,
 }
 
 void Scope::storedFuncMod(OperationContext* opCtx) {
-    opCtx->recoveryUnit()->onCommit(
-        [](OperationContext*, boost::optional<Timestamp>) { _lastVersion.fetchAndAdd(1); });
+    // opCtx->recoveryUnit()->onCommit(
+    //     [](boost::optional<Timestamp>) { _lastVersion.fetchAndAdd(1); });
 }
 
 void Scope::validateObjectIdString(const string& str) {
@@ -581,6 +579,15 @@ public:
               bool assertOnError,
               int timeoutMs = 0) {
         return _real->exec(code, name, printResult, reportError, assertOnError, timeoutMs);
+    }
+    bool execAndGetResult(StringData code,
+              const string& name,
+              bool printResult,
+              bool reportError,
+              bool assertOnError,
+              std::string& res,
+              int timeoutMs = 0) {
+        return _real->execAndGetResult(code, name, printResult, reportError, assertOnError, res, timeoutMs);
     }
     bool execFile(const string& filename, bool printResult, bool reportError, int timeoutMs = 0) {
         return _real->execFile(filename, printResult, reportError, timeoutMs);

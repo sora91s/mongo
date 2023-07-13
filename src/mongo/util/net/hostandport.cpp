@@ -27,11 +27,13 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/util/net/hostandport.h"
 
 #include <boost/functional/hash.hpp>
 
-#include "mongo/base/parse_number.h"
+#include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/util/builder.h"

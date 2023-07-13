@@ -9,8 +9,10 @@
 load("jstests/libs/analyze_plan.js");  // For explain helpers.
 load("jstests/libs/sbe_util.js");      // For checkSBEEnabled.
 
-if (!checkSBEEnabled(db)) {
-    jsTest.log("Skipping test because SBE is not enabled");
+const isSBEEnabled = checkSBEEnabled(db, ["featureFlagSbeFull"]);
+
+if (!isSBEEnabled) {
+    // This test is only relevant when SBE is enabled.
     return;
 }
 
@@ -52,12 +54,21 @@ function assertIndexScanPlan(explain, isGeneric) {
 }
 
 try {
+    const isSBEPlanCacheEnabled = checkSBEEnabled(db, ["featureFlagSbePlanCache"]);
+
     // Verify that when the number of statically generated single interval bounds is less than the
     // static limit, the optimized plan is used.
     const optimized =
         coll.find({a: {$in: [1, 2, 3]}, b: {$in: [10, 11, 12]}, c: {$in: [42]}, d: {$lt: 3}})
             .explain("executionStats");
-    assertIndexScanPlan(optimized, /*isGeneric*/ false);
+
+    if (isSBEPlanCacheEnabled) {
+        assertIndexScanPlan(optimized, /*isGeneric*/ false);
+    } else {
+        const optimiziedStages = optimized.executionStats.executionStages;
+        assert(planHasStage(db, optimiziedStages, "ixseek"), optimiziedStages);
+        assert(!planHasStage(db, optimiziedStages, "chkbounds"), optimiziedStages);
+    }
 
     // Verify that when the number of statically generated single interval bounds is greater than
     // the static limit, the generic plan is used.
@@ -65,7 +76,14 @@ try {
     const generic =
         coll.find({a: {$in: [1, 2, 3]}, b: {$in: [10, 11, 12]}, c: {$in: [42]}, d: {$lt: 3}})
             .explain("executionStats");
-    assertIndexScanPlan(generic, /*isGeneric*/ true);
+
+    if (isSBEPlanCacheEnabled) {
+        assertIndexScanPlan(generic, /*isGeneric*/ true);
+    } else {
+        const genericStages = generic.executionStats.executionStages;
+        assert(planHasStage(db, genericStages, "chkbounds"), genericStages);
+        assert(planHasStage(db, genericStages, "ixseek"), genericStages);
+    }
 } finally {
     setStaticLimit(staticLimit);
 }

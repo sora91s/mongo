@@ -370,6 +370,7 @@ __wt_hazard_count(WT_SESSION_IMPL *session, WT_REF *ref)
     return (count);
 }
 
+#ifdef HAVE_DIAGNOSTIC
 /*
  * __wt_hazard_check_assert --
  *     Assert there's no hazard pointer to the page.
@@ -387,24 +388,14 @@ __wt_hazard_check_assert(WT_SESSION_IMPL *session, void *ref, bool waitfor)
             return (true);
         if (!waitfor || ++i > 100)
             break;
-        __wt_sleep(0, 10 * WT_THOUSAND);
+        __wt_sleep(0, 10000);
     }
-#ifdef HAVE_DIAGNOSTIC
-    /*
-     * In diagnostic mode we also track the file and line where the hazard pointer is set. If this
-     * is available report it in the error trace.
-     */
     __wt_errx(session,
       "hazard pointer reference to discarded object: (%p: session %p name %s: %s, line %d)",
       (void *)hp->ref, (void *)s, s->name == NULL ? "UNKNOWN" : s->name, hp->func, hp->line);
-#else
-    __wt_errx(session, "hazard pointer reference to discarded object: (%p: session %p name %s)",
-      (void *)hp->ref, (void *)s, s->name == NULL ? "UNKNOWN" : s->name);
-#endif
     return (false);
 }
 
-#ifdef HAVE_DIAGNOSTIC
 /*
  * __hazard_dump --
  *     Display the list of hazard pointers.

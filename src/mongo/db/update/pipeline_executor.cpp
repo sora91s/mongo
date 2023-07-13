@@ -103,11 +103,12 @@ UpdateExecutor::ApplyResult PipelineExecutor::applyUpdate(ApplyParams applyParam
 
     // Replace the pre-image document in applyParams with the post image we got from running the
     // post image.
-    auto ret =
-        ObjectReplaceExecutor::applyReplacementUpdate(applyParams,
-                                                      transformedDoc,
-                                                      transformedDocHasIdField,
-                                                      true /* allowTopLevelDollarPrefixedFields */);
+    bool allowTopLevelDollarPrefixedFields =
+        serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+        serverGlobalParams.featureCompatibility.isGreaterThanOrEqualTo(
+            multiversion::FeatureCompatibilityVersion::kFullyDowngradedTo_5_0);
+    auto ret = ObjectReplaceExecutor::applyReplacementUpdate(
+        applyParams, transformedDoc, transformedDocHasIdField, allowTopLevelDollarPrefixedFields);
 
     // The oplog entry should not have been populated yet.
     invariant(ret.oplogEntry.isEmpty());
@@ -117,10 +118,10 @@ UpdateExecutor::ApplyResult PipelineExecutor::applyUpdate(ApplyParams applyParam
             // We're allowed to generate $v: 2 log entries. The $v:2 has certain meta-fields like
             // '$v', 'diff'. So we pad some additional byte while computing diff.
             const auto diffOutput =
-                doc_diff::computeOplogDiff(originalDoc,
-                                           transformedDoc,
-                                           update_oplog_entry::kSizeOfDeltaOplogEntryMetadata,
-                                           applyParams.indexData);
+                doc_diff::computeDiff(originalDoc,
+                                      transformedDoc,
+                                      update_oplog_entry::kSizeOfDeltaOplogEntryMetadata,
+                                      applyParams.indexData);
             if (diffOutput) {
                 ret.oplogEntry = update_oplog_entry::makeDeltaOplogEntry(diffOutput->diff);
                 ret.indexesAffected = diffOutput->indexesAffected;

@@ -27,34 +27,35 @@
  *    it in the license file.
  */
 
-#include "mongo/db/commands/test_commands.h"
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include <string>
 
+#include "mongo/platform/basic.h"
+
+#include "mongo/db/commands/test_commands.h"
+
 #include "mongo/base/init.h"
-#include "mongo/db/catalog/capped_collection_maintenance.h"
 #include "mongo/db/catalog/capped_utils.h"
-#include "mongo/db/catalog/collection_write_path.h"
-#include "mongo/db/catalog/collection_yield_restore.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 namespace mongo {
-namespace {
 
+namespace {
 const NamespaceString kDurableHistoryTestNss("mdb_testing.pinned_timestamp");
 const std::string kTestingDurableHistoryPinName = "_testing";
+}  // namespace
 
 using repl::UnreplicatedWritesBlock;
 using std::endl;
@@ -62,59 +63,54 @@ using std::string;
 using std::stringstream;
 
 /* For testing only, not for general use. Enabled via command-line */
-class GodInsert : public BasicCommand {
+class GodInsert : public ErrmsgCommandDeprecated {
 public:
-    GodInsert() : BasicCommand("godinsert") {}
-    bool adminOnly() const override {
+    GodInsert() : ErrmsgCommandDeprecated("godinsert") {}
+    virtual bool adminOnly() const {
         return false;
     }
-
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
-
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
-
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();
-    }
-
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {}
     std::string help() const override {
         return "internal. for testing only.";
     }
-    bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
+    virtual bool errmsgRun(OperationContext* opCtx,
+                           const string& dbname,
+                           const BSONObj& cmdObj,
+                           string& errmsg,
+                           BSONObjBuilder& result) {
+        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
         LOGV2(20505,
               "Test-only command 'godinsert' invoked coll:{collection}",
               "Test-only command 'godinsert' invoked",
               "collection"_attr = nss.coll());
         BSONObj obj = cmdObj["obj"].embeddedObjectUserCheck();
 
-        Lock::DBLock lk(opCtx, dbName, MODE_X);
-        OldClientContext ctx(opCtx, nss);
+        Lock::DBLock lk(opCtx, dbname, MODE_X);
+        OldClientContext ctx(opCtx, nss.ns());
         Database* db = ctx.db();
 
         WriteUnitOfWork wunit(opCtx);
         UnreplicatedWritesBlock unreplicatedWritesBlock(opCtx);
-        CollectionPtr collection(
-            CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss));
+        CollectionPtr collection =
+            CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
         if (!collection) {
-            collection = CollectionPtr(db->createCollection(opCtx, nss));
-            uassert(ErrorCodes::CannotCreateCollection, "could not create collection", collection);
+            collection = db->createCollection(opCtx, nss);
+            if (!collection) {
+                errmsg = "could not create collection";
+                return false;
+            }
         }
-        collection.makeYieldable(opCtx, LockedCollectionYieldRestore(opCtx, collection));
-
         OpDebug* const nullOpDebug = nullptr;
-        Status status = collection_internal::insertDocument(
-            opCtx, collection, InsertStatement(obj), nullOpDebug, false);
+        Status status = collection->insertDocument(opCtx, InsertStatement(obj), nullOpDebug, false);
         if (status.isOK()) {
             wunit.commit();
         }
@@ -129,27 +125,21 @@ MONGO_REGISTER_TEST_COMMAND(GodInsert);
 class CapTrunc : public BasicCommand {
 public:
     CapTrunc() : BasicCommand("captrunc") {}
-
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
-
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
-
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();
-    }
-
-    bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        const NamespaceString fullNs = CommandHelpers::parseNsCollectionRequired(dbName, cmdObj);
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {}
+    virtual bool run(OperationContext* opCtx,
+                     const string& dbname,
+                     const BSONObj& cmdObj,
+                     BSONObjBuilder& result) {
+        const NamespaceString fullNs = CommandHelpers::parseNsCollectionRequired(dbname, cmdObj);
         if (!fullNs.isValid()) {
             uasserted(ErrorCodes::InvalidNamespace,
                       str::stream() << "collection name " << fullNs.ns() << " is not valid");
@@ -196,7 +186,8 @@ public:
         IndexBuildsCoordinator::get(opCtx)->assertNoIndexBuildInProgForCollection(
             collection->uuid());
 
-        collection_internal::cappedTruncateAfter(opCtx, *collection, end, inc);
+        collection->cappedTruncateAfter(opCtx, end, inc);
+
         return true;
     }
 };
@@ -210,23 +201,19 @@ public:
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
-
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
-
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();
-    }
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {}
 
-    bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        const NamespaceString nss = CommandHelpers::parseNsCollectionRequired(dbName, cmdObj);
+    virtual bool run(OperationContext* opCtx,
+                     const string& dbname,
+                     const BSONObj& cmdObj,
+                     BSONObjBuilder& result) {
+        const NamespaceString nss = CommandHelpers::parseNsCollectionRequired(dbname, cmdObj);
 
         uassertStatusOK(emptyCapped(opCtx, nss));
         return true;
@@ -256,24 +243,22 @@ public:
     }
 
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();
-    }
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const override {}
 
     std::string help() const override {
         return "pins the oldest timestamp";
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         const Timestamp requestedPinTs = cmdObj.firstElement().timestamp();
         const bool round = cmdObj["round"].booleanSafe();
 
-        AutoGetDb autoDb(opCtx, kDurableHistoryTestNss.dbName(), MODE_IX);
+        AutoGetDb autoDb(opCtx, kDurableHistoryTestNss.db(), MODE_IX);
         Lock::CollectionLock collLock(opCtx, kDurableHistoryTestNss, MODE_IX);
         if (!CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(
                 opCtx,
@@ -298,9 +283,8 @@ public:
             uassertStatusOK(opCtx->getServiceContext()->getStorageEngine()->pinOldestTimestamp(
                 opCtx, kTestingDurableHistoryPinName, requestedPinTs, round));
 
-        uassertStatusOK(collection_internal::insertDocument(
+        uassertStatusOK(autoColl->insertDocument(
             opCtx,
-            *autoColl,
             InsertStatement(fixDocumentForInsert(opCtx, BSON("pinTs" << pinTs)).getValue()),
             nullptr));
         wuow.commit();
@@ -312,8 +296,6 @@ public:
 };
 
 MONGO_REGISTER_TEST_COMMAND(DurableHistoryReplicatedTestCmd);
-
-}  // namespace
 
 std::string TestingDurableHistoryPin::getName() {
     return kTestingDurableHistoryPinName;
@@ -328,7 +310,7 @@ boost::optional<Timestamp> TestingDurableHistoryPin::calculatePin(OperationConte
     Timestamp ret = Timestamp::max();
     auto cursor = autoColl->getCursor(opCtx);
     for (auto doc = cursor->next(); doc; doc = cursor->next()) {
-        const BSONObj obj = doc.value().data.toBson();
+        const BSONObj obj = doc.get().data.toBson();
         const Timestamp ts = obj["pinTs"].timestamp();
         ret = std::min(ret, ts);
     }
@@ -339,5 +321,6 @@ boost::optional<Timestamp> TestingDurableHistoryPin::calculatePin(OperationConte
 
     return ret;
 }
+
 
 }  // namespace mongo

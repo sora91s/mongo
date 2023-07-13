@@ -35,10 +35,15 @@
 #include "mongo/util/options_parser/option_description.h"
 #include "mongo/util/options_parser/option_section.h"
 #include "mongo/util/options_parser/options_parser.h"
+#include "mongo/util/options_parser/options_parser_init.h"
 #include "mongo/util/options_parser/startup_option_init.h"
 #include "mongo/util/quick_exit.h"
 
 namespace mongo {
+void initMyOptionsParserInit() {
+    
+}
+
 namespace optionenvironment {
 namespace {
 
@@ -49,7 +54,7 @@ MONGO_STARTUP_OPTIONS_PARSE(StartupOptions)(InitializerContext* context) {
         std::cerr << ret.reason() << std::endl;
         // TODO: Figure out if there's a use case for this help message ever being different
         std::cerr << "try '" << context->args()[0] << " --help' for more information" << std::endl;
-        quickExit(ExitCode::badOptions);
+        quickExit(EXIT_BADOPTIONS);
     }
 }
 
@@ -62,7 +67,7 @@ MONGO_INITIALIZER_GENERAL(OutputConfig,
         uassertStatusOK(startupOptionsParsed.get(Key("outputConfig"), &output));
         if (output) {
             std::cout << startupOptionsParsed.toYAML() << std::endl;
-            quickExit(ExitCode::clean);
+            quickExit(EXIT_CLEAN);
         }
     }
 }

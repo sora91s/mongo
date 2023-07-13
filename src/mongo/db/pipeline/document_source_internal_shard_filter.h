@@ -85,8 +85,6 @@ public:
         return DepsTracker::State::SEE_NEXT;
     }
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
-
 private:
     GetNextResult doGetNext() override;
 

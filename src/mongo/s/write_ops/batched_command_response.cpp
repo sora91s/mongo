@@ -38,6 +38,9 @@
 #include "mongo/util/str.h"
 
 namespace mongo {
+void initMyBatchedCommandResponse() {
+    
+}
 namespace {
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(MultipleErrorsOccurredInfo);
@@ -384,7 +387,7 @@ void BatchedCommandResponse::unsetErrDetails() {
 }
 
 bool BatchedCommandResponse::isErrDetailsSet() const {
-    return _writeErrors.has_value();
+    return _writeErrors.is_initialized();
 }
 
 size_t BatchedCommandResponse::sizeErrDetails() const {

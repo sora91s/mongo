@@ -64,12 +64,12 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const final;
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const final;
 
     bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final;
 
@@ -78,7 +78,7 @@ protected:
     // set. On success, returns a struct indicating the previous profiling level and filter.
     virtual CollectionCatalog::ProfileSettings _applyProfilingLevel(
         OperationContext* opCtx,
-        const DatabaseName& dbName,
+        const std::string& dbName,
         const ProfileCmdRequest& request) const = 0;
 };
 

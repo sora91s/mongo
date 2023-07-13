@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
 
 #include "mongo/platform/basic.h"
 
@@ -40,17 +41,13 @@
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/db/field_ref.h"
-#include "mongo/db/index/column_key_generator.h"
-#include "mongo/db/index/columns_access_method.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index/wildcard_key_generator.h"
-#include "mongo/db/index/wildcard_validation.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
-#include "mongo/db/query/query_feature_flags_gen.h"
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/db/service_context.h"
 #include "mongo/logv2/log.h"
@@ -58,10 +55,10 @@
 #include "mongo/util/represent_as.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kIndex
-
-
 namespace mongo {
+void initMyIndexKeyVaildate() {
+    
+}
 namespace index_key_validate {
 
 std::function<void(std::set<StringData>&)> filterAllowedIndexFieldNames;
@@ -74,9 +71,9 @@ namespace {
 // specification.
 MONGO_FAIL_POINT_DEFINE(skipIndexCreateFieldNameValidation);
 
-// When the skipTTLIndexInvalidExpireAfterSecondsValidationForCreateIndex failpoint is enabled,
-// validation for TTL index 'expireAfterSeconds' will be disabled in certain codepaths.
-MONGO_FAIL_POINT_DEFINE(skipTTLIndexInvalidExpireAfterSecondsValidationForCreateIndex);
+// When the skipTTLIndexNaNExpireAfterSecondsValidation failpoint is enabled, validation for
+// TTL index 'expireAfterSeconds' will be disabled.
+MONGO_FAIL_POINT_DEFINE(skipTTLIndexNaNExpireAfterSecondsValidation);
 
 static const std::set<StringData> allowedIdIndexFieldNames = {
     IndexDescriptor::kCollationFieldName,
@@ -93,7 +90,7 @@ static const std::set<StringData> allowedClusteredIndexFieldNames = {
     ClusteredIndexSpec::kVFieldName,
     ClusteredIndexSpec::kKeyFieldName,
     // This is for indexSpec creation only.
-    IndexDescriptor::kClusteredFieldName,
+    "clustered",
 };
 
 /**
@@ -152,15 +149,6 @@ Status validateKeyPattern(const BSONObj& key, IndexDescriptor::IndexVersion inde
             return Status(code, str::stream() << "Unknown index plugin '" << pluginName << '\'');
     }
 
-    if (pluginName == IndexNames::WILDCARD &&
-        feature_flags::gFeatureFlagCompoundWildcardIndexes.isEnabled(
-            serverGlobalParams.featureCompatibility)) {
-        auto status = validateWildcardIndex(key);
-        if (!status.isOK()) {
-            return status;
-        }
-    }
-
     BSONObjIterator it(key);
     while (it.more()) {
         BSONElement keyElement = it.next();
@@ -174,6 +162,12 @@ Status validateKeyPattern(const BSONObj& key, IndexDescriptor::IndexVersion inde
                                           << static_cast<int>(indexVersion)};
                 }
 
+                if (pluginName == IndexNames::WILDCARD) {
+                    return {code,
+                            str::stream() << "'" << pluginName
+                                          << "' index plugin is not allowed with index version v:"
+                                          << static_cast<int>(indexVersion)};
+                }
                 break;
             }
             case IndexVersion::kV2: {
@@ -183,9 +177,7 @@ Status validateKeyPattern(const BSONObj& key, IndexDescriptor::IndexVersion inde
                         return {code, "Values in the index key pattern cannot be NaN."};
                     } else if (value == 0.0) {
                         return {code, "Values in the index key pattern cannot be 0."};
-                    } else if (value < 0.0 && pluginName == IndexNames::WILDCARD &&
-                               !feature_flags::gFeatureFlagCompoundWildcardIndexes.isEnabled(
-                                   serverGlobalParams.featureCompatibility)) {
+                    } else if (value < 0.0 && pluginName == IndexNames::WILDCARD) {
                         return {code,
                                 "A numeric value in a $** index key pattern must be positive."};
                     }
@@ -211,22 +203,10 @@ Status validateKeyPattern(const BSONObj& key, IndexDescriptor::IndexVersion inde
                                         << "' index must be a non-zero number, not a string.");
         }
 
-        StringData fieldName(keyElement.fieldNameStringData());
-
-        // TODO SERVER-68303: Remove the CompoundWildcardIndexes feature flag.
-        if ((pluginName == IndexNames::WILDCARD &&
-             !feature_flags::gFeatureFlagCompoundWildcardIndexes.isEnabled(
-                 serverGlobalParams.featureCompatibility)) ||
-            pluginName == IndexNames::COLUMN) {
-            if (key.nFields() != 1) {
-                // Columnstore indexes do not support compound indexes.
-                return Status(code,
-                              str::stream() << pluginName << " indexes do not allow compounding");
-            } else if (!WildcardNames::isWildcardFieldName(fieldName)) {
-                // Invalid key names for columnstore are not supported.
-                return Status(code,
-                              str::stream() << "Invalid key name for " << pluginName << " indexes");
-            }
+        // Check if the wildcard index is compounded. If it is the key is invalid because
+        // compounded wildcard indexes are disallowed.
+        if (pluginName == IndexNames::WILDCARD && key.nFields() != 1) {
+            return Status(code, "wildcard indexes do not allow compounding");
         }
 
         // Ensure that the fields on which we are building the index are valid: a field must not
@@ -241,10 +221,9 @@ Status validateKeyPattern(const BSONObj& key, IndexDescriptor::IndexVersion inde
             return Status(code, "Index keys cannot be an empty field.");
         }
 
-        // "$**" is acceptable for a text, wildcard, or columnstore index.
+        // "$**" is acceptable for a text index or wildcard index.
         if ((keyElement.fieldNameStringData() == "$**") &&
-            ((keyElement.isNumber()) || (keyElement.str() == IndexNames::TEXT) ||
-             (keyElement.str() == IndexNames::COLUMN)))
+            ((keyElement.isNumber()) || (keyElement.str() == IndexNames::TEXT)))
             continue;
 
         if ((keyElement.fieldNameStringData() == "_fts") && keyElement.str() != IndexNames::TEXT) {
@@ -268,10 +247,10 @@ Status validateKeyPattern(const BSONObj& key, IndexDescriptor::IndexVersion inde
             const bool mightBePartOfDbRef =
                 (i != 0) && (part == "$db" || part == "$id" || part == "$ref");
 
-            const bool isWildcardOrColumn = (i == numParts - 1) && (part == "$**") &&
-                (pluginName == IndexNames::WILDCARD || pluginName == IndexNames::COLUMN);
+            const bool isPartOfWildcard =
+                (i == numParts - 1) && (part == "$**") && (pluginName == IndexNames::WILDCARD);
 
-            if (!mightBePartOfDbRef && !isWildcardOrColumn) {
+            if (!mightBePartOfDbRef && !isPartOfWildcard) {
                 return Status(code,
                               "Index key contains an illegal field name: "
                               "field name starts with '$'.");
@@ -299,8 +278,7 @@ BSONObj repairIndexSpec(const NamespaceString& ns,
              IndexDescriptor::kUniqueFieldName == fieldName ||
              IndexDescriptor::kSparseFieldName == fieldName ||
              IndexDescriptor::kDropDuplicatesFieldName == fieldName ||
-             IndexDescriptor::kPrepareUniqueFieldName == fieldName ||
-             IndexDescriptor::kClusteredFieldName == fieldName) &&
+             IndexDescriptor::kPrepareUniqueFieldName == fieldName || "clustered" == fieldName) &&
             !indexSpecElem.isNumber() && !indexSpecElem.isBoolean() && indexSpecElem.trueValue()) {
             LOGV2_WARNING(6444400,
                           "Fixing boolean field from index spec",
@@ -309,9 +287,7 @@ BSONObj repairIndexSpec(const NamespaceString& ns,
                           "indexSpec"_attr = redact(indexSpec));
             builder->appendBool(fieldName, true);
         } else if (IndexDescriptor::kExpireAfterSecondsFieldName == fieldName &&
-                   !validateExpireAfterSeconds(indexSpecElem,
-                                               ValidateExpireAfterSecondsMode::kSecondaryTTLIndex)
-                        .isOK()) {
+                   !(indexSpecElem.isNumber() && !indexSpecElem.isNaN())) {
             LOGV2_WARNING(6835900,
                           "Fixing expire field from TTL index spec",
                           "namespace"_attr = redact(ns.toString()),
@@ -331,14 +307,14 @@ StatusWith<BSONObj> validateIndexSpec(OperationContext* opCtx, const BSONObj& in
     bool hasKeyPatternField = false;
     bool hasIndexNameField = false;
     bool hasNamespaceField = false;
-    bool isTTLIndexWithInvalidExpireAfterSeconds = false;
+    bool isTTLIndexWithNaNExpireAfterSeconds = false;
     bool hasVersionField = false;
     bool hasCollationField = false;
     bool hasWeightsField = false;
     bool hasOriginalSpecField = false;
     bool unique = false;
     bool prepareUnique = false;
-    auto clusteredField = indexSpec[IndexDescriptor::kClusteredFieldName];
+    auto clusteredField = indexSpec["clustered"];
     bool apiStrict = opCtx && APIParameters::get(opCtx).getAPIStrict().value_or(false);
 
     auto fieldNamesValidStatus = validateIndexSpecFieldNames(indexSpec);
@@ -372,7 +348,7 @@ StatusWith<BSONObj> validateIndexSpec(OperationContext* opCtx, const BSONObj& in
             }
 
             indexType = IndexNames::findPluginName(keyPattern);
-            if (apiStrict && (indexType == IndexNames::TEXT || indexType == IndexNames::COLUMN)) {
+            if (apiStrict && indexType == IndexNames::TEXT) {
                 return {ErrorCodes::APIStrictError,
                         str::stream()
                             << indexType << " indexes cannot be created with apiStrict: true"};
@@ -391,13 +367,6 @@ StatusWith<BSONObj> validateIndexSpec(OperationContext* opCtx, const BSONObj& in
                     return {ErrorCodes::CannotCreateIndex,
                             str::stream()
                                 << "Values in the index key pattern cannot be empty strings"};
-                }
-                if (indexType == IndexNames::WILDCARD &&
-                    keyElement.fieldNameStringData() == "$**" && keyPattern.nFields() > 1 &&
-                    !indexSpec.hasField(IndexDescriptor::kWildcardProjectionFieldName)) {
-                    return {ErrorCodes::CannotCreateIndex,
-                            "Compound wildcard indexes on all fields must also specify "
-                            "'wildcardProjection' option"};
                 }
             }
 
@@ -506,61 +475,40 @@ StatusWith<BSONObj> validateIndexSpec(OperationContext* opCtx, const BSONObj& in
             if (!statusWithMatcher.isOK()) {
                 return statusWithMatcher.getStatus();
             }
-        } else if (IndexDescriptor::kWildcardProjectionFieldName == indexSpecElemFieldName ||
-                   IndexDescriptor::kColumnStoreProjectionFieldName == indexSpecElemFieldName) {
-            const bool isWildcard =
-                IndexDescriptor::kWildcardProjectionFieldName == indexSpecElemFieldName;
-            const auto indexName = isWildcard ? IndexNames::WILDCARD : IndexNames::COLUMN;
+        } else if (IndexDescriptor::kPathProjectionFieldName == indexSpecElemFieldName) {
             const auto key = indexSpec.getObjectField(IndexDescriptor::kKeyPatternFieldName);
-            if (IndexNames::findPluginName(key) != indexName) {
-                // For backwards compatibility, we will return BadValue for Wildcard indices.
-                auto code =
-                    isWildcard ? ErrorCodes::BadValue : ErrorCodes::InvalidIndexSpecificationOption;
-                return {code,
-                        str::stream() << "The field '" << indexSpecElemFieldName
-                                      << "' is only allowed in '" << indexName << "' indexes"};
+            if (IndexNames::findPluginName(key) != IndexNames::WILDCARD) {
+                return {ErrorCodes::BadValue,
+                        str::stream()
+                            << "The field '" << IndexDescriptor::kPathProjectionFieldName
+                            << "' is only allowed in an '" << IndexNames::WILDCARD << "' index"};
             }
             if (indexSpecElem.type() != BSONType::Object) {
                 return {ErrorCodes::TypeMismatch,
-                        str::stream() << "The field '" << indexSpecElemFieldName
+                        str::stream() << "The field '" << IndexDescriptor::kPathProjectionFieldName
                                       << "' must be a non-empty object, but got "
                                       << typeName(indexSpecElem.type())};
             }
             if (!key.hasField("$**")) {
                 return {ErrorCodes::FailedToParse,
                         str::stream()
-                            << "The field '" << indexSpecElemFieldName << "' is only allowed when '"
-                            << IndexDescriptor::kKeyPatternFieldName
-                            << "' is {\"$**\": ±1} or {\"$**\": \"columnstore\"}"};
+                            << "The field '" << IndexDescriptor::kPathProjectionFieldName
+                            << "' is only allowed when '" << IndexDescriptor::kKeyPatternFieldName
+                            << "' is {\"$**\": ±1}"};
             }
+
             if (indexSpecElem.embeddedObject().isEmpty()) {
                 return {ErrorCodes::FailedToParse,
-                        str::stream() << "The '" << indexSpecElemFieldName
+                        str::stream() << "The '" << IndexDescriptor::kPathProjectionFieldName
                                       << "' field can't be an empty object"};
             }
             try {
-                if (isWildcard) {
-                    if (key.nFields() > 1 &&
-                        feature_flags::gFeatureFlagCompoundWildcardIndexes
-                            .isEnabledAndIgnoreFCV()) {
-                        auto validationStatus =
-                            validateWildcardProjection(key, indexSpecElem.embeddedObject());
-                        if (!validationStatus.isOK()) {
-                            return validationStatus;
-                        }
-                    }
-                    // We use createProjectionExecutor to parse and validate the path projection
-                    // spec. call here
-                    WildcardKeyGenerator::createProjectionExecutor(key,
-                                                                   indexSpecElem.embeddedObject());
-                } else {
-                    column_keygen::ColumnKeyGenerator::createProjectionExecutor(
-                        key, indexSpecElem.embeddedObject());
-                }
-
+                // We use WildcardKeyGenerator::createProjectionExec to parse and validate the path
+                // projection spec.
+                WildcardKeyGenerator::createProjectionExecutor(key, indexSpecElem.embeddedObject());
             } catch (const DBException& ex) {
-                return ex.toStatus(str::stream()
-                                   << "Failed to parse projection: " << indexSpecElemFieldName);
+                return ex.toStatus(str::stream() << "Failed to parse: "
+                                                 << IndexDescriptor::kPathProjectionFieldName);
             }
         } else if (IndexDescriptor::kWeightsFieldName == indexSpecElemFieldName) {
             if (!indexSpecElem.isABSONObj() && indexSpecElem.type() != String) {
@@ -573,9 +521,11 @@ StatusWith<BSONObj> validateIndexSpec(OperationContext* opCtx, const BSONObj& in
         } else if ((IndexDescriptor::kBackgroundFieldName == indexSpecElemFieldName ||
                     IndexDescriptor::kUniqueFieldName == indexSpecElemFieldName ||
                     IndexDescriptor::kSparseFieldName == indexSpecElemFieldName ||
+                    IndexDescriptor::k2dsphereCoarsestIndexedLevel == indexSpecElemFieldName ||
+                    IndexDescriptor::k2dsphereFinestIndexedLevel == indexSpecElemFieldName ||
                     IndexDescriptor::kDropDuplicatesFieldName == indexSpecElemFieldName ||
                     IndexDescriptor::kPrepareUniqueFieldName == indexSpecElemFieldName ||
-                    IndexDescriptor::kClusteredFieldName == indexSpecElemFieldName)) {
+                    "clustered" == indexSpecElemFieldName)) {
             if (!indexSpecElem.isNumber() && !indexSpecElem.isBoolean()) {
                 return {ErrorCodes::TypeMismatch,
                         str::stream()
@@ -599,41 +549,14 @@ StatusWith<BSONObj> validateIndexSpec(OperationContext* opCtx, const BSONObj& in
                     IndexDescriptor::kTextVersionFieldName == indexSpecElemFieldName ||
                     IndexDescriptor::k2dIndexBitsFieldName == indexSpecElemFieldName ||
                     IndexDescriptor::k2dIndexMinFieldName == indexSpecElemFieldName ||
-                    IndexDescriptor::k2dIndexMaxFieldName == indexSpecElemFieldName ||
-                    IndexDescriptor::k2dsphereCoarsestIndexedLevel == indexSpecElemFieldName ||
-                    IndexDescriptor::k2dsphereFinestIndexedLevel == indexSpecElemFieldName) &&
+                    IndexDescriptor::k2dIndexMaxFieldName == indexSpecElemFieldName) &&
                    !indexSpecElem.isNumber()) {
             return {ErrorCodes::TypeMismatch,
                     str::stream() << "The field '" << indexSpecElemFieldName
                                   << "' must be a number, but got "
                                   << typeName(indexSpecElem.type())};
-        } else if (IndexDescriptor::kExpireAfterSecondsFieldName == indexSpecElemFieldName &&
-                   !validateExpireAfterSeconds(indexSpecElem,
-                                               ValidateExpireAfterSecondsMode::kSecondaryTTLIndex)
-                        .isOK() &&
-                   !skipTTLIndexInvalidExpireAfterSecondsValidationForCreateIndex.shouldFail()) {
-            isTTLIndexWithInvalidExpireAfterSeconds = true;
-        } else if (IndexDescriptor::kColumnStoreCompressorFieldName == indexSpecElemFieldName) {
-            if (IndexNames::findPluginName(indexSpec.getObjectField(
-                    IndexDescriptor::kKeyPatternFieldName)) != IndexNames::COLUMN) {
-                return {ErrorCodes::InvalidIndexSpecificationOption,
-                        str::stream()
-                            << "The field '" << indexSpecElemFieldName << "' is only allowed in '"
-                            << IndexDescriptor::kColumnStoreCompressorFieldName << "' indexes"};
-            }
-            if (indexSpecElem.type() != BSONType::String) {
-                return {ErrorCodes::TypeMismatch,
-                        str::stream()
-                            << "The field '" << IndexDescriptor::kColumnStoreCompressorFieldName
-                            << "' must be a string, but got " << typeName(indexSpecElem.type())};
-            }
-            if (!ColumnStoreAccessMethod::supportsBlockCompressor(
-                    indexSpecElem.valueStringData())) {
-                return {ErrorCodes::InvalidIndexSpecificationOption,
-                        str::stream() << "Unsupported value for "
-                                      << IndexDescriptor::kColumnStoreCompressorFieldName << ": "
-                                      << indexSpecElem.valueStringData()};
-            }
+        } else if (IndexDescriptor::kExpireAfterSecondsFieldName == indexSpecElemFieldName) {
+            isTTLIndexWithNaNExpireAfterSeconds = indexSpecElem.isNaN();
         } else {
             // We can assume field name is valid at this point. Validation of fieldname is handled
             // prior to this in validateIndexSpecFieldNames().
@@ -705,9 +628,10 @@ StatusWith<BSONObj> validateIndexSpec(OperationContext* opCtx, const BSONObj& in
         modifiedSpec = modifiedSpec.removeField(IndexDescriptor::kNamespaceFieldName);
     }
 
-    if (isTTLIndexWithInvalidExpireAfterSeconds) {
+    if (isTTLIndexWithNaNExpireAfterSeconds &&
+        !skipTTLIndexNaNExpireAfterSecondsValidation.shouldFail()) {
         // We create a new index specification with the 'expireAfterSeconds' field set as
-        // kExpireAfterSecondsForInactiveTTLIndex if the current value is invalid. A similar
+        // kExpireAfterSecondsForInactiveTTLIndex if the current value is NaN. A similar
         // treatment is done in repairIndexSpec(). This rewrites the 'expireAfterSeconds'
         // value to be compliant with the 'safeInt' IDL type for the listIndexes response.
         BSONObjBuilder builder;
@@ -741,7 +665,7 @@ StatusWith<BSONObj> validateIndexSpec(OperationContext* opCtx, const BSONObj& in
 }
 
 Status validateIdIndexSpec(const BSONObj& indexSpec) {
-    bool isClusteredIndexSpec = indexSpec.hasField(IndexDescriptor::kClusteredFieldName);
+    bool isClusteredIndexSpec = indexSpec.hasField("clustered");
 
     if (!isClusteredIndexSpec) {
         // Field names for a 'clustered' index spec have already been validated through
@@ -803,7 +727,7 @@ Status validateIndexSpecFieldNames(const BSONObj& indexSpec) {
         return Status::OK();
     }
 
-    if (indexSpec.hasField(IndexDescriptor::kClusteredFieldName)) {
+    if (indexSpec.hasField("clustered")) {
         return validateClusteredSpecFieldNames(indexSpec);
     }
 
@@ -918,38 +842,6 @@ Status validateExpireAfterSeconds(std::int64_t expireAfterSeconds,
     return Status::OK();
 }
 
-Status validateExpireAfterSeconds(BSONElement expireAfterSeconds,
-                                  ValidateExpireAfterSecondsMode mode) {
-    if (!expireAfterSeconds.isNumber()) {
-        return {ErrorCodes::CannotCreateIndex,
-                str::stream() << "TTL index '" << IndexDescriptor::kExpireAfterSecondsFieldName
-                              << "' option must be numeric, but received a type of '"
-                              << typeName(expireAfterSeconds.type())};
-    }
-
-    if (expireAfterSeconds.isNaN()) {
-        return {ErrorCodes::CannotCreateIndex,
-                str::stream() << "TTL index '" << IndexDescriptor::kExpireAfterSecondsFieldName
-                              << "' option must not be NaN"};
-    }
-
-    // Clustered indexes allow 64-bit integers for expireAfterSeconds, but secondary indexes only
-    // allow 32-bit integers, so we check the range here for secondary indexes.
-    if (mode == ValidateExpireAfterSecondsMode::kSecondaryTTLIndex &&
-        expireAfterSeconds.safeNumberInt() != expireAfterSeconds.safeNumberLong()) {
-        return {ErrorCodes::CannotCreateIndex,
-                str::stream() << "TTL index '" << IndexDescriptor::kExpireAfterSecondsFieldName
-                              << "' must be within the range of a 32-bit integer"};
-    }
-
-    if (auto status = validateExpireAfterSeconds(expireAfterSeconds.safeNumberLong(), mode);
-        !status.isOK()) {
-        return {ErrorCodes::CannotCreateIndex, str::stream() << status.reason()};
-    }
-
-    return Status::OK();
-}
-
 bool isIndexTTL(const BSONObj& indexSpec) {
     return indexSpec.hasField(IndexDescriptor::kExpireAfterSecondsFieldName);
 }
@@ -959,11 +851,22 @@ Status validateIndexSpecTTL(const BSONObj& indexSpec) {
         return Status::OK();
     }
 
+    const BSONElement expireAfterSecondsElt =
+        indexSpec[IndexDescriptor::kExpireAfterSecondsFieldName];
+    if (!expireAfterSecondsElt.isNumber()) {
+        return {ErrorCodes::CannotCreateIndex,
+                str::stream() << "TTL index '" << IndexDescriptor::kExpireAfterSecondsFieldName
+                              << "' option must be numeric, but received a type of '"
+                              << typeName(expireAfterSecondsElt.type())
+                              << "'. Index spec: " << indexSpec};
+    }
+
     if (auto status =
-            validateExpireAfterSeconds(indexSpec[IndexDescriptor::kExpireAfterSecondsFieldName],
+            validateExpireAfterSeconds(expireAfterSecondsElt.safeNumberLong(),
                                        ValidateExpireAfterSecondsMode::kSecondaryTTLIndex);
         !status.isOK()) {
-        return status.withContext(str::stream() << ". Index spec: " << indexSpec);
+        return {ErrorCodes::CannotCreateIndex,
+                str::stream() << status.reason() << ". Index spec: " << indexSpec};
     }
 
     const BSONObj key = indexSpec["key"].Obj();
@@ -982,38 +885,6 @@ bool isIndexAllowedInAPIVersion1(const IndexDescriptor& indexDesc) {
     return indexName != IndexNames::TEXT && indexName != IndexNames::GEO_HAYSTACK &&
         !indexDesc.isSparse();
 }
-
-BSONObj parseAndValidateIndexSpecs(OperationContext* opCtx, const BSONObj& indexSpecObj) {
-    constexpr auto k_id_ = "_id_"_sd;
-    constexpr auto kStar = "*"_sd;
-
-    BSONObj parsedIndexSpec = indexSpecObj;
-
-    auto indexSpecStatus = index_key_validate::validateIndexSpec(opCtx, parsedIndexSpec);
-    uassertStatusOK(indexSpecStatus.getStatus().withContext(
-        str::stream() << "Error in specification " << parsedIndexSpec.toString()));
-
-    auto indexSpec = indexSpecStatus.getValue();
-    if (IndexDescriptor::isIdIndexPattern(indexSpec[IndexDescriptor::kKeyPatternFieldName].Obj())) {
-        uassertStatusOK(index_key_validate::validateIdIndexSpec(indexSpec));
-    } else {
-        uassert(ErrorCodes::BadValue,
-                str::stream() << "The index name '_id_' is reserved for the _id index, "
-                                 "which must have key pattern {_id: 1}, found "
-                              << indexSpec[IndexDescriptor::kKeyPatternFieldName],
-                indexSpec[IndexDescriptor::kIndexNameFieldName].String() != k_id_);
-
-        // An index named '*' cannot be dropped on its own, because a dropIndex oplog
-        // entry with a '*' as an index name means "drop all indexes in this
-        // collection".  We disallow creation of such indexes to avoid this conflict.
-        uassert(ErrorCodes::BadValue,
-                "The index name '*' is not valid.",
-                indexSpec[IndexDescriptor::kIndexNameFieldName].String() != kStar);
-    }
-
-    return indexSpec;
-}
-
 
 GlobalInitializerRegisterer filterAllowedIndexFieldNamesInitializer(
     "FilterAllowedIndexFieldNames", [](InitializerContext* service) {

@@ -54,7 +54,7 @@ public:
         OperationContext* opCtx,
         StringData purpose,
         const LogicalTime& newerThanThis,
-        bool tryUseMajority) = 0;
+        bool useMajority) = 0;
 
     /**
      * Returns all external keys (validation-only keys copied from other clusters) that match the
@@ -69,10 +69,9 @@ public:
     virtual Status insertNewKey(OperationContext* opCtx, const BSONObj& doc) = 0;
 
     /**
-     * Returns true if the client can only read with local read concern, which means keys read by a
-     * refresh may be rolled back.
+     * Returns true if it performs majority reads
      */
-    virtual bool mustUseLocalReads() const = 0;
+    virtual bool supportsMajorityReads() const = 0;
 };
 
 }  // namespace mongo

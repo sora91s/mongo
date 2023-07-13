@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -44,9 +45,6 @@
 #include "mongo/platform/strnlen.h"
 #include "mongo/util/decimal_counter.h"
 #include "mongo/util/hex.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 #define keyStringAssert(msgid, msg, expr) \
     uassert(msgid, str::stream() << "KeyString format error: " << msg, expr)
@@ -118,92 +116,6 @@ MONGO_STATIC_ASSERT(kNumericPositiveLargeMagnitude < kStringLike);
 const uint8_t kBoolFalse = kBool + 0;
 const uint8_t kBoolTrue = kBool + 1;
 MONGO_STATIC_ASSERT(kBoolTrue < kDate);
-
-std::string toString(uint8_t ctype) {
-    switch (ctype) {
-        case kMinKey:
-            return "MinKey";
-        case kUndefined:
-            return "Undefined";
-        case kNullish:
-            return "Nullish";
-        case kStringLike:
-            return "StringLike";
-        case kObject:
-            return "Object";
-        case kArray:
-            return "Array";
-        case kBinData:
-            return "BinData";
-        case kOID:
-            return "OID";
-        case kDate:
-            return "Date";
-        case kTimestamp:
-            return "Timestamp";
-        case kRegEx:
-            return "RegEx";
-        case kDBRef:
-            return "DBRef";
-        case kCode:
-            return "Code";
-        case kCodeWithScope:
-            return "CodeWithScope";
-        case kMaxKey:
-            return "MaxKey";
-        case kNumericNaN:
-            return "NumericNaN";
-        case kNumericNegativeLargeMagnitude:
-            return "NumericNegativeLargeMagnitude";
-        case kNumericNegative8ByteInt:
-            return "NumericNegative8ByteInt";
-        case kNumericNegative7ByteInt:
-            return "NumericNegative7ByteInt";
-        case kNumericNegative6ByteInt:
-            return "NumericNegative6ByteInt";
-        case kNumericNegative5ByteInt:
-            return "NumericNegative5ByteInt";
-        case kNumericNegative4ByteInt:
-            return "NumericNegative4ByteInt";
-        case kNumericNegative3ByteInt:
-            return "NumericNegative3ByteInt";
-        case kNumericNegative2ByteInt:
-            return "NumericNegative2ByteInt";
-        case kNumericNegative1ByteInt:
-            return "NumericNegative1ByteInt";
-        case kNumericNegativeSmallMagnitude:
-            return "NumericNegativeSmallMagnitude";
-        case kNumericZero:
-            return "NumericZero";
-        case kNumericPositiveSmallMagnitude:
-            return "NumericPositiveSmallMagnitude";
-        case kNumericPositive1ByteInt:
-            return "NumericPositive1ByteInt";
-        case kNumericPositive2ByteInt:
-            return "NumericPositive2ByteInt";
-        case kNumericPositive3ByteInt:
-            return "NumericPositive3ByteInt";
-        case kNumericPositive4ByteInt:
-            return "NumericPositive4ByteInt";
-        case kNumericPositive5ByteInt:
-            return "NumericPositive5ByteInt";
-        case kNumericPositive6ByteInt:
-            return "NumericPositive6ByteInt";
-        case kNumericPositive7ByteInt:
-            return "NumericPositive7ByteInt";
-        case kNumericPositive8ByteInt:
-            return "NumericPositive8ByteInt";
-        case kNumericPositiveLargeMagnitude:
-            return "NumericPositiveLargeMagnitude";
-        case kBoolFalse:
-            return "BoolFalse";
-        case kBoolTrue:
-            return "BoolTrue";
-        default:
-            return fmt::format("unknown {}", ctype);
-    }
-    MONGO_UNREACHABLE;
-}
 
 size_t numBytesForInt(uint8_t ctype) {
     if (ctype >= kNumericPositive1ByteInt) {
@@ -425,7 +337,7 @@ string readInvertedCStringWithNuls(BufReader* reader) {
 }  // namespace
 
 template <class BufferT>
-void BuilderBase<BufferT>::resetToKey(const BSONObj& obj, Ordering ord, const RecordId& recordId) {
+void BuilderBase<BufferT>::resetToKey(const BSONObj& obj, Ordering ord, RecordId recordId) {
     resetToEmpty(ord);
     _appendAllElementsForIndexing(obj, Discriminator::kInclusive);
     appendRecordId(recordId);
@@ -637,7 +549,7 @@ void BuilderBase<BufferT>::_appendAllElementsForIndexing(const BSONObj& obj,
 }
 
 template <class BufferT>
-void BuilderBase<BufferT>::appendRecordId(const RecordId& loc) {
+void BuilderBase<BufferT>::appendRecordId(RecordId loc) {
     _doneAppending();
     _transition(BuildState::kAppendedRecordID);
     loc.withFormat([](RecordId::Null n) { invariant(false); },
@@ -1454,14 +1366,14 @@ namespace {
 template <class Stream>
 void toBsonValue(uint8_t ctype,
                  BufReader* reader,
-                 TypeBits::ReaderBase* typeBits,
+                 TypeBits::Reader* typeBits,
                  bool inverted,
                  Version version,
                  Stream* stream,
                  uint32_t depth);
 
 void toBson(BufReader* reader,
-            TypeBits::ReaderBase* typeBits,
+            TypeBits::Reader* typeBits,
             bool inverted,
             Version version,
             BSONObjBuilder* builder,
@@ -1495,7 +1407,7 @@ void toBson(BufReader* reader,
  * Helper function to read the least significant type bits for 'num' and return a value that
  * is numerically equal to 'num', but has its exponent adjusted to match the stored exponent bits.
  */
-Decimal128 adjustDecimalExponent(TypeBits::ReaderBase* typeBits, Decimal128 num);
+Decimal128 adjustDecimalExponent(TypeBits::Reader* typeBits, Decimal128 num);
 
 /**
  * Helper function that takes a 'num' with 15 decimal digits of precision, normalizes it to 34
@@ -1519,7 +1431,7 @@ Decimal128 readDecimalContinuation(BufReader* reader, bool inverted, Decimal128 
 template <class Stream>
 void toBsonValue(uint8_t ctype,
                  BufReader* reader,
-                 TypeBits::ReaderBase* typeBits,
+                 TypeBits::Reader* typeBits,
                  bool inverted,
                  Version version,
                  Stream* stream,
@@ -1746,7 +1658,7 @@ void toBsonValue(uint8_t ctype,
         case CType::kNumericNegativeLargeMagnitude:
             inverted = !inverted;
             isNegative = true;
-            [[fallthrough]];  // format is the same as positive, but inverted
+        // fallthrough (format is the same as positive, but inverted)
         case CType::kNumericPositiveLargeMagnitude: {
             const uint8_t originalType = typeBits->readNumeric();
             keyStringAssert(31231,
@@ -1813,7 +1725,7 @@ void toBsonValue(uint8_t ctype,
         case CType::kNumericNegativeSmallMagnitude:
             inverted = !inverted;
             isNegative = true;
-            [[fallthrough]];  // format is the same as positive, but inverted
+            // fallthrough (format is the same as positive, but inverted)
 
         case CType::kNumericPositiveSmallMagnitude: {
             const uint8_t originalType = typeBits->readNumeric();
@@ -1944,7 +1856,7 @@ void toBsonValue(uint8_t ctype,
         case CType::kNumericNegative1ByteInt:
             inverted = !inverted;
             isNegative = true;
-            [[fallthrough]];  // format is the same as positive, but inverted
+            // fallthrough (format is the same as positive, but inverted)
 
         case CType::kNumericPositive1ByteInt:
         case CType::kNumericPositive2ByteInt:
@@ -2086,6 +1998,10 @@ void readBson(BufReader* reader, bool inverted, Version version) {
 }
 
 void filterKeyFromKeyString(uint8_t ctype, BufReader* reader, bool inverted, Version version) {
+    // This is only used by the kNumeric.*ByteInt types, but needs to be declared up here
+    // since it is used across a fallthrough.
+    bool isNegative = false;
+
     switch (ctype) {
         case CType::kMinKey:
         case CType::kMaxKey:
@@ -2188,7 +2104,8 @@ void filterKeyFromKeyString(uint8_t ctype, BufReader* reader, bool inverted, Ver
 
         case CType::kNumericNegativeLargeMagnitude:
             inverted = !inverted;
-            [[fallthrough]];  // format is the same as positive, but inverted
+            isNegative = true;
+        // fallthrough (format is the same as positive, but inverted)
         case CType::kNumericPositiveLargeMagnitude: {
             uint64_t encoded = readType<uint64_t>(reader, inverted);
             encoded = endian::bigToNative(encoded);
@@ -2213,7 +2130,8 @@ void filterKeyFromKeyString(uint8_t ctype, BufReader* reader, bool inverted, Ver
 
         case CType::kNumericNegativeSmallMagnitude:
             inverted = !inverted;
-            [[fallthrough]];  // format is the same as positive, but inverted
+            isNegative = true;
+            // fallthrough (format is the same as positive, but inverted)
 
         case CType::kNumericPositiveSmallMagnitude: {
             uint64_t encoded = readType<uint64_t>(reader, inverted);
@@ -2274,7 +2192,8 @@ void filterKeyFromKeyString(uint8_t ctype, BufReader* reader, bool inverted, Ver
         case CType::kNumericNegative2ByteInt:
         case CType::kNumericNegative1ByteInt:
             inverted = !inverted;
-            [[fallthrough]];  // format is the same as positive, but inverted
+            isNegative = true;
+            // fallthrough (format is the same as positive, but inverted)
 
         case CType::kNumericPositive1ByteInt:
         case CType::kNumericPositive2ByteInt:
@@ -2342,7 +2261,7 @@ void filterKeyFromKeyString(uint8_t ctype, BufReader* reader, bool inverted, Ver
     }
 }
 
-Decimal128 adjustDecimalExponent(TypeBits::ReaderBase* typeBits, Decimal128 num) {
+Decimal128 adjustDecimalExponent(TypeBits::Reader* typeBits, Decimal128 num) {
     // The last 6 bits of the exponent are stored in the type bits. First figure out if the exponent
     // of 'num' is too high or too low. Even for a non-zero number with only a single significant
     // digit, there are only 34 possiblities while exponents with the given low 6 bits are spaced
@@ -2521,7 +2440,7 @@ void TypeBits::appendZero(uint8_t zeroType) {
                 break;
             }
             zeroType = kV1NegativeDoubleZero;
-            [[fallthrough]];  // fallthrough for 5-bit encodings
+        // fallthrough for 5-bit encodings
         case kDecimalZero0xxx:
         case kDecimalZero1xxx:
         case kDecimalZero2xxx:
@@ -2564,15 +2483,6 @@ uint8_t TypeBits::Reader::readBit() {
     return (_typeBits.getDataBuffer()[byte] & (1 << offsetInByte)) ? 1 : 0;
 }
 
-uint8_t TypeBits::Reader::readStringLike() {
-    return readBit();
-}
-
-uint8_t TypeBits::Reader::readNumeric() {
-    uint8_t highBit = readBit();
-    return (highBit << 1) | readBit();
-}
-
 uint8_t TypeBits::Reader::readZero() {
     uint8_t res = readNumeric();
 
@@ -2600,62 +2510,6 @@ uint8_t TypeBits::Reader::readDecimalExponent() {
     for (int bitPos = kStoredDecimalExponentBits - 1; bitPos >= 0; bitPos--)
         exponentBits = (exponentBits << 1) | readBit();
     return exponentBits;
-}
-
-uint8_t TypeBits::ExplainReader::readStringLike() {
-    auto val = _reader.readStringLike();
-    if (val == TypeBits::kString) {
-        _explain << "String";
-    } else if (val == TypeBits::kSymbol) {
-        _explain << "Symbol";
-    }
-    return val;
-}
-
-uint8_t TypeBits::ExplainReader::readNumeric() {
-    auto val = _reader.readNumeric();
-    _explain << [&]() -> std::string {
-        switch (val) {
-            case TypeBits::kInt:
-                return "Int";
-            case TypeBits::kLong:
-                return "Long";
-            case TypeBits::kDouble:
-                return "Double";
-            case TypeBits::kDecimal:
-                return "Decimal";
-            default:
-                return fmt::format("unknown {}", val);
-        }
-    }();
-    return val;
-}
-
-uint8_t TypeBits::ExplainReader::readZero() {
-    auto val = _reader.readZero();
-    _explain << [&]() {
-        switch (val) {
-            case TypeBits::kInt:
-                return "Int";
-            case TypeBits::kLong:
-                return "Long";
-            case TypeBits::kDouble:
-                return "Double";
-            case TypeBits::kNegativeDoubleZero:
-                return "NegativeDoubleZero";
-            default:
-                return "DecimalZero";
-        }
-    }();
-    return val;
-}
-
-uint32_t TypeBits::ExplainReader::readDecimalZero(uint8_t zeroType) {
-    return _reader.readDecimalZero(zeroType);
-}
-
-uint8_t TypeBits::ExplainReader::readDecimalExponent() {
-    return _reader.readDecimalExponent();
 }
 
 size_t getKeySize(const char* buffer, size_t len, Ordering ord, const TypeBits& typeBits) {
@@ -2873,7 +2727,7 @@ int Value::compareWithTypeBits(const Value& other) const {
 }
 
 bool readSBEValue(BufReader* reader,
-                  TypeBits::ReaderBase* typeBits,
+                  TypeBits::Reader* typeBits,
                   bool inverted,
                   Version version,
                   sbe::value::ValueBuilder* valueBuilder) {
@@ -2960,17 +2814,6 @@ void logKeyString(const RecordId& recordId,
                   const BSONObj& keyStringBson,
                   std::string callerLogPrefix) {
     // We need to rehydrate the keyString to something readable.
-    BSONObj rehydratedKey = rehydrateKey(keyPatternBson, keyStringBson);
-
-    LOGV2(51811,
-          "logging keystring",
-          "caller"_attr = callerLogPrefix,
-          "record_id"_attr = recordId,
-          "rehydrated_key"_attr = rehydratedKey,
-          "key_string"_attr = keyStringValue);
-}
-
-BSONObj rehydrateKey(const BSONObj& keyPatternBson, const BSONObj& keyStringBson) {
     auto keyPatternIter = keyPatternBson.begin();
     auto keyStringIter = keyStringBson.begin();
     BSONObjBuilder b;
@@ -2984,87 +2827,15 @@ BSONObj rehydrateKey(const BSONObj& keyPatternBson, const BSONObj& keyStringBson
         b.append(*keyStringIter);
         ++keyStringIter;
     }
-    return b.obj();
-}
+    BSONObj rehydratedKey = b.done();
 
-std::string explain(const char* buffer,
-                    int len,
-                    const BSONObj& keyPattern,
-                    const TypeBits& typeBits,
-                    boost::optional<KeyFormat> keyFormat) {
-    const auto ord = Ordering::make(keyPattern);
-
-    auto keyPatternIter = keyPattern.begin();
-    BufReader reader(buffer, len);
-    str::stream str;
-    TypeBits::Reader typeBitsReader(typeBits);
-    for (int i = 0; reader.remaining(); i++) {
-        const bool invert = (ord.get(i) == -1);
-        uint8_t ctype = readType<uint8_t>(&reader, false /* invert */);
-        str << fmt::format("Byte: {0:#x} ", ctype);
-        if (invert) {
-            ctype = ~ctype;
-            str << fmt::format("(inverted {0:#x}) ", ctype);
-        }
-        str << "\n";
-        if (ctype == kLess) {
-            str << "  Discriminator: kLess\n";
-        } else if (ctype == kGreater) {
-            str << "  Discriminator: kGreater\n";
-        } else if (ctype == kEnd) {
-            str << "  End\n";
-            break;
-        } else {
-            const auto ctypeName = CType::toString(ctype);
-            str << fmt::format("  CType: {}\n", ctypeName);
-
-            const auto startPos = reader.pos();
-            const auto startOff = reader.offset();
-
-            BSONObjBuilder builder;
-            TypeBits::ExplainReader explainReader(typeBitsReader);
-            auto fieldName = (keyPatternIter->eoo()) ? "" : (keyPatternIter++)->fieldName();
-
-            toBsonValue(ctype,
-                        &reader,
-                        &explainReader,
-                        invert,
-                        typeBits.version,
-                        &(builder << fieldName),
-                        1);
-
-            const auto endOff = reader.offset();
-            if (auto bytes = (endOff - startOff); bytes > 0) {
-                str << "Bytes: 0x" << hexblob::encodeLower(startPos, bytes) << "\n";
-            }
-
-            if (auto tbExplain = explainReader.getExplain(); !tbExplain.empty()) {
-                str << "  TypeBits: " << tbExplain << "\n";
-            }
-            str << "  BSON: " << builder.done().toString() << "\n";
-        }
-    }
-
-    if (!reader.remaining()) {
-        str << "No RecordId\n";
-    } else if (keyFormat) {
-        const auto startPos = reader.pos();
-        const auto startOff = reader.offset();
-
-        RecordId recordId;
-        if (keyFormat == KeyFormat::Long) {
-            recordId = KeyString::decodeRecordIdLongAtEnd(buffer, len);
-        } else {
-            recordId = KeyString::decodeRecordIdStrAtEnd(buffer, len);
-        }
-        str << "Bytes: 0x" << hexblob::encodeLower(startPos, (len - startOff)) << "\n";
-        auto kfString = (*keyFormat == KeyFormat::Long) ? "Long" : "String";
-        str << fmt::format("  RecordId {}: {}\n", kfString, recordId.toString());
-    } else {
-        str << "RecordId present but no format provided\n";
-    }
-
-    return str;
+    LOGV2(51811,
+          "{caller} {record_id}, key: {rehydrated_key}, keystring: "
+          "{key_string}",
+          "caller"_attr = callerLogPrefix,
+          "record_id"_attr = recordId,
+          "rehydrated_key"_attr = rehydratedKey,
+          "key_string"_attr = keyStringValue);
 }
 
 }  // namespace KeyString

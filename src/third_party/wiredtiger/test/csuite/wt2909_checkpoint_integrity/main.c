@@ -71,12 +71,12 @@
 #define BIG_SIZE (1024 * 10)
 #define BIG_CONTENTS "<Big String Contents>"
 #define MAX_ARGS 20
-#define MAX_OP_RANGE WT_THOUSAND
+#define MAX_OP_RANGE 1000
 #define STDERR_FILE "stderr.txt"
 #define STDOUT_FILE "stdout.txt"
 #define TESTS_PER_CALIBRATION 2
 #define TESTS_WITH_RECALIBRATION 5
-#define VERBOSE_PRINT (10 * WT_THOUSAND)
+#define VERBOSE_PRINT 10000
 
 static int check_results(TEST_OPTS *, uint64_t *);
 static void check_values(WT_CURSOR *, int, int, int, char *);
@@ -111,8 +111,7 @@ check_results(TEST_OPTS *opts, uint64_t *foundp)
 
     testutil_check(create_big_string(&bigref));
     nrecords = opts->nrecords;
-    testutil_check(wiredtiger_open(opts->home, NULL,
-      "create,log=(enabled),statistics=(all),statistics_log=(json,on_close,wait=1)", &opts->conn));
+    testutil_check(wiredtiger_open(opts->home, NULL, "create,log=(enabled)", &opts->conn));
     testutil_check(opts->conn->open_session(opts->conn, NULL, NULL, &session));
 
     testutil_check(session->open_cursor(session, "table:subtest", NULL, NULL, &maincur));
@@ -485,8 +484,7 @@ subtest_error_handler(
 static WT_EVENT_HANDLER event_handler = {
   subtest_error_handler, NULL, /* Message handler */
   NULL,                        /* Progress handler */
-  NULL,                        /* Close handler */
-  NULL                         /* General handler */
+  NULL                         /* Close handler */
 };
 
 /*
@@ -523,8 +521,7 @@ subtest_main(int argc, char *argv[], bool close_test)
     testutil_build_dir(opts, buf, 1024);
     testutil_check(__wt_snprintf(config, sizeof(config),
       "create,cache_size=250M,log=(enabled),transaction_sync=(enabled,method=none),extensions=(%s/"
-      "%s=(early_load,config={environment=true,verbose=true})),statistics=(all),statistics_log=("
-      "json,on_close,wait=1)",
+      "%s=(early_load,config={environment=true,verbose=true}))",
       buf, WT_FAIL_FS_LIB));
     testutil_check(wiredtiger_open(opts->home, &event_handler, config, &opts->conn));
 
@@ -625,7 +622,7 @@ subtest_populate(TEST_OPTS *opts, bool close_test)
             printf("  %" PRIu64 "/%" PRIu64 "\n", (i + 1), nrecords);
         /* Attempt to isolate the failures to checkpointing. */
         if (i == (nrecords / 100)) {
-            enable_failures(opts->nops, WT_MILLION);
+            enable_failures(opts->nops, 1000000);
             /* CHECK should expect failures. */
             CHECK(session->checkpoint(session, NULL), true);
             disable_failures();
@@ -674,7 +671,7 @@ main(int argc, char *argv[])
     argc -= __wt_optind;
     argv += __wt_optind;
     if (opts->nrecords == 0)
-        opts->nrecords = 50 * WT_THOUSAND;
+        opts->nrecords = 50000;
     if (opts->table_type == TABLE_FIX)
         testutil_die(ENOTSUP, "Fixed-length column store not supported");
 

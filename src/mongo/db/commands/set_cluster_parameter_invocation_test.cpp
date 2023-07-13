@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/db/operation_context.h"
 #include "mongo/db/operation_id.h"
@@ -40,9 +41,6 @@
 #include "mongo/db/commands/set_cluster_parameter_invocation.h"
 #include "mongo/idl/idl_parser.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
-
 namespace mongo {
 namespace {
 
@@ -53,14 +51,15 @@ const WriteConcernOptions kMajorityWriteConcern{WriteConcernOptions::kMajority,
 // Mocks
 class MockParameterService : public ServerParameterService {
 public:
-    MockParameterService(std::function<ServerParameter*(StringData)> get) : _getMock(get){};
+    MockParameterService(std::function<ServerParameter*(StringData)> getIfExists)
+        : getIfExistsMock(getIfExists){};
 
-    ServerParameter* get(StringData parameterName) {
-        return _getMock(parameterName);
+    const ServerParameter* getIfExists(StringData parameterName) {
+        return getIfExistsMock(parameterName);
     }
 
 private:
-    std::function<ServerParameter*(StringData)> _getMock;
+    std::function<ServerParameter*(StringData)> getIfExistsMock;
 };
 
 class MockServerParameter : public ServerParameter {
@@ -70,26 +69,21 @@ public:
         : ServerParameter(name, ServerParameterType::kRuntimeOnly) {
         this->validateImpl = validateImpl;
     }
-    void append(OperationContext* opCtx,
-                BSONObjBuilder* b,
-                StringData name,
-                const boost::optional<TenantId>&) {}
+    void append(OperationContext* opCtx, BSONObjBuilder& b, const std::string& name) {}
 
     void appendSupportingRoundtrip(OperationContext* opCtx,
-                                   BSONObjBuilder* b,
-                                   StringData name,
-                                   const boost::optional<TenantId>&) {}
+                                   BSONObjBuilder& b,
+                                   const std::string& name) {}
 
-    Status set(const BSONElement& newValueElement, const boost::optional<TenantId>& tenantId) {
+    Status set(const BSONElement& newValueElement) {
         return Status(ErrorCodes::BadValue, "Should not call set() in this test");
     }
 
-    Status setFromString(StringData str, const boost::optional<TenantId>& tenantId) {
-        return Status(ErrorCodes::BadValue, "Should not call setFromString() in this test");
+    Status setFromString(const std::string& str) {
+        return Status(ErrorCodes::BadValue, "Should not call setFromString in this test");
     }
 
-    Status validate(const BSONElement& newValueElement,
-                    const boost::optional<TenantId>& tenantId) const {
+    Status validate(const BSONElement& newValueElement) const {
         return validateImpl(newValueElement);
     }
 
@@ -99,17 +93,15 @@ private:
 
 class DBClientMock : public DBClientService {
 public:
-    DBClientMock(std::function<StatusWith<bool>(BSONObj, BSONObj, const boost::optional<TenantId>&)>
-                     updateParameterOnDiskMock) {
+    DBClientMock(std::function<StatusWith<bool>(BSONObj, BSONObj)> updateParameterOnDiskMock) {
         this->updateParameterOnDiskMockImpl = updateParameterOnDiskMock;
     }
 
     StatusWith<bool> updateParameterOnDisk(OperationContext* opCtx,
                                            BSONObj cmd,
                                            BSONObj info,
-                                           const WriteConcernOptions&,
-                                           const boost::optional<TenantId>& tenantId) override {
-        return updateParameterOnDiskMockImpl(cmd, info, tenantId);
+                                           const WriteConcernOptions&) override {
+        return updateParameterOnDiskMockImpl(cmd, info);
     }
 
     Timestamp getUpdateClusterTime(OperationContext*) override {
@@ -118,8 +110,7 @@ public:
     }
 
 private:
-    std::function<StatusWith<bool>(BSONObj, BSONObj, const boost::optional<TenantId>&)>
-        updateParameterOnDiskMockImpl;
+    std::function<StatusWith<bool>(BSONObj, BSONObj)> updateParameterOnDiskMockImpl;
 };
 
 MockServerParameter alwaysValidatingServerParameter(StringData name) {
@@ -139,22 +130,13 @@ MockServerParameter alwaysInvalidatingServerParameter(StringData name) {
 }
 
 DBClientMock alwaysSucceedingDbClient() {
-    DBClientMock dbServiceMock(
-        [&](BSONObj, BSONObj, const boost::optional<TenantId>&) { return true; });
-
-    return dbServiceMock;
-}
-
-DBClientMock tenantIdReportingDbClient() {
-    DBClientMock dbServiceMock([&](BSONObj, BSONObj, const boost::optional<TenantId>& tenantId) {
-        return Status(ErrorCodes::UnknownError, tenantId ? tenantId->toString() : "");
-    });
+    DBClientMock dbServiceMock([&](BSONObj cmd, BSONObj info) { return true; });
 
     return dbServiceMock;
 }
 
 DBClientMock alwaysFailingDbClient() {
-    DBClientMock dbServiceMock([&](BSONObj, BSONObj, const boost::optional<TenantId>&) {
+    DBClientMock dbServiceMock([&](BSONObj cmd, BSONObj info) {
         return Status(ErrorCodes::UnknownError, "DB Client Update Failed");
     });
 
@@ -216,7 +198,7 @@ TEST(SetClusterParameterCommand, ThrowsWithNonObjectParameter) {
 
     ASSERT_THROWS_CODE(fixture.invoke(&spyCtx, testCmd, boost::none, kMajorityWriteConcern),
                        DBException,
-                       ErrorCodes::BadValue);
+                       ErrorCodes::IllegalOperation);
 }
 
 TEST(SetClusterParameterCommand, ThrowsWhenServerParameterValidationFails) {
@@ -288,9 +270,7 @@ TEST(SetClusterParameterCommand, ThrowsWhenParameterNotPresent) {
     auto serviceCtx = ServiceContext::make();
     auto client = serviceCtx->makeClient("SomeTest");
 
-    auto mpsPtr = std::make_unique<MockParameterService>([&](StringData s) {
-        return ServerParameterSet::getClusterParameterSet()->get("doesNotExistParam"_sd);
-    });
+    auto mpsPtr = std::make_unique<MockParameterService>([&](StringData s) { return nullptr; });
 
     Client* clientPtr = client.get();
 
@@ -309,51 +289,7 @@ TEST(SetClusterParameterCommand, ThrowsWhenParameterNotPresent) {
 
     ASSERT_THROWS_CODE(fixture.invoke(&spyCtx, testCmd, boost::none, kMajorityWriteConcern),
                        DBException,
-                       ErrorCodes::NoSuchKey);
+                       ErrorCodes::IllegalOperation);
 }
-
-TEST(SetClusterParameterCommand, TenantIdPassesThrough) {
-
-    DBClientMock dbServiceMock = tenantIdReportingDbClient();
-    MockServerParameter sp = alwaysValidatingServerParameter("TenantIdPassesThroughParameter"_sd);
-
-    auto serviceCtx = ServiceContext::make();
-    auto client = serviceCtx->makeClient("SomeTest");
-
-    auto mpsPtr = std::make_unique<MockParameterService>([&](StringData s) { return &sp; });
-
-    Client* clientPtr = client.get();
-
-    BSONObjBuilder testCmdBson;
-    testCmdBson << "testCommand"
-                << BSON("ok"
-                        << "someval");
-
-    BSONObj obj = testCmdBson.obj();
-
-    SetClusterParameterInvocation fixture(std::move(mpsPtr), dbServiceMock);
-
-    OperationContext spyCtx(clientPtr, 1234);
-
-    TenantId tenantId(OID("123456789012345678901234"));
-
-    SetClusterParameter testCmdNoTenant(obj);
-
-    ASSERT_THROWS_CODE_AND_WHAT(
-        fixture.invoke(&spyCtx, testCmdNoTenant, boost::none, kMajorityWriteConcern),
-        DBException,
-        ErrorCodes::UnknownError,
-        "");
-
-    SetClusterParameter testCmdWithTenant(obj);
-    testCmdWithTenant.setDbName(NamespaceString::makeClusterParametersNSS(tenantId).dbName());
-
-    ASSERT_THROWS_CODE_AND_WHAT(
-        fixture.invoke(&spyCtx, testCmdWithTenant, boost::none, kMajorityWriteConcern),
-        DBException,
-        ErrorCodes::UnknownError,
-        tenantId.toString());
-}
-
 }  // namespace
 }  // namespace mongo

@@ -5,6 +5,8 @@ import unittest
 
 from buildscripts.resmokelib.utils import scheduler as _scheduler
 
+# pylint: disable=missing-docstring
+
 
 def noop():
     pass
@@ -32,12 +34,10 @@ class TestScheduler(unittest.TestCase):
         self.assertEqual(self.__scheduler.queue, [])
 
 
-# TODO(SERVER-72079) Either reneable this test to remove uses of scheduler.py
-# See ticket for more details
-# class TestBuiltinScheduler(TestScheduler):
-#     """Unit tests for the sched.scheduler class."""
-#     scheduler = sched.scheduler
+class TestBuiltinScheduler(TestScheduler):
+    """Unit tests for the sched.scheduler class."""
+    scheduler = sched.scheduler
 
-#     def test_cancel_with_identical_time_and_priority(self):
-#         with self.assertRaises(AssertionError):
-#             super().test_cancel_with_identical_time_and_priority()
+    def test_cancel_with_identical_time_and_priority(self):
+        with self.assertRaises(AssertionError):
+            super().test_cancel_with_identical_time_and_priority()

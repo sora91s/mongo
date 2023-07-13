@@ -31,7 +31,6 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj.h"
-#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/timeseries/timeseries_options.h"
 
 /**
@@ -72,11 +71,10 @@ std::list<BSONObj> createTimeseriesIndexesFromBucketsIndexes(
     const TimeseriesOptions& timeseriesOptions, const std::list<BSONObj>& bucketsIndexes);
 
 /**
- * Returns true if the original index specification should be included when creating an index on the
- * time-series buckets collection.
+ * Returns true if the 'bucketsIndex' is compatible for FCV downgrade.
  */
-bool shouldIncludeOriginalSpec(const TimeseriesOptions& timeseriesOptions,
-                               const BSONObj& bucketsIndex);
+bool isBucketsIndexSpecCompatibleForDowngrade(const TimeseriesOptions& timeseriesOptions,
+                                              const BSONObj& bucketsIndex);
 
 /**
  * Returns true if 'bucketsIndex' uses a measurement field, excluding the time field. Checks both
@@ -98,13 +96,5 @@ bool doesBucketsIndexIncludeMeasurement(OperationContext* opCtx,
  * or it can be {} which means no hint is given.
  */
 bool isHintIndexKey(const BSONObj& obj);
-
-/**
- * Returns true if the IndexCatalog contains an index for a time-series collection which we can use
- * for query based reopening.
- */
-bool collectionHasIndexSupportingReopeningQuery(OperationContext* opCtx,
-                                                const IndexCatalog* indexCatalog,
-                                                const TimeseriesOptions& tsOptions);
 
 }  // namespace mongo::timeseries

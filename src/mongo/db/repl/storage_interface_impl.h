@@ -190,6 +190,11 @@ public:
 
     Timestamp getAllDurableTimestamp(ServiceContext* serviceCtx) const override;
 
+    /**
+     * Checks that the "admin" database contains a supported version of the auth data schema.
+     */
+    Status isAdminDbValid(OperationContext* opCtx) override;
+
     void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx,
                                                  bool primaryOnly) override;
     void oplogDiskLocRegister(OperationContext* opCtx,

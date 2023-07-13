@@ -29,14 +29,22 @@
 # test_tiered13.py
 # Check that importing tiered tables returns an error.
 
-import os, shutil, wiredtiger
-from helper_tiered import get_conn_config, gen_tiered_storage_sources, TieredConfigMixin
-from test_import01 import test_import_base
+from helper_tiered import generate_s3_prefix, get_auth_token, get_bucket1_name
 from wtscenario import make_scenarios
-import wttest 
+import os, shutil, wiredtiger
+from test_import01 import test_import_base
 
-class test_tiered13(test_import_base, TieredConfigMixin):
-    storage_sources = gen_tiered_storage_sources(wttest.getss_random_prefix(), 'test_tiered13', tiered_only=True)
+class test_tiered13(test_import_base):
+    storage_sources = [
+        ('dir_store', dict(auth_token = get_auth_token('dir_store'),
+            bucket = get_bucket1_name('dir_store'),
+            bucket_prefix = "pfx_",
+            ss_name = 'dir_store')),
+        ('s3', dict(auth_token = get_auth_token('s3_store'),
+            bucket = get_bucket1_name('s3_store'),
+            bucket_prefix = generate_s3_prefix(),
+            ss_name = 's3_store')),
+    ]
     # Make scenarios for different cloud service providers
     scenarios = make_scenarios(storage_sources)
 
@@ -52,10 +60,27 @@ class test_tiered13(test_import_base, TieredConfigMixin):
 
     # Load the storage store extension.
     def conn_extensions(self, extlist):
-        TieredConfigMixin.conn_extensions(self, extlist)
+        config = ''
+        # S3 store is built as an optional loadable extension, not all test environments build S3.
+        if self.ss_name == 's3_store':
+            #config = '=(config=\"(verbose=1)\")'
+            extlist.skip_if_missing = True
+        #if self.ss_name == 'dir_store':
+            #config = '=(config=\"(verbose=1,delay_ms=200,force_delay=3)\")'
+        # Windows doesn't support dynamically loaded extension libraries.
+        if os.name == 'nt':
+            extlist.skip_if_missing = True
+        extlist.extension('storage_sources', self.ss_name + config)
 
     def conn_config(self):
-        self.saved_conn = get_conn_config(self) + '),create'
+        if self.ss_name == 'dir_store' and not os.path.exists(self.bucket):
+            os.mkdir(self.bucket)
+        self.saved_conn = \
+          'debug_mode=(flush_checkpoint=true),' + \
+          'create,tiered_storage=(auth_token=%s,' % self.auth_token + \
+          'bucket=%s,' % self.bucket + \
+          'bucket_prefix=%s,' % self.bucket_prefix + \
+          'name=%s)' % self.ss_name 
         return self.saved_conn
 
     def test_tiered13(self):
@@ -65,9 +90,8 @@ class test_tiered13(test_import_base, TieredConfigMixin):
         c = self.session.open_cursor(self.uri)
         c["0"] = "0"
         c.close()
-        # Use force to make sure the new object is created. Otherwise there is no
-        # existing checkpoint yet and the flush will think there is no work to do.
-        self.session.checkpoint('flush_tier=(enabled,force=true)')
+        self.session.checkpoint()
+        self.session.flush_tier(None)
         c = self.session.open_cursor(self.uri)
         c["1"] = "1"
         c.close()
@@ -125,7 +149,6 @@ class test_tiered13(test_import_base, TieredConfigMixin):
 
         msg = '/Operation not supported/'
         enoent = '/No such file/'
-        invalid = "/import for tiered storage is incompatible with the 'file_metadata' setting/"
         # Try to import via the table:uri. This fails with ENOENT because
         # it is looking for the normal on-disk file name. It cannot tell it
         # is a tiered table in this case.
@@ -133,13 +156,13 @@ class test_tiered13(test_import_base, TieredConfigMixin):
             lambda: self.session.create(self.uri, import_enabled), enoent)
         # Try to import via the table:uri with file metadata.
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: self.session.create(self.uri, table_import_meta), invalid)
+            lambda: self.session.create(self.uri, table_import_meta), msg)
         # Try to import via the file:uri.
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
             lambda: self.session.create(self.file2uri, import_enabled), msg)
         # Try to import via the file:uri with file metadata.
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: self.session.create(self.file2uri, import_meta), invalid)
+            lambda: self.session.create(self.file2uri, import_meta), msg)
 
         # Try to import via a renamed object. If we don't send in metadata,
         # we cannot tell it was a tiered table until we read in the root page.
@@ -155,4 +178,4 @@ class test_tiered13(test_import_base, TieredConfigMixin):
 
         # Try to import via a renamed object with metadata.
         self.assertRaisesWithMessage(wiredtiger.WiredTigerError,
-            lambda: self.session.create(self.otheruri, import_meta), invalid)
+            lambda: self.session.create(self.otheruri, import_meta), msg)

@@ -3,6 +3,7 @@
 // specifially for the newly added events that are behind the 'showExpandedEvents' flag.
 //
 // @tags: [
+//   featureFlagChangeStreamsVisibility,
 //   requires_fcv_60,
 //   requires_pipeline_optimization,
 //   requires_sharding,

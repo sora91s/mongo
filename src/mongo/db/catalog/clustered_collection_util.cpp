@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/represent_as.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 namespace clustered_util {
@@ -89,8 +87,7 @@ boost::optional<ClusteredCollectionInfo> parseClusteredInfo(const BSONElement& e
         return makeCanonicalClusteredInfoForLegacyFormat();
     }
 
-    auto indexSpec = ClusteredIndexSpec::parse(
-        IDLParserContext{"ClusteredUtil::parseClusteredInfo"}, elem.Obj());
+    auto indexSpec = ClusteredIndexSpec::parse({"ClusteredUtil::parseClusteredInfo"}, elem.Obj());
     ensureClusteredIndexName(indexSpec);
     return makeCanonicalClusteredInfo(std::move(indexSpec));
 }
@@ -103,7 +100,7 @@ boost::optional<ClusteredCollectionInfo> createClusteredInfoForNewCollection(
 
     auto filteredIndexSpec = indexSpec.removeField("clustered"_sd);
     auto clusteredIndexSpec = ClusteredIndexSpec::parse(
-        IDLParserContext{"ClusteredUtil::createClusteredInfoForNewCollection"}, filteredIndexSpec);
+        {"ClusteredUtil::createClusteredInfoForNewCollection"}, filteredIndexSpec);
     ensureClusteredIndexName(clusteredIndexSpec);
     return makeCanonicalClusteredInfo(std::move(clusteredIndexSpec));
 };
@@ -124,7 +121,7 @@ BSONObj formatClusterKeyForListIndexes(const ClusteredCollectionInfo& collInfo,
 }
 
 bool isClusteredOnId(const boost::optional<ClusteredCollectionInfo>& collInfo) {
-    return matchesClusterKey(BSON("_id" << 1), collInfo);
+    return clustered_util::matchesClusterKey(BSON("_id" << 1), collInfo);
 }
 
 bool matchesClusterKey(const BSONObj& keyPatternObj,

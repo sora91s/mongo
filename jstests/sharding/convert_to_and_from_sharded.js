@@ -1,11 +1,10 @@
 /**
  * Test that a replica set member can process basic CRUD operations after switching from being
  * a shardsvr and back to non shardsvr.
- * @tags: [requires_persistence, temporary_catalog_shard_incompatible]
+ * @tags: [requires_persistence]
  */
 (function() {
 "use strict";
-load('jstests/sharding/libs/remove_shard_util.js');
 
 // TODO SERVER-50144 Remove this and allow orphan checking.
 // This test calls removeShard which can leave docs in config.rangeDeletions in state "pending",
@@ -97,10 +96,15 @@ for (x = 0; x < 2; x++) {
 checkBasicCRUD(st.s.getDB('test').unsharded);
 checkBasicCRUD(st.s.getDB('test').sharded);
 
+assert.commandWorked(st.s.adminCommand({removeShard: 'toRemoveLater'}));
+
 // Start the balancer to start draining the chunks.
 st.startBalancer();
 
-removeShard(st, 'toRemoveLater');
+assert.soon(function() {
+    var res = st.s.adminCommand({removeShard: 'toRemoveLater'});
+    return res.state == 'completed';
+});
 
 newShard.stopSet();
 
@@ -121,5 +125,6 @@ replShard.awaitNodesAgreeOnPrimary();
 priConn = replShard.getPrimary();
 checkBasicCRUD(priConn.getDB('test').unsharded);
 checkBasicCRUD(priConn.getDB('test').sharded);
+
 replShard.stopSet();
 })();

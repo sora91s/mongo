@@ -46,12 +46,12 @@ protected:
     void runTest(const BSONObj& obj, const std::function<void(const BSONObj&)>& test) {
         test(obj);
 
-        NamespaceString nss = NamespaceString::createNamespaceString_forTest("test");
+        NamespaceString nss{"test"};
         auto compressionResult = timeseries::compressBucket(obj, "time", nss, true);
         ASSERT_TRUE(compressionResult.compressedBucket.has_value());
         ASSERT_FALSE(compressionResult.decompressionFailed);
 
-        test(compressionResult.compressedBucket.value());
+        test(compressionResult.compressedBucket.get());
     }
 };
 
@@ -99,12 +99,6 @@ TEST_F(TimeseriesDottedPathSupportTest, HaveArrayAlongBucketPath) {
                     b: true
                 }
             }
-        },
-        i: {
-            "1": [
-                {a: true},
-                {a: false}
-            ]
         }
     }
 })");
@@ -120,7 +114,7 @@ TEST_F(TimeseriesDottedPathSupportTest, HaveArrayAlongBucketPath) {
         ASSERT_FALSE(
             tdps::haveArrayAlongBucketDataPath(obj, "data.b"));  // bucket expansion hides array
         ASSERT_FALSE(tdps::haveArrayAlongBucketDataPath(obj, "data.c"));
-        ASSERT_TRUE(tdps::haveArrayAlongBucketDataPath(obj, "data.d"));
+        invariant(tdps::haveArrayAlongBucketDataPath(obj, "data.d"));
         ASSERT_TRUE(tdps::haveArrayAlongBucketDataPath(obj, "data.e"));
         ASSERT_FALSE(tdps::haveArrayAlongBucketDataPath(obj, "data.f"));
         ASSERT_TRUE(tdps::haveArrayAlongBucketDataPath(obj, "data.f.a"));
@@ -128,8 +122,6 @@ TEST_F(TimeseriesDottedPathSupportTest, HaveArrayAlongBucketPath) {
         ASSERT_TRUE(tdps::haveArrayAlongBucketDataPath(obj, "data.g.a"));
         ASSERT_TRUE(tdps::haveArrayAlongBucketDataPath(obj, "data.g.a.a"));
         ASSERT_FALSE(tdps::haveArrayAlongBucketDataPath(obj, "data.h.a.b"));
-        ASSERT_TRUE(tdps::haveArrayAlongBucketDataPath(obj, "data.i"));
-        ASSERT_TRUE(tdps::haveArrayAlongBucketDataPath(obj, "data.i.a"));
     });
 }
 
@@ -372,12 +364,6 @@ TEST_F(TimeseriesDottedPathSupportTest, ExtractAllElementsAlongBucketPath) {
                     b: false
                 }
             }
-        },
-        i: {
-            "1": [
-                {a: true},
-                {a: false}
-            ]
         }
     }
 })");
@@ -392,8 +378,7 @@ TEST_F(TimeseriesDottedPathSupportTest, ExtractAllElementsAlongBucketPath) {
                 expected.emplace(el);
             }
 
-            ASSERT_EQ(actual.size(), expected.size())
-                << "Expected path '" << path << "' to yield " << expectedStorage << " from " << obj;
+            ASSERT_EQ(actual.size(), expected.size());
 
             auto actualIt = actual.begin();
             auto expectedIt = expected.begin();
@@ -422,7 +407,6 @@ TEST_F(TimeseriesDottedPathSupportTest, ExtractAllElementsAlongBucketPath) {
             BSON_ARRAY(BSON("a" << BSON("b" << true)) << BSON("a" << BSON("b" << false))));
         assertExtractionMatches("data.h.a"_sd, BSON_ARRAY(BSON("b" << true) << BSON("b" << false)));
         assertExtractionMatches("data.h.a.b"_sd, BSON_ARRAY(true << false));
-        assertExtractionMatches("data.i.a"_sd, BSON_ARRAY(true << false));
     });
 }
 }  // namespace

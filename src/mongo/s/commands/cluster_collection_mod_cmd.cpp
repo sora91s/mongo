@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -37,12 +38,10 @@
 #include "mongo/db/coll_mod_reply_validation.h"
 #include "mongo/db/commands.h"
 #include "mongo/logv2/log.h"
+#include "mongo/s/chunk_manager_targeter.h"
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -70,13 +69,11 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* client = opCtx->getClient();
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
-        return auth::checkAuthForCollMod(
-            client->getOperationContext(), AuthorizationSession::get(client), nss, cmdObj, true);
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
+        return auth::checkAuthForCollMod(AuthorizationSession::get(client), nss, cmdObj, true);
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -84,7 +81,7 @@ public:
     }
 
     bool runWithRequestParser(OperationContext* opCtx,
-                              const DatabaseName& dbName,
+                              const std::string& db,
                               const BSONObj& cmdObj,
                               const RequestParser& requestParser,
                               BSONObjBuilder& result) final {
@@ -97,32 +94,23 @@ public:
                     "namespace"_attr = nss,
                     "command"_attr = redact(cmdObj));
 
-        auto swDbInfo = Grid::get(opCtx)->catalogCache()->getDatabase(
-            opCtx, cmd.getDbName().toStringWithTenantId());
+        auto swDbInfo = Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, cmd.getDbName());
         if (swDbInfo == ErrorCodes::NamespaceNotFound) {
-            uassert(
-                CollectionUUIDMismatchInfo(
-                    cmd.getDbName(), *cmd.getCollectionUUID(), nss.coll().toString(), boost::none),
-                "Database does not exist",
-                !cmd.getCollectionUUID());
+            uassert(CollectionUUIDMismatchInfo(cmd.getDbName().toString(),
+                                               *cmd.getCollectionUUID(),
+                                               nss.coll().toString(),
+                                               boost::none),
+                    "Database does not exist",
+                    !cmd.getCollectionUUID());
         }
         const auto dbInfo = uassertStatusOK(swDbInfo);
 
-        if (cmd.getValidator() || cmd.getValidationLevel() || cmd.getValidationAction()) {
-            // Check for config.settings in the user command since a validator is allowed
-            // internally on this collection but the user may not modify the validator.
-            uassert(ErrorCodes::InvalidOptions,
-                    str::stream() << "Document validators not allowed on system collection " << nss,
-                    nss != NamespaceString::kConfigSettingsNamespace);
-        }
-
         ShardsvrCollMod collModCommand(nss);
         collModCommand.setCollModRequest(cmd.getCollModRequest());
-        // TODO SERVER-67411 change executeCommandAgainstDatabasePrimary to take in DatabaseName
         auto cmdResponse =
             uassertStatusOK(executeCommandAgainstDatabasePrimary(
                                 opCtx,
-                                dbName.toStringWithTenantId(),
+                                db,
                                 dbInfo,
                                 CommandHelpers::appendMajorityWriteConcern(
                                     collModCommand.toBSON({}), opCtx->getWriteConcern()),
@@ -135,7 +123,7 @@ public:
     }
 
     void validateResult(const BSONObj& resultObj) final {
-        auto ctx = IDLParserContext("CollModReply");
+        auto ctx = IDLParserErrorContext("CollModReply");
         if (checkIsErrorStatus(resultObj, ctx)) {
             return;
         }
@@ -156,7 +144,7 @@ public:
             return;
         }
 
-        auto rawCtx = IDLParserContext(kRawFieldName, &ctx);
+        auto rawCtx = IDLParserErrorContext(kRawFieldName, &ctx);
         for (const auto& element : rawData.Obj()) {
             if (!rawCtx.checkAndAssertType(element, Object)) {
                 return;

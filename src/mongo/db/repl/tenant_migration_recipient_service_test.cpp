@@ -27,6 +27,9 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
+
+#include <boost/optional/optional_io.hpp>
 #include <fstream>
 #include <memory>
 
@@ -36,12 +39,11 @@
 #include "mongo/client/streamable_replica_set_monitor_for_testing.h"
 #include "mongo/config.h"
 #include "mongo/db/client.h"
+#include "mongo/db/commands/feature_compatibility_version_document_gen.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/feature_compatibility_version_document_gen.h"
-#include "mongo/db/op_observer/op_observer_impl.h"
-#include "mongo/db/op_observer/op_observer_registry.h"
-#include "mongo/db/op_observer/oplog_writer_impl.h"
+#include "mongo/db/op_observer_impl.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_buffer_collection.h"
@@ -50,14 +52,12 @@
 #include "mongo/db/repl/primary_only_service_op_observer.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/storage_interface_impl.h"
-#include "mongo/db/repl/tenant_migration_access_blocker_registry.h"
-#include "mongo/db/repl/tenant_migration_recipient_access_blocker.h"
 #include "mongo/db/repl/tenant_migration_recipient_entry_helpers.h"
 #include "mongo/db/repl/tenant_migration_recipient_service.h"
 #include "mongo/db/repl/tenant_migration_state_machine_gen.h"
 #include "mongo/db/repl/wait_for_majority_service.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/db/session/session_txn_record_gen.h"
+#include "mongo/db/session_txn_record_gen.h"
 #include "mongo/dbtests/mock/mock_conn_registry.h"
 #include "mongo/dbtests/mock/mock_replica_set.h"
 #include "mongo/executor/network_interface.h"
@@ -74,9 +74,6 @@
 #include "mongo/util/future.h"
 #include "mongo/util/net/ssl_util.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo {
 namespace repl {
 
@@ -91,7 +88,9 @@ OplogEntry makeOplogEntry(OpTime opTime,
                           BSONObj o,
                           boost::optional<BSONObj> o2) {
     return {DurableOplogEntry(opTime,                     // optime
+                              boost::none,                // hash
                               opType,                     // opType
+                              boost::none,                // tenant id
                               nss,                        // namespace
                               uuid,                       // uuid
                               boost::none,                // fromMigrate
@@ -123,7 +122,7 @@ MutableOplogEntry makeNoOpOplogEntry(OpTime opTime,
     oplogEntry.setObject2(o);
     oplogEntry.setWallClockTime(Date_t::now());
     if (migrationUUID) {
-        oplogEntry.setFromTenantMigration(migrationUUID.value());
+        oplogEntry.setFromTenantMigration(migrationUUID.get());
     }
     return oplogEntry;
 }
@@ -187,10 +186,8 @@ public:
         // Automatically mark the state doc garbage collectable after data sync completion.
         globalFailPointRegistry()
             .find("autoRecipientForgetMigration")
-            ->setMode(FailPoint::alwaysOn,
-                      0,
-                      BSON("state"
-                           << "done"));
+            ->setMode(FailPoint::alwaysOn);
+
         {
             auto opCtx = cc().makeOperationContext();
             auto replCoord = std::make_unique<ReplicationCoordinatorMock>(serviceContext);
@@ -199,7 +196,7 @@ public:
             repl::createOplog(opCtx.get());
             {
                 Lock::GlobalWrite lk(opCtx.get());
-                OldClientContext ctx(opCtx.get(), NamespaceString::kRsOplogNamespace);
+                OldClientContext ctx(opCtx.get(), NamespaceString::kRsOplogNamespace.ns());
                 tenant_migration_util::createOplogViewForTenantMigrations(opCtx.get(), ctx.db());
             }
 
@@ -216,8 +213,7 @@ public:
             // ReplClientInfo.
             OpObserverRegistry* opObserverRegistry =
                 dynamic_cast<OpObserverRegistry*>(serviceContext->getOpObserver());
-            opObserverRegistry->addObserver(
-                std::make_unique<OpObserverImpl>(std::make_unique<OplogWriterImpl>()));
+            opObserverRegistry->addObserver(std::make_unique<OpObserverImpl>());
             opObserverRegistry->addObserver(
                 std::make_unique<PrimaryOnlyServiceOpObserver>(serviceContext));
 
@@ -336,7 +332,7 @@ protected:
         ASSERT_BSONOBJ_EQ(memoryStateDoc.toBSON(), persistedStateDocWithStatus.getValue().toBSON());
     }
     void insertToNodes(MockReplicaSet* replSet,
-                       const NamespaceString& nss,
+                       const std::string& nss,
                        BSONObj obj,
                        const std::vector<HostAndPort>& hosts) {
         for (const auto& host : hosts) {
@@ -344,12 +340,12 @@ protected:
         }
     }
 
-    void insertToAllNodes(MockReplicaSet* replSet, const NamespaceString& nss, BSONObj obj) {
+    void insertToAllNodes(MockReplicaSet* replSet, const std::string& nss, BSONObj obj) {
         insertToNodes(replSet, nss, obj, replSet->getHosts());
     }
 
     void clearCollection(MockReplicaSet* replSet,
-                         const NamespaceString& nss,
+                         const std::string& nss,
                          const std::vector<HostAndPort>& hosts) {
         for (const auto& host : hosts) {
             replSet->getNode(host.toString())->remove(nss, BSONObj{} /*filter*/);
@@ -362,9 +358,9 @@ protected:
         const auto targetHosts = hosts.empty() ? replSet->getHosts() : hosts;
         // The MockRemoteDBService does not actually implement the database, so to make our
         // find work correctly we must make sure there's only one document to find.
-        clearCollection(replSet, NamespaceString::kRsOplogNamespace, targetHosts);
+        clearCollection(replSet, NamespaceString::kRsOplogNamespace.ns(), targetHosts);
         insertToNodes(replSet,
-                      NamespaceString::kRsOplogNamespace,
+                      NamespaceString::kRsOplogNamespace.ns(),
                       makeOplogEntry(topOfOplogOpTime,
                                      OpTypeEnum::kNoop,
                                      {} /* namespace */,
@@ -450,24 +446,11 @@ protected:
         multiversion::FeatureCompatibilityVersion version = multiversion::GenericFCV::kLatest) {
         auto fcvDoc = FeatureCompatibilityVersionDocument(version);
         auto client = getClient(instance);
-        client->insert(NamespaceString::kServerConfigurationNamespace, fcvDoc.toBSON());
+        client->insert(NamespaceString::kServerConfigurationNamespace.ns(), fcvDoc.toBSON());
     }
 
     ClockSource* clock() {
         return &_clkSource;
-    }
-
-    TenantMigrationRecipientDocument createInitialStateDocument(const UUID& migrationId,
-                                                                MigrationProtocolEnum protocol) {
-        TenantMigrationRecipientDocument initialStateDocument(
-            migrationId,
-            "donor-rs/localhost:12345",
-            OID::gen().toString(),
-            kDefaultStartMigrationTimestamp,
-            ReadPreferenceSetting(ReadPreference::PrimaryOnly, TagSet::primaryOnly()));
-        initialStateDocument.setProtocol(protocol);
-        initialStateDocument.setRecipientCertificateForDonor(kRecipientPEMPayload);
-        return initialStateDocument;
     }
 
 private:
@@ -491,7 +474,7 @@ TEST_F(TenantMigrationRecipientServiceTest, BasicTenantMigrationRecipientService
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         "donor-rs/localhost:12345",
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly, TagSet::primaryOnly()));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -506,7 +489,7 @@ TEST_F(TenantMigrationRecipientServiceTest, BasicTenantMigrationRecipientService
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, InstanceReportsErrorOnFailureWhilePersistingStateDoc) {
@@ -517,7 +500,7 @@ TEST_F(TenantMigrationRecipientServiceTest, InstanceReportsErrorOnFailureWhilePe
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         "donor-rs/localhost:12345",
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly, TagSet::primaryOnly()));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -535,8 +518,7 @@ TEST_F(TenantMigrationRecipientServiceTest, InstanceReportsErrorOnFailureWhilePe
     ASSERT_EQ(ErrorCodes::NotWritablePrimary, status.code());
     // Should also fail to mark the state doc garbage collectable if we have failed to persist the
     // state doc at the first place.
-    ASSERT_EQ(ErrorCodes::NotWritablePrimary,
-              instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_EQ(ErrorCodes::NotWritablePrimary, instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_Primary) {
@@ -554,7 +536,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_P
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -588,7 +570,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_P
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_Secondary) {
@@ -606,7 +588,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_S
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::SecondaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -640,7 +622,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_S
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -659,7 +641,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -699,7 +681,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     // Wait for task completion failure.
     ASSERT_EQUALS(ErrorCodes::FailedToSatisfyReadPreference,
                   instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -718,7 +700,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -772,7 +754,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -791,7 +773,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::Nearest));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -834,7 +816,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     // Wait for task completion failure.
     ASSERT_EQUALS(ErrorCodes::FailedToSatisfyReadPreference,
                   instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -853,7 +835,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryPreferred));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -904,7 +886,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -923,7 +905,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryPreferred));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -977,7 +959,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -996,7 +978,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::SecondaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1039,7 +1021,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     // Wait for task completion failure.
     ASSERT_EQUALS(ErrorCodes::FailedToSatisfyReadPreference,
                   instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -1058,7 +1040,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::SecondaryPreferred));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1111,7 +1093,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -1138,7 +1120,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryPreferred));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1197,7 +1179,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         startMigrationDonorTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryPreferred));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1259,7 +1241,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_P
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryPreferred));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1293,7 +1275,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_P
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_BadConnectString) {
@@ -1304,7 +1286,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientConnection_B
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         "broken,connect,string,no,set,name",
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1327,7 +1309,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         "localhost:12345",
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1343,8 +1325,6 @@ TEST_F(TenantMigrationRecipientServiceTest,
 
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientGetStartOpTime_NoTransaction) {
     stopFailPointEnableBlock fp("fpAfterRetrievingStartOpTimesMigrationRecipientInstance");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
 
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
@@ -1356,7 +1336,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientGetStartOpTi
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1370,17 +1350,59 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientGetStartOpTi
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     ASSERT_EQ(topOfOplogOpTime, getStateDoc(instance.get()).getStartFetchingDonorOpTime());
     ASSERT_EQ(topOfOplogOpTime, getStateDoc(instance.get()).getStartApplyingDonorOpTime());
     checkStateDocPersisted(opCtx.get(), instance.get());
 }
 
+TEST_F(TenantMigrationRecipientServiceTest,
+       TenantMigrationRecipientGetStartOpTime_Advances_NoTransaction) {
+    stopFailPointEnableBlock fp("fpAfterRetrievingStartOpTimesMigrationRecipientInstance");
+
+    auto pauseFailPoint =
+        globalFailPointRegistry().find("pauseAfterRetrievingLastTxnMigrationRecipientInstance");
+    auto timesEntered = pauseFailPoint->setMode(FailPoint::alwaysOn, 0);
+
+    const UUID migrationUUID = UUID::gen();
+    const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
+    const OpTime newTopOfOplogOpTime(Timestamp(6, 1), 1);
+
+    MockReplicaSet replSet("donorSet", 3, true /* hasPrimary */, true /* dollarPrefixHosts */);
+    getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
+    insertTopOfOplog(&replSet, topOfOplogOpTime);
+
+    TenantMigrationRecipientDocument initialStateDocument(
+        migrationUUID,
+        replSet.getConnectionString(),
+        "tenantA",
+        kDefaultStartMigrationTimestamp,
+        ReadPreferenceSetting(ReadPreference::PrimaryOnly));
+    initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
+    initialStateDocument.setRecipientCertificateForDonor(kRecipientPEMPayload);
+
+    // Create and start the instance.
+    auto opCtx = makeOperationContext();
+    auto instance = TenantMigrationRecipientService::Instance::getOrCreate(
+        opCtx.get(), _service, initialStateDocument.toBSON());
+    ASSERT(instance.get());
+
+    pauseFailPoint->waitForTimesEntered(timesEntered + 1);
+    insertTopOfOplog(&replSet, newTopOfOplogOpTime);
+    pauseFailPoint->setMode(FailPoint::off, 0);
+
+    // Wait for task completion.
+    ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
+
+    ASSERT_EQ(topOfOplogOpTime, getStateDoc(instance.get()).getStartFetchingDonorOpTime());
+    ASSERT_EQ(newTopOfOplogOpTime, getStateDoc(instance.get()).getStartApplyingDonorOpTime());
+    checkStateDocPersisted(opCtx.get(), instance.get());
+}
+
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientGetStartOpTime_Transaction) {
     stopFailPointEnableBlock fp("fpAfterRetrievingStartOpTimesMigrationRecipientInstance");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
 
     const UUID migrationUUID = UUID::gen();
     const OpTime txnStartOpTime(Timestamp(3, 1), 1);
@@ -1395,12 +1417,12 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientGetStartOpTi
     lastTxn.setStartOpTime(txnStartOpTime);
     lastTxn.setState(DurableTxnStateEnum::kInProgress);
     insertToAllNodes(
-        &replSet, NamespaceString::kSessionTransactionsTableNamespace, lastTxn.toBSON());
+        &replSet, NamespaceString::kSessionTransactionsTableNamespace.ns(), lastTxn.toBSON());
 
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1414,7 +1436,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientGetStartOpTi
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     ASSERT_EQ(txnStartOpTime, getStateDoc(instance.get()).getStartFetchingDonorOpTime());
     ASSERT_EQ(topOfOplogOpTime, getStateDoc(instance.get()).getStartApplyingDonorOpTime());
@@ -1422,10 +1444,60 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientGetStartOpTi
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
+       TenantMigrationRecipientGetStartOpTime_Advances_Transaction) {
+    stopFailPointEnableBlock fp("fpAfterRetrievingStartOpTimesMigrationRecipientInstance");
+
+    auto pauseFailPoint =
+        globalFailPointRegistry().find("pauseAfterRetrievingLastTxnMigrationRecipientInstance");
+    auto timesEntered = pauseFailPoint->setMode(FailPoint::alwaysOn, 0);
+
+    const UUID migrationUUID = UUID::gen();
+    const OpTime txnStartOpTime(Timestamp(3, 1), 1);
+    const OpTime txnLastWriteOpTime(Timestamp(4, 1), 1);
+    const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
+    const OpTime newTopOfOplogOpTime(Timestamp(6, 1), 1);
+
+    MockReplicaSet replSet("donorSet", 3, true /* hasPrimary */, true /* dollarPrefixHosts */);
+    getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
+    insertTopOfOplog(&replSet, topOfOplogOpTime);
+
+    SessionTxnRecord lastTxn(makeLogicalSessionIdForTest(), 100, txnLastWriteOpTime, Date_t());
+    lastTxn.setStartOpTime(txnStartOpTime);
+    lastTxn.setState(DurableTxnStateEnum::kInProgress);
+    insertToAllNodes(
+        &replSet, NamespaceString::kSessionTransactionsTableNamespace.ns(), lastTxn.toBSON());
+
+    TenantMigrationRecipientDocument initialStateDocument(
+        migrationUUID,
+        replSet.getConnectionString(),
+        "tenantA",
+        kDefaultStartMigrationTimestamp,
+        ReadPreferenceSetting(ReadPreference::PrimaryOnly));
+    initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
+    initialStateDocument.setRecipientCertificateForDonor(kRecipientPEMPayload);
+
+    // Create and start the instance.
+    auto opCtx = makeOperationContext();
+    auto instance = TenantMigrationRecipientService::Instance::getOrCreate(
+        opCtx.get(), _service, initialStateDocument.toBSON());
+    ASSERT(instance.get());
+
+    pauseFailPoint->waitForTimesEntered(timesEntered + 1);
+    insertTopOfOplog(&replSet, newTopOfOplogOpTime);
+    pauseFailPoint->setMode(FailPoint::off, 0);
+
+    // Wait for task completion.
+    ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
+
+    ASSERT_EQ(txnStartOpTime, getStateDoc(instance.get()).getStartFetchingDonorOpTime());
+    ASSERT_EQ(newTopOfOplogOpTime, getStateDoc(instance.get()).getStartApplyingDonorOpTime());
+    checkStateDocPersisted(opCtx.get(), instance.get());
+}
+
+TEST_F(TenantMigrationRecipientServiceTest,
        TenantMigrationRecipientGetStartOpTimes_RemoteOplogQueryFails) {
     stopFailPointEnableBlock fp("fpAfterRetrievingStartOpTimesMigrationRecipientInstance");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
 
     const UUID migrationUUID = UUID::gen();
 
@@ -1435,7 +1507,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1449,7 +1521,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
 
     // Wait for task completion.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     // Even though we failed, the memory state should still match the on-disk state.
     checkStateDocPersisted(opCtx.get(), instance.get());
@@ -1457,8 +1529,6 @@ TEST_F(TenantMigrationRecipientServiceTest,
 
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientStartOplogFetcher) {
     stopFailPointEnableBlock fp("fpAfterStartingOplogFetcherMigrationRecipientInstance");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
 
     auto taskFp = globalFailPointRegistry().find("hangBeforeTaskCompletion");
     auto initialTimesEntered = taskFp->setMode(FailPoint::alwaysOn);
@@ -1473,7 +1543,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientStartOplogFe
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1502,13 +1572,11 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientStartOplogFe
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientStartsCloner) {
     stopFailPointEnableBlock fp("fpBeforeFetchingCommittedTransactions");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
 
     auto taskFp = globalFailPointRegistry().find("hangBeforeTaskCompletion");
     ScopeGuard taskFpGuard([&taskFp] { taskFp->setMode(FailPoint::off); });
@@ -1531,7 +1599,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientStartsCloner
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1573,13 +1641,10 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientStartsCloner
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherFailsDuringOplogApplication) {
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -1590,7 +1655,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherFailsDuringOplogApplicat
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1632,7 +1697,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherFailsDuringOplogApplicat
     // Wait for task completion failure.
     auto status = instance->getDataSyncCompletionFuture().getNoThrow();
     ASSERT_EQ(4881203, status.code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherResumesFromTopOfOplogBuffer) {
@@ -1644,11 +1709,10 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherResumesFromTopOfOplogBuf
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, initialOpTime);
 
-    const auto tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1661,7 +1725,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherResumesFromTopOfOplogBuf
 
     // Hang after creating the oplog buffer collection but before starting the oplog fetcher.
     const auto hangBeforeFetcherFp =
-        globalFailPointRegistry().find("fpAfterRetrievingStartOpTimesMigrationRecipientInstance");
+        globalFailPointRegistry().find("pauseAfterCreatingOplogBuffer");
     auto initialTimesEntered = hangBeforeFetcherFp->setMode(FailPoint::alwaysOn,
                                                             0,
                                                             BSON("action"
@@ -1686,15 +1750,14 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherResumesFromTopOfOplogBuf
     const auto oplogBuffer = getDonorOplogBuffer(instance.get());
     OplogBuffer::Batch batch1;
     const OpTime resumeOpTime(Timestamp(2, 1), initialOpTime.getTerm());
-    auto resumeOplogBson =
-        makeOplogEntry(resumeOpTime,
-                       OpTypeEnum::kInsert,
-                       NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar"),
-                       UUID::gen(),
-                       BSON("doc" << 2),
-                       boost::none /* o2 */)
-            .getEntry()
-            .toBSON();
+    auto resumeOplogBson = makeOplogEntry(resumeOpTime,
+                                          OpTypeEnum::kInsert,
+                                          NamespaceString("tenantA_foo.bar"),
+                                          UUID::gen(),
+                                          BSON("doc" << 2),
+                                          boost::none /* o2 */)
+                               .getEntry()
+                               .toBSON();
     batch1.push_back(resumeOplogBson);
     oplogBuffer->push(opCtx.get(), batch1.cbegin(), batch1.cend());
     ASSERT_EQUALS(oplogBuffer->getCount(), 1);
@@ -1720,13 +1783,12 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherResumesFromTopOfOplogBuf
     hangAfterStartingOplogApplier->setMode(FailPoint::off);
 
     // Feed the oplog fetcher the last doc required for us to be considered consistent.
-    auto dataConsistentOplogEntry =
-        makeOplogEntry(dataConsistentOpTime,
-                       OpTypeEnum::kInsert,
-                       NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar"),
-                       UUID::gen(),
-                       BSON("doc" << 3),
-                       boost::none /* o2 */);
+    auto dataConsistentOplogEntry = makeOplogEntry(dataConsistentOpTime,
+                                                   OpTypeEnum::kInsert,
+                                                   NamespaceString("tenantA_foo.bar"),
+                                                   UUID::gen(),
+                                                   BSON("doc" << 3),
+                                                   boost::none /* o2 */);
     oplogFetcher->receiveBatch(
         1, {dataConsistentOplogEntry.getEntry().toBSON()}, dataConsistentOpTime.getTimestamp());
 
@@ -1741,7 +1803,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherResumesFromTopOfOplogBuf
     // Wait for task completion.  Since we're using a test function to cancel the applier,
     // the actual result is not critical.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherNoDocInBufferToResumeFrom) {
@@ -1755,11 +1817,10 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherNoDocInBufferToResumeFro
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, startFetchingOpTime);
 
-    const auto tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1778,7 +1839,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherNoDocInBufferToResumeFro
 
     // Hang after creating the oplog buffer collection but before starting the oplog fetcher.
     const auto hangBeforeFetcherFp =
-        globalFailPointRegistry().find("fpAfterRetrievingStartOpTimesMigrationRecipientInstance");
+        globalFailPointRegistry().find("pauseAfterCreatingOplogBuffer");
     auto initialTimesEntered = hangBeforeFetcherFp->setMode(FailPoint::alwaysOn,
                                                             0,
                                                             BSON("action"
@@ -1819,7 +1880,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherNoDocInBufferToResumeFro
            OplogFetcher::StartingPoint::kEnqueueFirstDoc);
 
     // Feed the oplog fetcher the last doc required for the recipient to be considered consistent.
-    const auto tenantNss = NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar");
+    const auto tenantNss = NamespaceString("tenantA_foo.bar");
     auto resumeFetchingOplogEntry = makeOplogEntry(resumeFetchingOpTime,
                                                    OpTypeEnum::kInsert,
                                                    tenantNss,
@@ -1850,7 +1911,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogFetcherNoDocInBufferToResumeFro
     // Wait for task completion.  Since we're using a test function to cancel the applier,
     // the actual result is not critical.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromLastNoOpOplogEntry) {
@@ -1866,11 +1927,10 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromLastNoOpOplog
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, clonerFinishedOpTime);
 
-    const auto tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -1913,7 +1973,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromLastNoOpOplog
     }
     // Create and insert two tenant migration no-op entries into the oplog. The oplog applier should
     // resume from the no-op entry with the most recent donor opTime.
-    const auto insertNss = NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar");
+    const auto insertNss = NamespaceString("tenantA_foo.bar");
     const auto earlierOplogBson = makeOplogEntry(earlierThanResumeOpTime,
                                                  OpTypeEnum::kInsert,
                                                  insertNss,
@@ -1980,15 +2040,15 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromLastNoOpOplog
     // The oplog applier should have started batching and applying at the donor opTime equal to
     // 'resumeOpTime'.
     const auto oplogApplier = getTenantOplogApplier(instance.get());
-    ASSERT_EQUALS(resumeOpTime, oplogApplier->getStartApplyingAfterOpTime());
-    ASSERT_EQUALS(resumeOpTime.getTimestamp(), oplogApplier->getResumeBatchingTs());
+    ASSERT_EQUALS(resumeOpTime, oplogApplier->getBeginApplyingOpTime_forTest());
+    ASSERT_EQUALS(resumeOpTime.getTimestamp(), oplogApplier->getResumeBatchingTs_forTest());
 
     // Stop the oplog applier.
     instance->stopOplogApplier_forTest();
     // Wait for task completion.  Since we're using a test function to cancel the applier,
     // the actual result is not critical.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -2002,11 +2062,10 @@ TEST_F(TenantMigrationRecipientServiceTest,
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, startApplyingOpTime);
 
-    const auto tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2059,7 +2118,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     //       'fromTenantMigrate' field. This oplog entry does not satisfy the conditions
     //       for the oplog applier to resume applying from so we default to apply from
     //       'startDonorApplyingOpTime'.
-    const auto insertNss = NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar");
+    const auto insertNss = NamespaceString("tenantA_foo.bar");
     const auto beforeStartApplyingOpTime = OpTime(Timestamp(1, 1), 1);
     const auto entryBeforeStartApplyingOpTime = makeOplogEntry(
                                                     beforeStartApplyingOpTime,
@@ -2117,12 +2176,12 @@ TEST_F(TenantMigrationRecipientServiceTest,
                                              collUuid,
                                              entryAfterStartApplyingOpTime,
                                              boost::none /* migrationUUID */));
-    for (const auto& entry : oplogEntries) {
+    for (auto entry : oplogEntries) {
         auto opTime = entry.getOpTime();
         ASSERT_OK(storage->insertDocument(
             opCtx.get(), oplogNss, {entry.toBSON(), opTime.getTimestamp()}, opTime.getTerm()));
     }
-    for (const auto& entry : noOpEntries) {
+    for (auto entry : noOpEntries) {
         auto opTime = entry.getOpTime();
         ASSERT_OK(storage->insertDocument(
             opCtx.get(), oplogNss, {entry.toBSON(), opTime.getTimestamp()}, opTime.getTerm()));
@@ -2131,13 +2190,12 @@ TEST_F(TenantMigrationRecipientServiceTest,
     hangBeforeCreatingOplogApplier->setMode(FailPoint::off);
     hangAfterStartingOplogApplier->waitForTimesEntered(initialTimesEntered + 1);
 
-    auto dataConsistentOplogEntry =
-        makeOplogEntry(dataConsistentOpTime,
-                       OpTypeEnum::kInsert,
-                       NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar"),
-                       UUID::gen(),
-                       BSON("doc" << 3),
-                       boost::none /* o2 */);
+    auto dataConsistentOplogEntry = makeOplogEntry(dataConsistentOpTime,
+                                                   OpTypeEnum::kInsert,
+                                                   NamespaceString("tenantA_foo.bar"),
+                                                   UUID::gen(),
+                                                   BSON("doc" << 3),
+                                                   boost::none /* o2 */);
 
     auto oplogFetcher = getDonorOplogFetcher(instance.get());
     // Feed the oplog fetcher the last doc required for the recipient to be considered consistent.
@@ -2155,16 +2213,17 @@ TEST_F(TenantMigrationRecipientServiceTest,
     const auto oplogApplier = getTenantOplogApplier(instance.get());
     // Resume batching from the first migration no-op oplog entry. In this test, this is before
     // the 'startApplyingDonorOpTime'.
-    ASSERT_EQUALS(beforeStartApplyingOpTime.getTimestamp(), oplogApplier->getResumeBatchingTs());
+    ASSERT_EQUALS(beforeStartApplyingOpTime.getTimestamp(),
+                  oplogApplier->getResumeBatchingTs_forTest());
     // The oplog applier starts applying from the donor opTime equal to 'beginApplyingOpTime'.
-    ASSERT_EQUALS(startApplyingOpTime, oplogApplier->getStartApplyingAfterOpTime());
+    ASSERT_EQUALS(startApplyingOpTime, oplogApplier->getBeginApplyingOpTime_forTest());
 
     // Stop the oplog applier.
     instance->stopOplogApplier_forTest();
     // Wait for task completion.  Since we're using a test function to cancel the applier,
     // the actual result is not critical.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromStartDonorApplyingOpTime) {
@@ -2177,11 +2236,10 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromStartDonorApp
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, startApplyingOpTime);
 
-    const auto tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2224,7 +2282,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromStartDonorApp
     //       'fromTenantMigrate' field. This oplog entry does not satisfy the conditions
     //       for the oplog applier to resume applying from so we default to applying and
     //       batching from the start of the buffer collection.
-    const auto insertNss = NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar");
+    const auto insertNss = NamespaceString("tenantA_foo.bar");
     const auto afterStartApplyingOpTime = OpTime(Timestamp(3, 1), 1);
     const auto entryAfterStartApplyingOpTime = makeOplogEntry(
                                                    afterStartApplyingOpTime,
@@ -2267,7 +2325,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromStartDonorApp
                                               entryAfterStartApplyingOpTime,
                                               boost::none /* migrationUUID */);
 
-    for (const auto& entry : oplogEntries) {
+    for (auto entry : oplogEntries) {
         auto opTime = entry.getOpTime();
         ASSERT_OK(storage->insertDocument(
             opCtx.get(), oplogNss, {entry.toBSON(), opTime.getTimestamp()}, opTime.getTerm()));
@@ -2279,13 +2337,12 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromStartDonorApp
 
     hangAfterStartingOplogApplier->waitForTimesEntered(initialTimesEntered + 1);
 
-    auto dataConsistentOplogEntry =
-        makeOplogEntry(dataConsistentOpTime,
-                       OpTypeEnum::kInsert,
-                       NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar"),
-                       UUID::gen(),
-                       BSON("doc" << 3),
-                       boost::none /* o2 */);
+    auto dataConsistentOplogEntry = makeOplogEntry(dataConsistentOpTime,
+                                                   OpTypeEnum::kInsert,
+                                                   NamespaceString("tenantA_foo.bar"),
+                                                   UUID::gen(),
+                                                   BSON("doc" << 3),
+                                                   boost::none /* o2 */);
 
     auto oplogFetcher = getDonorOplogFetcher(instance.get());
     // Feed the oplog fetcher the last doc required for the recipient to be considered consistent.
@@ -2303,16 +2360,16 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierResumesFromStartDonorApp
     const auto oplogApplier = getTenantOplogApplier(instance.get());
     // There is no oplog entry to resume batching from, so we treat it as if we are resuming
     // oplog application from the start. The 'resumeBatchingTs' will be a null timestamp.
-    ASSERT_EQUALS(Timestamp(), oplogApplier->getResumeBatchingTs());
+    ASSERT_EQUALS(Timestamp(), oplogApplier->getResumeBatchingTs_forTest());
     // The oplog applier starts applying from the donor opTime equal to 'beginApplyingOpTime'.
-    ASSERT_EQUALS(startApplyingOpTime, oplogApplier->getStartApplyingAfterOpTime());
+    ASSERT_EQUALS(startApplyingOpTime, oplogApplier->getBeginApplyingOpTime_forTest());
 
     // Stop the oplog applier.
     instance->stopOplogApplier_forTest();
     // Wait for task completion.  Since we're using a test function to cancel the applier,
     // the actual result is not critical.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -2325,11 +2382,10 @@ TEST_F(TenantMigrationRecipientServiceTest,
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, startFetchingOpTime);
 
-    const auto tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2345,7 +2401,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
 
     // Hang after creating the oplog buffer collection but before starting the oplog fetcher.
     const auto hangBeforeFetcherFp =
-        globalFailPointRegistry().find("fpAfterRetrievingStartOpTimesMigrationRecipientInstance");
+        globalFailPointRegistry().find("pauseAfterCreatingOplogBuffer");
     auto initialTimesEntered = hangBeforeFetcherFp->setMode(FailPoint::alwaysOn,
                                                             0,
                                                             BSON("action"
@@ -2368,25 +2424,23 @@ TEST_F(TenantMigrationRecipientServiceTest,
     // should know to skip this document on service restart.
     const auto oplogBuffer = getDonorOplogBuffer(instance.get());
     OplogBuffer::Batch batch1;
-    batch1.push_back(
-        makeOplogEntry(startFetchingOpTime,
-                       OpTypeEnum::kInsert,
-                       NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar"),
-                       UUID::gen(),
-                       BSON("doc" << 2),
-                       boost::none /* o2 */)
-            .getEntry()
-            .toBSON());
+    batch1.push_back(makeOplogEntry(startFetchingOpTime,
+                                    OpTypeEnum::kInsert,
+                                    NamespaceString("tenantA_foo.bar"),
+                                    UUID::gen(),
+                                    BSON("doc" << 2),
+                                    boost::none /* o2 */)
+                         .getEntry()
+                         .toBSON());
     oplogBuffer->push(opCtx.get(), batch1.cbegin(), batch1.cend());
     ASSERT_EQUALS(oplogBuffer->getCount(), 1);
 
-    auto dataConsistentOplogEntry =
-        makeOplogEntry(dataConsistentOpTime,
-                       OpTypeEnum::kInsert,
-                       NamespaceString::createNamespaceString_forTest(tenantId + "_foo.bar"),
-                       UUID::gen(),
-                       BSON("doc" << 3),
-                       boost::none /* o2 */);
+    auto dataConsistentOplogEntry = makeOplogEntry(dataConsistentOpTime,
+                                                   OpTypeEnum::kInsert,
+                                                   NamespaceString("tenantA_foo.bar"),
+                                                   UUID::gen(),
+                                                   BSON("doc" << 3),
+                                                   boost::none /* o2 */);
     // Continue the recipient service to hang before starting the oplog applier.
     const auto hangAfterStartingOplogApplier =
         globalFailPointRegistry().find("fpAfterStartingOplogApplierMigrationRecipientInstance");
@@ -2423,13 +2477,10 @@ TEST_F(TenantMigrationRecipientServiceTest,
     // Wait for task completion.  Since we're using a test function to cancel the applier,
     // the actual result is not critical.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, OplogApplierFails) {
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
     const OpTime injectedEntryOpTime(Timestamp(6, 1), 1);
@@ -2441,7 +2492,7 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierFails) {
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2481,27 +2532,23 @@ TEST_F(TenantMigrationRecipientServiceTest, OplogApplierFails) {
         ASSERT_TRUE(oplogFetcher->isActive());
 
         // Send an oplog entry not from our tenant, which should cause the oplog applier to assert.
-        auto oplogEntry =
-            makeOplogEntry(injectedEntryOpTime,
-                           OpTypeEnum::kInsert,
-                           NamespaceString::createNamespaceString_forTest("admin.bogus"),
-                           UUID::gen(),
-                           BSON("_id"
-                                << "bad insert"),
-                           boost::none /* o2 */);
+        auto oplogEntry = makeOplogEntry(injectedEntryOpTime,
+                                         OpTypeEnum::kInsert,
+                                         NamespaceString("admin.bogus"),
+                                         UUID::gen(),
+                                         BSON("_id"
+                                              << "bad insert"),
+                                         boost::none /* o2 */);
         oplogFetcher->receiveBatch(
             1LL, {oplogEntry.getEntry().toBSON()}, injectedEntryOpTime.getTimestamp());
     }
 
     // Wait for task completion failure.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, StoppingApplierAllowsCompletion) {
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -2512,7 +2559,7 @@ TEST_F(TenantMigrationRecipientServiceTest, StoppingApplierAllowsCompletion) {
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2553,7 +2600,7 @@ TEST_F(TenantMigrationRecipientServiceTest, StoppingApplierAllowsCompletion) {
     // Wait for task completion.  Since we're using a test function to cancel the applier,
     // the actual result is not critical.
     ASSERT_NOT_OK(instance->getDataSyncCompletionFuture().getNoThrow());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientAddResumeTokenNoopsToBuffer) {
@@ -2568,7 +2615,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientAddResumeTok
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2605,24 +2652,22 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientAddResumeTok
     // Feed the oplog fetcher a resume token.
     auto oplogFetcher = getDonorOplogFetcher(instance.get());
     const auto resumeToken1 = topOfOplogOpTime.getTimestamp();
-    auto oplogEntry1 =
-        makeOplogEntry(topOfOplogOpTime,
-                       OpTypeEnum::kInsert,
-                       NamespaceString::createNamespaceString_forTest("foo.bar") /* namespace */,
-                       UUID::gen() /* uuid */,
-                       BSON("doc" << 2) /* o */,
-                       boost::none /* o2 */);
+    auto oplogEntry1 = makeOplogEntry(topOfOplogOpTime,
+                                      OpTypeEnum::kInsert,
+                                      NamespaceString("foo.bar") /* namespace */,
+                                      UUID::gen() /* uuid */,
+                                      BSON("doc" << 2) /* o */,
+                                      boost::none /* o2 */);
     oplogFetcher->receiveBatch(17, {oplogEntry1.getEntry().toBSON()}, resumeToken1);
 
     const Timestamp oplogEntryTS2 = Timestamp(6, 2);
     const Timestamp resumeToken2 = Timestamp(7, 3);
-    auto oplogEntry2 =
-        makeOplogEntry(OpTime(oplogEntryTS2, topOfOplogOpTime.getTerm()),
-                       OpTypeEnum::kInsert,
-                       NamespaceString::createNamespaceString_forTest("foo.bar") /* namespace */,
-                       UUID::gen() /* uuid */,
-                       BSON("doc" << 3) /* o */,
-                       boost::none /* o2 */);
+    auto oplogEntry2 = makeOplogEntry(OpTime(oplogEntryTS2, topOfOplogOpTime.getTerm()),
+                                      OpTypeEnum::kInsert,
+                                      NamespaceString("foo.bar") /* namespace */,
+                                      UUID::gen() /* uuid */,
+                                      BSON("doc" << 3) /* o */,
+                                      boost::none /* o2 */);
     oplogFetcher->receiveBatch(17, {oplogEntry2.getEntry().toBSON()}, resumeToken2);
 
     // Receive an empty batch.
@@ -2652,8 +2697,8 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientAddResumeTok
         OplogEntry noopEntry(noopDoc);
         ASSERT_TRUE(noopEntry.getOpType() == OpTypeEnum::kNoop);
         ASSERT_EQUALS(noopEntry.getTimestamp(), resumeToken2);
-        ASSERT_EQUALS(noopEntry.getTerm().value(), -1);
-        ASSERT_EQUALS(noopEntry.getNss(), NamespaceString::createNamespaceString_forTest(""));
+        ASSERT_EQUALS(noopEntry.getTerm().get(), -1);
+        ASSERT_EQUALS(noopEntry.getNss(), NamespaceString(""));
     }
 
     ASSERT_TRUE(oplogBuffer->isEmpty());
@@ -2663,7 +2708,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientAddResumeTok
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_BeforeRun) {
@@ -2674,7 +2719,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_BeforeRun) 
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2692,15 +2737,14 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_BeforeRun) 
 
     // Test that receiving recipientForgetMigration command after that should result in the same
     // error.
-    ASSERT_THROWS_CODE(instance->onReceiveRecipientForgetMigration(
-                           opCtx.get(), TenantMigrationRecipientStateEnum::kDone),
+    ASSERT_THROWS_CODE(instance->onReceiveRecipientForgetMigration(opCtx.get()),
                        AssertionException,
                        ErrorCodes::InterruptedDueToReplStateChange);
 
     fp->setMode(FailPoint::off);
 
     // We should fail to mark the state doc garbage collectable.
-    ASSERT_EQ(instance->getForgetMigrationDurableFuture().getNoThrow(),
+    ASSERT_EQ(instance->getCompletionFuture().getNoThrow(),
               ErrorCodes::InterruptedDueToReplStateChange);
 }
 
@@ -2714,7 +2758,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_FailToIniti
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2724,14 +2768,12 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_FailToIniti
     auto instance = repl::TenantMigrationRecipientService::Instance::getOrCreate(
         opCtx.get(), _service, initialStateDocument.toBSON());
 
-    ASSERT_THROWS_CODE(instance->onReceiveRecipientForgetMigration(
-                           opCtx.get(), TenantMigrationRecipientStateEnum::kDone),
+    ASSERT_THROWS_CODE(instance->onReceiveRecipientForgetMigration(opCtx.get()),
                        AssertionException,
                        ErrorCodes::NotWritablePrimary);
     // We should fail to mark the state doc garbage collectable if we have failed to initialize and
     // persist the state doc at the first place.
-    ASSERT_EQ(instance->getForgetMigrationDurableFuture().getNoThrow(),
-              ErrorCodes::NotWritablePrimary);
+    ASSERT_EQ(instance->getCompletionFuture().getNoThrow(), ErrorCodes::NotWritablePrimary);
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_WaitUntilStateDocInitialized) {
@@ -2740,8 +2782,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_WaitUntilSt
     // state doc.
     auto autoForgetFp = globalFailPointRegistry().find("autoRecipientForgetMigration");
     autoForgetFp->setMode(FailPoint::off);
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
 
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
@@ -2750,11 +2790,10 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_WaitUntilSt
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, topOfOplogOpTime);
 
-    const std::string tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2773,8 +2812,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_WaitUntilSt
     opCtx->setDeadlineAfterNowBy(Seconds(2), opCtx->getTimeoutError());
     // Advance time past deadline.
     advanceTime(Milliseconds(3000));
-    ASSERT_THROWS_CODE(instance->onReceiveRecipientForgetMigration(
-                           opCtx.get(), TenantMigrationRecipientStateEnum::kDone),
+    ASSERT_THROWS_CODE(instance->onReceiveRecipientForgetMigration(opCtx.get()),
                        AssertionException,
                        opCtx->getTimeoutError());
 
@@ -2794,13 +2832,12 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_WaitUntilSt
 
         // Test that onReceiveRecipientForgetMigration goes through now that the state doc has been
         // persisted.
-        instance->onReceiveRecipientForgetMigration(opCtx.get(),
-                                                    TenantMigrationRecipientStateEnum::kDone);
+        instance->onReceiveRecipientForgetMigration(opCtx.get());
     }
 
     ASSERT_EQ(instance->getDataSyncCompletionFuture().getNoThrow(),
               ErrorCodes::TenantMigrationForgotten);
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     const auto doc = getStateDoc(instance.get());
     LOGV2(4881411,
@@ -2808,12 +2845,11 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_WaitUntilSt
           "preStateDoc"_attr = initialStateDocument.toBSON(),
           "postStateDoc"_attr = doc.toBSON());
     ASSERT_EQ(doc.getDonorConnectionString(), replSet.getConnectionString());
-    ASSERT_EQ(doc.getTenantId(), tenantId);
+    ASSERT_EQ(doc.getTenantId(), "tenantA");
     ASSERT_TRUE(doc.getReadPreference().equals(ReadPreferenceSetting(ReadPreference::PrimaryOnly)));
     ASSERT_TRUE(doc.getState() == TenantMigrationRecipientStateEnum::kDone);
     ASSERT_TRUE(doc.getExpireAt() != boost::none);
-    ASSERT_TRUE(doc.getExpireAt().value() >
-                opCtx->getServiceContext()->getFastClockSource()->now());
+    ASSERT_TRUE(doc.getExpireAt().get() > opCtx->getServiceContext()->getFastClockSource()->now());
     ASSERT_TRUE(doc.getStartApplyingDonorOpTime() == boost::none);
     ASSERT_TRUE(doc.getStartFetchingDonorOpTime() == boost::none);
     ASSERT_TRUE(doc.getDataConsistentStopDonorOpTime() == boost::none);
@@ -2830,8 +2866,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterStartO
                                            0,
                                            BSON("action"
                                                 << "hang"));
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
+
 
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
@@ -2840,11 +2875,10 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterStartO
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, topOfOplogOpTime);
 
-    const std::string tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2857,8 +2891,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterStartO
     ASSERT(instance.get());
 
     fp->waitForTimesEntered(initialTimesEntered + 1);
-    instance->onReceiveRecipientForgetMigration(opCtx.get(),
-                                                TenantMigrationRecipientStateEnum::kDone);
+    instance->onReceiveRecipientForgetMigration(opCtx.get());
 
     // Skip the cloners in this test, so we provide an empty list of databases.
     MockRemoteDBServer* const _donorServer =
@@ -2869,7 +2902,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterStartO
     fp->setMode(FailPoint::off);
     ASSERT_EQ(instance->getDataSyncCompletionFuture().getNoThrow(),
               ErrorCodes::TenantMigrationForgotten);
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     const auto doc = getStateDoc(instance.get());
     LOGV2(4881412,
@@ -2877,12 +2910,11 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterStartO
           "preStateDoc"_attr = initialStateDocument.toBSON(),
           "postStateDoc"_attr = doc.toBSON());
     ASSERT_EQ(doc.getDonorConnectionString(), replSet.getConnectionString());
-    ASSERT_EQ(doc.getTenantId(), tenantId);
+    ASSERT_EQ(doc.getTenantId(), "tenantA");
     ASSERT_TRUE(doc.getReadPreference().equals(ReadPreferenceSetting(ReadPreference::PrimaryOnly)));
     ASSERT_TRUE(doc.getState() == TenantMigrationRecipientStateEnum::kDone);
     ASSERT_TRUE(doc.getExpireAt() != boost::none);
-    ASSERT_TRUE(doc.getExpireAt().value() >
-                opCtx->getServiceContext()->getFastClockSource()->now());
+    ASSERT_TRUE(doc.getExpireAt().get() > opCtx->getServiceContext()->getFastClockSource()->now());
     checkStateDocPersisted(opCtx.get(), instance.get());
 }
 
@@ -2899,9 +2931,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterConsis
                                                          0,
                                                          BSON("action"
                                                               << "hang"));
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
 
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
@@ -2910,11 +2939,10 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterConsis
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, topOfOplogOpTime);
 
-    const std::string tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -2945,7 +2973,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterConsis
               "preStateDoc"_attr = initialStateDocument.toBSON(),
               "postStateDoc"_attr = doc.toBSON());
         ASSERT_EQ(doc.getDonorConnectionString(), replSet.getConnectionString());
-        ASSERT_EQ(doc.getTenantId(), tenantId);
+        ASSERT_EQ(doc.getTenantId(), "tenantA");
         ASSERT_TRUE(
             doc.getReadPreference().equals(ReadPreferenceSetting(ReadPreference::PrimaryOnly)));
         ASSERT_TRUE(doc.getState() == TenantMigrationRecipientStateEnum::kConsistent);
@@ -2953,12 +2981,10 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterConsis
         checkStateDocPersisted(opCtx.get(), instance.get());
     }
 
-    instance->onReceiveRecipientForgetMigration(opCtx.get(),
-                                                TenantMigrationRecipientStateEnum::kDone);
+    instance->onReceiveRecipientForgetMigration(opCtx.get());
 
     // Test receiving duplicating recipientForgetMigration requests.
-    instance->onReceiveRecipientForgetMigration(opCtx.get(),
-                                                TenantMigrationRecipientStateEnum::kDone);
+    instance->onReceiveRecipientForgetMigration(opCtx.get());
 
     // Continue after data being consistent.
     dataConsistentFp->setMode(FailPoint::off);
@@ -2967,7 +2993,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterConsis
     ASSERT_EQ(instance->getDataSyncCompletionFuture().getNoThrow(),
               ErrorCodes::TenantMigrationForgotten);
 
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     {
         const auto doc = getStateDoc(instance.get());
@@ -2976,12 +3002,12 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterConsis
               "preStateDoc"_attr = initialStateDocument.toBSON(),
               "postStateDoc"_attr = doc.toBSON());
         ASSERT_EQ(doc.getDonorConnectionString(), replSet.getConnectionString());
-        ASSERT_EQ(doc.getTenantId(), tenantId);
+        ASSERT_EQ(doc.getTenantId(), "tenantA");
         ASSERT_TRUE(
             doc.getReadPreference().equals(ReadPreferenceSetting(ReadPreference::PrimaryOnly)));
         ASSERT_TRUE(doc.getState() == TenantMigrationRecipientStateEnum::kDone);
         ASSERT_TRUE(doc.getExpireAt() != boost::none);
-        ASSERT_TRUE(doc.getExpireAt().value() >
+        ASSERT_TRUE(doc.getExpireAt().get() >
                     opCtx->getServiceContext()->getFastClockSource()->now());
         checkStateDocPersisted(opCtx.get(), instance.get());
     }
@@ -2994,9 +3020,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterFail) 
     auto autoForgetFp = globalFailPointRegistry().find("autoRecipientForgetMigration");
     autoForgetFp->setMode(FailPoint::off);
 
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     stopFailPointEnableBlock fp("fpBeforeFetchingCommittedTransactions");
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
@@ -3005,11 +3028,10 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterFail) 
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
     insertTopOfOplog(&replSet, topOfOplogOpTime);
 
-    const std::string tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3043,7 +3065,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterFail) 
               "preStateDoc"_attr = initialStateDocument.toBSON(),
               "postStateDoc"_attr = doc.toBSON());
         ASSERT_EQ(doc.getDonorConnectionString(), replSet.getConnectionString());
-        ASSERT_EQ(doc.getTenantId(), tenantId);
+        ASSERT_EQ(doc.getTenantId(), "tenantA");
         ASSERT_TRUE(
             doc.getReadPreference().equals(ReadPreferenceSetting(ReadPreference::PrimaryOnly)));
         ASSERT_TRUE(doc.getState() == TenantMigrationRecipientStateEnum::kStarted);
@@ -3055,9 +3077,8 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterFail) 
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
 
     // The instance should still be running and waiting for the recipientForgetMigration command.
-    instance->onReceiveRecipientForgetMigration(opCtx.get(),
-                                                TenantMigrationRecipientStateEnum::kDone);
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    instance->onReceiveRecipientForgetMigration(opCtx.get());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     {
         const auto doc = getStateDoc(instance.get());
@@ -3066,12 +3087,12 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_AfterFail) 
               "preStateDoc"_attr = initialStateDocument.toBSON(),
               "postStateDoc"_attr = doc.toBSON());
         ASSERT_EQ(doc.getDonorConnectionString(), replSet.getConnectionString());
-        ASSERT_EQ(doc.getTenantId(), tenantId);
+        ASSERT_EQ(doc.getTenantId(), "tenantA");
         ASSERT_TRUE(
             doc.getReadPreference().equals(ReadPreferenceSetting(ReadPreference::PrimaryOnly)));
         ASSERT_TRUE(doc.getState() == TenantMigrationRecipientStateEnum::kDone);
         ASSERT_TRUE(doc.getExpireAt() != boost::none);
-        ASSERT_TRUE(doc.getExpireAt().value() >
+        ASSERT_TRUE(doc.getExpireAt().get() >
                     opCtx->getServiceContext()->getFastClockSource()->now());
         checkStateDocPersisted(opCtx.get(), instance.get());
     }
@@ -3087,17 +3108,13 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_FailToMarkG
     stopFailPointEnableBlock fp("fpAfterPersistingTenantMigrationRecipientInstanceStateDoc");
     const UUID migrationUUID = UUID::gen();
 
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     MockReplicaSet replSet("donorSet", 3, true /* hasPrimary */, true /* dollarPrefixHosts */);
     getTopologyManager()->setTopologyDescription(replSet.getTopologyDescription(clock()));
 
-    const std::string tenantId = OID::gen().toString();
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        tenantId,
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3119,11 +3136,9 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_FailToMarkG
                                           ErrorCodes::NotWritablePrimary);
 
     // The instance should still be running and waiting for the recipientForgetMigration command.
-    instance->onReceiveRecipientForgetMigration(opCtx.get(),
-                                                TenantMigrationRecipientStateEnum::kDone);
+    instance->onReceiveRecipientForgetMigration(opCtx.get());
     // Check that it fails to mark the state doc garbage collectable.
-    ASSERT_EQ(ErrorCodes::NotWritablePrimary,
-              instance->getForgetMigrationDurableFuture().getNoThrow().code());
+    ASSERT_EQ(ErrorCodes::NotWritablePrimary, instance->getCompletionFuture().getNoThrow().code());
 
     {
         const auto doc = getStateDoc(instance.get());
@@ -3132,7 +3147,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_FailToMarkG
               "preStateDoc"_attr = initialStateDocument.toBSON(),
               "postStateDoc"_attr = doc.toBSON());
         ASSERT_EQ(doc.getDonorConnectionString(), replSet.getConnectionString());
-        ASSERT_EQ(doc.getTenantId(), tenantId);
+        ASSERT_EQ(doc.getTenantId(), "tenantA");
         ASSERT_TRUE(
             doc.getReadPreference().equals(ReadPreferenceSetting(ReadPreference::PrimaryOnly)));
         ASSERT_TRUE(doc.getState() == TenantMigrationRecipientStateEnum::kStarted);
@@ -3143,8 +3158,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientForgetMigration_FailToMarkG
 
 TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientServiceRecordsFCVAtStart) {
     stopFailPointEnableBlock fp("fpAfterRecordingRecipientPrimaryStartingFCV");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
 
     const UUID migrationUUID = UUID::gen();
     MockReplicaSet replSet("donorSet", 3, true /* hasPrimary */, true /* dollarPrefixHosts */);
@@ -3154,7 +3167,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientServiceRecor
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3168,7 +3181,7 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientServiceRecor
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     auto doc = getStateDoc(instance.get());
     auto docFCV = doc.getRecipientPrimaryStartingFCV();
@@ -3181,9 +3194,6 @@ TEST_F(TenantMigrationRecipientServiceTest, TenantMigrationRecipientServiceRecor
 TEST_F(TenantMigrationRecipientServiceTest,
        TenantMigrationRecipientServiceAlreadyRecordedFCV_Match) {
     stopFailPointEnableBlock fp("fpAfterRecordingRecipientPrimaryStartingFCV");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
 
     const UUID migrationUUID = UUID::gen();
     MockReplicaSet replSet("donorSet", 3, true /* hasPrimary */, true /* dollarPrefixHosts */);
@@ -3193,7 +3203,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3212,7 +3222,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     // Wait for task completion.
     // The FCV should match so we should exit with the failpoint code rather than an error.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     auto doc = getStateDoc(instance.get());
     auto docFCV = doc.getRecipientPrimaryStartingFCV();
@@ -3233,7 +3243,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3254,7 +3264,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     // The FCV should differ so we expect to exit with an error.
     std::int32_t expectedCode = 5356201;
     ASSERT_EQ(expectedCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest,
@@ -3281,7 +3291,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3303,13 +3313,10 @@ TEST_F(TenantMigrationRecipientServiceTest,
     // The FCVs should differ so we expect to exit with an error.
     std::int32_t expectedCode = 5382301;
     ASSERT_EQ(expectedCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, WaitUntilMigrationReachesReturnAfterReachingTimestamp) {
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -3320,7 +3327,7 @@ TEST_F(TenantMigrationRecipientServiceTest, WaitUntilMigrationReachesReturnAfter
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3371,9 +3378,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesRetriableFetcherErr
                                            BSON("action"
                                                 << "hang"));
 
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -3384,7 +3388,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesRetriableFetcherErr
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3423,7 +3427,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesRetriableFetcherErr
     fp->setMode(FailPoint::off);
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     doc = getStateDoc(instance.get());
     ASSERT_EQ(doc.getNumRestartsDueToDonorConnectionFailure(), 1);
@@ -3439,9 +3443,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesNonRetriableFetcher
                                            BSON("action"
                                                 << "hang"));
 
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -3452,7 +3453,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesNonRetriableFetcher
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3486,7 +3487,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesNonRetriableFetcher
     // Wait for task completion failure.
     auto status = instance->getDataSyncCompletionFuture().getNoThrow();
     ASSERT_EQ(nonRetriableErrorCode, status.code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     doc = getStateDoc(instance.get());
     ASSERT_EQ(doc.getNumRestartsDueToDonorConnectionFailure(), 0);
@@ -3502,9 +3503,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientWillNotRetryOnExternalInter
                                            BSON("action"
                                                 << "hang"));
 
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -3515,7 +3513,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientWillNotRetryOnExternalInter
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3547,8 +3545,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientWillNotRetryOnExternalInter
 
     fp->setMode(FailPoint::off);
     // Wait for task completion failure.
-    ASSERT_EQ(instance->getForgetMigrationDurableFuture().getNoThrow(),
-              ErrorCodes::SocketException);
+    ASSERT_EQ(instance->getCompletionFuture().getNoThrow(), ErrorCodes::SocketException);
 
     doc = getStateDoc(instance.get());
     ASSERT_EQ(doc.getNumRestartsDueToDonorConnectionFailure(), 0);
@@ -3565,9 +3562,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientWillNotRetryOnReceivingForg
                                                  BSON("action"
                                                       << "hang"));
 
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -3578,7 +3572,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientWillNotRetryOnReceivingForg
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3619,12 +3613,11 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientWillNotRetryOnReceivingForg
     // After the migration is interrupted successfully, signal migration that we received
     // recipientForgetMigration command. And, that should make the migration not to retry
     // on retryable error.
-    instance->onReceiveRecipientForgetMigration(opCtx.get(),
-                                                TenantMigrationRecipientStateEnum::kDone);
+    instance->onReceiveRecipientForgetMigration(opCtx.get());
     hangMigrationBeforeRetryCheckFp->setMode(FailPoint::off);
 
     // Wait for task completion failure.
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     auto doc = getStateDoc(instance.get());
     ASSERT_EQ(doc.getNumRestartsDueToDonorConnectionFailure(), 0);
@@ -3641,10 +3634,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesRetriableClonerErro
                                            BSON("action"
                                                 << "hang"));
 
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -3655,7 +3644,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesRetriableClonerErro
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3701,7 +3690,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesRetriableClonerErro
 
     // Wait for task completion.
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     doc = getStateDoc(instance.get());
     ASSERT_EQ(doc.getNumRestartsDueToDonorConnectionFailure(), 1);
@@ -3718,10 +3707,6 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesNonRetriableClonerE
                                            BSON("action"
                                                 << "hang"));
 
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(5, 1), 1);
 
@@ -3732,7 +3717,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesNonRetriableClonerE
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3767,7 +3752,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesNonRetriableClonerE
 
     // Wait for task completion.
     ASSERT_EQ(nonRetriableErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     doc = getStateDoc(instance.get());
     ASSERT_EQ(doc.getNumRestartsDueToDonorConnectionFailure(), 0);
@@ -3776,11 +3761,7 @@ TEST_F(TenantMigrationRecipientServiceTest, RecipientReceivesNonRetriableClonerE
 }
 
 TEST_F(TenantMigrationRecipientServiceTest, IncrementNumRestartsDueToRecipientFailureCounter) {
-    FailPointEnableBlock createIndexesFailpointBlock("skipCreatingIndexDuringRebuildService");
     stopFailPointEnableBlock fp("fpAfterPersistingTenantMigrationRecipientInstanceStateDoc");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(1, 1), 1);
 
@@ -3791,7 +3772,7 @@ TEST_F(TenantMigrationRecipientServiceTest, IncrementNumRestartsDueToRecipientFa
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3823,7 +3804,7 @@ TEST_F(TenantMigrationRecipientServiceTest, IncrementNumRestartsDueToRecipientFa
     ASSERT(instance.get());
 
     ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
+    ASSERT_OK(instance->getCompletionFuture().getNoThrow());
 
     const auto stateDoc = getStateDoc(instance.get());
     ASSERT_EQ(stateDoc.getNumRestartsDueToDonorConnectionFailure(), 0);
@@ -3833,10 +3814,6 @@ TEST_F(TenantMigrationRecipientServiceTest, IncrementNumRestartsDueToRecipientFa
 
 TEST_F(TenantMigrationRecipientServiceTest,
        RecipientFailureCounterNotIncrementedWhenMigrationForgotten) {
-    FailPointEnableBlock createIndexesFailpointBlock("skipCreatingIndexDuringRebuildService");
-    // Hang before deleting the state doc so that we can check the state doc was persisted.
-    FailPointEnableBlock fpDeletingStateDoc("pauseTenantMigrationRecipientBeforeDeletingStateDoc");
-
     const UUID migrationUUID = UUID::gen();
     const OpTime topOfOplogOpTime(Timestamp(1, 1), 1);
 
@@ -3847,7 +3824,7 @@ TEST_F(TenantMigrationRecipientServiceTest,
     TenantMigrationRecipientDocument initialStateDocument(
         migrationUUID,
         replSet.getConnectionString(),
-        OID::gen().toString(),
+        "tenantA",
         kDefaultStartMigrationTimestamp,
         ReadPreferenceSetting(ReadPreference::PrimaryOnly));
     initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
@@ -3888,187 +3865,6 @@ TEST_F(TenantMigrationRecipientServiceTest,
     ASSERT_EQ(stateDoc.getNumRestartsDueToDonorConnectionFailure(), 0);
     ASSERT_EQ(stateDoc.getNumRestartsDueToRecipientFailure(), 0);
     checkStateDocPersisted(opCtx.get(), instance.get());
-}
-
-TEST_F(TenantMigrationRecipientServiceTest,
-       TenantMigrationRecipientServiceSkipsMarkingExternalKeysAsGarbageCollectableIfAlreadyMarked) {
-
-    auto beforeMarkingForGarbageCollectionFp =
-        globalFailPointRegistry().find("fpAfterReceivingRecipientForgetMigration");
-    auto initialTimesEntered = beforeMarkingForGarbageCollectionFp->setMode(FailPoint::alwaysOn,
-                                                                            0,
-                                                                            BSON("action"
-                                                                                 << "hang"));
-
-    auto markingExternalKeysGarbageCollectionFp = globalFailPointRegistry().find(
-        "pauseTenantMigrationBeforeMarkingExternalKeysGarbageCollectable");
-    auto markingExternalKeysInitialTimesEntered =
-        markingExternalKeysGarbageCollectionFp->setMode(FailPoint::alwaysOn,
-                                                        0,
-                                                        BSON("action"
-                                                             << "hang"));
-
-    const UUID migrationUUID = UUID::gen();
-    auto opCtx = makeOperationContext();
-    auto initialStateDocument =
-        createInitialStateDocument(migrationUUID, MigrationProtocolEnum::kMultitenantMigrations);
-    initialStateDocument.setExpireAt(opCtx->getServiceContext()->getFastClockSource()->now());
-
-    // Create and start the instance.
-    auto instance = TenantMigrationRecipientService::Instance::getOrCreate(
-        opCtx.get(), _service, initialStateDocument.toBSON());
-    ASSERT(instance.get());
-    ASSERT_EQ(migrationUUID, instance->getMigrationUUID());
-
-    // When reaching this step it means we have passed the logic to mark external keys for garbage
-    // collection.
-    beforeMarkingForGarbageCollectionFp->waitForTimesEntered(initialTimesEntered + 1);
-    beforeMarkingForGarbageCollectionFp->setMode(FailPoint::off);
-
-    // We never reached that logic therefore the time entered should remain the same.
-    ASSERT_EQ(markingExternalKeysGarbageCollectionFp->setMode(FailPoint::off),
-              markingExternalKeysInitialTimesEntered);
-
-    // Wait for task completion.
-    ASSERT_EQ(ErrorCodes::TenantMigrationForgotten,
-              instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
-}
-
-TEST_F(TenantMigrationRecipientServiceTest,
-       RecipientDeletesExistingStateDocMarkedForGarbageCollection) {
-    FailPointEnableBlock createIndexesFailpointBlock("skipCreatingIndexDuringRebuildService");
-    stopFailPointEnableBlock fp("fpAfterPersistingTenantMigrationRecipientInstanceStateDoc");
-    auto beforeDeleteFp = globalFailPointRegistry().find(
-        "pauseTenantMigrationRecipientInstanceBeforeDeletingOldStateDoc");
-    FailPointEnableBlock skipRebuildFp("PrimaryOnlyServiceSkipRebuildingInstances");
-
-    auto initialTimesEntered = beforeDeleteFp->setMode(FailPoint::alwaysOn);
-    auto opCtx = makeOperationContext();
-
-    // Insert a state doc to simulate running a migration with an existing state doc NOT marked for
-    // garbage collection.
-    const std::string kTenantId = OID::gen().toString();
-    const std::string kConnectionString = "donor-rs/localhost:12345";
-    const UUID existingMigrationId = UUID::gen();
-    TenantMigrationRecipientDocument previousStateDoc(
-        existingMigrationId,
-        kConnectionString,
-        kTenantId,
-        kDefaultStartMigrationTimestamp,
-        ReadPreferenceSetting(ReadPreference::PrimaryOnly));
-    previousStateDoc.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
-    previousStateDoc.setRecipientCertificateForDonor(kRecipientPEMPayload);
-
-    // Starting a migration where the state is not 'kUninitialized' indicates that we are restarting
-    // from failover.
-    previousStateDoc.setState(TenantMigrationRecipientStateEnum::kStarted);
-    // Set the 'expireAt' field to indicate the migration is garbage collectable.
-    previousStateDoc.setExpireAt(opCtx->getServiceContext()->getFastClockSource()->now());
-
-    // Insert existing state document for the same tenant but different migration id.
-    uassertStatusOK(
-        tenantMigrationRecipientEntryHelpers::insertStateDoc(opCtx.get(), previousStateDoc));
-
-    // Create the tenant access blockers for the stateDoc with the associated tenantId and
-    // migrationId.
-    auto recipientMtab = std::make_shared<TenantMigrationRecipientAccessBlocker>(
-        opCtx->getServiceContext(), existingMigrationId);
-    TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
-        .add(kTenantId, recipientMtab);
-
-    const UUID migrationUUID = UUID::gen();
-    TenantMigrationRecipientDocument initialStateDocument(
-        migrationUUID,
-        kConnectionString,
-        kTenantId,
-        kDefaultStartMigrationTimestamp,
-        ReadPreferenceSetting(ReadPreference::PrimaryOnly, TagSet::primaryOnly()));
-    initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
-    initialStateDocument.setRecipientCertificateForDonor(kRecipientPEMPayload);
-
-    // Create and start the instance.
-    auto instance = TenantMigrationRecipientService::Instance::getOrCreate(
-        opCtx.get(), _service, initialStateDocument.toBSON());
-    ASSERT(instance.get());
-    ASSERT_EQ(migrationUUID, instance->getMigrationUUID());
-
-    // We block and wait right before the service deletes the previous state document.
-    beforeDeleteFp->waitForTimesEntered(initialTimesEntered + 1);
-
-    // Delete state doc while we are expecting to delete it ourselves.
-    auto deleted = uassertStatusOK(
-        tenantMigrationRecipientEntryHelpers::deleteStateDocIfMarkedAsGarbageCollectable(
-            opCtx.get(), kTenantId));
-
-    // Successfully deletes the old state document before the service deletes it itself.
-    ASSERT_TRUE(deleted);
-
-    beforeDeleteFp->setMode(FailPoint::off);
-
-    // Wait for task completion. We should not get an error since the state doc was already deleted.
-    ASSERT_EQ(stopFailPointErrorCode, instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_OK(instance->getForgetMigrationDurableFuture().getNoThrow());
-}
-
-TEST_F(TenantMigrationRecipientServiceTest, RecipientFailsDueToOperationConflict) {
-    FailPointEnableBlock createIndexesFailpointBlock("skipCreatingIndexDuringRebuildService");
-    stopFailPointEnableBlock fp("fpAfterPersistingTenantMigrationRecipientInstanceStateDoc");
-    FailPointEnableBlock skipRebuildFp("PrimaryOnlyServiceSkipRebuildingInstances");
-
-    // Insert a state doc to simulate running a migration with an existing state doc NOT marked for
-    // garbage collection.
-    const std::string kTenantId = OID::gen().toString();
-    const std::string kConnectionString = "donor-rs/localhost:12345";
-    const UUID existingMigrationId = UUID::gen();
-    TenantMigrationRecipientDocument previousStateDoc(
-        existingMigrationId,
-        kConnectionString,
-        kTenantId,
-        kDefaultStartMigrationTimestamp,
-        ReadPreferenceSetting(ReadPreference::PrimaryOnly));
-    previousStateDoc.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
-    previousStateDoc.setRecipientCertificateForDonor(kRecipientPEMPayload);
-
-    // Starting a migration where the state is not 'kUninitialized' indicates that we are restarting
-    // from failover.
-    previousStateDoc.setState(TenantMigrationRecipientStateEnum::kStarted);
-
-    auto opCtx = makeOperationContext();
-
-    // Insert existing state document for the same tenant but different migration id
-    uassertStatusOK(
-        tenantMigrationRecipientEntryHelpers::insertStateDoc(opCtx.get(), previousStateDoc));
-
-    // Create the tenant access blockers for the stateDoc with the associated tenantId and
-    // migrationId.
-    auto recipientMtab = std::make_shared<TenantMigrationRecipientAccessBlocker>(
-        opCtx->getServiceContext(), existingMigrationId);
-    TenantMigrationAccessBlockerRegistry::get(opCtx->getServiceContext())
-        .add(kTenantId, recipientMtab);
-
-    const UUID migrationUUID = UUID::gen();
-    TenantMigrationRecipientDocument initialStateDocument(
-        migrationUUID,
-        kConnectionString,
-        kTenantId,
-        kDefaultStartMigrationTimestamp,
-        ReadPreferenceSetting(ReadPreference::PrimaryOnly, TagSet::primaryOnly()));
-    initialStateDocument.setProtocol(MigrationProtocolEnum::kMultitenantMigrations);
-    initialStateDocument.setRecipientCertificateForDonor(kRecipientPEMPayload);
-
-    // Create and start the instance.
-    auto instance = TenantMigrationRecipientService::Instance::getOrCreate(
-        opCtx.get(), _service, initialStateDocument.toBSON());
-    ASSERT(instance.get());
-    ASSERT_EQ(migrationUUID, instance->getMigrationUUID());
-
-    // Since the previous state doc did not have expireAt set we will assert with
-    // ConflictingOperationInProgress.
-    ASSERT_EQ(ErrorCodes::ConflictingOperationInProgress,
-              instance->getDataSyncCompletionFuture().getNoThrow().code());
-    ASSERT_EQ(instance->getForgetMigrationDurableFuture().getNoThrow(),
-              ErrorCodes::ConflictingOperationInProgress);
 }
 
 #endif

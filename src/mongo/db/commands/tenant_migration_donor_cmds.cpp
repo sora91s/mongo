@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
@@ -37,9 +38,6 @@
 #include "mongo/db/repl/tenant_migration_access_blocker_util.h"
 #include "mongo/db/repl/tenant_migration_donor_service.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -64,7 +62,8 @@ public:
         Response typedRun(OperationContext* opCtx) {
             uassert(ErrorCodes::IllegalOperation,
                     "tenant migrations are not available on config servers",
-                    serverGlobalParams.clusterRole != ClusterRole::ConfigServer);
+                    serverGlobalParams.clusterRole == ClusterRole::None ||
+                        serverGlobalParams.clusterRole == ClusterRole::ShardServer);
 
             // (Generic FCV reference): This FCV reference should exist across LTS binary versions.
             uassert(
@@ -74,23 +73,16 @@ public:
 
             const auto& cmd = request();
             const auto migrationProtocol = cmd.getProtocol().value_or(kDefaultMigrationProtocol);
-            const auto& tenantId = cmd.getTenantId();
-            const auto& tenantIds = cmd.getTenantIds();
 
-            tenant_migration_util::protocolTenantIdCompatibilityCheck(migrationProtocol, tenantId);
-            tenant_migration_util::protocolTenantIdsCompatibilityCheck(migrationProtocol,
-                                                                       tenantIds);
+            uassertStatusOK(tenant_migration_util::protocolTenantIdCompatibilityCheck(
+                migrationProtocol, cmd.getTenantId().toString()));
             tenant_migration_util::protocolStorageOptionsCompatibilityCheck(opCtx,
                                                                             migrationProtocol);
-            tenant_migration_util::protocolReadPreferenceCompatibilityCheck(
-                opCtx, migrationProtocol, cmd.getReadPreference());
 
-            // tenantId will be set to empty string for the "shard merge" protocol.
             TenantMigrationDonorDocument stateDoc(cmd.getMigrationId(),
                                                   cmd.getRecipientConnectionString().toString(),
                                                   cmd.getReadPreference(),
-                                                  tenantId.value_or("").toString());
-            stateDoc.setTenantIds(tenantIds);
+                                                  cmd.getTenantId().toString());
 
             if (!repl::tenantMigrationDisableX509Auth) {
                 uassert(ErrorCodes::InvalidOptions,
@@ -122,6 +114,12 @@ public:
                     ->lookupServiceByName(TenantMigrationDonorService::kServiceName);
             auto donor = TenantMigrationDonorService::Instance::getOrCreate(
                 opCtx, donorService, stateDocBson);
+
+            // If the conflict is discovered here, it implies that there is an existing instance
+            // with the same migrationId but different options (e.g. tenantId or
+            // recipientConnectionString or readPreference).
+            uassertStatusOK(donor->checkIfOptionsConflict(stateDoc));
+
 
             // always ensure we wait for the initial state document to be inserted.
             donor->getInitialStateDocumentDurableFuture().get(opCtx);
@@ -180,11 +178,12 @@ public:
         void typedRun(OperationContext* opCtx) {
             uassert(ErrorCodes::IllegalOperation,
                     "tenant migrations are not available on config servers",
-                    serverGlobalParams.clusterRole != ClusterRole::ConfigServer);
+                    serverGlobalParams.clusterRole == ClusterRole::None ||
+                        serverGlobalParams.clusterRole == ClusterRole::ShardServer);
 
             const auto& cmd = request();
 
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
             auto donorService =
                 repl::PrimaryOnlyServiceRegistry::get(opCtx->getServiceContext())
                     ->lookupServiceByName(TenantMigrationDonorService::kServiceName);
@@ -196,7 +195,7 @@ public:
                     optionalDonor);
 
             // Retrieve the shared_ptr from boost::optional to improve readability
-            auto donorPtr = optionalDonor.value();
+            auto donorPtr = optionalDonor.get();
 
             // always ensure we wait for the initial state document to be inserted.
             donorPtr->getInitialStateDocumentDurableFuture().get(opCtx);
@@ -209,7 +208,7 @@ public:
                         durableState->state == TenantMigrationDonorStateEnum::kAborted);
 
             donorPtr->onReceiveDonorForgetMigration();
-            donorPtr->getForgetMigrationDurableFuture().get(opCtx);
+            donorPtr->getCompletionFuture().get(opCtx);
         }
 
     private:
@@ -254,7 +253,8 @@ public:
         void typedRun(OperationContext* opCtx) {
             uassert(ErrorCodes::IllegalOperation,
                     "tenant migrations are not available on config servers",
-                    serverGlobalParams.clusterRole != ClusterRole::ConfigServer);
+                    serverGlobalParams.clusterRole == ClusterRole::None ||
+                        serverGlobalParams.clusterRole == ClusterRole::ShardServer);
 
             const RequestType& cmd = request();
 
@@ -285,7 +285,7 @@ public:
             }
 
             // Retrieve the shared_ptr from boost::optional to improve readability
-            auto donorPtr = optionalDonor.value();
+            auto donorPtr = optionalDonor.get();
 
             donorPtr->onReceiveDonorAbortMigration();
             donorPtr->getDecisionFuture().get(opCtx);

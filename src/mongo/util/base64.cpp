@@ -37,26 +37,39 @@
 #include <cstdint>
 #include <iostream>
 
-namespace mongo::base64_detail {
+namespace mongo::base64 {
 namespace {
 
-template <typename Mode>
-bool valid(unsigned char x) {
-    static_assert(Mode::kDecodeTable.size() == 256, "Invalid decode table");
-    return Mode::kDecodeTable[x] != kInvalid;
+constexpr unsigned char kInvalid = ~0;
+
+constexpr std::size_t search(StringData table, int c) {
+    for (std::size_t i = 0; i < table.size(); ++i)
+        if (table[i] == c)
+            return i;
+    return kInvalid;
 }
 
-template <typename Mode, typename Writer>
+template <std::size_t... Cs>
+constexpr auto invertTable(StringData table, std::index_sequence<Cs...>) {
+    return std::array<unsigned char, sizeof...(Cs)>{
+        {static_cast<unsigned char>(search(table, Cs))...}};
+}
+
+constexpr StringData kEncodeTable =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"_sd;
+
+constexpr auto kDecodeTable = invertTable(kEncodeTable, std::make_index_sequence<256>{});
+
+bool valid(unsigned char x) {
+    return kDecodeTable[x] != kInvalid;
+}
+
+template <typename Writer>
 void encodeImpl(Writer&& write, StringData in) {
-    static_assert(Mode::kEncodeTable.size() == 64, "Invalid encoding table");
     const char* data = in.rawData();
     std::size_t size = in.size();
-    auto readOctet = [&data] {
-        return static_cast<std::uint8_t>(*data++);
-    };
-    auto encodeSextet = [](unsigned x) {
-        return Mode::kEncodeTable[x & 0b11'1111];
-    };
+    auto readOctet = [&data] { return static_cast<std::uint8_t>(*data++); };
+    auto encodeSextet = [](unsigned x) { return kEncodeTable[x & 0b11'1111]; };
 
     std::array<char, 512> buf;
     std::array<char, 512>::iterator p;
@@ -89,9 +102,7 @@ void encodeImpl(Writer&& write, StringData in) {
             *p++ = encodeSextet(accum >> (6 * (3 - 0)));
             *p++ = encodeSextet(accum >> (6 * (3 - 1)));
             *p++ = encodeSextet(accum >> (6 * (3 - 2)));
-            if (Mode::kTerminatorRequired) {
-                *p++ = '=';
-            }
+            *p++ = '=';
             write(buf.data(), p - buf.begin());
             break;
         case 1:
@@ -100,10 +111,8 @@ void encodeImpl(Writer&& write, StringData in) {
             accum |= readOctet() << (8 * (2 - 0));
             *p++ = encodeSextet(accum >> (6 * (3 - 0)));
             *p++ = encodeSextet(accum >> (6 * (3 - 1)));
-            if (Mode::kTerminatorRequired) {
-                *p++ = '=';
-                *p++ = '=';
-            }
+            *p++ = '=';
+            *p++ = '=';
             write(buf.data(), p - buf.begin());
             break;
         case 0:
@@ -111,25 +120,16 @@ void encodeImpl(Writer&& write, StringData in) {
     }
 }
 
-template <typename Mode, typename Writer>
+template <typename Writer>
 void decodeImpl(const Writer& write, StringData in) {
-    static_assert(Mode::kDecodeTable.size() == 256, "Invalid decode table");
     const char* data = in.rawData();
     std::size_t size = in.size();
-    if (size == 0) {
+    if (size == 0)
         return;
-    }
-
-    const std::size_t lastBlockSize = (size % 4) ? (size % 4) : 4;
-    constexpr std::size_t kMinLastBlockSize = Mode::kTerminatorRequired ? 4 : 2;
-    uassert(10270, "invalid base64", lastBlockSize >= kMinLastBlockSize);
+    uassert(10270, "invalid base64", size % 4 == 0);
 
     auto decodeSextet = [](char x) {
-        static_assert(std::numeric_limits<unsigned char>::min() == 0,
-                      "Unexpected range for unsigned char");
-        static_assert(std::numeric_limits<unsigned char>::max() == 255,
-                      "Unexpected range for unsigned char");
-        auto c = Mode::kDecodeTable[static_cast<unsigned char>(x)];
+        auto c = kDecodeTable[static_cast<unsigned char>(x)];
         uassert(40537, "Invalid base64 character", c != kInvalid);
         return c;
     };
@@ -139,7 +139,7 @@ void decodeImpl(const Writer& write, StringData in) {
     std::uint32_t accum;
 
     // All but the final group to avoid '='-related conditionals in the bulk path.
-    for (std::size_t groups = (size - lastBlockSize) / 4; groups;) {
+    for (std::size_t groups = size / 4 - 1; groups;) {
         std::size_t chunkGroups = std::min(groups, buf.size() / 3);
         groups -= chunkGroups;
         p = buf.begin();
@@ -159,11 +159,10 @@ void decodeImpl(const Writer& write, StringData in) {
     {
         // Final group might have some equal signs
         std::size_t nbits = 24;
-        if ((lastBlockSize < 4) || (data[3] == '=')) {
+        if (data[3] == '=') {
             nbits -= 8;
-            if ((lastBlockSize < 3) || (data[2] == '=')) {
+            if (data[2] == '=')
                 nbits -= 8;
-            }
         }
         accum = 0;
         accum |= decodeSextet(*data++) << (6 * (3 - 0));
@@ -186,46 +185,40 @@ void decodeImpl(const Writer& write, StringData in) {
 
 }  // namespace
 
-template <typename Mode>
-std::string Base64Impl<Mode>::encode(StringData in) {
+std::string encode(StringData in) {
     std::string r;
     r.reserve(encodedLength(in.size()));
-    encodeImpl<Mode>([&](const char* s, std::size_t n) { r.append(s, s + n); }, in);
+    encodeImpl([&](const char* s, std::size_t n) { r.append(s, s + n); }, in);
     return r;
 }
 
-template <typename Mode>
-std::string Base64Impl<Mode>::decode(StringData in) {
+std::string decode(StringData in) {
     std::string r;
     r.reserve(in.size() / 4 * 3);
-    decodeImpl<Mode>([&](const char* s, std::size_t n) { r.append(s, s + n); }, in);
+    decodeImpl([&](const char* s, std::size_t n) { r.append(s, s + n); }, in);
     return r;
 }
 
-template <typename Mode>
-void Base64Impl<Mode>::encode(std::stringstream& ss, StringData in) {
-    encodeImpl<Mode>([&](const char* s, std::size_t n) { ss.write(s, n); }, in);
+void encode(std::stringstream& ss, StringData in) {
+    encodeImpl([&](const char* s, std::size_t n) { ss.write(s, n); }, in);
 }
 
-template <typename Mode>
-void Base64Impl<Mode>::decode(std::stringstream& ss, StringData in) {
-    decodeImpl<Mode>([&](const char* s, std::size_t n) { ss.write(s, n); }, in);
+void decode(std::stringstream& ss, StringData in) {
+    decodeImpl([&](const char* s, std::size_t n) { ss.write(s, n); }, in);
 }
 
-template <typename Mode>
-void Base64Impl<Mode>::encode(fmt::memory_buffer& buffer, StringData in) {
+void encode(fmt::memory_buffer& buffer, StringData in) {
     buffer.reserve(buffer.size() + encodedLength(in.size()));
-    encodeImpl<Mode>([&](const char* s, std::size_t n) { buffer.append(s, s + n); }, in);
+    encodeImpl([&](const char* s, std::size_t n) { buffer.append(s, s + n); }, in);
 }
 
-template <typename Mode>
-void Base64Impl<Mode>::decode(fmt::memory_buffer& buffer, StringData in) {
+void decode(fmt::memory_buffer& buffer, StringData in) {
     buffer.reserve(buffer.size() + in.size() / 4 * 3);
-    decodeImpl<Mode>([&](const char* s, std::size_t n) { buffer.append(s, s + n); }, in);
+    decodeImpl([&](const char* s, std::size_t n) { buffer.append(s, s + n); }, in);
 }
 
-template <>
-bool Base64Impl<Standard>::validate(StringData s) {
+
+bool validate(StringData s) {
     if (s.size() % 4) {
         return false;
     }
@@ -233,46 +226,13 @@ bool Base64Impl<Standard>::validate(StringData s) {
         return true;
     }
 
-    auto const unwindTerminator = [](auto it) {
-        return (*(it - 1) == '=') ? (it - 1) : it;
-    };
-    auto const e = unwindTerminator(unwindTerminator(std::end(s)));
+    using std::begin;
+    using std::end;
 
-    return e == std::find_if(std::begin(s), e, [](const char ch) { return !valid<Standard>(ch); });
+    auto const unwindTerminator = [](auto it) { return (*(it - 1) == '=') ? (it - 1) : it; };
+    auto const e = unwindTerminator(unwindTerminator(end(s)));
+
+    return e == std::find_if(begin(s), e, [](const char ch) { return !valid(ch); });
 }
 
-template <>
-bool Base64Impl<URL>::validate(StringData s) {
-    if (s.empty()) {
-        return true;
-    }
-
-    auto const unwindTerminator = [](auto it) {
-        return (*(it - 1) == '=') ? (it - 1) : it;
-    };
-    auto e = std::end(s);
-
-    switch (s.size() % 4) {
-        case 1:
-            // Invalid length for a Base64URL block.
-            return false;
-        case 2:
-            // Valid length when no terminators present.
-            break;
-        case 3:
-            // Valid with one optional terminator.
-            e = unwindTerminator(e);
-            break;
-        case 0:
-            // Valid with up to two optional terminators.
-            e = unwindTerminator(unwindTerminator(e));
-            break;
-    }
-
-    return e == std::find_if(std::begin(s), e, [](const char ch) { return !valid<URL>(ch); });
-}
-
-template class Base64Impl<Standard>;
-template class Base64Impl<URL>;
-
-}  // namespace mongo::base64_detail
+}  // namespace mongo::base64

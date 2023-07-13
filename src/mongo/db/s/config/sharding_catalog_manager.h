@@ -33,13 +33,12 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/logical_session_cache.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/optime_with.h"
-#include "mongo/db/session/logical_session_cache.h"
-#include "mongo/db/transaction/transaction_api.h"
+#include "mongo/db/transaction_api.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/platform/mutex.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_database_gen.h"
@@ -89,15 +88,8 @@ class ShardingCatalogManager {
 
 public:
     ShardingCatalogManager(ServiceContext* serviceContext,
-                           std::unique_ptr<executor::TaskExecutor> addShardExecutor,
-                           std::shared_ptr<Shard> localConfigShard,
-                           std::unique_ptr<ShardingCatalogClient> localCatalogClient);
+                           std::unique_ptr<executor::TaskExecutor> addShardExecutor);
     ~ShardingCatalogManager();
-
-    struct ShardAndCollectionPlacementVersions {
-        ChunkVersion shardPlacementVersion;
-        ChunkVersion collectionPlacementVersion;
-    };
 
     /**
      * Instantiates an instance of the sharding catalog manager and installs it on the specified
@@ -105,9 +97,7 @@ public:
      * is starting.
      */
     static void create(ServiceContext* serviceContext,
-                       std::unique_ptr<executor::TaskExecutor> addShardExecutor,
-                       std::shared_ptr<Shard> localConfigShard,
-                       std::unique_ptr<ShardingCatalogClient> localCatalogClient);
+                       std::unique_ptr<executor::TaskExecutor> addShardExecutor);
 
     /**
      * Retrieves the per-service instance of the ShardingCatalogManager. This instance is only
@@ -236,19 +226,12 @@ public:
                                                         TxnNumber txnNumber,
                                                         const BSONObj& query);
 
-    /**
-     * Find a single document. Returns an empty BSONObj if no matching document is found.
-     */
-    BSONObj findOneConfigDocument(OperationContext* opCtx,
-                                  const NamespaceString& nss,
-                                  const BSONObj& query);
-
     //
     // Chunk Operations
     //
 
     /**
-     * Bumps the major component of the placement version for each 'shardIds'.
+     * Bumps the major component of the shard version for each 'shardIds'.
      */
     void bumpMajorVersionOneChunkPerShard(OperationContext* opCtx,
                                           const NamespaceString& nss,
@@ -259,72 +242,55 @@ public:
      * Updates metadata in the config.chunks collection to show the given chunk as split into
      * smaller chunks at the specified split points.
      *
-     * Returns a ShardAndCollectionPlacementVersions object with the newly produced chunk versions
-     * after the migration:
-     *   - shardPlacementVersion - The new placement version of the source shard
-     *   - collectionPlacementVersion - The new collection placement version after the commit
+     * Returns a BSON object with the newly produced chunk versions after the migration:
+     *   - shardVersion - The new shard version of the source shard
+     *   - collectionVersion - The new collection version after the commit
      */
-    StatusWith<ShardAndCollectionPlacementVersions> commitChunkSplit(
-        OperationContext* opCtx,
-        const NamespaceString& nss,
-        const OID& requestEpoch,
-        const boost::optional<Timestamp>& requestTimestamp,
-        const ChunkRange& range,
-        const std::vector<BSONObj>& splitPoints,
-        const std::string& shardName,
-        bool fromChunkSplitter);
+    StatusWith<BSONObj> commitChunkSplit(OperationContext* opCtx,
+                                         const NamespaceString& nss,
+                                         const OID& requestEpoch,
+                                         const boost::optional<Timestamp>& requestTimestamp,
+                                         const ChunkRange& range,
+                                         const std::vector<BSONObj>& splitPoints,
+                                         const std::string& shardName,
+                                         bool fromChunkSplitter);
 
     /**
      * Updates metadata in the config.chunks collection so the chunks within the specified key range
      * are seen merged into a single larger chunk.
+     * If 'validAfter' is not set, this means the commit request came from an older server version,
+     * which is not history-aware.
      *
-     * Returns a ShardAndCollectionPlacementVersions object with the newly produced chunk versions
-     * after the migration:
-     *   - shardPlacementVersion - The new placement version of the source shard
-     *   - collectionPlacementVersion - The new collection placement version after the commit
+     * Returns a BSON object with the newly produced chunk versions after the migration:
+     *   - shardVersion - The new shard version of the source shard
+     *   - collectionVersion - The new collection version after the commit
      */
-    StatusWith<ShardAndCollectionPlacementVersions> commitChunksMerge(
-        OperationContext* opCtx,
-        const NamespaceString& nss,
-        const boost::optional<OID>& epoch,
-        const boost::optional<Timestamp>& timestamp,
-        const UUID& requestCollectionUUID,
-        const ChunkRange& chunkRange,
-        const ShardId& shardId);
-
-    /**
-     * Updates metadata in the config.chunks collection so that all mergeable chunks belonging to
-     * the specified shard for the given collection are merged within one transaction.
-     *
-     * Returns a ShardAndCollectionPlacementVersions object containing the new collection placement
-     * version produced by the merge(s) and the total number of chunks that were merged.
-     */
-    StatusWith<std::pair<ShardingCatalogManager::ShardAndCollectionPlacementVersions, int>>
-    commitMergeAllChunksOnShard(OperationContext* opCtx,
-                                const NamespaceString& nss,
-                                const ShardId& shardId,
-                                int maxNumberOfChunksToMerge = INT_MAX);
-
+    StatusWith<BSONObj> commitChunksMerge(OperationContext* opCtx,
+                                          const NamespaceString& nss,
+                                          const boost::optional<OID>& epoch,
+                                          const boost::optional<Timestamp>& timestamp,
+                                          const UUID& requestCollectionUUID,
+                                          const ChunkRange& chunkRange,
+                                          const ShardId& shardId,
+                                          const boost::optional<Timestamp>& validAfter);
 
     /**
      * Updates metadata in config.chunks collection to show the given chunk in its new shard.
      * If 'validAfter' is not set, this means the commit request came from an older server version,
      * which is not history-aware.
      *
-     * Returns a ShardAndCollectionPlacementVersions object with the newly produced chunk versions
-     * after the migration:
-     *   - shardPlacementVersion - The new placement version of the source shard
-     *   - collectionPlacementVersion - The new collection placement version after the commit
+     * Returns a BSON object with the newly produced chunk versions after the migration:
+     *   - shardVersion - The new shard version of the source shard
+     *   - collectionVersion - The new collection version after the commit
      */
-    StatusWith<ShardAndCollectionPlacementVersions> commitChunkMigration(
-        OperationContext* opCtx,
-        const NamespaceString& nss,
-        const ChunkType& migratedChunk,
-        const OID& collectionEpoch,
-        const Timestamp& collectionTimestamp,
-        const ShardId& fromShard,
-        const ShardId& toShard,
-        const Timestamp& validAfter);
+    StatusWith<BSONObj> commitChunkMigration(OperationContext* opCtx,
+                                             const NamespaceString& nss,
+                                             const ChunkType& migratedChunk,
+                                             const OID& collectionEpoch,
+                                             const Timestamp& collectionTimestamp,
+                                             const ShardId& fromShard,
+                                             const ShardId& toShard,
+                                             const boost::optional<Timestamp>& validAfter);
 
     /**
      * Removes the jumbo flag from the specified chunk.
@@ -335,7 +301,7 @@ public:
                         const ChunkRange& chunk);
     /**
      * If a chunk matching 'requestedChunk' exists, bumps the chunk's version to one greater than
-     * the current collection placement version.
+     * the current collection version.
      *
      * 'nss' and 'collUUID' were added to the ConfigsvrEnsureChunkVersionIsGreaterThanCommand
      * in 5.0. They are optional in 5.0 because the request may come from a previous version (4.4)
@@ -348,29 +314,29 @@ public:
                                          const ChunkVersion& version);
 
     /**
-     * In a single transaction, effectively bumps the placement version for each shard in the
-     * collection to be the current collection placement version's major version + 1 inside an
-     * already-running transaction.
+     * In a single transaction, effectively bumps the shard version for each shard in the collection
+     * to be the current collection version's major version + 1 inside an already-running
+     * transaction.
      */
-    void bumpCollectionPlacementVersionAndChangeMetadataInTxn(
+    void bumpCollectionVersionAndChangeMetadataInTxn(
         OperationContext* opCtx,
         const NamespaceString& nss,
         unique_function<void(OperationContext*, TxnNumber)> changeMetadataFunc);
-    void bumpCollectionPlacementVersionAndChangeMetadataInTxn(
+    void bumpCollectionVersionAndChangeMetadataInTxn(
         OperationContext* opCtx,
         const NamespaceString& nss,
         unique_function<void(OperationContext*, TxnNumber)> changeMetadataFunc,
         const WriteConcernOptions& writeConcern);
 
     /**
-     * Same as bumpCollectionPlacementVersionAndChangeMetadataInTxn, but bumps the placement version
-     * for several collections in a single transaction.
+     * Same as bumpCollectionVersionAndChangeMetadataInTxn, but bumps the version for several
+     * collections in a single transaction.
      */
-    void bumpMultipleCollectionPlacementVersionsAndChangeMetadataInTxn(
+    void bumpMultipleCollectionVersionsAndChangeMetadataInTxn(
         OperationContext* opCtx,
         const std::vector<NamespaceString>& collNames,
         unique_function<void(OperationContext*, TxnNumber)> changeMetadataFunc);
-    void bumpMultipleCollectionPlacementVersionsAndChangeMetadataInTxn(
+    void bumpMultipleCollectionVersionsAndChangeMetadataInTxn(
         OperationContext* opCtx,
         const std::vector<NamespaceString>& collNames,
         unique_function<void(OperationContext*, TxnNumber)> changeMetadataFunc,
@@ -382,8 +348,7 @@ public:
      */
     void splitOrMarkJumbo(OperationContext* opCtx,
                           const NamespaceString& nss,
-                          const BSONObj& minKey,
-                          boost::optional<int64_t> optMaxChunkSizeBytes);
+                          const BSONObj& minKey);
 
     /**
      * In a transaction, sets the 'allowMigrations' to the requested state and bumps the collection
@@ -424,18 +389,21 @@ public:
      * exists, and if not, creates a new one that matches these prerequisites. If a database already
      * exists and matches all the prerequisites returns success, otherwise throws NamespaceNotFound.
      */
-    DatabaseType createDatabase(OperationContext* opCtx,
-                                StringData dbName,
-                                const boost::optional<ShardId>& optPrimaryShard);
+    DatabaseType createDatabase(
+        OperationContext* opCtx,
+        StringData dbName,
+        const boost::optional<ShardId>& optPrimaryShard,
+        // # TODO SERVER-63983: remove enableSharding paramter when 6.0 becomes lastLTS
+        bool enableSharding = false);
 
     /**
      * Updates the metadata in config.databases collection with the new primary shard for the given
      * database. This also advances the database's lastmod.
      */
     void commitMovePrimary(OperationContext* opCtx,
-                           const DatabaseName& dbName,
+                           const StringData& dbName,
                            const DatabaseVersion& expectedDbVersion,
-                           const ShardId& toShardId);
+                           const ShardId& toShard);
 
     //
     // Collection Operations
@@ -451,20 +419,32 @@ public:
                                   const NamespaceString& nss,
                                   const ShardKeyPattern& newShardKey);
 
+    /**
+     * Runs a replacement update on config.collections for the collection entry for 'nss' in a
+     * transaction with 'txnNumber'. 'coll' is used as the replacement doc.
+     *
+     * Throws exception on errors.
+     */
+    void updateShardingCatalogEntryForCollectionInTxn(OperationContext* opCtx,
+                                                      const NamespaceString& nss,
+                                                      const CollectionType& coll,
+                                                      bool upsert,
+                                                      TxnNumber txnNumber);
+
+
     void configureCollectionBalancing(OperationContext* opCtx,
                                       const NamespaceString& nss,
                                       boost::optional<int32_t> chunkSizeMB,
                                       boost::optional<bool> defragmentCollection,
-                                      boost::optional<bool> enableAutoSplitter,
-                                      boost::optional<bool> enableAutoMerger);
+                                      boost::optional<bool> enableAutoSplitter);
 
     /**
-     * Updates the bucketing parameters of a time-series collection. Also bumps the placement
-     * versions for all shards.
+     * Updates the granularity value of a time-series collection. Also bumps the shard versions for
+     * all shards.
      */
-    void updateTimeSeriesBucketingParameters(OperationContext* opCtx,
-                                             const NamespaceString& nss,
-                                             const CollModTimeseries& timeseriesParameters);
+    void updateTimeSeriesGranularity(OperationContext* opCtx,
+                                     const NamespaceString& nss,
+                                     BucketGranularityEnum granularity);
 
     //
     // Shard Operations
@@ -479,19 +459,15 @@ public:
      * nullptr, a name will be automatically generated; if not nullptr, it cannot
      *         contain the empty string.
      * 'shardConnectionString' is the complete connection string of the shard being added.
+     * 'maxSize' is the optional space quota in bytes. Zero means there's no limitation to space
+     * usage.
      *
      * On success returns the name of the newly added shard.
      */
     StatusWith<std::string> addShard(OperationContext* opCtx,
                                      const std::string* shardProposedName,
                                      const ConnectionString& shardConnectionString,
-                                     bool isCatalogShard);
-
-    /**
-     * Inserts the config server shard identity document using a sentinel shard id. Requires the
-     * config server's ShardingState has not already been enabled. Throws on errors.
-     */
-    void installConfigShardIdentityDocument(OperationContext* opCtx);
+                                     long long maxSize);
 
     /**
      * Tries to remove a shard. To completely remove a shard from a sharded cluster,
@@ -557,37 +533,6 @@ public:
                               bool force,
                               const Timestamp& validAfter);
 
-    /**
-     * Creates config.settings (if needed) and adds a schema to the collection.
-     */
-    Status upgradeConfigSettings(OperationContext* opCtx);
-
-    /**
-     * Set `onCurrentShardSince` to the same value as `history[0].validAfter` for all config.chunks
-     * entries.
-     * Only called on the FCV upgrade
-     * TODO (SERVER-72791): Remove the method once FCV 7.0 becomes last-lts.
-     */
-    Status setOnCurrentShardSinceFieldOnChunks(OperationContext* opCtx);
-
-    /**
-     * Returns a catalog client that will always run commands locally. Can only be used on a
-     * config server node.
-     */
-    ShardingCatalogClient* localCatalogClient();
-
-    /**
-     * Initializes the config.placementHistory collection:
-        - one entry per collection and its placement information at the current timestamp
-        - one entry per database with the current primary shard at the current timestamp
-     */
-    void initializePlacementHistory(OperationContext* opCtx);
-
-    /**
-     * Returns the oldest timestamp that is supported for history preservation.
-     */
-    static Timestamp getOldestTimestampSupportedForSnapshotHistory(OperationContext* opCtx);
-
 private:
     /**
      * Performs the necessary checks for version compatibility and creates a new config.version
@@ -599,11 +544,6 @@ private:
      * Builds all the expected indexes on the config server.
      */
     Status _initConfigIndexes(OperationContext* opCtx);
-
-    /**
-     * Creates config.settings (if needed) and adds a schema to the collection.
-     */
-    Status _initConfigSettings(OperationContext* opCtx);
 
     /**
      * Ensure that config.collections exists upon configsvr startup
@@ -623,7 +563,8 @@ private:
     StatusWith<boost::optional<ShardType>> _checkIfShardExists(
         OperationContext* opCtx,
         const ConnectionString& propsedShardConnectionString,
-        const std::string* shardProposedName);
+        const std::string* shardProposedName,
+        long long maxSize);
 
     /**
      * Validates that the specified endpoint can serve as a shard server. In particular, this
@@ -644,8 +585,7 @@ private:
     StatusWith<ShardType> _validateHostAsShard(OperationContext* opCtx,
                                                std::shared_ptr<RemoteCommandTargeter> targeter,
                                                const std::string* shardProposedName,
-                                               const ConnectionString& connectionString,
-                                               bool isCatalogShard);
+                                               const ConnectionString& connectionString);
 
     /**
      * Drops the sessions collection on the specified host.
@@ -710,85 +650,28 @@ private:
      * Given a vector of cluster parameters in disk format, sets them locally.
      */
     void _setClusterParametersLocally(OperationContext* opCtx,
-                                      const boost::optional<TenantId>& tenantId,
                                       const std::vector<BSONObj>& parameters);
 
     /**
      * Gets the cluster parameters set on the shard and then saves them locally.
      */
-    void _pullClusterParametersFromNewShard(OperationContext* opCtx, Shard* shard);
+    void _pullClusterParametersFromNewShard(OperationContext* opCtx,
+                                            RemoteCommandTargeter* targeter);
 
     /**
-     * Remove all existing cluster parameters set on the shard.
+     * Clean all possible leftover cluster parameters on the new added shard and sets the ones
+     * stored on the config server.
      */
-    void _removeAllClusterParametersFromShard(OperationContext* opCtx, Shard* shard);
-
-    /**
-     * Remove all existing cluster parameters on the new added shard and sets the ones stored on the
-     * config server.
-     */
-    void _pushClusterParametersToNewShard(
-        OperationContext* opCtx,
-        Shard* shard,
-        const TenantIdMap<std::vector<BSONObj>>& allClusterParameters);
+    void _pushClusterParametersToNewShard(OperationContext* opCtx,
+                                          RemoteCommandTargeter* targeter,
+                                          const std::vector<BSONObj>& clusterParameters);
 
     /**
      * Determines whether to absorb the cluster parameters on the newly added shard (if we're
      * converting from a replica set to a sharded cluster) or set the cluster parameters stored on
      * the config server in the newly added shard.
      */
-    void _standardizeClusterParameters(OperationContext* opCtx, Shard* shard);
-
-
-    /**
-     * Execute the migration chunk updates using the internal transaction API.
-     */
-    void _commitChunkMigrationInTransaction(
-        OperationContext* opCtx,
-        const NamespaceString& nss,
-        std::shared_ptr<const ChunkType> migratedChunk,
-        std::shared_ptr<const std::vector<ChunkType>> splitChunks,
-        std::shared_ptr<ChunkType> controlChunk,
-        const ShardId& donorShardId);
-    /**
-     * Use the internal transaction API to remove a shard.
-     */
-    void _removeShardInTransaction(OperationContext* opCtx,
-                                   const std::string& removedShardName,
-                                   const std::string& controlShardName,
-                                   const Timestamp& newTopologyTime);
-
-    /**
-     * Execute the merge chunk updates using the internal transaction API.
-     */
-    void _mergeChunksInTransaction(OperationContext* opCtx,
-                                   const NamespaceString& nss,
-                                   const UUID& collectionUUID,
-                                   const ChunkVersion& mergeVersion,
-                                   const Timestamp& validAfter,
-                                   const ChunkRange& chunkRange,
-                                   const ShardId& shardId,
-                                   std::shared_ptr<std::vector<ChunkType>> chunksToMerge);
-
-    struct SplitChunkInTransactionResult {
-        SplitChunkInTransactionResult(const ChunkVersion& currentMaxVersion_,
-                                      std::shared_ptr<std::vector<ChunkType>> newChunks_)
-            : currentMaxVersion(currentMaxVersion_), newChunks(newChunks_) {}
-
-        ChunkVersion currentMaxVersion;
-        std::shared_ptr<std::vector<ChunkType>> newChunks;
-    };
-
-    /**
-     * Execute the split chunk operations using the internal transaction API.
-     */
-    SplitChunkInTransactionResult _splitChunkInTransaction(OperationContext* opCtx,
-                                                           const NamespaceString& nss,
-                                                           const ChunkRange& range,
-                                                           const std::string& shardName,
-                                                           const ChunkType& origChunk,
-                                                           const ChunkVersion& collPlacementVersion,
-                                                           const std::vector<BSONObj>& splitPoints);
+    void _standardizeClusterParameters(OperationContext* opCtx, RemoteCommandTargeter* targeter);
 
     // The owning service context
     ServiceContext* const _serviceContext;
@@ -797,10 +680,6 @@ private:
     // added as shards. Does not have any connection hook set on it, thus it can be used to talk to
     // servers that are not yet in the ShardRegistry.
     const std::unique_ptr<executor::TaskExecutor> _executorForAddShard;
-
-    // A ShardLocal and ShardingCatalogClient with a ShardLocal used for local connections.
-    const std::shared_ptr<Shard> _localConfigShard;
-    const std::unique_ptr<ShardingCatalogClient> _localCatalogClient;
 
     //
     // All member variables are labeled with one of the following codes indicating the

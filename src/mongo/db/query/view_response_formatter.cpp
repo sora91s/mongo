@@ -45,9 +45,8 @@ const char ViewResponseFormatter::kOkField[] = "ok";
 ViewResponseFormatter::ViewResponseFormatter(BSONObj aggregationResponse)
     : _response(std::move(aggregationResponse)) {}
 
-Status ViewResponseFormatter::appendAsCountResponse(BSONObjBuilder* resultBuilder,
-                                                    boost::optional<TenantId> tenantId) {
-    auto cursorResponse = CursorResponse::parseFromBSON(_response, nullptr, tenantId);
+Status ViewResponseFormatter::appendAsCountResponse(BSONObjBuilder* resultBuilder) {
+    auto cursorResponse = CursorResponse::parseFromBSON(_response);
     if (!cursorResponse.isOK())
         return cursorResponse.getStatus();
 
@@ -64,9 +63,8 @@ Status ViewResponseFormatter::appendAsCountResponse(BSONObjBuilder* resultBuilde
     return Status::OK();
 }
 
-Status ViewResponseFormatter::appendAsDistinctResponse(BSONObjBuilder* resultBuilder,
-                                                       boost::optional<TenantId> tenantId) {
-    auto cursorResponse = CursorResponse::parseFromBSON(_response, nullptr, tenantId);
+Status ViewResponseFormatter::appendAsDistinctResponse(BSONObjBuilder* resultBuilder) {
+    auto cursorResponse = CursorResponse::parseFromBSON(_response);
     if (!cursorResponse.isOK())
         return cursorResponse.getStatus();
 

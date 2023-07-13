@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -35,62 +36,48 @@
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo::update_oplog_entry {
 namespace {
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWithVersionField,
-                 "Tripwire assertion.*6448500") {
+TEST(UpdateOplogSerializationTest, ReadV1EntryWithVersionField) {
     auto setField = BSON("a" << 1 << "b" << 2);
     BSONObj o(BSON("$v" << 1 << "$set" << setField));
 
-    extractNewValueForField(o, "a");
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "a"), setField["a"]);
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "b"), setField["b"]);
+
+    ASSERT(isFieldRemovedByUpdate(o, "a") == FieldRemovedStatus::kFieldNotRemoved);
+    ASSERT(isFieldRemovedByUpdate(o, "z") == FieldRemovedStatus::kFieldNotRemoved);
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWithoutVersionField_NotSupported1,
-                 "Tripwire assertion.*6448500") {
+TEST(UpdateOplogSerializationTest, ReadV1EntryWithoutVersionField) {
     auto setField = BSON("a" << 1 << "b" << 2);
     BSONObj o(BSON("$set" << setField));
 
-    extractNewValueForField(o, "a");
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "a"), setField["a"]);
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "b"), setField["b"]);
+
+    ASSERT(isFieldRemovedByUpdate(o, "a") == FieldRemovedStatus::kFieldNotRemoved);
+    ASSERT(isFieldRemovedByUpdate(o, "z") == FieldRemovedStatus::kFieldNotRemoved);
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWithoutVersionField_NotSupported2,
-                 "Tripwire assertion.*6448500") {
-    auto setField = BSON("a" << 1 << "b" << 2);
-    BSONObj o(BSON("$set" << setField));
-
-    isFieldRemovedByUpdate(o, "a");
-}
-
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWithSetAndUnset_NotSupported1,
-                 "Tripwire assertion.*6448500") {
+TEST(UpdateOplogSerializationTest, ReadV1EntryWithSetAndUnset) {
     auto setField = BSON("a" << 1 << "b" << 2);
     auto unsetField = BSON("c" << true << "d" << true);
     BSONObj o(BSON("$set" << setField << "$unset" << unsetField));
 
-    extractNewValueForField(o, "a");
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "a"), setField["a"]);
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "b"), setField["b"]);
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "c"), BSONElement());
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "d"), BSONElement());
+
+    ASSERT(isFieldRemovedByUpdate(o, "a") == FieldRemovedStatus::kFieldNotRemoved);
+    ASSERT(isFieldRemovedByUpdate(o, "b") == FieldRemovedStatus::kFieldNotRemoved);
+    ASSERT(isFieldRemovedByUpdate(o, "c") == FieldRemovedStatus::kFieldRemoved);
+    ASSERT(isFieldRemovedByUpdate(o, "d") == FieldRemovedStatus::kFieldRemoved);
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWithSetAndUnset_NotSupported2,
-                 "Tripwire assertion.*6448500") {
-    auto setField = BSON("a" << 1 << "b" << 2);
-    auto unsetField = BSON("c" << true << "d" << true);
-    BSONObj o(BSON("$set" << setField << "$unset" << unsetField));
-
-    isFieldRemovedByUpdate(o, "a");
-}
-
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWhichIncludesDottedPath_NotSupported1,
-                 "Tripwire assertion.*6448500") {
+TEST(UpdateOplogSerializationTest, ReadV1EntryWhichIncludesDottedPath) {
     // While our function for getting modified fields only supports top-level fields,
     // there should be no problem if the oplog entry contains modifications to
     // dotted paths.
@@ -99,21 +86,12 @@ DEATH_TEST_REGEX(UpdateOplogSerializationTest,
     auto unsetField = BSON("d.e.f" << true << "y" << true);
     BSONObj o(BSON("$set" << setField << "$unset" << unsetField));
 
-    extractNewValueForField(o, "x");
-}
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "x"), setField["x"]);
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "y"), BSONElement());
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWhichIncludesDottedPath_NotSupported2,
-                 "Tripwire assertion.*6448500") {
-    // While our function for getting modified fields only supports top-level fields,
-    // there should be no problem if the oplog entry contains modifications to
-    // dotted paths.
-
-    auto setField = BSON("a.b.c" << 1 << "x" << 2);
-    auto unsetField = BSON("d.e.f" << true << "y" << true);
-    BSONObj o(BSON("$set" << setField << "$unset" << unsetField));
-
-    isFieldRemovedByUpdate(o, "x");
+    ASSERT(isFieldRemovedByUpdate(o, "x") == FieldRemovedStatus::kFieldNotRemoved);
+    ASSERT(isFieldRemovedByUpdate(o, "y") == FieldRemovedStatus::kFieldRemoved);
+    ASSERT(isFieldRemovedByUpdate(o, "z") == FieldRemovedStatus::kFieldNotRemoved);
 }
 
 TEST(UpdateOplogSerializationTest, ReadV2Entry) {
@@ -134,22 +112,12 @@ TEST(UpdateOplogSerializationTest, ReadV2Entry) {
     ASSERT(isFieldRemovedByUpdate(o, "nonexistentField") == FieldRemovedStatus::kFieldNotRemoved);
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWithSubfieldModified_NotSupported1,
-                 "Tripwire assertion.*6448500") {
+TEST(UpdateOplogSerializationTest, ReadV1EntryWithSubfieldModified) {
     auto setField = BSON("a.b" << 1 << "x" << 2);
     BSONObj o(BSON("$set" << setField));
 
     // We cannot recover the entire new value for field 'a' so an EOO element is returned.
-    extractNewValueForField(o, "a");
-}
-
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadV1EntryWithSubfieldModified_NotSupported2,
-                 "Tripwire assertion.*6448500") {
-    auto setField = BSON("a.b" << 1 << "x" << 2);
-    BSONObj o(BSON("$set" << setField));
-
+    ASSERT_BSONELT_EQ(extractNewValueForField(o, "a"), BSONElement());
     ASSERT(isFieldRemovedByUpdate(o, "a") == FieldRemovedStatus::kFieldNotRemoved);
 }
 
@@ -162,40 +130,29 @@ TEST(UpdateOplogSerializationTest, ReadV2EntryWithSubfieldModified) {
     ASSERT(isFieldRemovedByUpdate(o, "a") == FieldRemovedStatus::kFieldNotRemoved);
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadReplacementEntry_NotSupported1,
-                 "Tripwire assertion.*6448500") {
+TEST(UpdateOplogSerializationTest, ReadReplacementEntry) {
     BSONObj o(BSON("foo" << 1 << "bar" << 2));
 
-    isFieldRemovedByUpdate(o, "bar");
+    ASSERT_EQ(extractNewValueForField(o, "foo"), o["foo"]);
+    ASSERT_EQ(extractNewValueForField(o, "bar"), o["bar"]);
+
+    ASSERT(isFieldRemovedByUpdate(o, "bar") == FieldRemovedStatus::kFieldNotRemoved);
+    ASSERT(isFieldRemovedByUpdate(o, "baz") == FieldRemovedStatus::kUnknown);
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 ReadReplacementEntry_NotSupported2,
-                 "Tripwire assertion.*6448500") {
-    BSONObj o(BSON("foo" << 1 << "bar" << 2));
-
-    extractNewValueForField(o, "foo");
-}
-
-
-DEATH_TEST_REGEX(UpdateOplogSerializationTest, CannotExtractDottedField, "cannot contain dots") {
+DEATH_TEST(UpdateOplogSerializationTest, CannotExtractDottedField, "cannot contain dots") {
     extractNewValueForField(BSONObj(), "a.b");
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest, CannotReadDottedField, "cannot contain dots") {
+DEATH_TEST(UpdateOplogSerializationTest, CannotReadDottedField, "cannot contain dots") {
     isFieldRemovedByUpdate(BSONObj(), "a.b");
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 CannotExtractFromNonExistentVersion,
-                 "Tripwire assertion.*6448500") {
+DEATH_TEST(UpdateOplogSerializationTest, CannotExtractFromNonExistentVersion, "Unrecognized") {
     extractNewValueForField(BSON("$v" << 10), "a");
 }
 
-DEATH_TEST_REGEX(UpdateOplogSerializationTest,
-                 CannotReadNonExistentVersion,
-                 "Tripwire assertion.*6448500") {
+DEATH_TEST(UpdateOplogSerializationTest, CannotReadNonExistentVersion, "Unrecognized") {
     isFieldRemovedByUpdate(BSON("$v" << 10), "a");
 }
 }  // namespace

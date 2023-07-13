@@ -114,24 +114,28 @@ inline long lround(const T& v)
    return lround(v, policies::policy<>());
 }
 
+#ifdef BOOST_HAS_LONG_LONG
+
 template <class T, class Policy>
-inline long long llround(const T& v, const Policy& pol)
+inline boost::long_long_type llround(const T& v, const Policy& pol)
 {
    BOOST_MATH_STD_USING
    typedef typename tools::promote_args<T>::type result_type;
    T r = boost::math::round(v, pol);
-   if(r > static_cast<result_type>((std::numeric_limits<long long>::max)()) || 
-      r < static_cast<result_type>((std::numeric_limits<long long>::min)()))
+   if(r > static_cast<result_type>((std::numeric_limits<boost::long_long_type>::max)()) || 
+      r < static_cast<result_type>((std::numeric_limits<boost::long_long_type>::min)()))
    {
-      return static_cast<long long>(policies::raise_rounding_error("boost::math::llround<%1%>(%1%)", 0, v, static_cast<long long>(0), pol));
+      return static_cast<boost::long_long_type>(policies::raise_rounding_error("boost::math::llround<%1%>(%1%)", 0, v, static_cast<boost::long_long_type>(0), pol));
    }
-   return static_cast<long long>(r);
+   return static_cast<boost::long_long_type>(r);
 }
 template <class T>
-inline long long llround(const T& v)
+inline boost::long_long_type llround(const T& v)
 {
    return llround(v, policies::policy<>());
 }
+
+#endif
 
 }} // namespaces
 

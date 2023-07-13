@@ -131,7 +131,6 @@ start_workers(void)
     (void)gettimeofday(&stop, NULL);
     seconds = (stop.tv_sec - start.tv_sec) + (stop.tv_usec - start.tv_usec) * 1e-6;
     printf("Ran workers for: %f seconds\n", seconds);
-    fflush(stdout);
 
 err:
     free(tids);
@@ -161,11 +160,11 @@ modify_build(WT_MODIFY *entries, int *nentriesp, u_int seed)
 }
 
 /*
- * worker_no_ts_delete --
- *     Delete a key without setting a timestamp.
+ * worker_mm_delete --
+ *     Delete a key with a mixed mode timestamp.
  */
 static inline int
-worker_no_ts_delete(WT_CURSOR *cursor, uint64_t keyno)
+worker_mm_delete(WT_CURSOR *cursor, uint64_t keyno)
 {
     int ret;
 
@@ -340,7 +339,6 @@ worker(void *arg)
 
     testutil_check(__wt_thread_str(tid, sizeof(tid)));
     printf("worker thread starting: tid: %s\n", tid);
-    fflush(stdout);
 
     (void)real_worker();
     return (WT_THREAD_RET_VALUE);
@@ -375,13 +373,10 @@ real_worker(void)
         goto err;
     }
 
-    begin_cfg = NULL;
-    if (g.use_timestamps) {
-        if (g.no_ts_deletes)
-            begin_cfg = "no_timestamp=true,read_timestamp=1,roundup_timestamps=(read=true)";
-        else
-            begin_cfg = "read_timestamp=1,roundup_timestamps=(read=true)";
-    }
+    if (g.use_timestamps)
+        begin_cfg = "read_timestamp=1,roundup_timestamps=(read=true)";
+    else
+        begin_cfg = NULL;
 
     __wt_random_init_seed((WT_SESSION_IMPL *)session, &rnd);
 
@@ -391,9 +386,7 @@ real_worker(void)
             goto err;
         }
 
-    for (i = 0; i < g.nops && g.opts.running; ++i, __wt_yield()) {
-        if (i > 0 && i % (5 * WT_THOUSAND) == 0)
-            printf("Worker %u of %u ops\n", i, g.nops);
+    for (i = 0; i < g.nops && g.running; ++i, __wt_yield()) {
         if (start_txn) {
             if ((ret = session->begin_transaction(session, begin_cfg)) != 0) {
                 (void)log_print_err("real_worker:begin_transaction", ret, 1);
@@ -404,10 +397,10 @@ real_worker(void)
         }
         keyno = __wt_random(&rnd) % g.nkeys + 1;
         /* If we have specified to run with mix mode deletes we need to do it in it's own txn. */
-        if (g.use_timestamps && g.no_ts_deletes && new_txn && __wt_random(&rnd) % 72 == 0) {
+        if (g.use_timestamps && g.mixed_mode_deletes && new_txn && __wt_random(&rnd) % 72 == 0) {
             new_txn = false;
             for (j = 0; j < g.ntables; j++) {
-                ret = worker_no_ts_delete(cursors[j], keyno);
+                ret = worker_mm_delete(cursors[j], keyno);
                 if (ret == WT_ROLLBACK || ret == WT_PREPARE_CONFLICT)
                     break;
                 else if (ret != 0)
@@ -416,12 +409,12 @@ real_worker(void)
 
             if (ret == 0) {
                 if ((ret = session->commit_transaction(session, NULL)) != 0) {
-                    (void)log_print_err("real_worker:commit_no_ts_transaction", ret, 1);
+                    (void)log_print_err("real_worker:commit_mm_transaction", ret, 1);
                     goto err;
                 }
             } else {
                 if ((ret = session->rollback_transaction(session, NULL)) != 0) {
-                    (void)log_print_err("real_worker:rollback_no_ts_transaction", ret, 1);
+                    (void)log_print_err("real_worker:rollback_transaction", ret, 1);
                     goto err;
                 }
             }

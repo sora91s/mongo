@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -42,22 +43,17 @@
 #include "mongo/db/storage/control/storage_control.h"
 #include "mongo/db/storage/recovery_unit_noop.h"
 #include "mongo/db/storage/storage_engine_change_context.h"
-#include "mongo/db/storage/storage_engine_feature_flags_gen.h"
 #include "mongo/db/storage/storage_engine_lock_file.h"
 #include "mongo/db/storage/storage_engine_metadata.h"
+#include "mongo/db/storage/storage_engine_parameters.h"
 #include "mongo/db/storage/storage_engine_parameters_gen.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/storage_parameters_gen.h"
 #include "mongo/db/storage/storage_repair_observer.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/concurrency/priority_ticketholder.h"
-#include "mongo/util/concurrency/semaphore_ticketholder.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
@@ -89,16 +85,19 @@ StorageEngine::LastShutdownState initializeStorageEngine(OperationContext* opCtx
 
     const std::string dbpath = storageGlobalParams.dbpath;
 
-    StorageRepairObserver::set(service, std::make_unique<StorageRepairObserver>(dbpath));
-    auto repairObserver = StorageRepairObserver::get(service);
+    if (!storageGlobalParams.readOnly) {
+        StorageRepairObserver::set(service, std::make_unique<StorageRepairObserver>(dbpath));
+        auto repairObserver = StorageRepairObserver::get(service);
 
-    if (storageGlobalParams.repair) {
-        repairObserver->onRepairStarted();
-    } else if (repairObserver->isIncomplete()) {
-        LOGV2_FATAL_NOTRACE(50922,
-                            "An incomplete repair has been detected! This is likely because a "
-                            "repair operation unexpectedly failed before completing. MongoDB will "
-                            "not start up again without --repair.");
+        if (storageGlobalParams.repair) {
+            repairObserver->onRepairStarted();
+        } else if (repairObserver->isIncomplete()) {
+            LOGV2_FATAL_NOTRACE(
+                50922,
+                "An incomplete repair has been detected! This is likely because a repair "
+                "operation unexpectedly failed before completing. MongoDB will not start up "
+                "again without --repair.");
+        }
     }
 
     if (auto existingStorageEngine = StorageEngineMetadata::getStorageEngineForPath(dbpath)) {
@@ -135,17 +134,24 @@ StorageEngine::LastShutdownState initializeStorageEngine(OperationContext* opCtx
                           << storageGlobalParams.engine,
             factory);
 
-    if (storageGlobalParams.queryableBackupMode) {
+    if (storageGlobalParams.readOnly) {
         uassert(34368,
-                str::stream() << "Server was started in queryable backup mode, but the configured "
-                              << "storage engine, " << storageGlobalParams.engine
-                              << ", does not support queryable backup mode",
-                factory->supportsQueryableBackupMode());
+                str::stream()
+                    << "Server was started in read-only mode, but the configured storage engine, "
+                    << storageGlobalParams.engine << ", does not support read-only operation",
+                factory->supportsReadOnly());
     }
 
     std::unique_ptr<StorageEngineMetadata> metadata;
     if ((initFlags & StorageEngineInitFlags::kSkipMetadataFile) == StorageEngineInitFlags{}) {
         metadata = StorageEngineMetadata::forPath(dbpath);
+    }
+
+    if (storageGlobalParams.readOnly) {
+        uassert(34415,
+                "Server was started in read-only mode, but the storage metadata file was not"
+                " found.",
+                metadata.get());
     }
 
     // Validate options in metadata against current startup options.
@@ -154,7 +160,8 @@ StorageEngine::LastShutdownState initializeStorageEngine(OperationContext* opCtx
     }
 
     // This should be set once during startup.
-    if ((initFlags & StorageEngineInitFlags::kForRestart) == StorageEngineInitFlags{}) {
+    if (storageGlobalParams.engine != "ephemeralForTest" &&
+        (initFlags & StorageEngineInitFlags::kForRestart) == StorageEngineInitFlags{}) {
         auto readTransactions = gConcurrentReadTransactions.load();
         static constexpr auto DEFAULT_TICKETS_VALUE = 128;
         readTransactions = readTransactions == 0 ? DEFAULT_TICKETS_VALUE : readTransactions;
@@ -162,40 +169,27 @@ StorageEngine::LastShutdownState initializeStorageEngine(OperationContext* opCtx
         writeTransactions = writeTransactions == 0 ? DEFAULT_TICKETS_VALUE : writeTransactions;
 
         auto svcCtx = opCtx->getServiceContext();
-        if (feature_flags::gFeatureFlagDeprioritizeLowPriorityOperations.isEnabledAndIgnoreFCV()) {
-            std::unique_ptr<TicketHolderManager> ticketHolderManager;
-#ifdef __linux__
-            LOGV2_DEBUG(6902900, 1, "Using Priority Queue-based ticketing scheduler");
-
-            auto lowPriorityBypassThreshold = gLowPriorityAdmissionBypassThreshold.load();
-            ticketHolderManager = std::make_unique<TicketHolderManager>(
-                svcCtx,
-                std::make_unique<PriorityTicketHolder>(
-                    readTransactions, lowPriorityBypassThreshold, svcCtx),
-                std::make_unique<PriorityTicketHolder>(
-                    writeTransactions, lowPriorityBypassThreshold, svcCtx));
-#else
-            LOGV2_DEBUG(7207201, 1, "Using semaphore-based ticketing scheduler");
-
-            // PriorityTicketHolder is implemented using an equivalent mechanism to
-            // std::atomic::wait which isn't available until C++20. We've implemented it in Linux
-            // using futex calls. As this hasn't been implemented in non-Linux platforms we fallback
-            // to the existing semaphore implementation even if the feature flag is enabled.
-            //
-            // TODO SERVER-72616: Remove the ifdefs once TicketBroker is implemented with atomic
-            // wait.
-            ticketHolderManager = std::make_unique<TicketHolderManager>(
-                svcCtx,
-                std::make_unique<SemaphoreTicketHolder>(readTransactions, svcCtx),
-                std::make_unique<SemaphoreTicketHolder>(writeTransactions, svcCtx));
-#endif
-            TicketHolderManager::use(svcCtx, std::move(ticketHolderManager));
+        auto& ticketHolders = TicketHolders::get(svcCtx);
+        if (feature_flags::gFeatureFlagExecutionControl.isEnabledAndIgnoreFCV()) {
+            LOGV2_DEBUG(5190400, 1, "Enabling new ticketing policies");
+            switch (gTicketQueueingPolicy) {
+                case QueueingPolicyEnum::Semaphore:
+                    LOGV2_DEBUG(6382201, 1, "Using Semaphore-based ticketing scheduler");
+                    ticketHolders.setGlobalThrottling(
+                        std::make_unique<SemaphoreTicketHolder>(readTransactions, svcCtx),
+                        std::make_unique<SemaphoreTicketHolder>(writeTransactions, svcCtx));
+                    break;
+                case QueueingPolicyEnum::FifoQueue:
+                    LOGV2_DEBUG(6382200, 1, "Using FIFO queue-based ticketing scheduler");
+                    ticketHolders.setGlobalThrottling(
+                        std::make_unique<FifoTicketHolder>(readTransactions, svcCtx),
+                        std::make_unique<FifoTicketHolder>(writeTransactions, svcCtx));
+                    break;
+            }
         } else {
-            auto ticketHolderManager = std::make_unique<TicketHolderManager>(
-                svcCtx,
+            ticketHolders.setGlobalThrottling(
                 std::make_unique<SemaphoreTicketHolder>(readTransactions, svcCtx),
                 std::make_unique<SemaphoreTicketHolder>(writeTransactions, svcCtx));
-            TicketHolderManager::use(svcCtx, std::move(ticketHolderManager));
         }
     }
 
@@ -227,6 +221,7 @@ StorageEngine::LastShutdownState initializeStorageEngine(OperationContext* opCtx
     // Write a new metadata file if it is not present.
     if (!metadata.get() &&
         (initFlags & StorageEngineInitFlags::kSkipMetadataFile) == StorageEngineInitFlags{}) {
+        invariant(!storageGlobalParams.readOnly);
         metadata.reset(new StorageEngineMetadata(storageGlobalParams.dbpath));
         metadata->setStorageEngine(factory->getCanonicalName().toString());
         metadata->setStorageEngineOptions(factory->createMetadataOptions(storageGlobalParams));
@@ -249,11 +244,11 @@ void shutdownGlobalStorageEngineCleanly(ServiceContext* service,
     auto storageEngine = service->getStorageEngine();
     invariant(storageEngine);
     // We always use 'forRestart' = false here because 'forRestart' = true is only appropriate if
-    // we're going to restart controls on the same storage engine, which we are not here because we
-    // are shutting the storage engine down. Additionally, we need to terminate any background
+    // we're going to restart controls on the same storage engine, which we are not here because
+    // we are shutting the storage engine down. Additionally, we need to terminate any background
     // threads as they may be holding onto an OperationContext, as opposed to pausing them.
     StorageControl::stopStorageControls(service, errorToReport, /*forRestart=*/false);
-    storageEngine->cleanShutdown(service);
+    storageEngine->cleanShutdown();
     auto& lockFile = StorageEngineLockFile::get(service);
     if (lockFile) {
         lockFile->clearPidAndUnlock();
@@ -302,13 +297,18 @@ void createLockFile(ServiceContext* service) {
     }
     const bool wasUnclean = lockFile->createdByUncleanShutdown();
     const auto openStatus = lockFile->open();
-    if (openStatus == ErrorCodes::IllegalOperation) {
+    if (storageGlobalParams.readOnly && openStatus == ErrorCodes::IllegalOperation) {
         lockFile = boost::none;
     } else {
         uassertStatusOK(openStatus);
     }
 
     if (wasUnclean) {
+        if (storageGlobalParams.readOnly) {
+            LOGV2_FATAL_NOTRACE(34416,
+                                "Attempted to open dbpath in readOnly mode, but the server was "
+                                "previously not shut down cleanly.");
+        }
         LOGV2_WARNING(22271,
                       "Detected unclean shutdown - Lock file is not empty",
                       "lockFile"_attr = lockFile->getFilespec());

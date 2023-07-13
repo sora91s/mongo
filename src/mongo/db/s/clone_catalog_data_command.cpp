@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/authorization_session.h"
@@ -40,9 +41,6 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/clone_catalog_data_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -74,12 +72,11 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::internal)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::internal)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
 
@@ -87,7 +84,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbname_unused,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
 
@@ -101,7 +98,7 @@ public:
         CommandHelpers::uassertCommandRunWithMajority(getName(), opCtx->getWriteConcern());
 
         const auto cloneCatalogDataRequest =
-            CloneCatalogData::parse(IDLParserContext("_shardsvrCloneCatalogData"), cmdObj);
+            CloneCatalogData::parse(IDLParserErrorContext("_shardsvrCloneCatalogData"), cmdObj);
         const auto dbname = cloneCatalogDataRequest.getCommandParameter().toString();
 
         uassert(
@@ -111,8 +108,8 @@ public:
 
         uassert(ErrorCodes::InvalidOptions,
                 str::stream() << "Can't clone catalog data for " << dbname << " database",
-                dbname != DatabaseName::kAdmin.db() && dbname != DatabaseName::kConfig.db() &&
-                    dbname != DatabaseName::kLocal.db());
+                dbname != NamespaceString::kAdminDb && dbname != NamespaceString::kConfigDb &&
+                    dbname != NamespaceString::kLocalDb);
 
         auto from = cloneCatalogDataRequest.getFrom();
 

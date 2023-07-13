@@ -27,11 +27,11 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/util/exit.h"
-#include "mongo/util/exit_code.h"
 
 #include <boost/optional.hpp>
 #include <functional>
@@ -41,11 +41,7 @@
 #include "mongo/platform/mutex.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/thread.h"
-#include "mongo/util/assert_util.h"
 #include "mongo/util/quick_exit.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 namespace mongo {
 
@@ -71,7 +67,7 @@ void runTasks(decltype(shutdownTasks) tasks, const ShutdownTaskArgs& shutdownArg
 // prevent multiple threads from attempting to log that they are exiting. The quickExit() function
 // has its own 'quickExitMutex' to prohibit multiple threads from attempting to call _exit().
 MONGO_COMPILER_NORETURN void logAndQuickExit_inlock() {
-    ExitCode code = shutdownExitCode.value();
+    ExitCode code = shutdownExitCode.get();
     LOGV2(23138, "Shutting down with code: {exitCode}", "Shutting down", "exitCode"_attr = code);
     quickExit(code);
 }
@@ -93,7 +89,7 @@ ExitCode waitForShutdown() {
         return shutdownStarted && !shutdownTasksInProgress;
     });
 
-    return shutdownExitCode.value();
+    return shutdownExitCode.get();
 }
 
 void registerShutdownTask(unique_function<void(const ShutdownTaskArgs&)> task) {
@@ -115,7 +111,7 @@ void shutdown(ExitCode code, const ShutdownTaskArgs& shutdownArgs) {
             // Re-entrant calls to shutdown are not allowed.
             invariant(shutdownTasksThreadId != stdx::this_thread::get_id());
 
-            ExitCode originallyRequestedCode = shutdownExitCode.value();
+            ExitCode originallyRequestedCode = shutdownExitCode.get();
             if (code != originallyRequestedCode) {
                 LOGV2(23139,
                       "While running shutdown tasks with the intent to exit with code "
@@ -175,7 +171,7 @@ void shutdownNoTerminate(const ShutdownTaskArgs& shutdownArgs) {
     {
         stdx::lock_guard<Latch> lock(shutdownMutex);
         shutdownTasksInProgress = false;
-        shutdownExitCode.emplace(ExitCode::clean);
+        shutdownExitCode.emplace(EXIT_CLEAN);
     }
 
     shutdownTasksComplete.notify_all();

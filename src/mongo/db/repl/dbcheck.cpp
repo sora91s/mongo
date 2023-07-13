@@ -33,8 +33,9 @@
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/catalog/health_log_interface.h"
+#include "mongo/db/catalog/health_log.h"
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/internal_plans.h"
@@ -364,26 +365,14 @@ Status dbCheckBatchOnSecondary(OperationContext* opCtx,
     // Set up the hasher,
     boost::optional<DbCheckHasher> hasher;
     try {
-        // We may not have a read timestamp if the dbCheck command was run on an older version of
-        // the server with snapshotRead:false. Since we don't implement this feature, we'll log an
-        // error about skipping the batch to ensure an operator notices.
-        if (!entry.getReadTimestamp().has_value()) {
-            auto logEntry =
-                dbCheckErrorHealthLogEntry(entry.getNss(),
-                                           "dbCheck failed",
-                                           OplogEntriesEnum::Batch,
-                                           Status{ErrorCodes::Error(6769502),
-                                                  "no readTimestamp in oplog entry. Ensure dbCheck "
-                                                  "command is not using snapshotRead:false"},
-                                           entry.toBSON());
-            HealthLogInterface::get(opCtx)->log(*logEntry);
-            return Status::OK();
+        auto lockMode = MODE_S;
+        if (entry.getReadTimestamp()) {
+            lockMode = MODE_IS;
+            opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kProvided,
+                                                          entry.getReadTimestamp());
         }
 
-        opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kProvided,
-                                                      entry.getReadTimestamp());
-
-        AutoGetCollection coll(opCtx, entry.getNss(), MODE_IS);
+        AutoGetCollection coll(opCtx, entry.getNss(), lockMode);
         const auto& collection = coll.getCollection();
 
         if (!collection) {
@@ -393,7 +382,7 @@ Status dbCheckBatchOnSecondary(OperationContext* opCtx,
                                                   "dbCheck failed",
                                                   OplogEntriesEnum::Batch,
                                                   BSON("success" << false << "info" << msg));
-            HealthLogInterface::get(opCtx)->log(*logEntry);
+            HealthLog::get(opCtx).log(*logEntry);
             return Status::OK();
         }
 
@@ -419,13 +408,13 @@ Status dbCheckBatchOnSecondary(OperationContext* opCtx,
             (batchesProcessed % gDbCheckHealthLogEveryNBatches.load() == 0)) {
             // On debug builds, health-log every batch result; on release builds, health-log
             // every N batches.
-            HealthLogInterface::get(opCtx)->log(*logEntry);
+            HealthLog::get(opCtx).log(*logEntry);
         }
     } catch (const DBException& exception) {
         // In case of an error, report it to the health log,
         auto logEntry = dbCheckErrorHealthLogEntry(
             entry.getNss(), msg, OplogEntriesEnum::Batch, exception.toStatus(), entry.toBSON());
-        HealthLogInterface::get(opCtx)->log(*logEntry);
+        HealthLog::get(opCtx).log(*logEntry);
         return Status::OK();
     }
     return Status::OK();
@@ -446,11 +435,12 @@ Status dbCheckOplogCommand(OperationContext* opCtx,
     if (!opCtx->writesAreReplicated()) {
         opTime = entry.getOpTime();
     }
-    const auto type = OplogEntries_parse(IDLParserContext("type"), cmd.getStringField("type"));
-    const IDLParserContext ctx("o", false /*apiStrict*/, entry.getTid());
+    auto type = OplogEntries_parse(IDLParserErrorContext("type"), cmd.getStringField("type"));
+    IDLParserErrorContext ctx("o");
+
     switch (type) {
         case OplogEntriesEnum::Batch: {
-            const auto invocation = DbCheckOplogBatch::parse(ctx, cmd);
+            auto invocation = DbCheckOplogBatch::parse(ctx, cmd);
             return dbCheckBatchOnSecondary(opCtx, opTime, invocation);
         }
         case OplogEntriesEnum::Collection: {
@@ -463,8 +453,7 @@ Status dbCheckOplogCommand(OperationContext* opCtx,
             const auto healthLogEntry = mongo::dbCheckHealthLogEntry(
                 boost::none /*nss*/, SeverityEnum::Info, "", type, boost::none /*data*/
             );
-            HealthLogInterface::get(Client::getCurrent()->getServiceContext())
-                ->log(*healthLogEntry);
+            HealthLog::get(Client::getCurrent()->getServiceContext()).log(*healthLogEntry);
             return Status::OK();
     }
 

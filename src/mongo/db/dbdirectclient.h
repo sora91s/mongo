@@ -55,12 +55,10 @@ public:
     using DBClientBase::find;
     using DBClientBase::insert;
     using DBClientBase::remove;
-    using DBClientBase::runCommand;
     using DBClientBase::update;
 
     std::unique_ptr<DBClientCursor> find(FindCommandRequest findRequest,
-                                         const ReadPreferenceSetting& readPref,
-                                         ExhaustMode exhaustMode) override;
+                                         const ReadPreferenceSetting& readPref) override;
 
     write_ops::FindAndModifyCommandReply findAndModify(
         const write_ops::FindAndModifyCommandRequest& findAndModify);
@@ -82,6 +80,11 @@ public:
     std::string toString() const override;
 
     std::string getServerAddress() const override;
+
+    bool call(Message& toSend,
+              Message& response,
+              bool assertOk = true,
+              std::string* actualServer = nullptr) override;
 
     void say(Message& toSend, bool isRetry = false, std::string* actualServer = nullptr) override;
 
@@ -120,8 +123,6 @@ protected:
     void _auth(const BSONObj& params) override;
 
 private:
-    void _call(Message& toSend, Message& response, std::string* actualServer) override;
-
     OperationContext* _opCtx;
 };
 

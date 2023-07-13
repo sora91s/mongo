@@ -68,14 +68,6 @@ public:
     explicit BaseMockMechanism(std::string authenticationDatabase)
         : MakeServerMechanism<Policy>(std::move(authenticationDatabase)) {}
 
-    boost::optional<unsigned int> currentStep() const override {
-        return boost::none;
-    }
-
-    boost::optional<unsigned int> totalSteps() const override {
-        return boost::none;
-    }
-
 protected:
     StatusWith<std::tuple<bool, std::string>> stepImpl(OperationContext* opCtx,
                                                        StringData input) final {
@@ -198,7 +190,7 @@ public:
 
         ASSERT_OK(authManagerExternalState->updateOne(
             opCtx.get(),
-            NamespaceString::kServerConfigurationNamespace,
+            AuthorizationManager::versionCollectionNamespace,
             AuthorizationManager::versionDocumentQuery,
             BSON("$set" << BSON(AuthorizationManager::schemaVersionFieldName
                                 << AuthorizationManager::schemaVersion26Final)),
@@ -207,7 +199,7 @@ public:
 
         ASSERT_OK(authManagerExternalState->insert(
             opCtx.get(),
-            NamespaceString::createNamespaceString_forTest("admin.system.users"),
+            NamespaceString("admin.system.users"),
             BSON("_id"
                  << "test.sajack"
                  << "user"
@@ -222,8 +214,7 @@ public:
 
 
         ASSERT_OK(authManagerExternalState->insert(opCtx.get(),
-                                                   NamespaceString::createNamespaceString_forTest(
-                                                       "admin.system.users"),
+                                                   NamespaceString("admin.system.users"),
                                                    BSON("_id"
                                                         << "$external.sajack"
                                                         << "user"
@@ -234,8 +225,7 @@ public:
                                                         << "roles" << BSONArray()),
                                                    BSONObj()));
 
-        UserRequest systemLocal(UserName("__system"_sd, "local"_sd), boost::none);
-        internalSecurity.setUser(std::make_shared<UserHandle>(User(systemLocal)));
+        internalSecurity.setUser(std::make_shared<UserHandle>(User(UserName("__system", "local"))));
     }
 
     BSONObj getMechsFor(const UserName user) {

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -38,9 +39,6 @@
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -81,7 +79,7 @@ public:
             renameCollReq.setStayTemp(request().getStayTemp());
             renameCollReq.setExpectedSourceUUID(request().getCollectionUUID());
             stdx::visit(
-                OverloadedVisitor{
+                visit_helper::Overloaded{
                     [&renameCollReq](bool dropTarget) { renameCollReq.setDropTarget(dropTarget); },
                     [&renameCollReq](const UUID& uuid) {
                         renameCollReq.setDropTarget(true);
@@ -101,7 +99,7 @@ public:
             auto catalogCache = Grid::get(opCtx)->catalogCache();
             auto swDbInfo = Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, fromNss.db());
             if (swDbInfo == ErrorCodes::NamespaceNotFound) {
-                uassert(CollectionUUIDMismatchInfo(fromNss.dbName(),
+                uassert(CollectionUUIDMismatchInfo(fromNss.db().toString(),
                                                    *request().getCollectionUUID(),
                                                    fromNss.coll().toString(),
                                                    boost::none),
@@ -109,6 +107,7 @@ public:
                         !request().getCollectionUUID());
             }
             const auto dbInfo = uassertStatusOK(swDbInfo);
+            auto cri = uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, fromNss));
 
             auto shard = uassertStatusOK(
                 Grid::get(opCtx)->shardRegistry()->getShard(opCtx, dbInfo->getPrimary()));
@@ -124,13 +123,13 @@ public:
             uassertStatusOK(cmdResponse.commandStatus);
 
             auto renameCollResp = RenameCollectionResponse::parse(
-                IDLParserContext("renameCollection"), cmdResponse.response);
+                IDLParserErrorContext("renameCollection"), cmdResponse.response);
 
+            // TODO: SERVER-53098 advance the cache by collection version.
             catalogCache->invalidateShardOrEntireCollectionEntryForShardedCollection(
                 toNss, renameCollResp.getCollectionVersion(), dbInfo->getPrimary());
 
             catalogCache->invalidateCollectionEntry_LINEARIZABLE(fromNss);
-            catalogCache->invalidateIndexEntry_LINEARIZABLE(fromNss);
         }
 
         NamespaceString ns() const override {

@@ -42,10 +42,9 @@
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer/op_observer.h"
-#include "mongo/db/op_observer/op_observer_impl.h"
-#include "mongo/db/op_observer/op_observer_registry.h"
-#include "mongo/db/op_observer/oplog_writer_impl.h"
+#include "mongo/db/op_observer.h"
+#include "mongo/db/op_observer_impl.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/query_request_helper.h"
@@ -55,7 +54,6 @@
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/s/config_server_op_observer.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
@@ -67,10 +65,13 @@
 #include "mongo/s/catalog/type_database_gen.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/catalog_cache.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/config_server_catalog_cache_loader.h"
 #include "mongo/s/database_version.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
+#include "mongo/s/request_types/set_shard_version_request.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/tick_source_mock.h"
@@ -96,14 +97,30 @@ ConfigServerTestFixture::ConfigServerTestFixture(Options options, bool setUpMajo
 
 ConfigServerTestFixture::~ConfigServerTestFixture() = default;
 
+void ConfigServerTestFixture::setUp() {
+    _setUp([] {});
+}
+
+std::unique_ptr<AutoGetDb> ConfigServerTestFixture::setUpAndLockConfigDb() {
+    std::unique_ptr<AutoGetDb> autoDb;
+    auto lockConfigDb = [&] {
+        autoDb =
+            std::make_unique<AutoGetDb>(operationContext(), NamespaceString::kConfigDb, MODE_X);
+    };
+    _setUp(lockConfigDb);
+    return autoDb;
+}
+
 void ConfigServerTestFixture::setUpAndInitializeConfigDb() {
-    ConfigServerTestFixture::setUp();
+    // Prevent DistLockManager from writing to lockpings collection before we create the indexes.
+    auto autoDb = setUpAndLockConfigDb();
+
     // Initialize the config database while we have exclusive access.
     ASSERT_OK(ShardingCatalogManager::get(operationContext())
                   ->initializeConfigDatabaseIfNeeded(operationContext()));
 }
 
-void ConfigServerTestFixture::setUp() {
+void ConfigServerTestFixture::_setUp(std::function<void()> onPreInitGlobalStateFn) {
     ShardingMongodTestFixture::setUp();
 
     // TODO: SERVER-26919 set the flag on the mock repl coordinator just for the window where it
@@ -113,26 +130,26 @@ void ConfigServerTestFixture::setUp() {
     // Initialize sharding components as a config server.
     serverGlobalParams.clusterRole = ClusterRole::ConfigServer;
 
-    // The catalog manager requires a special executor used for operations during addShard.
-    auto specialNet(std::make_unique<executor::NetworkInterfaceMock>());
-    _mockNetworkForAddShard = specialNet.get();
+    {
+        // The catalog manager requires a special executor used for operations during addShard.
+        auto specialNet(std::make_unique<executor::NetworkInterfaceMock>());
+        _mockNetworkForAddShard = specialNet.get();
 
-    auto specialExec(makeThreadPoolTestExecutor(std::move(specialNet)));
-    _executorForAddShard = specialExec.get();
+        auto specialExec(makeThreadPoolTestExecutor(std::move(specialNet)));
+        _executorForAddShard = specialExec.get();
+
+        ShardingCatalogManager::create(getServiceContext(), std::move(specialExec));
+    }
 
     _addShardNetworkTestEnv =
         std::make_unique<NetworkTestEnv>(_executorForAddShard, _mockNetworkForAddShard);
     auto configServerCatalogCacheLoader = std::make_unique<ConfigServerCatalogCacheLoader>();
+    configServerCatalogCacheLoader->setAvoidSnapshotForRefresh_ForTest();
     CatalogCacheLoader::set(getServiceContext(), std::move(configServerCatalogCacheLoader));
 
-    uassertStatusOK(initializeGlobalShardingStateForMongodForTest(ConnectionString::forLocal()));
+    onPreInitGlobalStateFn();
 
-    auto shardLocal = Grid::get(getServiceContext())->shardRegistry()->createLocalConfigShard();
-    auto localCatalogClient = std::make_unique<ShardingCatalogClientImpl>(shardLocal);
-    ShardingCatalogManager::create(getServiceContext(),
-                                   std::move(specialExec),
-                                   std::move(shardLocal),
-                                   std::move(localCatalogClient));
+    uassertStatusOK(initializeGlobalShardingStateForMongodForTest(ConnectionString::forLocal()));
 }
 
 void ConfigServerTestFixture::tearDown() {
@@ -148,7 +165,7 @@ void ConfigServerTestFixture::tearDown() {
 }
 
 std::unique_ptr<ShardingCatalogClient> ConfigServerTestFixture::makeShardingCatalogClient() {
-    return std::make_unique<ShardingCatalogClientImpl>(nullptr /* overrideConfigShard */);
+    return std::make_unique<ShardingCatalogClientImpl>();
 }
 
 std::unique_ptr<BalancerConfiguration> ConfigServerTestFixture::makeBalancerConfiguration() {
@@ -180,17 +197,17 @@ std::shared_ptr<Shard> ConfigServerTestFixture::getConfigShard() const {
 Status ConfigServerTestFixture::insertToConfigCollection(OperationContext* opCtx,
                                                          const NamespaceString& ns,
                                                          const BSONObj& doc) {
-    auto insertResponse = getConfigShard()->runCommand(
-        opCtx,
-        kReadPref,
-        ns.db().toString(),
-        [&]() {
-            write_ops::InsertCommandRequest insertOp(ns);
-            insertOp.setDocuments({doc});
-            return insertOp.toBSON({});
-        }(),
-        Shard::kDefaultConfigCommandTimeout,
-        Shard::RetryPolicy::kNoRetry);
+    auto insertResponse =
+        getConfigShard()->runCommand(opCtx,
+                                     kReadPref,
+                                     ns.db().toString(),
+                                     [&]() {
+                                         write_ops::InsertCommandRequest insertOp(ns);
+                                         insertOp.setDocuments({doc});
+                                         return insertOp.toBSON({});
+                                     }(),
+                                     Shard::kDefaultConfigCommandTimeout,
+                                     Shard::RetryPolicy::kNoRetry);
 
     BatchedCommandResponse batchResponse;
     auto status = Shard::CommandResponse::processBatchWriteResponse(insertResponse, &batchResponse);
@@ -230,22 +247,22 @@ Status ConfigServerTestFixture::deleteToConfigCollection(OperationContext* opCtx
                                                          const NamespaceString& ns,
                                                          const BSONObj& doc,
                                                          const bool multi) {
-    auto deleteResponse = getConfigShard()->runCommand(
-        opCtx,
-        kReadPref,
-        ns.db().toString(),
-        [&]() {
-            write_ops::DeleteCommandRequest deleteOp(ns);
-            deleteOp.setDeletes({[&] {
-                write_ops::DeleteOpEntry entry;
-                entry.setQ(doc);
-                entry.setMulti(multi);
-                return entry;
-            }()});
-            return deleteOp.toBSON({});
-        }(),
-        Shard::kDefaultConfigCommandTimeout,
-        Shard::RetryPolicy::kNoRetry);
+    auto deleteResponse =
+        getConfigShard()->runCommand(opCtx,
+                                     kReadPref,
+                                     ns.db().toString(),
+                                     [&]() {
+                                         write_ops::DeleteCommandRequest deleteOp(ns);
+                                         deleteOp.setDeletes({[&] {
+                                             write_ops::DeleteOpEntry entry;
+                                             entry.setQ(doc);
+                                             entry.setMulti(multi);
+                                             return entry;
+                                         }()});
+                                         return deleteOp.toBSON({});
+                                     }(),
+                                     Shard::kDefaultConfigCommandTimeout,
+                                     Shard::RetryPolicy::kNoRetry);
 
 
     BatchedCommandResponse batchResponse;
@@ -276,7 +293,7 @@ StatusWith<BSONObj> ConfigServerTestFixture::findOneOnConfigCollection(Operation
 }
 
 void ConfigServerTestFixture::setupShards(const std::vector<ShardType>& shards) {
-    const NamespaceString shardNS(NamespaceString::kConfigsvrShardsNamespace);
+    const NamespaceString shardNS(ShardType::ConfigNS);
     for (const auto& shard : shards) {
         ASSERT_OK(insertToConfigCollection(operationContext(), shardNS, shard.toBSON()));
     }
@@ -284,8 +301,8 @@ void ConfigServerTestFixture::setupShards(const std::vector<ShardType>& shards) 
 
 StatusWith<ShardType> ConfigServerTestFixture::getShardDoc(OperationContext* opCtx,
                                                            const std::string& shardId) {
-    auto doc = findOneOnConfigCollection(
-        opCtx, NamespaceString::kConfigsvrShardsNamespace, BSON(ShardType::name(shardId)));
+    auto doc =
+        findOneOnConfigCollection(opCtx, ShardType::ConfigNS, BSON(ShardType::name(shardId)));
     if (!doc.isOK()) {
         if (doc.getStatus() == ErrorCodes::NoMatchingDocument) {
             return {ErrorCodes::ShardNotFound,
@@ -307,8 +324,8 @@ void ConfigServerTestFixture::setupCollection(const NamespaceString& nss,
     if (!dbDoc.isOK()) {
         // If the database is not setup, choose the first available shard as primary to implicitly
         // create the db
-        auto swShardDoc = findOneOnConfigCollection(
-            operationContext(), NamespaceString::kConfigsvrShardsNamespace, BSONObj());
+        auto swShardDoc =
+            findOneOnConfigCollection(operationContext(), ShardType::ConfigNS, BSONObj());
         invariant(swShardDoc.isOK(),
                   "At least one shard should be setup when initializing a collection");
         auto shard = uassertStatusOK(ShardType::fromBSON(swShardDoc.getValue()));
@@ -355,8 +372,8 @@ StatusWith<ChunkType> ConfigServerTestFixture::getChunkDoc(OperationContext* opC
     return ChunkType::parseFromConfigBSON(doc.getValue(), collEpoch, collTimestamp);
 }
 
-StatusWith<ChunkVersion> ConfigServerTestFixture::getCollectionPlacementVersion(
-    OperationContext* opCtx, const NamespaceString& nss) {
+StatusWith<ChunkVersion> ConfigServerTestFixture::getCollectionVersion(OperationContext* opCtx,
+                                                                       const NamespaceString& nss) {
     auto collectionDoc = findOneOnConfigCollection(
         opCtx, CollectionType::ConfigNS, BSON(CollectionType::kNssFieldName << nss.ns()));
     if (!collectionDoc.isOK())
@@ -429,18 +446,41 @@ std::vector<KeysCollectionDocument> ConfigServerTestFixture::getKeys(OperationCo
     std::vector<KeysCollectionDocument> keys;
     const auto& docs = findStatus.getValue().docs;
     for (const auto& doc : docs) {
-        auto key = KeysCollectionDocument::parse(IDLParserContext("keyDoc"), doc);
+        auto key = KeysCollectionDocument::parse(IDLParserErrorContext("keyDoc"), doc);
         keys.push_back(std::move(key));
     }
 
     return keys;
 }
 
+void ConfigServerTestFixture::expectSetShardVersion(
+    const HostAndPort& expectedHost,
+    const ShardType& expectedShard,
+    const NamespaceString& expectedNs,
+    boost::optional<ChunkVersion> expectedChunkVersion) {
+    onCommand([&](const RemoteCommandRequest& request) {
+        ASSERT_EQ(expectedHost, request.target);
+        ASSERT_BSONOBJ_EQ(rpc::makeEmptyMetadata(),
+                          rpc::TrackingMetadata::removeTrackingData(request.metadata));
+
+        SetShardVersionRequest ssv =
+            assertGet(SetShardVersionRequest::parseFromBSON(request.cmdObj));
+
+        ASSERT(ssv.isAuthoritative());
+        ASSERT_EQ(expectedNs.toString(), ssv.getNS().ns());
+
+        if (expectedChunkVersion) {
+            ASSERT_EQ(*expectedChunkVersion, ssv.getNSVersion());
+        }
+
+        return BSON("ok" << true);
+    });
+}
+
 void ConfigServerTestFixture::setupOpObservers() {
     auto opObserverRegistry =
         checked_cast<OpObserverRegistry*>(getServiceContext()->getOpObserver());
-    opObserverRegistry->addObserver(
-        std::make_unique<OpObserverImpl>(std::make_unique<OplogWriterImpl>()));
+    opObserverRegistry->addObserver(std::make_unique<OpObserverImpl>());
     opObserverRegistry->addObserver(std::make_unique<ConfigServerOpObserver>());
 }
 

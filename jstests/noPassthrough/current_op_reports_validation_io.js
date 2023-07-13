@@ -2,11 +2,12 @@
  * Verifies that the 'dataThroughputLastSecond' and 'dataThroughputAverage' fields appear in the
  * currentOp output while running validation.
  *
- * @tags: [requires_fsync, requires_wiredtiger, requires_persistence]
+ * ephemeralForTest does not support background validation, which is needed to report the
+ * 'dataThroughputLastSecond' and 'dataThroughputAverage' fields in currentOp.
+ *
+ * @tags: [incompatible_with_eft]
  */
 (function() {
-load('jstests/libs/fail_point_util.js');
-
 const dbName = "test";
 const collName = "currentOpValidation";
 
@@ -26,14 +27,13 @@ for (let i = 0; i < 5; i++) {
 assert.commandWorked(db.adminCommand({setParameter: 1, maxValidateMBperSec: 1}));
 
 // Simulate each record being 512KB.
-const cursorDataSizeFailPoint = configureFailPoint(db, "fixedCursorDataSizeOf512KBForDataThrottle");
+assert.commandWorked(db.adminCommand(
+    {configureFailPoint: "fixedCursorDataSizeOf512KBForDataThrottle", mode: "alwaysOn"}));
 
 // This fail point comes after we've traversed the record store, so currentOp should have some
 // validation statistics once we hit this fail point.
-const pauseFailPoint = configureFailPoint(db, "pauseCollectionValidationWithLock");
-
-// Forces a checkpoint to make the background validation see the data.
-assert.commandWorked(db.adminCommand({fsync: 1}));
+assert.commandWorked(
+    db.adminCommand({configureFailPoint: "pauseCollectionValidationWithLock", mode: "alwaysOn"}));
 
 TestData.dbName = dbName;
 TestData.collName = collName;
@@ -44,7 +44,7 @@ const awaitValidation = startParallelShell(() => {
         }));
 }, conn.port);
 
-pauseFailPoint.wait();
+checkLog.containsJson(conn, 20304);
 
 const curOpFilter = {
     'command.validate': collName
@@ -61,8 +61,10 @@ assert(curOp[0].hasOwnProperty("dataThroughputLastSecond") &&
        curOp[0].hasOwnProperty("dataThroughputAverage"));
 
 // Finish up validating the collection.
-cursorDataSizeFailPoint.off();
-pauseFailPoint.off();
+assert.commandWorked(db.adminCommand(
+    {configureFailPoint: "fixedCursorDataSizeOf512KBForDataThrottle", mode: "off"}));
+assert.commandWorked(
+    db.adminCommand({configureFailPoint: "pauseCollectionValidationWithLock", mode: "off"}));
 
 // Setting this to 0 turns off the throttle.
 assert.commandWorked(db.adminCommand({setParameter: 1, maxValidateMBperSec: 0}));

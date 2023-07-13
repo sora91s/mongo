@@ -1,9 +1,7 @@
 /**
  * Tests initializing a mixed version replica set through resmoke.
  *
- * The test runs commands that are not allowed with security token: replSetGetStatus.
- * @tags: [
- *   not_allowed_with_security_token,multiversion_sanity_check]
+ * @tags: [multiversion_sanity_check]
  */
 
 (function() {

@@ -6,7 +6,7 @@
  * hit. A replica set node should send a response to the mongos as soon as it processes a topology
  * change, so "immediately"/"quickly" can vary - we specify 5 seconds in this test ('timeoutMS').
  *
- * @tags: [requires_streamable_rsm, temporary_catalog_shard_incompatible]
+ * @tags: [requires_streamable_rsm]
  */
 
 // This test shuts down a shard's node and because of this consistency checking
@@ -14,7 +14,6 @@
 TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 (function() {
 "use strict";
@@ -86,9 +85,6 @@ st.rs0.getReplSetConfig().members.forEach(node => {
         electableRsSecondary = st.rs0.nodes[node._id];
     }
 });
-
-jsTestLog("Wait for the electable secondary to reach the SECONDARY after initial sync.");
-st.rs0.waitForState(electableRsSecondary, ReplSetTest.State.SECONDARY);
 
 // Terminate the primary and wait for the secondary to step up, trigger a topology change
 jsTestLog("Terminating the primary.");

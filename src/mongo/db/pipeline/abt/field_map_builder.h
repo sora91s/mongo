@@ -31,13 +31,14 @@
 
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/query/optimizer/node.h"
+#include "mongo/db/query/optimizer/utils/utils.h"
 
 namespace mongo::optimizer {
 
 /**
  * Represents a tree of paths with attached properties. For example adding "a.b" and "a.c" results
- * in a root node "a" with two children "b" and "c". By setting appropriate properties we can create
- * a path tree for a $project expression:
+ * in a root node "a" with two children "b" and "c". By setting appropriate we can create a path
+ * tree for a $project expression:
  *   Field "a" * Keep "a"
  *      |
  *      Traverse
@@ -45,19 +46,18 @@ namespace mongo::optimizer {
  *        Obj * Keep "b", "c"
  */
 struct FieldMapEntry {
-    FieldMapEntry(FieldNameType fieldName) : _fieldName(std::move(fieldName)) {
-        uassert(6624200, "Empty field name", !_fieldName.value().empty());
+    FieldMapEntry(std::string fieldName) : _fieldName(std::move(fieldName)) {
+        uassert(6624200, "Empty field name", !_fieldName.empty());
     }
 
-    FieldNameType _fieldName;
+    std::string _fieldName;
     bool _hasKeep = false;
     bool _hasLeadingObj = false;
     bool _hasTrailingDefault = false;
     bool _hasDrop = false;
-    boost::optional<ProjectionName> _constVarName;
+    std::string _constVarName;
 
-    // Child paths are potentially dotted field paths.
-    OrderedPathSet _childPaths;
+    std::set<std::string> _childPaths;
 };
 
 class FieldMapBuilder {
@@ -67,28 +67,10 @@ public:
     FieldMapBuilder(const ProjectionName& rootProjName, bool isRootSameAsScanProj)
         : _rootProjName(rootProjName), _isRootSameAsScanProj(isRootSameAsScanProj) {}
 
-    /**
-     * Adds 'fieldPath' as a projected field, creating FieldMapEntries for each element along the
-     * path as necessary, and applying 'fn' to each created FieldMapEntry.
-     */
     void integrateFieldPath(
         const FieldPath& fieldPath,
         const std::function<void(const bool isLastElement, FieldMapEntry& entry)>& fn);
 
-    /**
-     * Produce an ABT representing all fields integrated so far under a single EvalPath. For
-     * example, assuming "a.b" and "a.c" were integrated as fields in an inclusion projection, an
-     * output may look like:
-     *  EvalPath
-     *  |                        |
-     *  Field "a" * Keep "a"     Variable[rootProjName]
-     *      |
-     *      Traverse
-     *        |
-     *        Obj * Keep "b", "c"
-     *
-     * Returns boost::none when no fields have been integrated so far.
-     */
     boost::optional<ABT> generateABT() const;
 
 private:
@@ -97,7 +79,6 @@ private:
     const ProjectionName& _rootProjName;
     const bool _isRootSameAsScanProj;
 
-    // Maps from potentially dotted field path to FieldMapEntry.
     opt::unordered_map<std::string, FieldMapEntry> _fieldMap;
 };
 

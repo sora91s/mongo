@@ -33,13 +33,16 @@
 #include "mongo/db/catalog/collection_validation.h"
 #include "mongo/db/catalog/throttle_cursor.h"
 #include "mongo/db/catalog_raii.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/storage/record_store.h"
-#include "mongo/db/storage/storage_parameters_gen.h"
 #include "mongo/util/uuid.h"
 
 namespace mongo {
+
+class Database;
+class IndexCatalogEntry;
+
 namespace CollectionValidation {
 
 /**
@@ -52,11 +55,15 @@ class ValidateState {
     ValidateState& operator=(const ValidateState&) = delete;
 
 public:
+    /**
+     * 'turnOnExtraLoggingForTest' turns on extra logging for test debugging. This parameter is for
+     * unit testing only.
+     */
     ValidateState(OperationContext* opCtx,
                   const NamespaceString& nss,
                   ValidateMode mode,
                   RepairMode repairMode,
-                  bool logDiagnostics);
+                  bool turnOnExtraLoggingForTest = false);
 
     const NamespaceString& nss() const {
         return _nss;
@@ -67,7 +74,7 @@ public:
     }
 
     bool isBackground() const {
-        return _mode == ValidateMode::kBackground || _mode == ValidateMode::kBackgroundCheckBSON;
+        return _mode == ValidateMode::kBackground;
     }
 
     bool shouldEnforceFastCount() const;
@@ -81,37 +88,12 @@ public:
         return isFullValidation() || _mode == ValidateMode::kForegroundFullIndexOnly;
     }
 
-    BSONValidateMode getBSONValidateMode() const {
-        return serverGlobalParams.featureCompatibility.isVersionInitialized() &&
-                feature_flags::gExtendValidateCommand.isEnabled(
-                    serverGlobalParams.featureCompatibility) &&
-                (_mode == ValidateMode::kForegroundCheckBSON ||
-                 _mode == ValidateMode::kBackgroundCheckBSON || isFullValidation())
-            ? BSONValidateMode::kFull
-            : BSONValidateMode::kExtended;
-    }
-
     bool isCollectionSchemaViolated() const {
         return _collectionSchemaViolated;
     }
 
     void setCollectionSchemaViolated() {
         _collectionSchemaViolated = true;
-    }
-
-    bool isTimeseriesDataInconsistent() const {
-        return _timeseriesDataInconsistency;
-    }
-    void setTimeseriesDataInconsistent() {
-        _timeseriesDataInconsistency = true;
-    }
-
-    bool isBSONDataNonConformant() const {
-        return _BSONDataNonConformant;
-    }
-
-    void setBSONDataNonConformant() {
-        _BSONDataNonConformant = true;
     }
 
     bool fixErrors() const {
@@ -141,14 +123,11 @@ public:
         return _indexes;
     }
 
-    const StringSet& getSkippedIndexes() const {
-        return _skippedIndexes;
-    }
-
     /**
      * Map of index names to index cursors.
      */
-    const StringMap<std::unique_ptr<SortedDataInterfaceThrottleCursor>>& getIndexCursors() const {
+    const std::map<std::string, std::unique_ptr<SortedDataInterfaceThrottleCursor>>&
+    getIndexCursors() const {
         return _indexCursors;
     }
 
@@ -158,10 +137,6 @@ public:
 
     const std::unique_ptr<SeekableRecordThrottleCursor>& getSeekRecordStoreCursor() const {
         return _seekRecordStoreCursor;
-    }
-
-    const StringMap<std::unique_ptr<ColumnStore::Cursor>>& getColumnStoreCursors() const {
-        return _columnStoreIndexCursors;
     }
 
     RecordId getFirstRecordId() const {
@@ -180,15 +155,18 @@ public:
 
     /**
      * Initializes all the cursors to be used during validation and moves the traversal record
-     * store cursor to the first record.
+     * store cursor to the first record. For background validation, this should be called while
+     * holding the checkpoint lock when performing a background validation.
      */
     void initializeCursors(OperationContext* opCtx);
 
     /**
      * Indicates whether extra logging should occur during validation.
+     *
+     * This is for unit testing only. Intended to improve diagnosibility.
      */
-    bool logDiagnostics() {
-        return _logDiagnostics;
+    bool extraLoggingForTest() {
+        return _extraLoggingForTest;
     }
 
     boost::optional<Timestamp> getValidateTimestamp() {
@@ -224,23 +202,20 @@ private:
 
     /**
      * Saves and restores the open cursors to release snapshots and minimize cache pressure for
-     * validation.
+     * validation.  For background validation, also refreshes the snapshot by starting a new storage
+     * transaction.
      */
     void _yieldCursors(OperationContext* opCtx);
-
-    bool _isIndexDataCheckpointed(OperationContext* opCtx, const IndexCatalogEntry* entry);
 
     NamespaceString _nss;
     ValidateMode _mode;
     RepairMode _repairMode;
     bool _collectionSchemaViolated = false;
-    bool _timeseriesDataInconsistency = false;
-    bool _BSONDataNonConformant = false;
 
     boost::optional<ShouldNotConflictWithSecondaryBatchApplicationBlock> _noPBWM;
     boost::optional<Lock::GlobalLock> _globalLock;
     boost::optional<AutoGetDb> _databaseLock;
-    boost::optional<CollectionNamespaceOrUUIDLock> _collectionLock;
+    boost::optional<Lock::CollectionLock> _collectionLock;
 
     Database* _database;
     CollectionPtr _collection;
@@ -256,14 +231,9 @@ private:
     std::vector<std::shared_ptr<const IndexCatalogEntry>> _indexes;
 
     // Shared cursors to be used during validation, created in 'initializeCursors()'.
-    StringMap<std::unique_ptr<SortedDataInterfaceThrottleCursor>> _indexCursors;
+    std::map<std::string, std::unique_ptr<SortedDataInterfaceThrottleCursor>> _indexCursors;
     std::unique_ptr<SeekableRecordThrottleCursor> _traverseRecordStoreCursor;
     std::unique_ptr<SeekableRecordThrottleCursor> _seekRecordStoreCursor;
-    StringMap<std::unique_ptr<ColumnStore::Cursor>> _columnStoreIndexCursors;
-
-    // Stores the set of indexes that will not be validated for some reason, e.g. they are not
-    // ready.
-    StringSet _skippedIndexes;
 
     RecordId _firstRecordId;
 
@@ -272,8 +242,8 @@ private:
     // Used to detect when the catalog is re-opened while yielding locks.
     uint64_t _catalogGeneration;
 
-    // Can be set to obtain better insight into what validate sees/does.
-    bool _logDiagnostics;
+    // Can be set by unit tests to obtain better insight into what validate sees/does.
+    bool _extraLoggingForTest;
 
     boost::optional<Timestamp> _validateTs = boost::none;
 };

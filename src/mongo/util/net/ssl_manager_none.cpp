@@ -28,10 +28,14 @@
  */
 
 #include "mongo/platform/basic.h"
+#include "mongo/util/net/ssl_manager_none.h"
 
 #include "mongo/base/init.h"
 
 namespace mongo {
+void initSslManagerNone() {
+
+}
 namespace {
 // we need a no-op initializer so that we can depend on SSLManager as a prerequisite in
 // non-SSL builds.

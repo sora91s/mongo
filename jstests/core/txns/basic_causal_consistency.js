@@ -1,7 +1,5 @@
 // Test that the shell helper supports causal consistency.
-// The test runs commands that are not allowed with security token: endSession.
-// @tags: [
-//   not_allowed_with_security_token,uses_transactions, uses_snapshot_read_concern]
+// @tags: [uses_transactions, uses_snapshot_read_concern]
 (function() {
 "use strict";
 

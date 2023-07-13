@@ -16,12 +16,8 @@ var defragmentationUtil = (function() {
         assert.commandWorked(mongos.adminCommand({shardCollection: ns, key: {key: 1}}));
         // Turn off balancer for this collection
         if (disableCollectionBalancing) {
-            // Use 'retryWrites' when writing to the configsvr because mongos does not automatically
-            // retry those.
-            const mongosSession = mongos.startSession({retryWrites: true});
-            const sessionConfigDB = mongosSession.getDatabase('config');
             assert.commandWorked(
-                sessionConfigDB.collections.update({_id: ns}, {$set: {"noBalance": true}}));
+                mongos.getDB('config').collections.update({_id: ns}, {$set: {"noBalance": true}}));
         }
 
         createAndDistributeChunks(mongos, ns, numChunks, chunkSpacing);
@@ -99,6 +95,18 @@ var defragmentationUtil = (function() {
         assert.commandWorked(bulk.execute());
     };
 
+    let checkForOversizedChunk = function(
+        coll, chunk, shardKey, avgObjSize, oversizedChunkThreshold) {
+        let chunkSize = coll.countDocuments(
+                            {[shardKey]: {$gte: chunk.min[shardKey], $lt: chunk.max[shardKey]}}) *
+            avgObjSize;
+        assert.lte(
+            chunkSize,
+            oversizedChunkThreshold,
+            `Chunk ${tojson(chunk)} has size ${chunkSize} which is greater than max chunk size of ${
+                oversizedChunkThreshold}`);
+    };
+
     let checkForMergeableChunkSiblings = function(
         coll, leftChunk, rightChunk, shardKey, avgObjSize, oversizedChunkThreshold) {
         let combinedDataSize =
@@ -116,6 +124,10 @@ var defragmentationUtil = (function() {
     };
 
     let checkPostDefragmentationState = function(configSvr, mongos, ns, maxChunkSizeMB, shardKey) {
+        const withAutoSplitActive =
+            !FeatureFlagUtil.isEnabled(configSvr.getDB('admin'), 'NoMoreAutoSplitter');
+        jsTest.log(`Chunk (auto)splitting functionalities assumed to be ${
+            withAutoSplitActive ? "ON" : "OFF"}`);
         const oversizedChunkThreshold = maxChunkSizeMB * 1024 * 1024 * 4 / 3;
         const chunks = findChunksUtil.findChunksByNs(mongos.getDB('config'), ns)
                            .sort({[shardKey]: 1})
@@ -142,11 +154,36 @@ var defragmentationUtil = (function() {
                 let leftChunkZone = getZoneForRange(mongos, ns, leftChunk.min, leftChunk.max);
                 let rightChunkZone = getZoneForRange(mongos, ns, rightChunk.min, rightChunk.max);
                 if (bsonWoCompare(leftChunkZone, rightChunkZone) === 0) {
-                    assert(false,
-                           `Chunks ${tojson(leftChunk)} and ${
-                               tojson(rightChunk)} should have been merged`);
+                    if (withAutoSplitActive) {
+                        checkForMergeableChunkSiblings(coll,
+                                                       leftChunk,
+                                                       rightChunk,
+                                                       shardKey,
+                                                       avgObjSizeByShard[leftChunk['shard']],
+                                                       oversizedChunkThreshold);
+                    } else {
+                        assert(false,
+                               `Chunks ${tojson(leftChunk)} and ${
+                                   tojson(rightChunk)} should have been merged`);
+                    }
                 }
             }
+            if (withAutoSplitActive) {
+                checkForOversizedChunk(coll,
+                                       leftChunk,
+                                       shardKey,
+                                       avgObjSizeByShard[leftChunk['shard']],
+                                       oversizedChunkThreshold);
+            }
+        }
+
+        if (withAutoSplitActive) {
+            const lastChunk = chunks[chunks.length - 1];
+            checkForOversizedChunk(coll,
+                                   lastChunk,
+                                   shardKey,
+                                   avgObjSizeByShard[lastChunk['shard']],
+                                   oversizedChunkThreshold);
         }
     };
 

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -47,9 +48,6 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -83,19 +81,18 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::internal)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::internal)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         uassert(ErrorCodes::IllegalOperation,
@@ -118,7 +115,7 @@ public:
             return shard->getId();
         }();
 
-        const auto catalogClient = ShardingCatalogManager::get(opCtx)->localCatalogClient();
+        const auto catalogClient = Grid::get(opCtx)->catalogClient();
         const auto shardingCatalogManager = ShardingCatalogManager::get(opCtx);
 
         const auto shardDrainingStatus = [&] {
@@ -145,7 +142,7 @@ public:
 
             BSONArrayBuilder dbs(dbInfoBuilder.subarrayStart("dbsToMove"));
             for (const auto& db : databases) {
-                if (db != DatabaseName::kLocal.db()) {
+                if (db != NamespaceString::kLocalDb) {
                     dbs.append(db);
                 }
             }

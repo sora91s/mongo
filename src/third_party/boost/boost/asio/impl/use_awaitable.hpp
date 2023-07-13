@@ -2,7 +2,7 @@
 // impl/use_awaitable.hpp
 // ~~~~~~~~~~~~~~~~~~~~~~
 //
-// Copyright (c) 2003-2022 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+// Copyright (c) 2003-2021 Christopher M. Kohlhoff (chris at kohlhoff dot com)
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -17,7 +17,6 @@
 
 #include <boost/asio/detail/config.hpp>
 #include <boost/asio/async_result.hpp>
-#include <boost/asio/cancellation_signal.hpp>
 
 #include <boost/asio/detail/push_options.hpp>
 
@@ -34,9 +33,8 @@ public:
   typedef awaitable<T, Executor> awaitable_type;
 
   // Construct from the entry point of a new thread of execution.
-  awaitable_handler_base(awaitable<awaitable_thread_entry_point, Executor> a,
-      const Executor& ex, cancellation_slot pcs, cancellation_state cs)
-    : awaitable_thread<Executor>(std::move(a), ex, pcs, cs)
+  awaitable_handler_base(awaitable<void, Executor> a, const Executor& ex)
+    : awaitable_thread<Executor>(std::move(a), ex)
   {
   }
 
@@ -49,8 +47,7 @@ public:
 protected:
   awaitable_frame<T, Executor>* frame() noexcept
   {
-    return static_cast<awaitable_frame<T, Executor>*>(
-        this->entry_point()->top_of_stack_);
+    return static_cast<awaitable_frame<T, Executor>*>(this->top_of_stack_);
   }
 };
 
@@ -68,7 +65,6 @@ public:
   {
     this->frame()->attach_thread(this);
     this->frame()->return_void();
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -88,7 +84,6 @@ public:
       this->frame()->set_error(ec);
     else
       this->frame()->return_void();
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -108,7 +103,6 @@ public:
       this->frame()->set_except(ex);
     else
       this->frame()->return_void();
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -126,7 +120,6 @@ public:
   {
     this->frame()->attach_thread(this);
     this->frame()->return_value(std::forward<Arg>(arg));
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -147,7 +140,6 @@ public:
       this->frame()->set_error(ec);
     else
       this->frame()->return_value(std::forward<Arg>(arg));
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -168,7 +160,6 @@ public:
       this->frame()->set_except(ex);
     else
       this->frame()->return_value(std::forward<Arg>(arg));
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -187,7 +178,6 @@ public:
   {
     this->frame()->attach_thread(this);
     this->frame()->return_values(std::forward<Args>(args)...);
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -209,7 +199,6 @@ public:
       this->frame()->set_error(ec);
     else
       this->frame()->return_values(std::forward<Args>(args)...);
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -231,7 +220,6 @@ public:
       this->frame()->set_except(ex);
     else
       this->frame()->return_values(std::forward<Args>(args)...);
-    this->frame()->clear_cancellation_slot();
     this->frame()->pop_frame();
     this->pump();
   }
@@ -263,27 +251,17 @@ public:
   typedef typename handler_type::awaitable_type return_type;
 
   template <typename Initiation, typename... InitArgs>
-#if defined(__APPLE_CC__) && (__clang_major__ == 13)
-  __attribute__((noinline))
-#endif // defined(__APPLE_CC__) && (__clang_major__ == 13)
-  static handler_type* do_init(
-      detail::awaitable_frame_base<Executor>* frame, Initiation& initiation,
-      use_awaitable_t<Executor> u, InitArgs&... args)
-  {
-    (void)u;
-    BOOST_ASIO_HANDLER_LOCATION((u.file_name_, u.line_, u.function_name_));
-    handler_type handler(frame->detach_thread());
-    std::move(initiation)(std::move(handler), std::move(args)...);
-    return nullptr;
-  }
-
-  template <typename Initiation, typename... InitArgs>
   static return_type initiate(Initiation initiation,
       use_awaitable_t<Executor> u, InitArgs... args)
   {
-    co_await [&] (auto* frame)
+    (void)u;
+
+    co_await [&](auto* frame)
       {
-        return do_init(frame, initiation, u, args...);
+        BOOST_ASIO_HANDLER_LOCATION((u.file_name_, u.line_, u.function_name_));
+        handler_type handler(frame->detach_thread());
+        std::move(initiation)(std::move(handler), std::move(args)...);
+        return static_cast<handler_type*>(nullptr);
       };
 
     for (;;) {} // Never reached.

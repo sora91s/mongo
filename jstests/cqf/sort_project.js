@@ -28,54 +28,47 @@ coll.insertMany([
 ]);
 
 const nDocs = 20;
-{
-    // Covered plan. Also an index scan on all fields is cheaper than a collection scan.
-    // TODO SERVER-71553 The Cost Model is overriden to preserve IndexScan plan.
-    const res = runWithParams(
-        [
-            {key: "internalCascadesOptimizerFastIndexNullHandling", value: true},
-            {key: 'internalCostModelCoefficients', value: {"indexScanStartupCost": 1e-9}}
-        ],
-        () => coll.explain("executionStats").aggregate([
-            {'$project': {_id: 0, f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}}
-        ]));
-    assert.eq(nDocs, res.executionStats.nReturned);
-    assertValueOnPlanPath("IndexScan", res, "child.child.nodeType");
-}
+
+var pln0 = [{'$project': {_id: 0, f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}}];
+
+var pln1 = [{'$sort': {f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}}];
+
+var pln2 = [
+    {'$project': {_id: 0, f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}},
+    {'$sort': {f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}}
+];
+
+var pln3 = [
+    {'$sort': {f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}},
+    {'$project': {_id: 0, f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}}
+];
 
 {
-    // We need to fetch since we do not restrict the set of output fields.
-    const res =
-        runWithParams([{key: "internalCascadesOptimizerFastIndexNullHandling", value: true}],
-                      () => coll.explain("executionStats").aggregate([
-                          {'$sort': {f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}}
-                      ]));
+    // Covered plan. Still chooses collection scan because there is no field size/count statistics.
+    // Also an index scan on all fields is not cheaper than a collection scan.
+    let res = coll.explain("executionStats").aggregate(pln0);
     assert.eq(nDocs, res.executionStats.nReturned);
-    assertValueOnPlanPath("Seek", res, "child.rightChild.child.nodeType");
-    assertValueOnPlanPath("IndexScan", res, "child.leftChild.nodeType");
+    assert.eq("IndexScan", res.queryPlanner.winningPlan.optimizerPlan.child.child.nodeType);
 }
 
 {
     // Covered plan.
-    const res =
-        runWithParams([{key: "internalCascadesOptimizerFastIndexNullHandling", value: true}],
-                      () => coll.explain("executionStats").aggregate([
-                          {'$project': {_id: 0, f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}},
-                          {'$sort': {f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}}
-                      ]));
+    let res = coll.explain("executionStats").aggregate(pln1);
     assert.eq(nDocs, res.executionStats.nReturned);
-    assertValueOnPlanPath("IndexScan", res, "child.child.nodeType");
+    assert.eq("IndexScan", res.queryPlanner.winningPlan.optimizerPlan.child.leftChild.nodeType);
 }
 
 {
     // Covered plan.
-    const res =
-        runWithParams([{key: "internalCascadesOptimizerFastIndexNullHandling", value: true}],
-                      () => coll.explain("executionStats").aggregate([
-                          {'$sort': {f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}},
-                          {'$project': {_id: 0, f_0: 1, f_1: 1, f_2: 1, f_3: 1, f_4: 1}}
-                      ]));
+    let res = coll.explain("executionStats").aggregate(pln2);
     assert.eq(nDocs, res.executionStats.nReturned);
-    assertValueOnPlanPath("IndexScan", res, "child.child.nodeType");
+    assert.eq("IndexScan", res.queryPlanner.winningPlan.optimizerPlan.child.child.nodeType);
+}
+
+{
+    // Covered plan.
+    let res = coll.explain("executionStats").aggregate(pln3);
+    assert.eq(nDocs, res.executionStats.nReturned);
+    assert.eq("IndexScan", res.queryPlanner.winningPlan.optimizerPlan.child.child.nodeType);
 }
 }());

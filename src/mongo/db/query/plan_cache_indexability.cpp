@@ -79,6 +79,7 @@ IndexabilityDiscriminator getCollatedIndexDiscriminator(const CollatorInterface*
             }
             return true;
         }
+
         // The predicate never compares strings so it is not affected by collation.
         return true;
     };
@@ -103,14 +104,21 @@ void PlanCacheIndexabilityState::processSparseIndex(const std::string& indexName
 
 void PlanCacheIndexabilityState::processPartialIndex(const std::string& indexName,
                                                      const MatchExpression* filterExpr) {
-    _globalDiscriminatorMap[indexName].addDiscriminator(getPartialIndexDiscriminator(filterExpr));
+    invariant(filterExpr);
+    for (size_t i = 0; i < filterExpr->numChildren(); ++i) {
+        processPartialIndex(indexName, filterExpr->getChild(i));
+    }
+    if (filterExpr->getCategory() != MatchExpression::MatchCategory::kLogical) {
+        _pathDiscriminatorsMap[filterExpr->path()][indexName].addDiscriminator(
+            getPartialIndexDiscriminator(filterExpr));
+    }
 }
 
 void PlanCacheIndexabilityState::processWildcardIndex(const CoreIndexInfo& cii) {
     invariant(cii.type == IndexType::INDEX_WILDCARD);
 
     _wildcardIndexDiscriminators.emplace_back(
-        cii.indexPathProjection->exec(), cii.identifier.catalogName, cii.collator);
+        cii.wildcardProjection->exec(), cii.identifier.catalogName, cii.collator);
 }
 
 void PlanCacheIndexabilityState::processIndexCollation(const std::string& indexName,
@@ -126,7 +134,7 @@ namespace {
 const IndexToDiscriminatorMap emptyDiscriminators{};
 }  // namespace
 
-const IndexToDiscriminatorMap& PlanCacheIndexabilityState::getPathDiscriminators(
+const IndexToDiscriminatorMap& PlanCacheIndexabilityState::getDiscriminators(
     StringData path) const {
     PathDiscriminatorsMap::const_iterator it = _pathDiscriminatorsMap.find(path);
     if (it == _pathDiscriminatorsMap.end()) {
@@ -158,7 +166,6 @@ IndexToDiscriminatorMap PlanCacheIndexabilityState::buildWildcardDiscriminators(
 void PlanCacheIndexabilityState::updateDiscriminators(
     const std::vector<CoreIndexInfo>& indexCores) {
     _pathDiscriminatorsMap = PathDiscriminatorsMap();
-    _globalDiscriminatorMap = IndexToDiscriminatorMap();
     _wildcardIndexDiscriminators.clear();
 
     for (const auto& idx : indexCores) {
@@ -175,12 +182,9 @@ void PlanCacheIndexabilityState::updateDiscriminators(
             // Instead, we just record some information about the wildcard index so that the
             // discriminators can be constructed on demand at query runtime.
             processWildcardIndex(idx);
-        }
-
-        if (feature_flags::gFeatureFlagCompoundWildcardIndexes.isEnabledAndIgnoreFCV() ||
-            idx.type != IndexType::INDEX_WILDCARD) {
-            // If the index is wildcard compound or not wildcard, add discriminators for
-            // fields mentioned in the key pattern.
+        } else {
+            // If the index is not wildcard, add discriminators for fields mentioned in the key
+            // pattern.
             if (idx.sparse) {
                 processSparseIndex(idx.identifier.catalogName, idx.keyPattern);
             }

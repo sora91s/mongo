@@ -167,15 +167,10 @@ withReshardingInBackground(() => {
 
     jsTest.log(
         "About to test that the admin commands do not work while the resharding operation is in progress.");
-
     assert.commandFailedWithCode(
         mongos.adminCommand(
             {moveChunk: sourceNamespace, find: {oldKey: -10}, to: donorShardNames[1]}),
-
-        [
-            ErrorCodes.LockBusy,  // TODO SERVER-68551: remove LockBusy from expected error set
-            ErrorCodes.ConflictingOperationInProgress
-        ]);
+        ErrorCodes.LockBusy);
     assert.commandFailedWithCode(
         mongos.adminCommand({reshardCollection: otherNamespace, key: {newKey: 1}}),
         ErrorCodes.ReshardCollectionInProgress);

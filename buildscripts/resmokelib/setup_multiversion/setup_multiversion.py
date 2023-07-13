@@ -93,6 +93,7 @@ class EvgURLInfo(NamedTuple):
 class SetupMultiversion(Subcommand):
     """Main class for the setup multiversion subcommand."""
 
+    # pylint: disable=too-many-instance-attributes
     def __init__(self, download_options, install_dir="", link_dir="", mv_platform=None,
                  edition=None, architecture=None, use_latest=None, versions=None, variant=None,
                  install_last_lts=None, install_last_continuous=None, evergreen_config=None,
@@ -372,6 +373,7 @@ class SetupMultiversion(Subcommand):
     @staticmethod
     def setup_mongodb(artifacts_url, binaries_url, symbols_url, python_venv_url, install_dir,
                       bin_suffix=None, link_dir=None, install_dir_list=None):
+        # pylint: disable=too-many-arguments
         """Download, extract and symlink."""
 
         for url in [artifacts_url, binaries_url, symbols_url, python_venv_url]:

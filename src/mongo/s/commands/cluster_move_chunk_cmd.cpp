@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
@@ -39,34 +43,28 @@
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_commands_helpers.h"
-#include "mongo/s/commands/cluster_commands_gen.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/migration_secondary_throttle_options.h"
 #include "mongo/s/request_types/move_range_request_gen.h"
-#include "mongo/s/shard_key_pattern_query_util.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 namespace mongo {
 namespace {
 
-class MoveChunkCmd final : public TypedCommand<MoveChunkCmd> {
+class MoveChunkCmd : public ErrmsgCommandDeprecated {
 public:
-    MoveChunkCmd()
-        : TypedCommand(ClusterMoveChunkRequest::kCommandName,
-                       ClusterMoveChunkRequest::kCommandAlias) {}
-
-    using Request = ClusterMoveChunkRequest;
+    MoveChunkCmd() : ErrmsgCommandDeprecated("moveChunk", "movechunk") {}
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
-
     bool adminOnly() const override {
         return true;
     }
 
+    bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return true;
+    }
 
     std::string help() const override {
         return "Example: move chunk that contains the doc {num : 7} to shard001\n"
@@ -76,158 +74,148 @@ public:
                " , to : 'shard001' }\n";
     }
 
-    class Invocation : public MinimalInvocationBase {
-    public:
-        using MinimalInvocationBase::MinimalInvocationBase;
-
-    private:
-        bool supportsWriteConcern() const override {
-            return true;
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forExactNamespace(NamespaceString(parseNs(dbname, cmdObj))),
+                ActionType::moveChunk)) {
+            return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
 
-        void doCheckAuthorization(OperationContext* opCtx) const override {
-            uassert(ErrorCodes::Unauthorized,
-                    "Unauthorized",
-                    AuthorizationSession::get(opCtx->getClient())
-                        ->isAuthorizedForActionsOnResource(ResourcePattern::forExactNamespace(ns()),
-                                                           ActionType::moveChunk));
+        return Status::OK();
+    }
+
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsFullyQualified(cmdObj);
+    }
+
+    bool errmsgRun(OperationContext* opCtx,
+                   const std::string& dbname,
+                   const BSONObj& cmdObj,
+                   std::string& errmsg,
+                   BSONObjBuilder& result) override {
+        Timer t;
+
+        const NamespaceString nss(parseNs(dbname, cmdObj));
+
+        const auto cm = uassertStatusOK(
+            Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
+                                                                                         nss));
+
+        const auto toElt = cmdObj["to"];
+        uassert(ErrorCodes::TypeMismatch,
+                "'to' must be of type String",
+                toElt.type() == BSONType::String);
+        const std::string toString = toElt.str();
+        if (!toString.size()) {
+            errmsg = "you have to specify where you want to move the chunk";
+            return false;
         }
 
-        NamespaceString ns() const override {
-            return request().getCommandParameter();
+        const auto toStatus = Grid::get(opCtx)->shardRegistry()->getShard(opCtx, toString);
+        if (!toStatus.isOK()) {
+            LOGV2_OPTIONS(22755,
+                          {logv2::UserAssertAfterLog(ErrorCodes::ShardNotFound)},
+                          "Could not move chunk in {namespace} to {toShardId} because that shard"
+                          " does not exist",
+                          "moveChunk destination shard does not exist",
+                          "toShardId"_attr = toString,
+                          "namespace"_attr = nss.ns());
         }
 
-        void run(OperationContext* opCtx, rpc::ReplyBuilderInterface* result) {
+        const auto to = toStatus.getValue();
+        const auto forceJumboElt = cmdObj["forceJumbo"];
+        const auto forceJumbo = forceJumboElt && forceJumboElt.Bool();
 
-            Timer t;
-            const auto chunkManager =
-                uassertStatusOK(
-                    Grid::get(opCtx)
-                        ->catalogCache()
-                        ->getShardedCollectionRoutingInfoWithPlacementRefresh(opCtx, ns()))
-                    .cm;
+        BSONObj find = cmdObj.getObjectField("find");
+        BSONObj bounds = cmdObj.getObjectField("bounds");
 
-            uassert(ErrorCodes::InvalidOptions,
-                    "bounds can only have exactly 2 elements",
-                    !request().getBounds() || request().getBounds()->size() == 2);
+        // check that only one of the two chunk specification methods is used
+        if (find.isEmpty() == bounds.isEmpty()) {
+            errmsg = "need to specify either a find query, or both lower and upper bounds.";
+            return false;
+        }
 
-            uassert(ErrorCodes::InvalidOptions,
-                    "cannot specify bounds and query at the same time",
-                    !(request().getFind() && request().getBounds()));
+        boost::optional<Chunk> chunk;
 
-            uassert(ErrorCodes::InvalidOptions,
-                    "need to specify query or bounds",
-                    request().getFind() || request().getBounds());
-
-
-            std::string destination = request().getTo().toString();
-            const auto toStatus = Grid::get(opCtx)->shardRegistry()->getShard(opCtx, destination);
-
-            if (!toStatus.isOK()) {
-                LOGV2_OPTIONS(
-                    22755,
-                    {logv2::UserAssertAfterLog(ErrorCodes::ShardNotFound)},
-                    "Could not move chunk in {namespace} to {toShardId} because that shard"
-                    " does not exist",
-                    "moveChunk destination shard does not exist",
-                    "toShardId"_attr = destination,
-                    "namespace"_attr = ns());
+        if (!find.isEmpty()) {
+            // find
+            BSONObj shardKey =
+                uassertStatusOK(cm.getShardKeyPattern().extractShardKeyFromQuery(opCtx, nss, find));
+            if (shardKey.isEmpty()) {
+                errmsg = str::stream() << "no shard key found in chunk query " << find;
+                return false;
             }
 
-
-            const auto to = toStatus.getValue();
-
-            auto find = request().getFind();
-            auto bounds = request().getBounds();
-
-
-            boost::optional<Chunk> chunk;
-
-            if (find) {
-                // find
-                BSONObj shardKey = uassertStatusOK(extractShardKeyFromBasicQuery(
-                    opCtx, ns(), chunkManager.getShardKeyPattern(), *find));
-
-                uassert(656450,
-                        str::stream() << "no shard key found in chunk query " << *find,
-                        !shardKey.isEmpty());
-
-                if (find && chunkManager.getShardKeyPattern().isHashedPattern()) {
-                    LOGV2_WARNING(7065400,
-                                  "bounds should be used instead of query for hashed shard keys");
-                }
-
-                chunk.emplace(chunkManager.findIntersectingChunkWithSimpleCollation(shardKey));
-            } else {
-
-                auto minBound = bounds->front();
-                auto maxBound = bounds->back();
-                uassert(656451,
-                        str::stream() << "shard key bounds "
-                                      << "[" << minBound << "," << maxBound << ")"
-                                      << " are not valid for shard key pattern "
-                                      << chunkManager.getShardKeyPattern().toBSON(),
-                        chunkManager.getShardKeyPattern().isShardKey(minBound) &&
-                            chunkManager.getShardKeyPattern().isShardKey(maxBound));
-
-                BSONObj minKey = chunkManager.getShardKeyPattern().normalizeShardKey(minBound);
-                BSONObj maxKey = chunkManager.getShardKeyPattern().normalizeShardKey(maxBound);
-
-                chunk.emplace(chunkManager.findIntersectingChunkWithSimpleCollation(minKey));
-                uassert(656452,
-                        str::stream() << "no chunk found with the shard key bounds "
-                                      << ChunkRange(minKey, maxKey).toString(),
-                        chunk->getMin().woCompare(minKey) == 0 &&
-                            chunk->getMax().woCompare(maxKey) == 0);
+            chunk.emplace(cm.findIntersectingChunkWithSimpleCollation(shardKey));
+        } else {
+            // bounds
+            if (!cm.getShardKeyPattern().isShardKey(bounds[0].Obj()) ||
+                !cm.getShardKeyPattern().isShardKey(bounds[1].Obj())) {
+                errmsg = str::stream()
+                    << "shard key bounds "
+                    << "[" << bounds[0].Obj() << "," << bounds[1].Obj() << ")"
+                    << " are not valid for shard key pattern " << cm.getShardKeyPattern().toBSON();
+                return false;
             }
 
+            BSONObj minKey = cm.getShardKeyPattern().normalizeShardKey(bounds[0].Obj());
+            BSONObj maxKey = cm.getShardKeyPattern().normalizeShardKey(bounds[1].Obj());
 
-            MoveRangeRequestBase moveRangeReq;
-            moveRangeReq.setToShard(to->getId());
-            moveRangeReq.setMin(chunk->getMin());
-            moveRangeReq.setMax(chunk->getMax());
-            moveRangeReq.setWaitForDelete(request().getWaitForDelete().value_or(false) ||
-                                          request().get_waitForDelete().value_or(false));
+            chunk.emplace(cm.findIntersectingChunkWithSimpleCollation(minKey));
 
+            if (chunk->getMin().woCompare(minKey) != 0 || chunk->getMax().woCompare(maxKey) != 0) {
+                errmsg = str::stream() << "no chunk found with the shard key bounds "
+                                       << ChunkRange(minKey, maxKey).toString();
+                return false;
+            }
+        }
 
-            ConfigsvrMoveRange configsvrRequest(ns());
-            configsvrRequest.setDbName(DatabaseName::kAdmin);
-            configsvrRequest.setMoveRangeRequestBase(moveRangeReq);
+        const auto secondaryThrottle =
+            uassertStatusOK(MigrationSecondaryThrottleOptions::createFromCommand(cmdObj));
 
-            const auto secondaryThrottle = uassertStatusOK(
-                MigrationSecondaryThrottleOptions::createFromCommand(request().toBSON({})));
+        const bool waitForDelete =
+            cmdObj["_waitForDelete"].trueValue() || cmdObj["waitForDelete"].trueValue();
 
+        MoveRangeRequestBase moveRangeReq;
+        moveRangeReq.setToShard(to->getId());
+        moveRangeReq.setMin(chunk->getMin());
+        moveRangeReq.setMax(chunk->getMax());
+        moveRangeReq.setWaitForDelete(waitForDelete);
+
+        ConfigsvrMoveRange configsvrRequest(nss);
+        configsvrRequest.setDbName(NamespaceString::kAdminDb);
+        configsvrRequest.setMoveRangeRequestBase(moveRangeReq);
+        configsvrRequest.setForceJumbo(forceJumbo ? ForceJumbo::kForceManual
+                                                  : ForceJumbo::kDoNotForce);
+        if (secondaryThrottle.getSecondaryThrottle() == MigrationSecondaryThrottleOptions::kOn) {
             configsvrRequest.setSecondaryThrottle(secondaryThrottle);
-
-            configsvrRequest.setForceJumbo(request().getForceJumbo() ? ForceJumbo::kForceManual
-                                                                     : ForceJumbo::kDoNotForce);
-
-            auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
-            auto commandResponse = configShard->runCommand(
-                opCtx,
-                ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-                DatabaseName::kAdmin.toString(),
-                CommandHelpers::appendMajorityWriteConcern(configsvrRequest.toBSON({})),
-                Shard::RetryPolicy::kIdempotent);
-            uassertStatusOK(Shard::CommandResponse::getEffectiveStatus(std::move(commandResponse)));
-
-            Grid::get(opCtx)
-                ->catalogCache()
-                ->invalidateShardOrEntireCollectionEntryForShardedCollection(
-                    ns(), boost::none, chunk->getShardId());
-            Grid::get(opCtx)
-                ->catalogCache()
-                ->invalidateShardOrEntireCollectionEntryForShardedCollection(
-                    ns(), boost::none, to->getId());
-
-            BSONObjBuilder resultbson;
-            resultbson.append("millis", t.millis());
-            result->getBodyBuilder().appendElements(resultbson.obj());
         }
-    };
 
+        auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
+        auto commandResponse = configShard->runCommand(
+            opCtx,
+            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+            NamespaceString::kAdminDb.toString(),
+            CommandHelpers::appendMajorityWriteConcern(configsvrRequest.toBSON({})),
+            Shard::RetryPolicy::kIdempotent);
+        uassertStatusOK(Shard::CommandResponse::getEffectiveStatus(std::move(commandResponse)));
 
-} clusterMoveChunk;
+        Grid::get(opCtx)
+            ->catalogCache()
+            ->invalidateShardOrEntireCollectionEntryForShardedCollection(
+                nss, boost::none, chunk->getShardId());
+        Grid::get(opCtx)
+            ->catalogCache()
+            ->invalidateShardOrEntireCollectionEntryForShardedCollection(
+                nss, boost::none, to->getId());
+
+        result.append("millis", t.millis());
+        return true;
+    }
+
+} moveChunk;
 
 }  // namespace
 }  // namespace mongo

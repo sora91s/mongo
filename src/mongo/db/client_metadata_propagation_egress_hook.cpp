@@ -29,6 +29,7 @@
 
 #include "mongo/db/client_metadata_propagation_egress_hook.h"
 
+#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/write_block_bypass.h"
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/rpc/metadata/impersonated_user_metadata.h"
@@ -49,7 +50,9 @@ Status ClientMetadataPropagationEgressHook::writeRequestMetadata(OperationContex
             metadata->writeToMetadata(metadataBob);
         }
 
-        WriteBlockBypass::get(opCtx).writeAsMetadata(metadataBob);
+        if (gFeatureFlagUserWriteBlocking.isEnabled(serverGlobalParams.featureCompatibility)) {
+            WriteBlockBypass::get(opCtx).writeAsMetadata(metadataBob);
+        }
 
         return Status::OK();
     } catch (...) {

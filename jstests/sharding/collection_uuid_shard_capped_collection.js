@@ -1,5 +1,9 @@
 /**
  * Tests the collectionUUID parameter of the shardCollection command against capped collections.
+ *
+ * @tags: [
+ *   requires_fcv_60,
+ * ]
  */
 (function() {
 'use strict';

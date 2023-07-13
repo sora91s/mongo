@@ -1,6 +1,8 @@
 /**
  * Test that verifies client metadata is logged as part of slow query logging in MongoD.
  */
+load("jstests/libs/logv2_helpers.js");
+
 (function() {
 'use strict';
 
@@ -21,8 +23,14 @@ assert.eq(count, 1, "expected 1 document");
 
 print(`Checking ${conn.fullOptions.logFile} for client metadata message`);
 let log = cat(conn.fullOptions.logFile);
-let predicate =
-    /Slow query.*test.foo.*"appName":"MongoDB Shell".*"command":{"count":"foo","query":{"\$where":{"\$code":"function\(\)/;
+let predicate = null;
+if (isJsonLog(conn)) {
+    predicate =
+        /Slow query.*test.foo.*"appName":"MongoDB Shell".*"command":{"count":"foo","query":{"\$where":{"\$code":"function\(\)/;
+} else {
+    predicate =
+        /COMMAND .* command test.foo appName: "MongoDB Shell" command: count { count: "foo", query: { \$where: function\(\)/;
+}
 
 // Dump the log line by line to avoid log truncation
 for (var a of log.split("\n")) {

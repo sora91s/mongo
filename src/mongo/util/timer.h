@@ -74,11 +74,11 @@ public:
     }
 
 private:
-    TickSource* _tickSource;
+    TickSource* const _tickSource;
 
     // Derived value from _countsPerSecond. This represents the conversion ratio
     // from clock ticks to microseconds.
-    double _microsPerCount;
+    const double _microsPerCount;
 
     long long now() const;
 

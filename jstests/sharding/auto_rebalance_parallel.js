@@ -1,5 +1,8 @@
 /**
  * Tests that the cluster is balanced in parallel in one balancer round (standalone).
+ * @tags: [
+ *   requires_fcv_60,
+ * ]
  */
 
 (function() {

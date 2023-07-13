@@ -29,7 +29,6 @@
 
 #pragma once
 
-#include "mongo/db/exec/sbe/expressions/compile_ctx.h"
 #include "mongo/db/exec/sbe/expressions/expression.h"
 #include "mongo/db/exec/sbe/size_estimator.h"
 #include "mongo/db/exec/sbe/stages/stages.h"
@@ -59,21 +58,16 @@ class FilterStage final : public PlanStage {
 public:
     FilterStage(std::unique_ptr<PlanStage> input,
                 std::unique_ptr<EExpression> filter,
-                PlanNodeId planNodeId,
-                bool participateInTrialRunTracking = true)
-        : PlanStage(IsConst ? "cfilter"_sd : (IsEof ? "efilter" : "filter"_sd),
-                    planNodeId,
-                    participateInTrialRunTracking),
+                PlanNodeId planNodeId)
+        : PlanStage(IsConst ? "cfilter"_sd : (IsEof ? "efilter" : "filter"_sd), planNodeId),
           _filter(std::move(filter)) {
         static_assert(!IsEof || !IsConst);
         _children.emplace_back(std::move(input));
     }
 
     std::unique_ptr<PlanStage> clone() const final {
-        return std::make_unique<FilterStage<IsConst, IsEof>>(_children[0]->clone(),
-                                                             _filter->clone(),
-                                                             _commonStats.nodeId,
-                                                             _participateInTrialRunTracking);
+        return std::make_unique<FilterStage<IsConst, IsEof>>(
+            _children[0]->clone(), _filter->clone(), _commonStats.nodeId);
     }
 
     void prepare(CompileCtx& ctx) final {

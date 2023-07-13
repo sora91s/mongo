@@ -4,32 +4,31 @@
  *
  * This test is based on "tenant_migration_retryable_write_retry_on_recipient.js".
  *
- * TODO (SERVER-68159) we should no longer need to use the incompatible_with_shard_merge. Remove it.
- *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
- *   incompatible_with_shard_merge,
  *   requires_majority_read_concern,
  *   requires_persistence,
  *   serverless,
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {runMigrationAsync} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");  // for 'Thread'
 load("jstests/libs/uuid_util.js");
-load("jstests/replsets/rslib.js");  // 'createRstArgs'
 
 function testRetryOnRecipient(ordered) {
     const tenantMigrationTest = new TenantMigrationTest({name: jsTestName()});
 
     const donorPrimary = tenantMigrationTest.getDonorPrimary();
 
-    const kTenantId = ObjectId().str;
+    const kTenantId = "testTenantId";
     const kDbName = tenantMigrationTest.tenantDB(kTenantId, "tsDb");
     const kCollNameBefore = "tsCollBefore";
     const kCollNameDuring = "tsCollDuring";
@@ -42,8 +41,8 @@ function testRetryOnRecipient(ordered) {
     const recipientPrimary = tenantMigrationTest.getRecipientPrimary();
     const recipientDb = recipientPrimary.getDB(kDbName);
 
-    const pauseTenantMigrationBeforeLeavingDataSyncState =
-        configureFailPoint(donorPrimary, "pauseTenantMigrationBeforeLeavingDataSyncState");
+    const waitBeforeFetchingTransactions = configureFailPoint(
+        recipientPrimary, "fpBeforeFetchingCommittedTransactions", {action: "hang"});
 
     const migrationId = UUID();
     const migrationOpts = {
@@ -92,18 +91,19 @@ function testRetryOnRecipient(ordered) {
     jsTestLog("Run retryable writes before the migration");
     assert.commandWorked(donorDb.runCommand(beforeWrites.retryableInsertCommand));
 
-    const donorRstArgs = createRstArgs(tenantMigrationTest.getDonorRst());
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(tenantMigrationTest.getDonorRst());
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
     migrationThread.start();
 
-    pauseTenantMigrationBeforeLeavingDataSyncState.wait();
+    waitBeforeFetchingTransactions.wait();
 
     jsTestLog("Run retryable writes during the migration");
     assert.commandWorked(donorDb.runCommand(duringWrites.retryableInsertCommand));
 
     // Wait for the migration to complete.
     jsTest.log("Waiting for migration to complete");
-    pauseTenantMigrationBeforeLeavingDataSyncState.off();
+    waitBeforeFetchingTransactions.off();
     TenantMigrationTest.assertCommitted(migrationThread.returnData());
 
     // Print the no-op oplog entries for debugging purposes.
@@ -163,3 +163,4 @@ function testRetryOnRecipient(ordered) {
 
 testRetryOnRecipient(true);
 testRetryOnRecipient(false);
+})();

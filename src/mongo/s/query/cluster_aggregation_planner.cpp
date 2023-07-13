@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -34,14 +35,12 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/connpool.h"
 #include "mongo/db/auth/authorization_session.h"
-#include "mongo/db/catalog_shard_feature_flag_gen.h"
 #include "mongo/db/pipeline/change_stream_constants.h"
 #include "mongo/db/pipeline/change_stream_invalidation_info.h"
 #include "mongo/db/pipeline/document_source_limit.h"
 #include "mongo/db/pipeline/document_source_skip.h"
 #include "mongo/db/pipeline/sharded_agg_helpers.h"
 #include "mongo/db/query/find_common.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/op_msg_rpc_impls.h"
@@ -57,19 +56,15 @@
 #include "mongo/s/query/router_stage_remove_metadata_fields.h"
 #include "mongo/s/query/router_stage_skip.h"
 #include "mongo/s/query/store_possible_cursor.h"
-#include "mongo/s/query_analysis_sampler_util.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/transaction_router.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 namespace cluster_aggregation_planner {
 
 MONGO_FAIL_POINT_DEFINE(shardedAggregateFailToDispatchExchangeConsumerPipeline);
 MONGO_FAIL_POINT_DEFINE(shardedAggregateFailToEstablishMergingShardCursor);
-MONGO_FAIL_POINT_DEFINE(shardedAggregateHangBeforeDispatchMergingPipeline);
 
 using sharded_agg_helpers::DispatchShardPipelineResults;
 using sharded_agg_helpers::SplitPipeline;
@@ -102,7 +97,7 @@ AsyncRequestsSender::Response establishMergingShardCursor(OperationContext* opCt
     MultiStatementTransactionRequestsSender ars(
         opCtx,
         Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
-        nss.dbName(),
+        nss.db().toString(),
         {{mergingShardId, mergeCmdObj}},
         ReadPreferenceSetting::get(opCtx),
         sharded_agg_helpers::getDesiredRetryPolicy(opCtx));
@@ -157,7 +152,7 @@ BSONObj createCommandForMergingShard(Document serializedCommand,
 
     // Attach the IGNORED chunk version to the command. On the shard, this will skip the actual
     // version check but will nonetheless mark the operation as versioned.
-    auto mergeCmdObj = appendShardVersion(mergeCmd.freeze().toBson(), ShardVersion::IGNORED());
+    auto mergeCmdObj = appendShardVersion(mergeCmd.freeze().toBson(), ChunkVersion::IGNORED());
 
     // Attach the read and write concerns if needed, and return the final command object.
     return applyReadWriteConcern(mergeCtx->opCtx,
@@ -176,13 +171,9 @@ Status dispatchMergingPipeline(const boost::intrusive_ptr<ExpressionContext>& ex
                                const PrivilegeVector& privileges,
                                bool hasChangeStream) {
     // We should never be in a situation where we call this function on a non-merge pipeline.
-    tassert(6525900,
-            "tried to dispatch merge pipeline but the pipeline was not split",
-            shardDispatchResults.splitPipeline);
+    invariant(shardDispatchResults.splitPipeline);
     auto* mergePipeline = shardDispatchResults.splitPipeline->mergePipeline.get();
-    tassert(6525901,
-            "tried to dispatch merge pipeline but there was no merge portion of the split pipeline",
-            mergePipeline);
+    invariant(mergePipeline);
     auto* opCtx = expCtx->opCtx;
 
     std::vector<ShardId> targetedShards;
@@ -241,13 +232,9 @@ Status dispatchMergingPipeline(const boost::intrusive_ptr<ExpressionContext>& ex
                             privileges,
                             expCtx->tailableMode));
 
-    // If the mergingShard returned an error and did not accept ownership it is our responsibility
-    // to kill the cursors.
-    uassertStatusOK(getStatusFromCommandResult(mergeResponse.swResponse.getValue().data));
-
-    // If we didn't get an error from the merging shard, ownership for the shard cursors has been
-    // transferred to the merging shard. Dismiss the ownership in the current merging pipeline such
-    // that when it goes out of scope it does not attempt to kill the cursors.
+    // Ownership for the shard cursors has been transferred to the merging shard. Dismiss the
+    // ownership in the current merging pipeline such that when it goes out of scope it does not
+    // attempt to kill the cursors.
     auto mergeCursors = static_cast<DocumentSourceMergeCursors*>(mergePipeline->peekFront());
     mergeCursors->dismissCursorOwnership();
 
@@ -349,36 +336,31 @@ BSONObj establishMergingMongosCursor(OperationContext* opCtx,
         responseBuilder.setPostBatchResumeToken(ccc->getPostBatchResumeToken());
     }
 
-    bool exhausted = cursorState != ClusterCursorManager::CursorState::NotExhausted;
-    int nShards = ccc->getNumRemotes();
-
-    // Fill out the aggregation metrics in CurOp, and record telemetry metrics, before detaching the
-    // cursor from its opCtx.
-    CurOp::get(opCtx)->debug().nShards = std::max(CurOp::get(opCtx)->debug().nShards, nShards);
-    CurOp::get(opCtx)->debug().cursorExhausted = exhausted;
-    CurOp::get(opCtx)->debug().nreturned = responseBuilder.numDocs();
-    if (exhausted) {
-        collectTelemetryMongos(opCtx);
-    } else {
-        collectTelemetryMongos(opCtx, ccc);
-    }
-
     ccc->detachFromOperationContext();
 
+    int nShards = ccc->getNumRemotes();
     CursorId clusterCursorId = 0;
-    if (!exhausted) {
-        auto authUser = AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserName();
+
+    if (cursorState == ClusterCursorManager::CursorState::NotExhausted) {
+        auto authUsers = AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames();
         clusterCursorId = uassertStatusOK(Grid::get(opCtx)->getCursorManager()->registerCursor(
             opCtx,
             ccc.releaseCursor(),
             requestedNss,
             ClusterCursorManager::CursorType::MultiTarget,
             ClusterCursorManager::CursorLifetime::Mortal,
-            authUser));
-        CurOp::get(opCtx)->debug().cursorid = clusterCursorId;
+            authUsers));
     }
 
-    responseBuilder.done(clusterCursorId, requestedNss);
+    // Fill out the aggregation metrics in CurOp.
+    if (clusterCursorId > 0) {
+        CurOp::get(opCtx)->debug().cursorid = clusterCursorId;
+    }
+    CurOp::get(opCtx)->debug().nShards = std::max(CurOp::get(opCtx)->debug().nShards, nShards);
+    CurOp::get(opCtx)->debug().cursorExhausted = (clusterCursorId == 0);
+    CurOp::get(opCtx)->debug().nreturned = responseBuilder.numDocs();
+
+    responseBuilder.done(clusterCursorId, requestedNss.ns());
 
     auto bodyBuilder = replyBuilder.getBodyBuilder();
     CommandHelpers::appendSimpleCommandStatus(bodyBuilder, true);
@@ -453,11 +435,8 @@ DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
 
     SplitPipeline splitPipeline{nullptr, std::move(mergePipeline), boost::none};
 
-    // Relinquish ownership of the consumer pipelines' cursors. These cursors are now set up to be
-    // merged by a set of $mergeCursors pipelines that we just dispatched to the shards above. Now
-    // that we've established those pipelines on the shards, we are no longer responsible for
-    // ensuring they are cleaned up. If there was a problem establishing the cursors then
-    // establishCursors() would have thrown and mongos would kill all the consumer cursors itself.
+    // Relinquish ownership of the local consumer pipelines' cursors as each shard is now
+    // responsible for its own producer cursors.
     for (const auto& pipeline : consumerPipelines) {
         const auto& mergeCursors =
             static_cast<DocumentSourceMergeCursors*>(pipeline.shardsPipeline->peekFront());
@@ -514,7 +493,8 @@ BSONObj getUnshardedCollInfo(OperationContext* opCtx,
                              const NamespaceString& nss) {
     auto shard = uassertStatusOK(Grid::get(opCtx)->shardRegistry()->getShard(opCtx, shardId));
     ScopedDbConnection conn(shard->getConnString());
-    std::list<BSONObj> all = conn->getCollectionInfos(nss.dbName(), BSON("name" << nss.coll()));
+    std::list<BSONObj> all =
+        conn->getCollectionInfos(nss.db().toString(), BSON("name" << nss.coll()));
     if (all.empty()) {
         // Collection does not exist, return an empty object.
         return BSONObj();
@@ -593,7 +573,7 @@ AggregationTargeter AggregationTargeter::make(
     // Check if any of the involved collections are sharded.
     bool involvesShardedCollections = [&]() {
         for (const auto& nss : involvedNamespaces) {
-            const auto [resolvedNsCM, _] =
+            const auto resolvedNsCM =
                 uassertStatusOK(getCollectionRoutingInfoForTxnCmd(opCtx, nss));
             if (resolvedNsCM.isSharded()) {
                 return true;
@@ -603,13 +583,12 @@ AggregationTargeter AggregationTargeter::make(
     }();
 
     // Determine whether this aggregation must be dispatched to all shards in the cluster.
-    const bool mustRunOnAllShards = sharded_agg_helpers::checkIfMustRunOnAllShards(
-        executionNss, hasChangeStream, startsWithDocuments);
+    const bool mustRunOnAll =
+        sharded_agg_helpers::mustRunOnAllShards(executionNss, hasChangeStream, startsWithDocuments);
 
     // If we don't have a routing table, then this is either a $changeStream which must run on all
     // shards or a $documents stage which must not.
-    invariant(cm || (mustRunOnAllShards && hasChangeStream) ||
-              (startsWithDocuments && !mustRunOnAllShards));
+    invariant(cm || (mustRunOnAll && hasChangeStream) || (startsWithDocuments && !mustRunOnAll));
 
     // A pipeline is allowed to passthrough to the primary shard iff the following conditions are
     // met:
@@ -621,7 +600,7 @@ AggregationTargeter AggregationTargeter::make(
     //    $currentOp.
     // 4. Doesn't need transformation via DocumentSource::serialize(). For example, list sessions
     //    needs to include information about users that can only be deduced on mongos.
-    if (cm && !cm->isSharded() && !mustRunOnAllShards && allowedToPassthrough &&
+    if (cm && !cm->isSharded() && !mustRunOnAll && allowedToPassthrough &&
         !involvesShardedCollections) {
         return AggregationTargeter{TargetingPolicy::kPassthrough, nullptr, cm};
     } else {
@@ -638,7 +617,6 @@ Status runPipelineOnPrimaryShard(const boost::intrusive_ptr<ExpressionContext>& 
                                  boost::optional<ExplainOptions::Verbosity> explain,
                                  Document serializedCommand,
                                  const PrivilegeVector& privileges,
-                                 bool eligibleForSampling,
                                  BSONObjBuilder* out) {
     return runPipelineOnSpecificShardOnly(expCtx,
                                           namespaces,
@@ -647,8 +625,7 @@ Status runPipelineOnPrimaryShard(const boost::intrusive_ptr<ExpressionContext>& 
                                           serializedCommand,
                                           privileges,
                                           cm.dbPrimary(),
-                                          false /* forPerShardCursor */,
-                                          eligibleForSampling,
+                                          false,
                                           out);
 }
 
@@ -689,16 +666,11 @@ Status dispatchPipelineAndMerge(OperationContext* opCtx,
                                 const PrivilegeVector& privileges,
                                 BSONObjBuilder* result,
                                 bool hasChangeStream,
-                                bool startsWithDocuments,
-                                bool eligibleForSampling) {
+                                bool startsWithDocuments) {
     auto expCtx = targeter.pipeline->getContext();
     // If not, split the pipeline as necessary and dispatch to the relevant shards.
-    auto shardDispatchResults =
-        sharded_agg_helpers::dispatchShardPipeline(serializedCommand,
-                                                   hasChangeStream,
-                                                   startsWithDocuments,
-                                                   eligibleForSampling,
-                                                   std::move(targeter.pipeline));
+    auto shardDispatchResults = sharded_agg_helpers::dispatchShardPipeline(
+        serializedCommand, hasChangeStream, startsWithDocuments, std::move(targeter.pipeline));
 
     // If the operation is an explain, then we verify that it succeeded on all targeted
     // shards, write the results to the output builder, and return immediately.
@@ -731,8 +703,6 @@ Status dispatchPipelineAndMerge(OperationContext* opCtx,
         shardDispatchResults = dispatchExchangeConsumerPipeline(
             expCtx, namespaces.executionNss, serializedCommand, &shardDispatchResults);
     }
-
-    shardedAggregateHangBeforeDispatchMergingPipeline.pauseWhileSet();
 
     // If we reach here, we have a merge pipeline to dispatch.
     return dispatchMergingPipeline(expCtx,
@@ -808,7 +778,6 @@ Status runPipelineOnSpecificShardOnly(const boost::intrusive_ptr<ExpressionConte
                                       const PrivilegeVector& privileges,
                                       ShardId shardId,
                                       bool forPerShardCursor,
-                                      bool eligibleForSampling,
                                       BSONObjBuilder* out) {
     auto opCtx = expCtx->opCtx;
 
@@ -832,9 +801,8 @@ Status runPipelineOnSpecificShardOnly(const boost::intrusive_ptr<ExpressionConte
                                                                            boost::none,
                                                                            overrideBatchSize);
 
-    if (!forPerShardCursor && (!dbVersion || !dbVersion->isFixed())) {
-        // A fixed dbVersion database can't move or be sharded, so we don't attach any version.
-        cmdObj = appendShardVersion(std::move(cmdObj), ShardVersion::UNSHARDED());
+    if (!forPerShardCursor && shardId != ShardId::kConfigServerId) {
+        cmdObj = appendShardVersion(std::move(cmdObj), ChunkVersion::UNSHARDED());
     }
     if (!forPerShardCursor) {
         // Unless this is a per shard cursor, we need to send shard version info.
@@ -842,19 +810,10 @@ Status runPipelineOnSpecificShardOnly(const boost::intrusive_ptr<ExpressionConte
         cmdObj = appendDbVersionIfPresent(std::move(cmdObj), *dbVersion);
     }
 
-    if (eligibleForSampling) {
-        if (auto sampleId = analyze_shard_key::tryGenerateSampleId(
-                opCtx,
-                namespaces.executionNss,
-                analyze_shard_key::SampledCommandNameEnum::kAggregate)) {
-            cmdObj = analyze_shard_key::appendSampleId(std::move(cmdObj), std::move(*sampleId));
-        }
-    }
-
     MultiStatementTransactionRequestsSender ars(
         opCtx,
         Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
-        namespaces.executionNss.dbName(),
+        namespaces.executionNss.db().toString(),
         {{shardId, cmdObj}},
         ReadPreferenceSetting::get(opCtx),
         Shard::RetryPolicy::kIdempotent);

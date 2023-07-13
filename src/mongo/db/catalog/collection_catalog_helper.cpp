@@ -28,7 +28,6 @@
  */
 
 #include "mongo/db/catalog/collection_catalog_helper.h"
-
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -61,15 +60,15 @@ Status checkIfNamespaceExists(OperationContext* opCtx, const NamespaceString& ns
 
 
 void forEachCollectionFromDb(OperationContext* opCtx,
-                             const DatabaseName& dbName,
+                             const TenantDatabaseName& tenantDbName,
                              LockMode collLockMode,
                              CollectionCatalog::CollectionInfoFn callback,
                              CollectionCatalog::CollectionInfoFn predicate) {
 
     auto catalogForIteration = CollectionCatalog::get(opCtx);
-    for (auto collectionIt = catalogForIteration->begin(opCtx, dbName);
+    for (auto collectionIt = catalogForIteration->begin(opCtx, tenantDbName);
          collectionIt != catalogForIteration->end(opCtx);) {
-        auto uuid = collectionIt.uuid();
+        auto uuid = collectionIt.uuid().get();
         if (predicate && !catalogForIteration->checkIfCollectionSatisfiable(uuid, predicate)) {
             ++collectionIt;
             continue;
@@ -87,7 +86,7 @@ void forEachCollectionFromDb(OperationContext* opCtx,
 
             if (catalog->lookupNSSByUUID(opCtx, uuid) == nss) {
                 // Success: locked the namespace and the UUID still maps to it.
-                collection = CollectionPtr(catalog->lookupCollectionByUUID(opCtx, uuid));
+                collection = catalog->lookupCollectionByUUID(opCtx, uuid);
                 invariant(collection);
                 break;
             }
@@ -103,7 +102,7 @@ void forEachCollectionFromDb(OperationContext* opCtx,
         if (!collection)
             continue;
 
-        if (!callback(collection.get()))
+        if (!callback(collection))
             break;
 
         hangBeforeGettingNextCollection.pauseWhileSet();

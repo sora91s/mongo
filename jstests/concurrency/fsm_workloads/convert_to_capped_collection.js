@@ -13,8 +13,6 @@
  */
 
 var $config = (function() {
-    load("jstests/libs/feature_flag_util.js");
-
     // TODO: This workload may fail if an iteration multiplier is specified.
     var data = {prefix: 'convert_to_capped_collection'};
 
@@ -42,9 +40,7 @@ var $config = (function() {
             assertWhenOwnDB(!db[this.threadCollName].isCapped());
             assertWhenOwnDB.commandWorked(db[this.threadCollName].convertToCapped(this.size));
             assertWhenOwnDB(db[this.threadCollName].isCapped());
-            if (!FeatureFlagUtil.isPresentAndEnabled(db, "CappedCollectionsRelaxedSize")) {
-                assertWhenOwnDB(isMultiple256(db[this.threadCollName].stats().maxSize));
-            }
+            assertWhenOwnDB(isMultiple256(db[this.threadCollName].stats().maxSize));
         }
 
         function convertToCapped(db, collName) {
@@ -54,9 +50,7 @@ var $config = (function() {
 
             assertWhenOwnDB.commandWorked(db[this.threadCollName].convertToCapped(this.size));
             assertWhenOwnDB(db[this.threadCollName].isCapped());
-            if (!FeatureFlagUtil.isPresentAndEnabled(db, "CappedCollectionsRelaxedSize")) {
-                assertWhenOwnDB(isMultiple256(db[this.threadCollName].stats().maxSize));
-            }
+            assertWhenOwnDB(isMultiple256(db[this.threadCollName].stats().maxSize));
 
             // only the _id index should remain after running convertToCapped
             var indexKeys = db[this.threadCollName].getIndexKeys();

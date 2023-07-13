@@ -36,6 +36,11 @@
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
+    
+void initMyCannotImplicitlyCreateCollectionInfo() {
+
+}
+
 namespace {
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(CannotImplicitlyCreateCollectionInfo);

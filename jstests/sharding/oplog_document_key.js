@@ -8,21 +8,6 @@
 (function() {
 "use strict";
 
-function validateDocumentKeyInOplogForRemove(ns, _id, docKey) {
-    const deleteEntry = oplog.findOne({ns: ns, op: 'd', 'o._id': _id});
-    const o = docKey ? {_id: _id, x: docKey} : {_id: _id};
-    if (deleteEntry) {
-        assert.docEq(o, deleteEntry.o);
-    } else {
-        // Validate this is a batched delete, which includes the document key.
-        const elemMatch = docKey ? {'ns': ns, 'op': 'd', 'o._id': _id, 'o.x': docKey}
-                                 : {'ns': ns, 'op': 'd', 'o._id': _id};
-        const applyOpsEntry =
-            oplog.findOne({ns: 'admin.$cmd', op: 'c', 'o.applyOps': {$elemMatch: elemMatch}});
-        assert.docEq(o, applyOpsEntry.o.applyOps[0].o);
-    }
-}
-
 var st = new ShardingTest({name: 'test', shards: {rs0: {nodes: 1}}});
 var db = st.s.getDB('test');
 
@@ -127,8 +112,10 @@ jsTest.log("Test remove command: 'un'");
 assert.commandWorked(db.un.remove({_id: 10}));
 assert.commandWorked(db.un.remove({_id: 30}));
 
-validateDocumentKeyInOplogForRemove('test.un', 10);
-validateDocumentKeyInOplogForRemove('test.un', 30);
+a = oplog.findOne({ns: 'test.un', op: 'd', 'o._id': 10});
+assert.eq(a.o, {_id: 10});
+b = oplog.findOne({ns: 'test.un', op: 'd', 'o._id': 30});
+assert.eq(b.o, {_id: 30});
 
 ////////////////////////////////////////////////////////////////////////
 jsTest.log("Test remove command: 'byX'");
@@ -136,8 +123,10 @@ jsTest.log("Test remove command: 'byX'");
 assert.commandWorked(db.byX.remove({_id: 12}));
 assert.commandWorked(db.byX.remove({_id: 32}));
 
-validateDocumentKeyInOplogForRemove('test.byX', 12, 52);
-validateDocumentKeyInOplogForRemove('test.byX', 32, 72);
+a = oplog.findOne({ns: 'test.byX', op: 'd', 'o._id': 12});
+assert.eq(a.o, {x: 52, _id: 12});
+b = oplog.findOne({ns: 'test.byX', op: 'd', 'o._id': 32});
+assert.eq(b.o, {x: 72, _id: 32});
 
 ////////////////////////////////////////////////////////////////////////
 jsTest.log("Test remove command: 'byXId'");
@@ -145,8 +134,10 @@ jsTest.log("Test remove command: 'byXId'");
 assert.commandWorked(db.byXId.remove({_id: 13}));
 assert.commandWorked(db.byXId.remove({_id: 33}));
 
-validateDocumentKeyInOplogForRemove('test.byXId', 13, 53);
-validateDocumentKeyInOplogForRemove('test.byXId', 33, 73);
+a = oplog.findOne({ns: 'test.byXId', op: 'd', 'o._id': 13});
+assert.eq(a.o, {x: 53, _id: 13});
+b = oplog.findOne({ns: 'test.byXId', op: 'd', 'o._id': 33});
+assert.eq(b.o, {x: 73, _id: 33});
 
 ////////////////////////////////////////////////////////////////////////
 jsTest.log("Test remove command: 'byIdX'");
@@ -154,8 +145,10 @@ jsTest.log("Test remove command: 'byIdX'");
 assert.commandWorked(db.byIdX.remove({_id: 14}));
 assert.commandWorked(db.byIdX.remove({_id: 34}));
 
-validateDocumentKeyInOplogForRemove('test.byIdX', 14, 54);
-validateDocumentKeyInOplogForRemove('test.byIdX', 34, 74);
+a = oplog.findOne({ns: 'test.byIdX', op: 'd', 'o._id': 14});
+assert.eq(a.o, {_id: 14, x: 54});
+b = oplog.findOne({ns: 'test.byIdX', op: 'd', 'o._id': 34});
+assert.eq(b.o, {_id: 34, x: 74});
 
 st.stop();
 })();

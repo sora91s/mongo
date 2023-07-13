@@ -1,78 +1,77 @@
 # -*- mode: python -*-
 
-Import([
-    "env",
-    "get_option",
-])
+Import("env")
 
 env = env.Clone()
 
 env.SConscript(
     dirs=[
-        'ce',
-        'collation',
-        'cost_model',
-        'datetime',
+        "ce",
+        "collation",
+        "datetime",
         'optimizer',
-        'stats',
     ],
     exports=[
-        'env',
+        'env'
     ],
 )
 
 env.Library(
     target='canonical_query',
-    source=['canonical_query.cpp', 'canonical_query_encoder.cpp', 'query_shape.cpp'],
+    source=[
+        "canonical_query.cpp",
+        "canonical_query_encoder.cpp",
+    ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/crypto/encrypted_field_config',
-        '$BUILD_DIR/mongo/db/cst/cst',
-        '$BUILD_DIR/mongo/db/query_expressions',
-        'collation/collator_factory_interface',
-        'collation/collator_interface',
-        'projection_ast',
-        'sort_pattern',
+        "$BUILD_DIR/mongo/crypto/encrypted_field_config",
+        "$BUILD_DIR/mongo/db/cst/cst",
+        "$BUILD_DIR/mongo/db/matcher/expressions",
+        "collation/collator_factory_interface",
+        "collation/collator_interface",
+        "projection_ast",
+        "sort_pattern",
     ],
     LIBDEPS_PRIVATE=[
-        'common_query_enums_and_helpers',
+        "common_query_enums_and_helpers",
     ],
 )
 
 env.Library(
-    target='query_planner',
+    target="query_planner",
     source=[
-        'expression_index_knobs.idl',
-        'expression_index.cpp',
-        'index_bounds_builder.cpp',
-        'interval_evaluation_tree.cpp',
-        'plan_cache_indexability.cpp',
-        'plan_enumerator.cpp',
-        'planner_access.cpp',
-        'planner_analysis.cpp',
-        'planner_ixselect.cpp',
-        'planner_wildcard_helpers.cpp',
-        'query_planner_common.cpp',
-        'query_planner.cpp',
-        'query_settings.cpp',
-        'query_solution.cpp',
-        'stage_types.cpp',
+        "expression_index_knobs.idl",
+        "expression_index.cpp",
+        "index_bounds_builder.cpp",
+        "interval_evaluation_tree.cpp",
+        "plan_cache_indexability.cpp",
+        "plan_enumerator.cpp",
+        "planner_access.cpp",
+        "planner_analysis.cpp",
+        "planner_ixselect.cpp",
+        "planner_wildcard_helpers.cpp",
+        "query_planner_common.cpp",
+        "query_planner.cpp",
+        "query_settings.cpp",
+        "query_solution.cpp",
+        "stage_types.cpp",
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/catalog/clustered_collection_options',
-        '$BUILD_DIR/mongo/db/exec/sbe/query_sbe_plan_stats',
-        '$BUILD_DIR/mongo/db/index/expression_params',
-        '$BUILD_DIR/mongo/db/query_expressions',
-        'canonical_query',
-        'query_index_bounds',
-        'query_knobs',
+        "$BUILD_DIR/mongo/base",
+        "$BUILD_DIR/mongo/db/catalog/clustered_collection_options",
+        "$BUILD_DIR/mongo/db/commands/server_status_core",
+        "$BUILD_DIR/mongo/db/exec/sbe/query_sbe_plan_stats",
+        "$BUILD_DIR/mongo/db/index/expression_params",
+        "$BUILD_DIR/mongo/db/index/key_generator",
+        "$BUILD_DIR/mongo/db/index_names",
+        "canonical_query",
+        "query_index_bounds",
+        "query_knobs",
+        "query_plan_cache",
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/commands/server_status_core',
         '$BUILD_DIR/mongo/db/fts/base_fts',
-        '$BUILD_DIR/mongo/db/index/index_access_method',
-        '$BUILD_DIR/mongo/db/record_id_helpers',
-        '$BUILD_DIR/mongo/db/server_base',
-        'query_plan_cache',
+        "$BUILD_DIR/mongo/db/record_id_helpers",
+        "$BUILD_DIR/mongo/idl/server_parameter",
     ],
 )
 
@@ -86,48 +85,51 @@ env.Library(
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/base",
-        "$BUILD_DIR/mongo/db/query_expressions",
-    ],
+        "$BUILD_DIR/mongo/db/matcher/expressions",
+    ]
 )
 
 env.Library(
-    target='memory_util',
+    target="query_plan_cache",
     source=[
-        'util/memory_util.cpp',
+        "classic_plan_cache.cpp",
+        "plan_cache_callbacks.cpp",
+        "plan_cache_invalidator.cpp",
+        "sbe_plan_cache.cpp",
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/util/pcre_wrapper',
-        '$BUILD_DIR/mongo/util/processinfo',
-    ],
+        "$BUILD_DIR/mongo/base",
+        "$BUILD_DIR/mongo/db/exec/sbe/query_sbe",
+        "canonical_query",
+    ]
 )
 
 env.Library(
-    target='query_plan_cache',
+    target='sbe_stage_builder_helpers',
     source=[
-        'classic_plan_cache.cpp',
-        'plan_cache_callbacks.cpp',
-        'plan_cache_invalidator.cpp',
-        'sbe_plan_cache.cpp',
+        "sbe_stage_builder_helpers.cpp",
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
+        "$BUILD_DIR/mongo/base",
         '$BUILD_DIR/mongo/db/exec/sbe/query_sbe',
-        '$BUILD_DIR/mongo/db/query_expressions',
-        'canonical_query',
-        'memory_util',
+        '$BUILD_DIR/mongo/db/exec/sbe/query_sbe_stages',
+        '$BUILD_DIR/mongo/db/exec/sbe/query_sbe_storage',
+        "$BUILD_DIR/mongo/db/index/index_access_method",
+        "$BUILD_DIR/mongo/db/matcher/expressions",
+        "$BUILD_DIR/mongo/db/storage/execution_context",
     ],
 )
 
 env.Library(
     target='projection_ast',
     source=[
-        'projection.cpp',
-        'projection_ast_util.cpp',
-        'projection_parser.cpp',
+        "projection.cpp",
+        "projection_ast_util.cpp",
+        "projection_parser.cpp",
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/query_expressions',
+        "$BUILD_DIR/mongo/base",
+        "$BUILD_DIR/mongo/db/matcher/expressions",
     ],
 )
 
@@ -177,8 +179,9 @@ env.Library(
     source=[
         'map_reduce_output_format.cpp',
     ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/namespace_string',
     ],
 )
 
@@ -189,87 +192,83 @@ env.Library(
         'cursor_response.idl',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
-        '$BUILD_DIR/mongo/util/namespace_string_database_name_util',
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/idl/basic_types',
+        '$BUILD_DIR/mongo/idl/idl_parser',
     ],
 )
 
 env.Library(
     target='command_request_response',
     source=[
-        'analyze_command.idl',
-        'count_command_as_aggregation_command.cpp',
-        'count_command.idl',
-        'count_request.cpp',
+        "count_command_as_aggregation_command.cpp",
+        "count_request.cpp",
         'cursor_request.cpp',
         'cursor_response.cpp',
-        'kill_cursors.idl',
         'view_response_formatter.cpp',
+        'count_command.idl',
+        'kill_cursors.idl',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/bson/util/bson_extract',
         '$BUILD_DIR/mongo/db/common',
+        '$BUILD_DIR/mongo/db/namespace_string',
         '$BUILD_DIR/mongo/db/ops/write_ops_parsers',
         '$BUILD_DIR/mongo/db/query/hint_parser',
         '$BUILD_DIR/mongo/db/repl/optime',
+        '$BUILD_DIR/mongo/idl/idl_parser',
         '$BUILD_DIR/mongo/rpc/command_status',
         '$BUILD_DIR/mongo/rpc/rpc',
-        '$BUILD_DIR/mongo/util/namespace_string_database_name_util',
         'query_request',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
-        'cursor_response_idl',
+        "cursor_response_idl",
     ],
 )
 
 env.Library(
-    target='query_request',
+    target="query_request",
     source=[
-        'distinct_command.idl',
-        'find_command.idl',
-        'getmore_command.idl',
-        'query_request_helper.cpp',
-        'max_time_ms_parser.cpp',
-        'tailable_mode.cpp',
-        'tailable_mode.idl',
+        "distinct_command.idl",
+        "find_command.idl",
+        "getmore_command.idl",
+        "query_request_helper.cpp",
+        "max_time_ms_parser.cpp",
+        "tailable_mode.cpp",
+        "tailable_mode.idl",
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/crypto/fle_fields',
-        '$BUILD_DIR/mongo/db/api_parameters',
+        "$BUILD_DIR/mongo/base",
+        "$BUILD_DIR/mongo/crypto/fle_fields",
+        "$BUILD_DIR/mongo/db/api_parameters",
         '$BUILD_DIR/mongo/db/auth/authprivilege',
-        '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
-        '$BUILD_DIR/mongo/db/pipeline/runtime_constants_idl',
-        '$BUILD_DIR/mongo/db/repl/read_concern_args',
-        '$BUILD_DIR/mongo/util/namespace_string_database_name_util',
-        'hint_parser',
+        "$BUILD_DIR/mongo/db/catalog/collection_catalog",
+        "$BUILD_DIR/mongo/db/commands/test_commands_enabled",
+        "$BUILD_DIR/mongo/db/namespace_string",
+        "$BUILD_DIR/mongo/db/pipeline/runtime_constants_idl",
+        "$BUILD_DIR/mongo/db/repl/read_concern_args",
+        "hint_parser",
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
-        'cursor_response_idl',
-        'telemetry_idl',
+        "cursor_response_idl",
     ],
 )
 
 env.Library(
-    target='query_knobs',
+    target="query_knobs",
     source=[
-        'ce_mode_parameter.cpp',
-        'cost_model/cost_model_on_update.cpp',
-        'explain_version_validator.cpp',
-        'framework_control.cpp',
+        'plan_cache_size_parameter.cpp',
         'query_feature_flags.idl',
         'query_knobs.idl',
         'sbe_plan_cache_on_parameter_change.cpp',
-        'telemetry_util.cpp',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_base',
-        '$BUILD_DIR/mongo/db/service_context',
-        '$BUILD_DIR/mongo/idl/cluster_server_parameter',
-        '$BUILD_DIR/mongo/util/pcre_wrapper',
-        'memory_util',
-    ],
+        "$BUILD_DIR/mongo/db/service_context",
+        '$BUILD_DIR/mongo/idl/feature_flag',
+        '$BUILD_DIR/mongo/idl/server_parameter',
+        '$BUILD_DIR/third_party/shim_pcrecpp',
+    ]
 )
 
 env.Library(
@@ -278,11 +277,12 @@ env.Library(
         "query_test_service_context.cpp",
     ],
     LIBDEPS=[
+        "$BUILD_DIR/mongo/db/logical_session_id",
         "$BUILD_DIR/mongo/db/service_context",
-        "$BUILD_DIR/mongo/db/session/logical_session_id",
         "collation/collator_factory_mock",
     ],
-    LIBDEPS_PRIVATE=[],
+    LIBDEPS_PRIVATE=[
+    ],
 )
 
 env.Library(
@@ -309,9 +309,9 @@ env.Library(
 )
 
 env.Library(
-    target='hint_parser',
+    target="hint_parser",
     source=[
-        'hint_parser.cpp',
+        "hint_parser.cpp",
         'hint.idl',
     ],
     LIBDEPS=[
@@ -320,21 +320,21 @@ env.Library(
 )
 
 env.Library(
-    target='sort_pattern',
+    target="sort_pattern",
     source=[
-        'sort_pattern.cpp',
+        "sort_pattern.cpp",
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/exec/document_value/document_value',
-        '$BUILD_DIR/mongo/db/query_expressions',
+        '$BUILD_DIR/mongo/db/pipeline/expression_context',
     ],
-)
+ )
 
 env.Library(
-    target='plan_yield_policy',
+    target="plan_yield_policy",
     source=[
-        'plan_yield_policy.cpp',
+        "plan_yield_policy.cpp",
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -342,78 +342,10 @@ env.Library(
         '$BUILD_DIR/mongo/util/fail_point',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/concurrency/exception_util',
+        '$BUILD_DIR/mongo/db/concurrency/write_conflict_exception',
         '$BUILD_DIR/mongo/db/storage/recovery_unit_base',
     ],
-)
-
-env.Library(
-    target='rate_limiting',
-    source=[
-        'rate_limiting.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/util/clock_sources',
-    ],
-)
-
-env.Library(
-    target='op_metrics',
-    source=[
-        'telemetry.cpp',
-        '$BUILD_DIR/mongo/db/curop.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/bson/mutable/mutable_bson',
-        '$BUILD_DIR/mongo/db/commands',
-        '$BUILD_DIR/mongo/db/concurrency/lock_manager',
-        '$BUILD_DIR/mongo/db/generic_cursor',
-        '$BUILD_DIR/mongo/db/profile_filter',
-        '$BUILD_DIR/mongo/db/server_options',
-        '$BUILD_DIR/mongo/db/service_context',
-        '$BUILD_DIR/mongo/db/stats/counters',
-        '$BUILD_DIR/mongo/db/stats/timer_stats',
-        '$BUILD_DIR/mongo/db/storage/storage_engine_parameters',
-        '$BUILD_DIR/mongo/rpc/client_metadata',
-        '$BUILD_DIR/mongo/transport/service_executor',
-        '$BUILD_DIR/mongo/util/diagnostic_info'
-        if get_option('use-diagnostic-latches') == 'on' else [],
-        '$BUILD_DIR/mongo/util/fail_point',
-        '$BUILD_DIR/mongo/util/net/network',
-        '$BUILD_DIR/mongo/util/processinfo',
-        '$BUILD_DIR/mongo/util/progress_meter',
-        'command_request_response',
-        'memory_util',
-        'query_knobs',
-        'rate_limiting',
-        'telemetry_idl',
-    ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/auth/auth',
-        '$BUILD_DIR/mongo/db/auth/user_acquisition_stats',
-        '$BUILD_DIR/mongo/db/exec/projection_executor',
-        '$BUILD_DIR/mongo/db/prepare_conflict_tracker',
-        '$BUILD_DIR/mongo/db/stats/resource_consumption_metrics',
-        # TODO (SERVER-66896): Remove this dependency.
-        '$BUILD_DIR/mongo/db/storage/storage_engine_feature_flags',
-        '$BUILD_DIR/mongo/util/concurrency/admission_context',
-        '$BUILD_DIR/mongo/util/md5',
-        '$BUILD_DIR/mongo/util/namespace_string_database_name_util',
-        'projection_ast',
-        'sort_pattern',
-    ],
-)
-
-env.Library(
-    target='telemetry_idl',
-    source=['telemetry.idl'],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        "$BUILD_DIR/mongo/idl/idl_parser",
-    ],
-)
+ )
 
 env.CppUnitTest(
     target="db_query_test",
@@ -421,7 +353,6 @@ env.CppUnitTest(
         "canonical_query_encoder_test.cpp",
         "canonical_query_test.cpp",
         "canonical_query_test_util.cpp",
-        "ce_mode_parameter_test.cpp",
         "classic_stage_builder_test.cpp",
         "count_command_test.cpp",
         "cursor_response_test.cpp",
@@ -440,56 +371,47 @@ env.CppUnitTest(
         "interval_test.cpp",
         "killcursors_request_test.cpp",
         "lru_key_value_test.cpp",
+        'map_reduce_output_format_test.cpp',
         "parsed_distinct_test.cpp",
         "plan_cache_indexability_test.cpp",
+        "plan_cache_size_parameter_test.cpp",
         "plan_cache_key_info_test.cpp",
         "plan_cache_test.cpp",
         "plan_ranker_test.cpp",
         "planner_access_test.cpp",
         "planner_analysis_test.cpp",
         "planner_ixselect_test.cpp",
-        "planner_wildcard_helpers_test.cpp",
         "projection_ast_test.cpp",
         "projection_test.cpp",
         "query_planner_array_test.cpp",
         "query_planner_collation_test.cpp",
         "query_planner_columnar_test.cpp",
         "query_planner_geo_test.cpp",
+        "query_planner_pipeline_pushdown_test.cpp",
         "query_planner_hashed_index_test.cpp",
+        "query_planner_partialidx_test.cpp",
         "query_planner_index_test.cpp",
         "query_planner_operator_test.cpp",
         "query_planner_options_test.cpp",
-        "query_planner_partialidx_test.cpp",
-        "query_planner_pipeline_pushdown_test.cpp",
-        "query_planner_text_test.cpp",
         "query_planner_tree_test.cpp",
+        "query_planner_text_test.cpp",
         "query_planner_wildcard_index_test.cpp",
         "query_request_test.cpp",
         "query_settings_test.cpp",
-        "query_shape_test.cpp",
         "query_solution_test.cpp",
-        "rate_limiting_test.cpp",
         "sbe_and_hash_test.cpp",
         "sbe_and_sorted_test.cpp",
-        "sbe_shard_filter_test.cpp",
         "sbe_stage_builder_accumulator_test.cpp",
-        "sbe_stage_builder_const_eval_test.cpp",
         "sbe_stage_builder_lookup_test.cpp",
-        "sbe_stage_builder_test.cpp",
         "sbe_stage_builder_test_fixture.cpp",
-        "sbe_stage_builder_type_checker_test.cpp",
+        "sbe_stage_builder_test.cpp",
+        "sbe_shard_filter_test.cpp",
         "shard_filterer_factory_mock.cpp",
-        "sort_pattern_test.cpp",
-        "telemetry_store_test.cpp",
-        "util/memory_util_test.cpp",
         "view_response_formatter_test.cpp",
-        'map_reduce_output_format_test.cpp',
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/db/auth/authmocks",
-        "$BUILD_DIR/mongo/db/catalog/collection_crud",
         "$BUILD_DIR/mongo/db/concurrency/lock_manager",
-        "$BUILD_DIR/mongo/db/exec/document_value/document_value_test_util",
         "$BUILD_DIR/mongo/db/exec/sbe/sbe_plan_stage_test",
         "$BUILD_DIR/mongo/db/multitenancy",
         "$BUILD_DIR/mongo/db/pipeline/aggregation_request_helper",
@@ -498,6 +420,7 @@ env.CppUnitTest(
         "$BUILD_DIR/mongo/db/repl/replmocks",
         "$BUILD_DIR/mongo/db/repl/storage_interface_impl",
         "$BUILD_DIR/mongo/db/service_context_d_test_fixture",
+        "$BUILD_DIR/mongo/db/service_context_test_fixture",
         "$BUILD_DIR/mongo/dbtests/mocklib",
         "$BUILD_DIR/mongo/rpc/rpc",
         "$BUILD_DIR/mongo/util/clock_source_mock",
@@ -510,21 +433,6 @@ env.CppUnitTest(
         "query_planner",
         "query_planner_test_fixture",
         "query_request",
-        "query_test_service_context",
-        "rate_limiting",
-    ],
-)
-
-env.Benchmark(
-    target="sbe_expression_bm",
-    source=[
-        "sbe_expression_bm.cpp",
-    ],
-    LIBDEPS=[
-        "$BUILD_DIR/mongo/db/auth/authmocks",
-        "$BUILD_DIR/mongo/db/exec/sbe/query_sbe_stages",
-        "$BUILD_DIR/mongo/db/pipeline/expression_bm_fixture",
-        "$BUILD_DIR/mongo/db/query_exec",
         "query_test_service_context",
     ],
 )

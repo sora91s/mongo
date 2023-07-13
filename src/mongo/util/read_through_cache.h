@@ -31,6 +31,7 @@
 
 #include <boost/optional.hpp>
 
+#include "mongo/bson/oid.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/platform/mutex.h"
 #include "mongo/util/concurrency/thread_pool_interface.h"
@@ -48,7 +49,7 @@ class ReadThroughCacheBase {
     ReadThroughCacheBase& operator=(const ReadThroughCacheBase&) = delete;
 
 protected:
-    ReadThroughCacheBase(ServiceContext* service, ThreadPoolInterface& threadPool);
+    ReadThroughCacheBase(Mutex& mutex, ServiceContext* service, ThreadPoolInterface& threadPool);
 
     virtual ~ReadThroughCacheBase();
 
@@ -83,18 +84,17 @@ protected:
     // functionality, such as client/operation context creation)
     ServiceContext* const _serviceContext;
 
-private:
     // Thread pool to be used for invoking the blocking 'lookup' calls
     ThreadPoolInterface& _threadPool;
 
-    // Used to protect calls to 'tryCancel' above and is shared across all emitted CancelTokens.
-    // Semantically, each CancelToken's interruption is independent from all the others so they
-    // could have their own mutexes, but in the interest of not creating a mutex for each async task
-    // spawned, we share the mutex here.
-    //
-    // Has a lock level of 2, meaning what while held, any code is only allowed to take the Client
-    // lock.
-    Mutex _cancelTokensMutex = MONGO_MAKE_LATCH("ReadThroughCacheBase::_cancelTokensMutex");
+    // Used to protect the shared state in the child ReadThroughCache template below. Has a lock
+    // level of 3, meaning that while held, it is only allowed to take '_cancelTokenMutex' below and
+    // the Client lock.
+    Mutex& _mutex;
+
+    // Used to protect calls to 'tryCancel' above. Has a lock level of 2, meaning what while held,
+    // it is only allowed to take the Client lock.
+    Mutex _cancelTokenMutex = MONGO_MAKE_LATCH("ReadThroughCacheBase::_cancelTokenMutex");
 };
 
 template <typename Result, typename Key, typename Value, typename Time>
@@ -496,8 +496,7 @@ public:
                      ThreadPoolInterface& threadPool,
                      LookupFn lookupFn,
                      int cacheSize)
-        : ReadThroughCacheBase(service, threadPool),
-          _mutex(mutex),
+        : ReadThroughCacheBase(mutex, service, threadPool),
           _lookupFn(std::move(lookupFn)),
           _cache(cacheSize) {}
 
@@ -512,10 +511,10 @@ private:
                                                      LruKeyComparator<Key>>;
 
     /**
-     * This method implements an asynchronous "while (!valid)" loop over the in-progress lookup
-     * object for 'key', which must have been previously placed on the in-progress map.
+     * This method implements an asynchronous "while (!valid)" loop over 'key', which must be on the
+     * in-progress map.
      */
-    Future<LookupResult> _doLookupWhileNotValid(Key key, StatusWith<LookupResult> sw) noexcept {
+    Future<LookupResult> _doLookupWhileNotValid(Key key, StatusWith<LookupResult> sw) {
         stdx::unique_lock ul(_mutex);
         auto it = _inProgressLookups.find(key);
         invariant(it != _inProgressLookups.end());
@@ -544,14 +543,7 @@ private:
             // 'invalidate'. Place the value on the cache and return the necessary promises to
             // signal (those which are waiting for time < time at the store).
             auto& result = sw.getValue();
-            const auto timeOfOldestPromise = inProgressLookup.getTimeOldestPromise(ul);
             auto promisesToSet = inProgressLookup.getPromisesLessThanOrEqualToTime(ul, result.t);
-            tassert(6493100,
-                    str::stream() << "Time monotonicity violation: lookup time "
-                                  << result.t.toString()
-                                  << " which is less than the earliest expected timeInStore "
-                                  << timeOfOldestPromise.toString() << ".",
-                    !promisesToSet.empty());
 
             auto valueHandleToSet = [&] {
                 if (result.v) {
@@ -600,11 +592,6 @@ private:
             : Future<LookupResult>::makeReady(Status(ErrorCodes::Error(461542), ""));
     }
 
-    // Used to protect the shared below. Has a lock level of 3, meaning that while held, any code is
-    // only allowed to take '_cancelTokensMutex' (which in turn is allowed to be followed by the
-    // Client lock).
-    Mutex& _mutex;
-
     // Blocking function which will be invoked to retrieve entries from the backing store
     const LookupFn _lookupFn;
 
@@ -630,8 +617,8 @@ private:
  * the invalidation logic as described in the comments of 'ReadThroughCache::invalidate'.
  *
  * It is intended to be used in conjunction with the 'ReadThroughCache', which operates on it under
- * its '_mutex' and ensures there is always at most one active instance at a time active for each
- * 'key'.
+ * its '_mutex' and ensures there is always at most a single active instance at a time active for
+ * each 'key'.
  *
  * The methods of this class are not thread-safe, unless indicated in the comments.
  *
@@ -663,23 +650,21 @@ public:
 
         stdx::lock_guard lg(_cache._mutex);
         _valid = true;
-        _cancelToken.emplace(_cache._asyncWork(
-            [this, promise = std::move(promise)](
-                OperationContext* opCtx, const Status& cancelStatusAtTaskBegin) mutable noexcept {
-                promise.setWith([&] {
-                    uassertStatusOK(cancelStatusAtTaskBegin);
-
-                    if constexpr (std::is_same_v<Time, CacheNotCausallyConsistent>) {
-                        return _cache._lookupFn(opCtx, _key, _cachedValue);
-                    } else {
-                        auto minTimeInStore = [&] {
-                            stdx::lock_guard lg(_cache._mutex);
-                            return _minTimeInStore;
-                        }();
-                        return _cache._lookupFn(opCtx, _key, _cachedValue, minTimeInStore);
-                    }
-                });
-            }));
+        _cancelToken.emplace(_cache._asyncWork([ this, promise = std::move(promise) ](
+            OperationContext * opCtx, const Status& status) mutable noexcept {
+            promise.setWith([&] {
+                uassertStatusOK(status);
+                if constexpr (std::is_same_v<Time, CacheNotCausallyConsistent>) {
+                    return _cache._lookupFn(opCtx, _key, _cachedValue);
+                } else {
+                    auto minTimeInStore = [&] {
+                        stdx::lock_guard lg(_cache._mutex);
+                        return _minTimeInStore;
+                    }();
+                    return _cache._lookupFn(opCtx, _key, _cachedValue, minTimeInStore);
+                }
+            });
+        }));
 
         return std::move(future);
     }
@@ -753,8 +738,6 @@ private:
 
     const Key _key;
 
-    // The validity status must start as false so that the first round ignores the error code with
-    // which it would have completed and will loop around
     bool _valid{false};
     boost::optional<CancelToken> _cancelToken;
 

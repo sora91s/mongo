@@ -30,6 +30,7 @@
 #include "mongo/transport/message_compressor_base.h"
 
 namespace mongo {
+void initMyZstdMessageCompressor();
 class ZstdMessageCompressor final : public MessageCompressorBase {
 public:
     ZstdMessageCompressor();

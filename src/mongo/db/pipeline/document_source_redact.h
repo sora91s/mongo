@@ -31,7 +31,6 @@
 
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 
 namespace mongo {
 
@@ -73,8 +72,14 @@ public:
         return _expression;
     }
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {
-        expression::addVariableRefs(_expression.get(), refs);
+    DepsTracker::State getDependencies(DepsTracker* deps) const final {
+        // Add the dependencies of the expression but all we really care about is variable
+        // references for correlation analysis. The field references may get populated but we'll
+        // still require the full document since the $redact may descend arbitrary levels of nested
+        // documents that is only known at runtime.
+        _expression->addDependencies(deps);
+        deps->needWholeDocument = true;
+        return DepsTracker::State::SEE_NEXT;
     }
 
 private:

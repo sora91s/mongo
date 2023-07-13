@@ -29,19 +29,28 @@
 
 #pragma once
 
-#include "mongo/db/service_context.h"
+namespace mongo {
 
-namespace mongo::initialize_server_global_state {
-
-/**
- * Returns whether the specified socket path is a directory.
- */
-bool checkSocketPath();
+class ServiceContext;
 
 /**
- * Attempts to write the PID file (if specified) and returns whether it was successful.
+ * Enum which controls whether the pid file is written at startup.
  */
-bool writePidFile();
+enum class PidFileWrite {
+    // Open PID file and write PID to disk
+    kWrite,
+
+    // Do not open or write PID file
+    kNoWrite,
+};
+
+/**
+ * Perform initialization activity common across all mongo server types.
+ *
+ * Set up logging, daemonize the process, configure SSL, etc.
+ */
+bool initializeServerGlobalState(ServiceContext* service,
+                                 PidFileWrite pidWrite = PidFileWrite::kWrite);
 
 /**
  * Forks and detaches the server, on platforms that support it, if serverGlobalParams.doFork is
@@ -57,4 +66,4 @@ void forkServerOrDie();
  */
 void signalForkSuccess();
 
-}  // namespace mongo::initialize_server_global_state
+}  // namespace mongo

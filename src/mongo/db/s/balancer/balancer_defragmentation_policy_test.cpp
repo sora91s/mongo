@@ -29,6 +29,7 @@
 
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/s/balancer/balancer_defragmentation_policy_impl.h"
+#include "mongo/db/s/balancer/balancer_random.h"
 #include "mongo/db/s/balancer/cluster_statistics_mock.h"
 #include "mongo/db/s/config/config_server_test_fixture.h"
 #include "mongo/idl/server_parameter_test_util.h"
@@ -40,14 +41,13 @@ using ShardStatistics = ClusterStatistics::ShardStatistics;
 
 class BalancerDefragmentationPolicyTest : public ConfigServerTestFixture {
 protected:
-    const NamespaceString kNss = NamespaceString::createNamespaceString_forTest("testDb.testColl");
+    const NamespaceString kNss{"testDb.testColl"};
     const UUID kUuid = UUID::gen();
     const ShardId kShardId0 = ShardId("shard0");
     const ShardId kShardId1 = ShardId("shard1");
     const ShardId kShardId2 = ShardId("shard2");
     const ShardId kShardId3 = ShardId("shard3");
-    const ChunkVersion kCollectionPlacementVersion =
-        ChunkVersion({OID::gen(), Timestamp(10)}, {1, 1});
+    const ChunkVersion kCollectionVersion = ChunkVersion(1, 1, OID::gen(), Timestamp(10));
     const KeyPattern kShardKeyPattern = KeyPattern(BSON("x" << 1));
     const BSONObj kKeyAtMin = BSONObjBuilder().appendMinKey("x").obj();
     const BSONObj kKeyAtZero = BSON("x" << 0);
@@ -63,17 +63,21 @@ protected:
     const HostAndPort kShardHost2 = HostAndPort("TestHost2", 12347);
     const HostAndPort kShardHost3 = HostAndPort("TestHost3", 12348);
 
+    const int64_t kPhase3DefaultChunkSize =
+        129 * 1024 * 1024;  // > 128MB should trigger AutoSplitVector
+
     const std::vector<ShardType> kShardList{
         ShardType(kShardId0.toString(), kShardHost0.toString()),
         ShardType(kShardId1.toString(), kShardHost1.toString()),
         ShardType(kShardId2.toString(), kShardHost2.toString()),
         ShardType(kShardId3.toString(), kShardHost3.toString())};
 
-    const std::function<void()> onDefragmentationStateUpdated = [] {
-    };
+    const std::function<void()> onDefragmentationStateUpdated = [] {};
 
     BalancerDefragmentationPolicyTest()
-        : _clusterStats(), _defragmentationPolicy(&_clusterStats, onDefragmentationStateUpdated) {}
+        : _clusterStats(),
+          _random(std::random_device{}()),
+          _defragmentationPolicy(&_clusterStats, _random, onDefragmentationStateUpdated) {}
 
     CollectionType setupCollectionWithPhase(
         const std::vector<ChunkType>& chunkList,
@@ -111,18 +115,14 @@ protected:
     }
 
     ChunkType makeConfigChunkEntry(const boost::optional<int64_t>& estimatedSize = boost::none) {
-        ChunkType chunk(
-            kUuid, ChunkRange(kKeyAtMin, kKeyAtMax), kCollectionPlacementVersion, kShardId0);
+        ChunkType chunk(kUuid, ChunkRange(kKeyAtMin, kKeyAtMax), kCollectionVersion, kShardId0);
         chunk.setEstimatedSizeBytes(estimatedSize);
         return chunk;
     }
 
     std::vector<ChunkType> makeMergeableConfigChunkEntries() {
-        return {
-            ChunkType(
-                kUuid, ChunkRange(kKeyAtMin, kKeyAtTen), kCollectionPlacementVersion, kShardId0),
-            ChunkType(
-                kUuid, ChunkRange(kKeyAtTen, kKeyAtMax), kCollectionPlacementVersion, kShardId0)};
+        return {ChunkType(kUuid, ChunkRange(kKeyAtMin, kKeyAtTen), kCollectionVersion, kShardId0),
+                ChunkType(kUuid, ChunkRange(kKeyAtTen, kKeyAtMax), kCollectionVersion, kShardId0)};
     }
 
     BSONObj getConfigCollectionEntry() {
@@ -137,13 +137,16 @@ protected:
     }
 
     ClusterStatisticsMock _clusterStats;
+    BalancerRandomSource _random;
     BalancerDefragmentationPolicyImpl _defragmentationPolicy;
 
     ShardStatistics buildShardStats(ShardId id,
                                     uint64_t currentSizeBytes,
+                                    bool maxed = false,
                                     bool draining = false,
                                     std::set<std::string>&& zones = {}) {
-        return ShardStatistics(id, currentSizeBytes, draining, zones, "");
+        return ShardStatistics(
+            id, maxed ? currentSizeBytes : 0, currentSizeBytes, draining, zones, "");
     }
 
     void setDefaultClusterStats() {
@@ -167,26 +170,13 @@ protected:
                              .getValue();
         if (expectedPhase.has_value()) {
             auto storedDefragmentationPhase = DefragmentationPhase_parse(
-                IDLParserContext("BalancerDefragmentationPolicyTest"),
+                IDLParserErrorContext("BalancerDefragmentationPolicyTest"),
                 configDoc.getStringField(CollectionType::kDefragmentationPhaseFieldName));
             ASSERT_TRUE(storedDefragmentationPhase == *expectedPhase);
         } else {
             ASSERT_FALSE(configDoc.hasField(CollectionType::kDefragmentationPhaseFieldName));
         }
     };
-
-    stdx::unordered_set<ShardId> getAllShardIds(OperationContext* opCtx) {
-        std::vector<ShardStatistics> shardStats = _clusterStats.getStats(opCtx).getValue();
-        stdx::unordered_set<ShardId> shards;
-        std::transform(shardStats.begin(),
-                       shardStats.end(),
-                       std::inserter(shards, shards.end()),
-                       [](const ClusterStatistics::ShardStatistics& shardStatistics) -> ShardId {
-                           return shardStatistics.shardId;
-                       });
-
-        return shards;
-    }
 };
 
 TEST_F(BalancerDefragmentationPolicyTest, TestGetNextActionIsNotReadyWhenNotDefragmenting) {
@@ -246,9 +236,9 @@ TEST_F(BalancerDefragmentationPolicyTest,
     // kMoveAndMergeChunks has no stream actions/migrations to offer, but the condition has to be
     // verified through a sequence of two action requests (the first being selectChunksToMove()) for
     // the phase to complete.
-    auto availableShards = getAllShardIds(operationContext());
+    stdx::unordered_set<ShardId> usedShards;
     auto pendingMigrations =
-        _defragmentationPolicy.selectChunksToMove(operationContext(), &availableShards);
+        _defragmentationPolicy.selectChunksToMove(operationContext(), &usedShards);
     ASSERT_TRUE(pendingMigrations.empty());
     verifyExpectedDefragmentationPhaseOndisk(DefragmentationPhaseEnum::kMoveAndMergeChunks);
 
@@ -264,10 +254,10 @@ TEST_F(BalancerDefragmentationPolicyTest,
     setDefaultClusterStats();
     _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
     auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
+    ASSERT_TRUE(nextAction.is_initialized());
     DataSizeInfo dataSizeAction = stdx::get<DataSizeInfo>(*nextAction);
 
-    auto resp = StatusWith(DataSizeResponse(2000, 4, false));
+    auto resp = StatusWith(DataSizeResponse(2000, 4));
     _defragmentationPolicy.applyActionResult(operationContext(), dataSizeAction, resp);
 
     // 1. The outcome of the data size has been stored in the expected document...
@@ -282,33 +272,6 @@ TEST_F(BalancerDefragmentationPolicyTest,
     ASSERT_TRUE(nextAction == boost::none);
     ASSERT_TRUE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
     verifyExpectedDefragmentationPhaseOndisk(DefragmentationPhaseEnum::kMoveAndMergeChunks);
-}
-
-TEST_F(BalancerDefragmentationPolicyTest,
-       TestPhaseOneDataSizeResponsesWithMaxSizeReachedCausesChunkToBeSkippedByPhaseTwo) {
-    auto coll = setupCollectionWithPhase({makeConfigChunkEntry()});
-    setDefaultClusterStats();
-    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
-    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
-    DataSizeInfo dataSizeAction = stdx::get<DataSizeInfo>(*nextAction);
-
-    auto resp = StatusWith(DataSizeResponse(2000, 4, true));
-    _defragmentationPolicy.applyActionResult(operationContext(), dataSizeAction, resp);
-
-    // 1. The outcome of the data size has been stored in the expected document...
-    auto chunkQuery = BSON(ChunkType::collectionUUID()
-                           << kUuid << ChunkType::min(kKeyAtMin) << ChunkType::max(kKeyAtMax));
-    auto configChunkDoc =
-        findOneOnConfigCollection(operationContext(), ChunkType::ConfigNS, chunkQuery).getValue();
-    ASSERT_EQ(configChunkDoc.getField("estimatedDataSizeBytes").safeNumberLong(),
-              std::numeric_limits<int64_t>::max());
-
-    // No new action is expected - and the algorithm should converge
-    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction == boost::none);
-    ASSERT_FALSE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
-    verifyExpectedDefragmentationPhaseOndisk(boost::none);
 }
 
 TEST_F(BalancerDefragmentationPolicyTest, TestRetriableFailedDataSizeActionGetsReissued) {
@@ -345,7 +308,7 @@ TEST_F(BalancerDefragmentationPolicyTest, TestRemoveCollectionEndsDefragmentatio
     auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
     DataSizeInfo dataSizeAction = stdx::get<DataSizeInfo>(*nextAction);
 
-    auto resp = StatusWith(DataSizeResponse(2000, 4, false));
+    auto resp = StatusWith(DataSizeResponse(2000, 4));
     _defragmentationPolicy.applyActionResult(operationContext(), dataSizeAction, resp);
 
     // Remove collection entry from config.collections
@@ -369,10 +332,30 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseOneUserCancellationFinishesDe
     // User cancellation of defragmentation
     _defragmentationPolicy.abortCollectionDefragmentation(operationContext(), kNss);
 
+    // Defragmentation should complete since the NoMoreAutoSplitter feature flag is enabled
     auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
     ASSERT_TRUE(nextAction == boost::none);
     ASSERT_FALSE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
     verifyExpectedDefragmentationPhaseOndisk(boost::none);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest, TestPhaseOneUserCancellationBeginsPhase3) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry()});
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+
+    // Collection should be in phase 1
+    verifyExpectedDefragmentationPhaseOndisk(DefragmentationPhaseEnum::kMergeAndMeasureChunks);
+
+    // User cancellation of defragmentation
+    _defragmentationPolicy.abortCollectionDefragmentation(operationContext(), kNss);
+
+    // Defragmentation should transition to phase 3
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    verifyExpectedDefragmentationPhaseOndisk(DefragmentationPhaseEnum::kSplitChunks);
+    ASSERT_TRUE(nextAction.is_initialized());
+    auto splitVectorAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
 }
 
 TEST_F(BalancerDefragmentationPolicyTest, TestNonRetriableErrorRebuildsCurrentPhase) {
@@ -390,7 +373,7 @@ TEST_F(BalancerDefragmentationPolicyTest, TestNonRetriableErrorRebuildsCurrentPh
     ASSERT_TRUE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
     verifyExpectedDefragmentationPhaseOndisk(DefragmentationPhaseEnum::kMergeAndMeasureChunks);
     // 2. The action returned by the stream should be now an actionable DataSizeCommand...
-    ASSERT_TRUE(nextAction.has_value());
+    ASSERT_TRUE(nextAction.is_initialized());
     DataSizeInfo dataSizeAction = stdx::get<DataSizeInfo>(*nextAction);
     // 3. with the expected content
     ASSERT_EQ(coll.getNss(), dataSizeAction.nss);
@@ -401,11 +384,8 @@ TEST_F(BalancerDefragmentationPolicyTest, TestNonRetriableErrorRebuildsCurrentPh
 TEST_F(BalancerDefragmentationPolicyTest,
        TestNonRetriableErrorWaitsForAllOutstandingActionsToComplete) {
     auto coll = setupCollectionWithPhase(
-        {ChunkType{kUuid, ChunkRange(kKeyAtMin, kKeyAtTen), kCollectionPlacementVersion, kShardId0},
-         ChunkType{kUuid,
-                   ChunkRange(BSON("x" << 11), kKeyAtMax),
-                   kCollectionPlacementVersion,
-                   kShardId0}});
+        {ChunkType{kUuid, ChunkRange(kKeyAtMin, kKeyAtTen), kCollectionVersion, kShardId0},
+         ChunkType{kUuid, ChunkRange(BSON("x" << 11), kKeyAtMax), kCollectionVersion, kShardId0}});
     _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
     auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
     DataSizeInfo failingDataSizeAction = stdx::get<DataSizeInfo>(*nextAction);
@@ -429,8 +409,8 @@ TEST_F(BalancerDefragmentationPolicyTest,
     // Phase 1 should restart.
     nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
     nextAction2 = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
-    ASSERT_TRUE(nextAction2.has_value());
+    ASSERT_TRUE(nextAction.is_initialized());
+    ASSERT_TRUE(nextAction2.is_initialized());
     DataSizeInfo dataSizeAction = stdx::get<DataSizeInfo>(*nextAction);
     DataSizeInfo dataSizeAction2 = stdx::get<DataSizeInfo>(*nextAction2);
 }
@@ -490,7 +470,7 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseOneAcknowledgeSuccessfulMerge
     ASSERT_TRUE(nextAction == boost::none);
     _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
     nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
+    ASSERT_TRUE(nextAction.is_initialized());
     MergeInfo mergeInfoAction = stdx::get<MergeInfo>(*nextAction);
     ASSERT_BSONOBJ_EQ(mergeInfoAction.chunkRange.getMin(), kKeyAtMin);
     ASSERT_BSONOBJ_EQ(mergeInfoAction.chunkRange.getMax(), kKeyAtMax);
@@ -498,7 +478,7 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseOneAcknowledgeSuccessfulMerge
     ASSERT_TRUE(nextAction == boost::none);
     _defragmentationPolicy.applyActionResult(operationContext(), mergeInfoAction, Status::OK());
     nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
+    ASSERT_TRUE(nextAction.is_initialized());
     DataSizeInfo dataSizeAction = stdx::get<DataSizeInfo>(*nextAction);
     ASSERT_EQ(mergeInfoAction.nss, dataSizeAction.nss);
     ASSERT_BSONOBJ_EQ(mergeInfoAction.chunkRange.getMin(), dataSizeAction.chunkRange.getMin());
@@ -511,32 +491,30 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseOneAllConsecutive) {
     for (int i = 0; i < 5; i++) {
         const auto minKey = (i == 0) ? kKeyAtMin : BSON("x" << i);
         const auto maxKey = BSON("x" << i + 1);
-        ChunkType chunk(kUuid,
-                        ChunkRange(minKey, maxKey),
-                        ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                      kCollectionPlacementVersion.getTimestamp()},
-                                     {1, uint32_t(i)}),
-                        kShardId0);
+        ChunkType chunk(
+            kUuid,
+            ChunkRange(minKey, maxKey),
+            ChunkVersion(1, i, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+            kShardId0);
         chunkList.push_back(chunk);
     }
     for (int i = 5; i < 10; i++) {
         const auto minKey = BSON("x" << i);
         const auto maxKey = (i == 9) ? kKeyAtMax : BSON("x" << i + 1);
-        ChunkType chunk(kUuid,
-                        ChunkRange(minKey, maxKey),
-                        ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                      kCollectionPlacementVersion.getTimestamp()},
-                                     {1, uint32_t(i)}),
-                        kShardId1);
+        ChunkType chunk(
+            kUuid,
+            ChunkRange(minKey, maxKey),
+            ChunkVersion(1, i, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+            kShardId1);
         chunkList.push_back(chunk);
     }
     auto coll = setupCollectionWithPhase(chunkList, boost::none, boost::none);
     _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
     // Test
     auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
+    ASSERT_TRUE(nextAction.is_initialized());
     auto nextAction2 = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction2.has_value());
+    ASSERT_TRUE(nextAction2.is_initialized());
     // Verify the content of the received merge actions
     // (Note: there is no guarantee on the order provided by the stream)
     MergeInfo mergeAction = stdx::get<MergeInfo>(*nextAction);
@@ -553,7 +531,7 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseOneAllConsecutive) {
         ASSERT_BSONOBJ_EQ(mergeAction.chunkRange.getMax(), kKeyAtMax);
     }
     auto nextAction3 = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_FALSE(nextAction3.has_value());
+    ASSERT_FALSE(nextAction3.is_initialized());
 }
 
 TEST_F(BalancerDefragmentationPolicyTest, PhaseOneNotConsecutive) {
@@ -562,50 +540,49 @@ TEST_F(BalancerDefragmentationPolicyTest, PhaseOneNotConsecutive) {
         const auto minKey = (i == 0) ? kKeyAtMin : BSON("x" << i);
         const auto maxKey = (i == 9) ? kKeyAtMax : BSON("x" << i + 1);
         ShardId chosenShard = (i == 5) ? kShardId1 : kShardId0;
-        ChunkType chunk(kUuid,
-                        ChunkRange(minKey, maxKey),
-                        ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                      kCollectionPlacementVersion.getTimestamp()},
-                                     {1, uint32_t(i)}),
-                        chosenShard);
+        ChunkType chunk(
+            kUuid,
+            ChunkRange(minKey, maxKey),
+            ChunkVersion(1, i, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+            chosenShard);
         chunkList.push_back(chunk);
     }
     auto coll = setupCollectionWithPhase(chunkList, boost::none, boost::none);
     _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
     // Three actions (in an unspecified order) should be immediately available.
     auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
+    ASSERT_TRUE(nextAction.is_initialized());
     auto nextAction2 = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction2.has_value());
+    ASSERT_TRUE(nextAction2.is_initialized());
     auto nextAction3 = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction3.has_value());
+    ASSERT_TRUE(nextAction3.is_initialized());
     // Verify their content of the received merge actions
     uint8_t timesLowerRangeMergeFound = 0;
     uint8_t timesUpperRangeMergeFound = 0;
     uint8_t timesMiddleRangeDataSizeFound = 0;
-    auto inspectAction = [&](const BalancerStreamAction& action) {
-        stdx::visit(OverloadedVisitor{
-                        [&](const MergeInfo& mergeAction) {
-                            if (mergeAction.chunkRange.getMin().woCompare(kKeyAtMin) == 0 &&
-                                mergeAction.chunkRange.getMax().woCompare(BSON("x" << 5)) == 0) {
-                                ++timesLowerRangeMergeFound;
-                            }
-                            if (mergeAction.chunkRange.getMin().woCompare(BSON("x" << 6)) == 0 &&
-                                mergeAction.chunkRange.getMax().woCompare(kKeyAtMax) == 0) {
-                                ++timesUpperRangeMergeFound;
-                            }
-                        },
-                        [&](const DataSizeInfo& dataSizeAction) {
-                            if (dataSizeAction.chunkRange.getMin().woCompare(BSON("x" << 5)) == 0 &&
-                                dataSizeAction.chunkRange.getMax().woCompare(BSON("x" << 6)) == 0) {
-                                ++timesMiddleRangeDataSizeFound;
-                            }
-                        },
-                        [](const MigrateInfo& _) { FAIL("Unexpected action type"); },
-                        [](const MergeAllChunksOnShardInfo& _) {
-                            FAIL("Unexpected action type");
-                        }},
-                    action);
+    auto inspectAction = [&](const DefragmentationAction& action) {
+        stdx::visit(
+            visit_helper::Overloaded{
+                [&](const MergeInfo& mergeAction) {
+                    if (mergeAction.chunkRange.getMin().woCompare(kKeyAtMin) == 0 &&
+                        mergeAction.chunkRange.getMax().woCompare(BSON("x" << 5)) == 0) {
+                        ++timesLowerRangeMergeFound;
+                    }
+                    if (mergeAction.chunkRange.getMin().woCompare(BSON("x" << 6)) == 0 &&
+                        mergeAction.chunkRange.getMax().woCompare(kKeyAtMax) == 0) {
+                        ++timesUpperRangeMergeFound;
+                    }
+                },
+                [&](const DataSizeInfo& dataSizeAction) {
+                    if (dataSizeAction.chunkRange.getMin().woCompare(BSON("x" << 5)) == 0 &&
+                        dataSizeAction.chunkRange.getMax().woCompare(BSON("x" << 6)) == 0) {
+                        ++timesMiddleRangeDataSizeFound;
+                    }
+                },
+                [&](const AutoSplitVectorInfo& _) { FAIL("Unexpected action type"); },
+                [&](const SplitInfoWithKeyPattern& _) { FAIL("Unexpected action type"); },
+                [&](const MigrateInfo& _) { FAIL("Unexpected action type"); }},
+            action);
     };
     inspectAction(*nextAction);
     inspectAction(*nextAction2);
@@ -615,7 +592,7 @@ TEST_F(BalancerDefragmentationPolicyTest, PhaseOneNotConsecutive) {
     ASSERT_EQ(1, timesMiddleRangeDataSizeFound);
 
     auto nextAction4 = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_FALSE(nextAction4.has_value());
+    ASSERT_FALSE(nextAction4.is_initialized());
 }
 
 // Phase 2 tests.
@@ -630,29 +607,27 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseTwoMissingDataSizeRestartsPha
     ASSERT_TRUE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
     verifyExpectedDefragmentationPhaseOndisk(DefragmentationPhaseEnum::kMergeAndMeasureChunks);
     // There should be a datasize entry and no migrations
-    auto availableShards = getAllShardIds(operationContext());
+    stdx::unordered_set<ShardId> usedShards;
     auto pendingMigrations =
-        _defragmentationPolicy.selectChunksToMove(operationContext(), &availableShards);
+        _defragmentationPolicy.selectChunksToMove(operationContext(), &usedShards);
     ASSERT_EQ(0, pendingMigrations.size());
     auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
+    ASSERT_TRUE(nextAction.is_initialized());
     auto dataSizeAction = stdx::get<DataSizeInfo>(*nextAction);
 }
 
 TEST_F(BalancerDefragmentationPolicyTest, TestPhaseTwoChunkCanBeMovedAndMergedWithSibling) {
-    ChunkType biggestChunk(kUuid,
-                           ChunkRange(kKeyAtMin, kKeyAtZero),
-                           ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                         kCollectionPlacementVersion.getTimestamp()},
-                                        {1, 0}),
-                           kShardId0);
+    ChunkType biggestChunk(
+        kUuid,
+        ChunkRange(kKeyAtMin, kKeyAtZero),
+        ChunkVersion(1, 0, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+        kShardId0);
     biggestChunk.setEstimatedSizeBytes(2048);
-    ChunkType smallestChunk(kUuid,
-                            ChunkRange(kKeyAtZero, kKeyAtMax),
-                            ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                          kCollectionPlacementVersion.getTimestamp()},
-                                         {1, 1}),
-                            kShardId1);
+    ChunkType smallestChunk(
+        kUuid,
+        ChunkRange(kKeyAtZero, kKeyAtMax),
+        ChunkVersion(1, 1, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+        kShardId1);
     smallestChunk.setEstimatedSizeBytes(1024);
 
     auto coll = setupCollectionWithPhase({smallestChunk, biggestChunk},
@@ -664,16 +639,11 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseTwoChunkCanBeMovedAndMergedWi
     _clusterStats.setStats(std::move(clusterStats), std::move(collectionStats));
     _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
     ASSERT_TRUE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
-
-
-    auto availableShards = getAllShardIds(operationContext());
-    auto numOfShards = availableShards.size();
+    stdx::unordered_set<ShardId> usedShards;
     auto pendingMigrations =
-        _defragmentationPolicy.selectChunksToMove(operationContext(), &availableShards);
-    auto numOfUsedShards = numOfShards - availableShards.size();
+        _defragmentationPolicy.selectChunksToMove(operationContext(), &usedShards);
     ASSERT_EQ(1, pendingMigrations.size());
-    ASSERT_EQ(2, numOfUsedShards);
-
+    ASSERT_EQ(2, usedShards.size());
     auto moveAction = pendingMigrations.back();
     // The chunk belonging to the "fullest" shard is expected to be moved - even though it is bigger
     // than its sibling.
@@ -687,15 +657,11 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseTwoChunkCanBeMovedAndMergedWi
 
     _defragmentationPolicy.applyActionResult(operationContext(), moveAction, Status::OK());
     nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
-    ASSERT_TRUE(nextAction.has_value());
-
-    availableShards = getAllShardIds(operationContext());
-    numOfShards = availableShards.size();
-    pendingMigrations =
-        _defragmentationPolicy.selectChunksToMove(operationContext(), &availableShards);
-    numOfUsedShards = numOfShards - availableShards.size();
+    ASSERT_TRUE(nextAction.is_initialized());
+    usedShards.clear();
+    pendingMigrations = _defragmentationPolicy.selectChunksToMove(operationContext(), &usedShards);
     ASSERT_TRUE(pendingMigrations.empty());
-    ASSERT_EQ(0, numOfUsedShards);
+    ASSERT_EQ(0, usedShards.size());
 
     auto mergeAction = stdx::get<MergeInfo>(*nextAction);
     ASSERT_EQ(smallestChunk.getShard(), mergeAction.shardId);
@@ -705,8 +671,7 @@ TEST_F(BalancerDefragmentationPolicyTest, TestPhaseTwoChunkCanBeMovedAndMergedWi
     _defragmentationPolicy.applyActionResult(operationContext(), mergeAction, Status::OK());
     nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
     ASSERT_TRUE(nextAction == boost::none);
-    pendingMigrations =
-        _defragmentationPolicy.selectChunksToMove(operationContext(), &availableShards);
+    pendingMigrations = _defragmentationPolicy.selectChunksToMove(operationContext(), &usedShards);
     ASSERT_TRUE(pendingMigrations.empty());
 }
 
@@ -714,52 +679,46 @@ TEST_F(BalancerDefragmentationPolicyTest,
        TestPhaseTwoMultipleCollectionChunkMigrationsMayBeIssuedConcurrently) {
     // Define a single collection, distributing 6 chunks across the 4 shards so that there cannot be
     // a merge without migrations
-    ChunkType firstChunkOnShard0(kUuid,
-                                 ChunkRange(kKeyAtMin, kKeyAtZero),
-                                 ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                               kCollectionPlacementVersion.getTimestamp()},
-                                              {1, 0}),
-                                 kShardId0);
+    ChunkType firstChunkOnShard0(
+        kUuid,
+        ChunkRange(kKeyAtMin, kKeyAtZero),
+        ChunkVersion(1, 0, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+        kShardId0);
     firstChunkOnShard0.setEstimatedSizeBytes(1);
 
-    ChunkType firstChunkOnShard1(kUuid,
-                                 ChunkRange(kKeyAtZero, kKeyAtTen),
-                                 ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                               kCollectionPlacementVersion.getTimestamp()},
-                                              {1, 1}),
-                                 kShardId1);
+    ChunkType firstChunkOnShard1(
+        kUuid,
+        ChunkRange(kKeyAtZero, kKeyAtTen),
+        ChunkVersion(1, 1, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+        kShardId1);
     firstChunkOnShard1.setEstimatedSizeBytes(1);
 
-    ChunkType chunkOnShard2(kUuid,
-                            ChunkRange(kKeyAtTen, kKeyAtTwenty),
-                            ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                          kCollectionPlacementVersion.getTimestamp()},
-                                         {1, 2}),
-                            kShardId2);
+    ChunkType chunkOnShard2(
+        kUuid,
+        ChunkRange(kKeyAtTen, kKeyAtTwenty),
+        ChunkVersion(1, 2, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+        kShardId2);
     chunkOnShard2.setEstimatedSizeBytes(1);
 
-    ChunkType chunkOnShard3(kUuid,
-                            ChunkRange(kKeyAtTwenty, kKeyAtThirty),
-                            ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                          kCollectionPlacementVersion.getTimestamp()},
-                                         {1, 3}),
-                            kShardId3);
+    ChunkType chunkOnShard3(
+        kUuid,
+        ChunkRange(kKeyAtTwenty, kKeyAtThirty),
+        ChunkVersion(1, 3, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+        kShardId3);
     chunkOnShard3.setEstimatedSizeBytes(1);
 
-    ChunkType secondChunkOnShard0(kUuid,
-                                  ChunkRange(kKeyAtThirty, kKeyAtForty),
-                                  ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                                kCollectionPlacementVersion.getTimestamp()},
-                                               {1, 4}),
-                                  kShardId0);
+    ChunkType secondChunkOnShard0(
+        kUuid,
+        ChunkRange(kKeyAtThirty, kKeyAtForty),
+        ChunkVersion(1, 4, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+        kShardId0);
     secondChunkOnShard0.setEstimatedSizeBytes(1);
 
-    ChunkType secondChunkOnShard1(kUuid,
-                                  ChunkRange(kKeyAtForty, kKeyAtMax),
-                                  ChunkVersion({kCollectionPlacementVersion.epoch(),
-                                                kCollectionPlacementVersion.getTimestamp()},
-                                               {1, 5}),
-                                  kShardId1);
+    ChunkType secondChunkOnShard1(
+        kUuid,
+        ChunkRange(kKeyAtForty, kKeyAtMax),
+        ChunkVersion(1, 5, kCollectionVersion.epoch(), kCollectionVersion.getTimestamp()),
+        kShardId1);
     secondChunkOnShard1.setEstimatedSizeBytes(1);
 
     auto coll = setupCollectionWithPhase({firstChunkOnShard0,
@@ -775,13 +734,247 @@ TEST_F(BalancerDefragmentationPolicyTest,
 
     // Two move operation should be returned within a single invocation, using all the possible
     // shards
-    auto availableShards = getAllShardIds(operationContext());
-    auto numOfShards = availableShards.size();
+    stdx::unordered_set<ShardId> usedShards;
     auto pendingMigrations =
-        _defragmentationPolicy.selectChunksToMove(operationContext(), &availableShards);
-    auto numOfUsedShards = numOfShards - availableShards.size();
-    ASSERT_EQ(4, numOfUsedShards);
+        _defragmentationPolicy.selectChunksToMove(operationContext(), &usedShards);
+    ASSERT_EQ(4, usedShards.size());
     ASSERT_EQ(2, pendingMigrations.size());
+}
+
+/** Phase 3 tests. By passing in DefragmentationPhaseEnum::kSplitChunks to
+ * setupCollectionWithPhase, the persisted collection entry will have
+ * kDefragmentationPhaseFieldName set to kSplitChunks and defragmentation will be started with
+ * phase 3.
+ */
+
+TEST_F(BalancerDefragmentationPolicyTest, DefragmentationBeginsWithPhase3FromPersistedSetting) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry(kPhase3DefaultChunkSize)},
+                                         DefragmentationPhaseEnum::kSplitChunks);
+    // Defragmentation does not start until startCollectionDefragmentation is called
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    ASSERT_TRUE(nextAction == boost::none);
+    ASSERT_FALSE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
+
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+
+    ASSERT_TRUE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
+    verifyExpectedDefragmentationPhaseOndisk(DefragmentationPhaseEnum::kSplitChunks);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest, SingleLargeChunkCausesAutoSplitAndSplitActions) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry(kPhase3DefaultChunkSize)},
+                                         DefragmentationPhaseEnum::kSplitChunks);
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+
+    // The new action returned by the stream should be an actionable AutoSplitVector command...
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    ASSERT_TRUE(nextAction.is_initialized());
+    AutoSplitVectorInfo splitVectorAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+    // with the expected content
+    ASSERT_EQ(coll.getNss(), splitVectorAction.nss);
+    ASSERT_BSONOBJ_EQ(kKeyAtMin, splitVectorAction.minKey);
+    ASSERT_BSONOBJ_EQ(kKeyAtMax, splitVectorAction.maxKey);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest, CollectionMaxChunkSizeIsUsedForPhase3) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    // One chunk > 1KB should trigger AutoSplitVector
+    auto coll = setupCollectionWithPhase(
+        {makeConfigChunkEntry(2 * 1024)}, DefragmentationPhaseEnum::kSplitChunks, 1024);
+
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+
+    // The action returned by the stream should be now an actionable AutoSplitVector command...
+    ASSERT_TRUE(nextAction.is_initialized());
+    AutoSplitVectorInfo splitVectorAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+    // with the expected content
+    ASSERT_EQ(coll.getNss(), splitVectorAction.nss);
+    ASSERT_BSONOBJ_EQ(kKeyAtMin, splitVectorAction.minKey);
+    ASSERT_BSONOBJ_EQ(kKeyAtMax, splitVectorAction.maxKey);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest, TestRetryableFailedAutoSplitActionGetsReissued) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry(kPhase3DefaultChunkSize)},
+                                         DefragmentationPhaseEnum::kSplitChunks);
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    AutoSplitVectorInfo failingAutoSplitAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+    StatusWith<AutoSplitVectorResponse> response(
+        Status(ErrorCodes::NetworkTimeout, "Testing error response"));
+
+    _defragmentationPolicy.applyActionResult(operationContext(), failingAutoSplitAction, response);
+
+    // Under the setup of this test, the stream should only contain one more action - which (version
+    // aside) matches the failed one.
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto replayedAutoSplitAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+    ASSERT_BSONOBJ_EQ(failingAutoSplitAction.minKey, replayedAutoSplitAction.minKey);
+    ASSERT_BSONOBJ_EQ(failingAutoSplitAction.maxKey, replayedAutoSplitAction.maxKey);
+    ASSERT_EQ(failingAutoSplitAction.uuid, replayedAutoSplitAction.uuid);
+    ASSERT_EQ(failingAutoSplitAction.shardId, replayedAutoSplitAction.shardId);
+    ASSERT_EQ(failingAutoSplitAction.nss, replayedAutoSplitAction.nss);
+    ASSERT_BSONOBJ_EQ(failingAutoSplitAction.keyPattern, replayedAutoSplitAction.keyPattern);
+    ASSERT_EQ(failingAutoSplitAction.maxChunkSizeBytes, replayedAutoSplitAction.maxChunkSizeBytes);
+
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    ASSERT_TRUE(nextAction == boost::none);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest,
+       TestAcknowledgeAutoSplitActionTriggersSplitOnResultingRange) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry(kPhase3DefaultChunkSize)},
+                                         DefragmentationPhaseEnum::kSplitChunks);
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto autoSplitAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+
+    std::vector<BSONObj> splitPoints{BSON("x" << 5)};
+    AutoSplitVectorResponse resp{splitPoints};
+    resp.setContinuation(false);
+    _defragmentationPolicy.applyActionResult(operationContext(), autoSplitAction, StatusWith(resp));
+
+    // Under the setup of this test, the stream should only contain only a split action over the
+    // recently AutoSplitVector-ed range.
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto splitAction = stdx::get<SplitInfoWithKeyPattern>(*nextAction);
+    ASSERT_BSONOBJ_EQ(splitAction.info.minKey, autoSplitAction.minKey);
+    ASSERT_BSONOBJ_EQ(splitAction.info.maxKey, autoSplitAction.maxKey);
+    ASSERT_EQ(splitAction.uuid, autoSplitAction.uuid);
+    ASSERT_EQ(splitAction.info.shardId, autoSplitAction.shardId);
+    ASSERT_EQ(splitAction.info.nss, autoSplitAction.nss);
+    ASSERT_EQ(splitAction.info.splitKeys.size(), 1);
+    ASSERT_BSONOBJ_EQ(splitAction.info.splitKeys[0], splitPoints[0]);
+
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    ASSERT_TRUE(nextAction == boost::none);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest, TestAutoSplitWithNoSplitPointsDoesNotTriggerSplit) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry(kPhase3DefaultChunkSize)},
+                                         DefragmentationPhaseEnum::kSplitChunks);
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto autoSplitAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+
+    std::vector<BSONObj> splitPoints;
+    AutoSplitVectorResponse resp{splitPoints};
+    resp.setContinuation(false);
+    _defragmentationPolicy.applyActionResult(operationContext(), autoSplitAction, StatusWith(resp));
+
+    // The stream should now be empty
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    ASSERT_TRUE(nextAction == boost::none);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest, TestMoreThan16MBSplitPointsTriggersSplitAndAutoSplit) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry(kPhase3DefaultChunkSize)},
+                                         DefragmentationPhaseEnum::kSplitChunks);
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto autoSplitAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+
+    std::vector<BSONObj> splitPoints{BSON("x" << 5)};
+    AutoSplitVectorResponse resp{splitPoints};
+    resp.setContinuation(true);
+    _defragmentationPolicy.applyActionResult(operationContext(), autoSplitAction, StatusWith(resp));
+
+    // The stream should now contain one Split action with the split points from above and one
+    // AutoSplitVector action from the last split point to the end of the chunk
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto splitAction = stdx::get<SplitInfoWithKeyPattern>(*nextAction);
+    ASSERT_BSONOBJ_EQ(splitAction.info.minKey, autoSplitAction.minKey);
+    ASSERT_BSONOBJ_EQ(splitAction.info.maxKey, autoSplitAction.maxKey);
+    ASSERT_EQ(splitAction.info.splitKeys.size(), splitPoints.size());
+    ASSERT_BSONOBJ_EQ(splitAction.info.splitKeys[0], splitPoints[0]);
+    ASSERT_BSONOBJ_EQ(splitAction.info.splitKeys.back(), splitPoints.back());
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto nextAutoSplitAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+    ASSERT_BSONOBJ_EQ(nextAutoSplitAction.minKey, splitPoints.back());
+    ASSERT_BSONOBJ_EQ(nextAutoSplitAction.maxKey, autoSplitAction.maxKey);
+
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    ASSERT_TRUE(nextAction == boost::none);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest, TestFailedSplitChunkActionGetsReissued) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry(kPhase3DefaultChunkSize)},
+                                         DefragmentationPhaseEnum::kSplitChunks);
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto autoSplitAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+
+    std::vector<BSONObj> splitPoints{BSON("x" << 5)};
+    AutoSplitVectorResponse resp{splitPoints};
+    resp.setContinuation(false);
+    _defragmentationPolicy.applyActionResult(operationContext(), autoSplitAction, StatusWith(resp));
+
+    // The stream should now contain the split action for the recently AutoSplitVector-ed range.
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto failingSplitAction = stdx::get<SplitInfoWithKeyPattern>(*nextAction);
+    _defragmentationPolicy.applyActionResult(
+        operationContext(),
+        failingSplitAction,
+        Status(ErrorCodes::NetworkTimeout, "Testing error response"));
+    // Under the setup of this test, the stream should only contain one more action - which (version
+    // aside) matches the failed one.
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto replayedSplitAction = stdx::get<SplitInfoWithKeyPattern>(*nextAction);
+    ASSERT_EQ(failingSplitAction.uuid, replayedSplitAction.uuid);
+    ASSERT_EQ(failingSplitAction.info.shardId, replayedSplitAction.info.shardId);
+    ASSERT_EQ(failingSplitAction.info.nss, replayedSplitAction.info.nss);
+    ASSERT_BSONOBJ_EQ(failingSplitAction.info.minKey, replayedSplitAction.info.minKey);
+    ASSERT_BSONOBJ_EQ(failingSplitAction.info.maxKey, replayedSplitAction.info.maxKey);
+
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    ASSERT_TRUE(nextAction == boost::none);
+}
+
+TEST_F(BalancerDefragmentationPolicyTest,
+       TestAcknowledgeLastSuccessfulSplitActionEndsDefragmentation) {
+    RAIIServerParameterControllerForTest featureFlagNoMoreAutoSplitterOff{
+        "featureFlagNoMoreAutoSplitter", false};
+    auto coll = setupCollectionWithPhase({makeConfigChunkEntry(kPhase3DefaultChunkSize)},
+                                         DefragmentationPhaseEnum::kSplitChunks);
+    _defragmentationPolicy.startCollectionDefragmentation(operationContext(), coll);
+    auto nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto autoSplitAction = stdx::get<AutoSplitVectorInfo>(*nextAction);
+
+    std::vector<BSONObj> splitPoints{BSON("x" << 5)};
+    AutoSplitVectorResponse resp{splitPoints};
+    resp.setContinuation(false);
+    _defragmentationPolicy.applyActionResult(operationContext(), autoSplitAction, StatusWith(resp));
+
+    // The stream should now contain the split action for the recently AutoSplitVector-ed range.
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    auto splitAction = stdx::get<SplitInfoWithKeyPattern>(*nextAction);
+    _defragmentationPolicy.applyActionResult(operationContext(), splitAction, Status::OK());
+
+    // Successful split actions trigger no new actions
+    nextAction = _defragmentationPolicy.getNextStreamingAction(operationContext());
+    ASSERT_TRUE(nextAction == boost::none);
+
+    // With phase 3 complete, defragmentation should be completed.
+    ASSERT_FALSE(_defragmentationPolicy.isDefragmentingCollection(coll.getUuid()));
+    verifyExpectedDefragmentationPhaseOndisk(boost::none);
 }
 
 }  // namespace

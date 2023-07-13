@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kProcessHealth
 
 #include "mongo/db/process_health/dns_health_observer.h"
 
@@ -37,9 +38,6 @@
 #include "mongo/util/net/hostname_canonicalization.h"
 #include <algorithm>
 #include <random>
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kProcessHealth
-
 
 namespace mongo {
 namespace process_health {
@@ -78,8 +76,8 @@ Future<HealthCheckStatus> DnsHealthObserver::periodicCheckImpl(
         if (shardIds.size() == 0) {
             connString = shardRegistry->getConfigServerConnectionString();
         } else {
-            auto shardSW = shardRegistry->getShard(opCtx.get(),
-                                                   shardIds.at(_random.nextInt32(shardIds.size())));
+            auto shardSW =
+                shardRegistry->getShard(opCtx.get(), shardIds.at(rand() % shardIds.size()));
             auto shardSWStatus = shardSW.getStatus();
             if (shardSWStatus.isOK()) {
                 connString = shardSW.getValue()->getConnString();

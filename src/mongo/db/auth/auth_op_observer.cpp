@@ -34,7 +34,7 @@
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/catalog/collection_options.h"
-#include "mongo/db/op_observer/op_observer_util.h"
+#include "mongo/db/op_observer_util.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/oplog_entry.h"
 
@@ -51,14 +51,15 @@ AuthOpObserver::AuthOpObserver() = default;
 AuthOpObserver::~AuthOpObserver() = default;
 
 void AuthOpObserver::onInserts(OperationContext* opCtx,
-                               const CollectionPtr& coll,
+                               const NamespaceString& nss,
+                               const UUID& uuid,
                                std::vector<InsertStatement>::const_iterator first,
                                std::vector<InsertStatement>::const_iterator last,
                                bool fromMigrate) {
     for (auto it = first; it != last; it++) {
-        audit::logInsertOperation(opCtx->getClient(), coll->ns(), it->doc);
+        audit::logInsertOperation(opCtx->getClient(), nss, it->doc);
         AuthorizationManager::get(opCtx->getServiceContext())
-            ->logOp(opCtx, "i", coll->ns(), it->doc, nullptr);
+            ->logOp(opCtx, "i", nss, it->doc, nullptr);
     }
 }
 
@@ -67,16 +68,17 @@ void AuthOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArg
         return;
     }
 
-    audit::logUpdateOperation(opCtx->getClient(), args.coll->ns(), args.updateArgs->updatedDoc);
+    audit::logUpdateOperation(opCtx->getClient(), args.nss, args.updateArgs->updatedDoc);
 
     AuthorizationManager::get(opCtx->getServiceContext())
-        ->logOp(opCtx, "u", args.coll->ns(), args.updateArgs->update, &args.updateArgs->criteria);
+        ->logOp(opCtx, "u", args.nss, args.updateArgs->update, &args.updateArgs->criteria);
 }
 
 void AuthOpObserver::aboutToDelete(OperationContext* opCtx,
-                                   const CollectionPtr& coll,
+                                   NamespaceString const& nss,
+                                   const UUID& uuid,
                                    BSONObj const& doc) {
-    audit::logRemoveOperation(opCtx->getClient(), coll->ns(), doc);
+    audit::logRemoveOperation(opCtx->getClient(), nss, doc);
 
     // Extract the _id field from the document. If it does not have an _id, use the
     // document itself as the _id.
@@ -84,13 +86,14 @@ void AuthOpObserver::aboutToDelete(OperationContext* opCtx,
 }
 
 void AuthOpObserver::onDelete(OperationContext* opCtx,
-                              const CollectionPtr& coll,
+                              const NamespaceString& nss,
+                              const UUID& uuid,
                               StmtId stmtId,
                               const OplogDeleteEntryArgs& args) {
     auto& documentId = documentIdDecoration(opCtx);
     invariant(!documentId.isEmpty());
     AuthorizationManager::get(opCtx->getServiceContext())
-        ->logOp(opCtx, "d", coll->ns(), documentId, nullptr);
+        ->logOp(opCtx, "d", nss, documentId, nullptr);
 }
 
 void AuthOpObserver::onCreateCollection(OperationContext* opCtx,
@@ -124,7 +127,7 @@ void AuthOpObserver::onCollMod(OperationContext* opCtx,
         ->logOp(opCtx, "c", cmdNss, cmdObj, nullptr);
 }
 
-void AuthOpObserver::onDropDatabase(OperationContext* opCtx, const DatabaseName& dbName) {
+void AuthOpObserver::onDropDatabase(OperationContext* opCtx, const std::string& dbName) {
     const NamespaceString cmdNss{dbName, "$cmd"};
     const auto cmdObj = BSON("dropDatabase" << 1);
 
@@ -203,7 +206,7 @@ void AuthOpObserver::onImportCollection(OperationContext* opCtx,
 }
 
 void AuthOpObserver::onApplyOps(OperationContext* opCtx,
-                                const DatabaseName& dbName,
+                                const std::string& dbName,
                                 const BSONObj& applyOpCmd) {
     const NamespaceString cmdNss{dbName, "$cmd"};
 
@@ -225,9 +228,9 @@ void AuthOpObserver::_onReplicationRollback(OperationContext* opCtx,
                                             const RollbackObserverInfo& rbInfo) {
     // Invalidate any in-memory auth data if necessary.
     const auto& rollbackNamespaces = rbInfo.rollbackNamespaces;
-    if (rollbackNamespaces.count(NamespaceString::kServerConfigurationNamespace) == 1 ||
-        rollbackNamespaces.count(NamespaceString::kAdminUsersNamespace) == 1 ||
-        rollbackNamespaces.count(NamespaceString::kAdminRolesNamespace) == 1) {
+    if (rollbackNamespaces.count(AuthorizationManager::versionCollectionNamespace) == 1 ||
+        rollbackNamespaces.count(AuthorizationManager::usersCollectionNamespace) == 1 ||
+        rollbackNamespaces.count(AuthorizationManager::rolesCollectionNamespace) == 1) {
         AuthorizationManager::get(opCtx->getServiceContext())->invalidateUserCache(opCtx);
     }
 }

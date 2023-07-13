@@ -2,11 +2,10 @@
  * Tests the behavior of change streams in the presence of 'showExpandedEvents' flag.
  *
  * @tags: [
- *   requires_fcv_61,
+ *   requires_fcv_60,
  *   # The test assumes certain ordering of the events. The chunk migrations on a sharded collection
  *   # could break the test.
  *   assumes_unsharded_collection,
- *   featureFlagChangeStreamsFurtherEnrichedEvents,
  * ]
  */
 (function() {
@@ -18,6 +17,16 @@ load('jstests/libs/change_stream_util.js');        // For 'ChangeStreamTest' and
                                                    // 'assertChangeStreamEventEq'.
 
 const testDB = db.getSiblingDB(jsTestName());
+
+if (!isChangeStreamsVisibilityEnabled(testDB)) {
+    assert.commandFailedWithCode(testDB.runCommand({
+        aggregate: 1,
+        pipeline: [{$changeStream: {showExpandedEvents: true}}],
+        cursor: {},
+    }),
+                                 6188501);
+    return;
+}
 
 // Assert that the flag is not allowed with 'apiStrict'.
 assert.commandFailedWithCode(testDB.runCommand({
@@ -100,8 +109,7 @@ assertChangeEvent(() => assert.commandWorked(coll.update({_id: 0}, {$inc: {a: 1}
     ns,
     operationType: 'update',
     documentKey: {_id: 0},
-    updateDescription:
-        {removedFields: [], updatedFields: {a: 3}, truncatedArrays: [], disambiguatedPaths: {}},
+    updateDescription: {removedFields: [], updatedFields: {a: 3}, truncatedArrays: []},
 });
 
 // Test change stream event for 'remove' operation.

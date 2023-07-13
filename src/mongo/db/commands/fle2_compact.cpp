@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kWrite
 
 #include "mongo/platform/basic.h"
 
@@ -35,7 +36,6 @@
 #include <memory>
 
 #include "mongo/crypto/encryption_fields_gen.h"
-#include "mongo/crypto/fle_stats.h"
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/commands/fle2_compact_gen.h"
 #include "mongo/db/commands/server_status.h"
@@ -161,7 +161,7 @@ void upsertNullDocument(FLEQueryInterface* queryImpl,
         updateEntry.setUpsert(false);
         updateEntry.setQ(newNullDoc.getField("_id").wrap());
         updateEntry.setU(mongo::write_ops::UpdateModification(
-            newNullDoc, write_ops::UpdateModification::ReplacementTag{}));
+            newNullDoc, write_ops::UpdateModification::ClassicTag(), true));
         write_ops::UpdateCommandRequest updateRequest(nss, {std::move(updateEntry)});
         auto [reply, originalDoc] =
             queryImpl->updateWithPreimage(nss, EncryptionInformation(BSONObj()), updateRequest);
@@ -172,7 +172,7 @@ void upsertNullDocument(FLEQueryInterface* queryImpl,
     } else {
         // insert the null doc; translate duplicate key error to a FLE contention error
         StmtId stmtId = kUninitializedStmtId;
-        auto reply = uassertStatusOK(queryImpl->insertDocuments(nss, {newNullDoc}, &stmtId, true));
+        auto reply = uassertStatusOK(queryImpl->insertDocument(nss, newNullDoc, &stmtId, true));
         checkWriteErrors(reply);
         statsCtr.addInserts(1);
     }
@@ -289,7 +289,7 @@ ESCPreCompactState prepareESCForCompaction(FLEQueryInterface* queryImpl,
         tagToken, valueToken, state.pos, state.count);
     StmtId stmtId = kUninitializedStmtId;
     auto insertReply =
-        uassertStatusOK(queryImpl->insertDocuments(nssEsc, {placeholder}, &stmtId, true));
+        uassertStatusOK(queryImpl->insertDocument(nssEsc, placeholder, &stmtId, true));
     checkWriteErrors(insertReply);
     stats.addInserts(1);
 
@@ -385,7 +385,7 @@ ECCPreCompactState prepareECCForCompaction(FLEQueryInterface* queryImpl,
             fleCompactHangBeforeECCPlaceholderInsert.pauseWhileSet();
         }
         auto insertReply =
-            uassertStatusOK(queryImpl->insertDocuments(nssEcc, {placeholder}, &stmtId, true));
+            uassertStatusOK(queryImpl->insertDocument(nssEcc, placeholder, &stmtId, true));
         checkWriteErrors(insertReply);
         stats.addInserts(1);
 
@@ -400,6 +400,70 @@ ECCPreCompactState prepareECCForCompaction(FLEQueryInterface* queryImpl,
 
     return state;
 }
+
+void accumulateStats(ECStats& left, const ECStats& right) {
+    left.setRead(left.getRead() + right.getRead());
+    left.setInserted(left.getInserted() + right.getInserted());
+    left.setUpdated(left.getUpdated() + right.getUpdated());
+    left.setDeleted(left.getDeleted() + right.getDeleted());
+}
+
+void accumulateStats(ECOCStats& left, const ECOCStats& right) {
+    left.setRead(left.getRead() + right.getRead());
+    left.setDeleted(left.getDeleted() + right.getDeleted());
+}
+
+/**
+ * Server status section to track an aggregate of global compact statistics.
+ */
+class FLECompactStatsStatusSection : public ServerStatusSection {
+public:
+    FLECompactStatsStatusSection() : ServerStatusSection("fle") {
+        ECStats zeroStats;
+        ECOCStats zeroECOC;
+
+        _stats.setEcc(zeroStats);
+        _stats.setEsc(zeroStats);
+        _stats.setEcoc(zeroECOC);
+    }
+
+    bool includeByDefault() const final {
+        return _hasStats;
+    }
+
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+
+        CompactStats temp;
+        {
+            stdx::lock_guard<Mutex> lock(_mutex);
+            temp = _stats;
+        }
+
+        BSONObjBuilder builder;
+        {
+            auto sub = BSONObjBuilder(builder.subobjStart("compactStats"));
+            temp.serialize(&sub);
+        }
+
+        return builder.obj();
+    }
+
+    void updateStats(const CompactStats& stats) {
+        stdx::lock_guard<Mutex> lock(_mutex);
+
+        _hasStats = true;
+        accumulateStats(_stats.getEsc(), stats.getEsc());
+        accumulateStats(_stats.getEcc(), stats.getEcc());
+        accumulateStats(_stats.getEcoc(), stats.getEcoc());
+    }
+
+private:
+    mutable Mutex _mutex = MONGO_MAKE_LATCH("FLECompactStats::_mutex");
+    CompactStats _stats;
+    bool _hasStats{false};
+};
+
+FLECompactStatsStatusSection _fleCompactStatsStatusSection;
 
 }  // namespace
 
@@ -509,10 +573,10 @@ void compactOneFieldValuePair(FLEQueryInterface* queryImpl,
             //  {_id: F(eccTagToken, pos'+ k), value: Enc(eccValueToken, g_prime[k])}
             for (auto k = eccState.g_prime.size(); k > 0; k--) {
                 const auto& range = eccState.g_prime[k - 1];
-                auto insertReply = uassertStatusOK(queryImpl->insertDocuments(
+                auto insertReply = uassertStatusOK(queryImpl->insertDocument(
                     namespaces.eccNss,
-                    {ECCCollection::generateDocument(
-                        eccTagToken, eccValueToken, eccState.pos + k, range.start, range.end)},
+                    ECCCollection::generateDocument(
+                        eccTagToken, eccValueToken, eccState.pos + k, range.start, range.end),
                     &stmtId,
                     true));
                 checkWriteErrors(insertReply);
@@ -618,7 +682,7 @@ CompactStats processFLECompact(OperationContext* opCtx,
     }
 
     CompactStats stats(*ecocStats, *eccStats, *escStats);
-    FLEStatusSection::get().updateCompactionStats(stats);
+    _fleCompactStatsStatusSection.updateStats(stats);
 
     return stats;
 }

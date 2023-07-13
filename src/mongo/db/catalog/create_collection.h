@@ -27,22 +27,16 @@
  *    it in the license file.
  */
 
-#pragma once
-
-#include <boost/optional.hpp>
 #include <string>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"
-#include "mongo/db/catalog/collection_options.h"
-#include "mongo/db/catalog/virtual_collection_options.h"
-#include "mongo/db/commands/create_gen.h"
+#include "mongo/db/catalog/collection_catalog.h"
 
 namespace mongo {
-
+class BSONObj;
 class OperationContext;
-
-enum class TimeseriesCreateLevel { kBothCollAndView, kBucketsCollOnly };
+class BSONElement;
 
 /**
  * Creates a collection as described in "cmdObj" on the database "dbName". Creates the collection's
@@ -50,29 +44,22 @@ enum class TimeseriesCreateLevel { kBothCollAndView, kBucketsCollOnly };
  * default _id index.
  */
 Status createCollection(OperationContext* opCtx,
-                        const DatabaseName& dbName,
+                        const std::string& dbName,
                         const BSONObj& cmdObj,
                         const BSONObj& idIndex = BSONObj());
 
 /**
  * Creates a collection as parsed in 'cmd'.
  */
-Status createCollection(OperationContext* opCtx, const CreateCommand& cmd);
-
-/**
- * Creates the collection or the view as described by 'options'.
- */
 Status createCollection(OperationContext* opCtx,
                         const NamespaceString& ns,
-                        const CollectionOptions& options,
-                        const boost::optional<BSONObj>& idIndex);
+                        const CreateCommand& cmd);
 
 /**
- * Creates a virtual collection as described by 'vopts'.
+ * Creates the change stream pre-images collection. The collection is clustered by the primary key,
+ * _id.
  */
-Status createVirtualCollection(OperationContext* opCtx,
-                               const NamespaceString& ns,
-                               const VirtualCollectionOptions& vopts);
+void createChangeStreamPreImagesCollection(OperationContext* opCtx);
 
 /**
  * As above, but only used by replication to apply operations. This allows recreating collections
@@ -83,18 +70,10 @@ Status createVirtualCollection(OperationContext* opCtx,
  * error.
  */
 Status createCollectionForApplyOps(OperationContext* opCtx,
-                                   const DatabaseName& dbName,
+                                   const std::string& dbName,
                                    const boost::optional<UUID>& ui,
                                    const BSONObj& cmdObj,
                                    bool allowRenameOutOfTheWay,
                                    const boost::optional<BSONObj>& idIndex = boost::none);
-/**
- * Creates a time-series collection as described in 'option' on the namespace 'ns'. If the level is
- * set to 'kBothCollAndView' both the buckets collection and the view will be created. If the level
- * is set to 'kBucketsCollOnly' only the buckets collection will be created.
- */
-Status createTimeseries(OperationContext* opCtx,
-                        const NamespaceString& ns,
-                        const BSONObj& options,
-                        TimeseriesCreateLevel level = TimeseriesCreateLevel::kBothCollAndView);
+
 }  // namespace mongo

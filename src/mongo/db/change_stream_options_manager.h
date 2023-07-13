@@ -47,9 +47,6 @@ public:
 
     ~ChangeStreamOptionsManager() = default;
 
-    ChangeStreamOptionsManager(const ChangeStreamOptionsManager&) = delete;
-    ChangeStreamOptionsManager& operator=(const ChangeStreamOptionsManager&) = delete;
-
     /**
      * Creates an instance of the class using the service-context.
      */
@@ -68,7 +65,7 @@ public:
     /**
      * Returns the change-streams options.
      */
-    ChangeStreamOptions getOptions(OperationContext* opCtx) const;
+    const ChangeStreamOptions& getOptions(OperationContext* opCtx);
 
     /**
      * Sets the provided change-streams options. Returns OK on success, otherwise appropriate error
@@ -80,14 +77,17 @@ public:
     /**
      * Returns the clusterParameterTime of the current change stream options.
      */
-    const LogicalTime& getClusterParameterTime() const {
+    const LogicalTime& getClusterParameterTime() {
         return _changeStreamOptions.getClusterParameterTime();
     }
 
 private:
+    ChangeStreamOptionsManager(const ChangeStreamOptionsManager&) = delete;
+    ChangeStreamOptionsManager& operator=(const ChangeStreamOptionsManager&) = delete;
+
     ChangeStreamOptions _changeStreamOptions;
 
-    mutable Mutex _mutex = MONGO_MAKE_LATCH("ChangeStreamOptionsManager::mutex");
+    Mutex _mutex = MONGO_MAKE_LATCH("ChangeStreamOptionsManager::mutex");
 };
 
 }  // namespace mongo

@@ -202,15 +202,8 @@ size_t aeadCipherOutputLength(size_t plainTextLen) {
     return aesOutLen + kHmacOutSize;
 }
 
-size_t fle2AeadCipherOutputLength(size_t plainTextLen, aesMode mode) {
-    switch (mode) {
-        case aesMode::ctr:
-            return plainTextLen + aesCTRIVSize + kHmacOutSize;
-        case aesMode::cbc:
-            return aesCBCCipherOutputLength(plainTextLen) + aesCBCIVSize + kHmacOutSize;
-        default:
-            uasserted(ErrorCodes::BadValue, "Unsupported AES mode");
-    }
+size_t fle2AeadCipherOutputLength(size_t plainTextLen) {
+    return plainTextLen + aesCTRIVSize + kHmacOutSize;
 }
 
 size_t fle2CipherOutputLength(size_t plainTextLen) {
@@ -355,12 +348,7 @@ Status fle2AeadEncrypt(ConstDataRange key,
                        ConstDataRange in,
                        ConstDataRange iv,
                        ConstDataRange associatedData,
-                       DataRange out,
-                       aesMode mode) {
-    if (mode != aesMode::cbc && mode != aesMode::ctr) {
-        return {ErrorCodes::BadValue, "Unsupported AES mode"};
-    }
-
+                       DataRange out) {
     if (key.length() != kFieldLevelEncryption2KeySize) {
         return Status(ErrorCodes::BadValue, "Invalid key size.");
     }
@@ -369,12 +357,11 @@ Status fle2AeadEncrypt(ConstDataRange key,
         return Status(ErrorCodes::BadValue, "Invalid AEAD parameters.");
     }
 
-    static_assert(aesCTRIVSize == aesCBCIVSize);
     if (0 != iv.length() && aesCTRIVSize != iv.length()) {
         return Status(ErrorCodes::BadValue, "Invalid IV length.");
     }
 
-    if (out.length() != fle2AeadCipherOutputLength(in.length(), mode)) {
+    if (out.length() != fle2AeadCipherOutputLength(in.length())) {
         return Status(ErrorCodes::BadValue, "Invalid output buffer size.");
     }
 
@@ -387,6 +374,7 @@ Status fle2AeadEncrypt(ConstDataRange key,
 
     bool ivProvided = false;
     if (iv.length() != 0) {
+        invariant(iv.length() == aesCTRIVSize);
         out.write(iv);
         ivProvided = true;
     }
@@ -397,7 +385,7 @@ Status fle2AeadEncrypt(ConstDataRange key,
     SymmetricKey symEncKey(encKey, sym256KeySize, aesAlgorithm, "aesKey", 1);
     std::size_t aesOutLen = out.length() - kHmacOutSize;
 
-    auto swEncrypt = _aesEncrypt(symEncKey, mode, in, {out.data(), aesOutLen}, ivProvided);
+    auto swEncrypt = _aesEncrypt(symEncKey, aesMode::ctr, in, {out.data(), aesOutLen}, ivProvided);
     if (!swEncrypt.isOK()) {
         return swEncrypt.getStatus();
     }
@@ -436,6 +424,7 @@ Status fle2Encrypt(ConstDataRange key, ConstDataRange in, ConstDataRange iv, Dat
 
     bool ivProvided = false;
     if (iv.length() != 0) {
+        invariant(iv.length() == aesCTRIVSize);
         out.write(iv);
         ivProvided = true;
     }
@@ -512,12 +501,7 @@ StatusWith<std::size_t> aeadDecrypt(const SymmetricKey& key,
 StatusWith<std::size_t> fle2AeadDecrypt(ConstDataRange key,
                                         ConstDataRange in,
                                         ConstDataRange associatedData,
-                                        DataRange out,
-                                        aesMode mode) {
-    if (mode != aesMode::cbc && mode != aesMode::ctr) {
-        return {ErrorCodes::BadValue, "Unsupported AES mode"};
-    }
-
+                                        DataRange out) {
     if (key.length() < kFieldLevelEncryption2KeySize) {
         return Status(ErrorCodes::BadValue, "Invalid key size.");
     }
@@ -526,12 +510,11 @@ StatusWith<std::size_t> fle2AeadDecrypt(ConstDataRange key,
         return Status(ErrorCodes::BadValue, "Invalid AEAD parameters.");
     }
 
-    static_assert(aesCTRIVSize == aesCBCIVSize);
     if (in.length() < (aesCTRIVSize + kHmacOutSize)) {
         return Status(ErrorCodes::BadValue, "Ciphertext is not long enough.");
     }
 
-    size_t expectedPlainTextSize = uassertStatusOK(fle2AeadGetMaximumPlainTextLength(in.length()));
+    size_t expectedPlainTextSize = uassertStatusOK(fle2AeadGetPlainTextLength(in.length()));
     if (out.length() != expectedPlainTextSize) {
         return Status(ErrorCodes::BadValue, "Output buffer must be as long as the cipherText.");
     }
@@ -556,7 +539,7 @@ StatusWith<std::size_t> fle2AeadDecrypt(ConstDataRange key,
     }
 
     SymmetricKey symEncKey(encKey, sym256KeySize, aesAlgorithm, "aesKey", 1);
-    return _aesDecrypt(symEncKey, mode, ivAndCipherText, out);
+    return _aesDecrypt(symEncKey, aesMode::ctr, ivAndCipherText, out);
 }
 
 StatusWith<std::size_t> fle2Decrypt(ConstDataRange key, ConstDataRange in, DataRange out) {

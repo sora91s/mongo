@@ -37,31 +37,33 @@ class DatabaseHolderMock : public DatabaseHolder {
 public:
     DatabaseHolderMock() = default;
 
-    Database* getDb(OperationContext* opCtx, const DatabaseName& dbName) const override {
+    Database* getDb(OperationContext* opCtx,
+                    const TenantDatabaseName& tenantDbName) const override {
         return nullptr;
     }
 
-    bool dbExists(OperationContext* opCtx, const DatabaseName& dbName) const override {
+    bool dbExists(OperationContext* opCtx, const TenantDatabaseName& tenantDbName) const override {
         return false;
     }
 
     Database* openDb(OperationContext* opCtx,
-                     const DatabaseName& dbName,
+                     const TenantDatabaseName& tenantDbName,
                      bool* justCreated = nullptr) override {
         return nullptr;
     }
 
     void dropDb(OperationContext* opCtx, Database* db) override {}
 
-    void close(OperationContext* opCtx, const DatabaseName& dbName) override {}
+    void close(OperationContext* opCtx, const TenantDatabaseName& tenantDbName) override {}
 
     void closeAll(OperationContext* opCtx) override {}
 
-    std::set<DatabaseName> getNamesWithConflictingCasing(const DatabaseName& dbName) override {
-        return std::set<DatabaseName>();
+    std::set<TenantDatabaseName> getNamesWithConflictingCasing(
+        const TenantDatabaseName& tenantDbName) override {
+        return std::set<TenantDatabaseName>();
     }
 
-    std::vector<DatabaseName> getNames() override {
+    std::vector<TenantDatabaseName> getNames() override {
         return {};
     }
 };

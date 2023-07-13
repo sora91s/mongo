@@ -30,7 +30,6 @@
 #pragma once
 
 #include <string>
-#include <utility>
 
 
 namespace mongo {
@@ -64,21 +63,14 @@ public:
      */
     ~TempDir();
 
-    /**
-     * Release the path encapsulated by this TempDir to be cleaned up by the caller as necessary.
-     *
-     * A released TempDir is left with an empty path, and its destructor will perform no cleanup.
-     */
-    std::string release() noexcept {
-        return std::exchange(_path, {});
-    }
-
     const std::string& path() const {
         return _path;
     }
 
     /**
-     * Set the path where TempDir() will create temporary directories.
+     * Set the path where TempDir() will create temporary directories. This is a workaround
+     * for situations where you might want to log, but you've not yet run the MONGO_INITIALIZERs,
+     * and should be removed if ever command line parsing is seperated from MONGO_INITIALIZERs.
      */
     static void setTempPath(std::string tempPath);
 

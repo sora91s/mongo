@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -74,14 +75,10 @@
 #include <winsock2.h>
 #endif  // defined(_WIN32)
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
-
 namespace mongo {
 namespace repl {
 
 MONGO_FAIL_POINT_DEFINE(failIsSelfCheck);
-MONGO_FAIL_POINT_DEFINE(transientDNSErrorInFastPath);
 
 OID instanceId;
 
@@ -90,6 +87,20 @@ MONGO_INITIALIZER(GenerateInstanceId)(InitializerContext*) {
 }
 
 namespace {
+
+/**
+ * Helper to convert a message from a networking function to a string.
+ * Needed because errnoWithDescription uses strerror on linux, when
+ * we need gai_strerror.
+ */
+std::string stringifyError(int code) {
+#if FASTPATH_UNIX
+    return gai_strerror(code);
+#elif defined(_WIN32)
+    // FormatMessage in errnoWithDescription works here on windows
+    return errnoWithDescription(code);
+#endif
+}
 
 /**
  * Resolves a host and port to a list of IP addresses. This requires a syscall. If the
@@ -105,45 +116,16 @@ std::vector<std::string> getAddrsForHost(const std::string& iporhost,
 
     const std::string portNum = std::to_string(port);
 
-    int err = 0;
-    int attempts = 0;
-    int maxAttempts = 4;
-
-    while (true) {
-        err = getaddrinfo(iporhost.c_str(), portNum.c_str(), &hints, &addrs);
-
-        // We do not sleep for as long in tests.
-        auto waitCoefficient = 1.0;
-
-        // Simulate transient DNS error if set.
-        if (MONGO_unlikely(transientDNSErrorInFastPath.shouldFail())) {
-            waitCoefficient = 0.1;
-            err = EAI_AGAIN;
-        }
-
-        // Skip waiting if we succeed, get a different error, or run out of attempts.
-        if (err != EAI_AGAIN || attempts == maxAttempts) {
-            break;
-        }
-
-        // Free what we have ahead of the next getaddrinfo call.
-        freeaddrinfo(addrs);
-
-        // Wait 1, 2, 4, 8 seconds (and a tenth of that in tests).
-        sleepmillis(std::pow(2, attempts++) * 1000 * waitCoefficient);
-    }
-
     std::vector<std::string> out;
 
+    int err = getaddrinfo(iporhost.c_str(), portNum.c_str(), &hints, &addrs);
+
     if (err) {
-        auto ec = addrInfoError(err);
         LOGV2_WARNING(21207,
                       "getaddrinfo(\"{host}\") failed: {error}",
                       "getaddrinfo() failed",
                       "host"_attr = iporhost,
-                      "error"_attr = errorMessage(ec),
-                      "timedOut"_attr = (attempts == maxAttempts));
-        freeaddrinfo(addrs);
+                      "error"_attr = stringifyError(err));
         return out;
     }
 
@@ -157,11 +139,10 @@ std::vector<std::string> getAddrsForHost(const std::string& iporhost,
             err = getnameinfo(
                 addr->ai_addr, addr->ai_addrlen, host, NI_MAXHOST, nullptr, 0, NI_NUMERICHOST);
             if (err) {
-                auto ec = addrInfoError(err);
                 LOGV2_WARNING(21208,
                               "getnameinfo() failed: {error}",
                               "getnameinfo() failed",
-                              "error"_attr = errorMessage(ec));
+                              "error"_attr = stringifyError(err));
                 continue;
             }
             out.push_back(host);
@@ -182,17 +163,10 @@ std::vector<std::string> getAddrsForHost(const std::string& iporhost,
 
 }  // namespace
 
-bool isSelf(const HostAndPort& hostAndPort, ServiceContext* const ctx, Milliseconds timeout) {
-    if (isSelfFastPath(hostAndPort)) {
-        return true;
-    }
-    return isSelfSlowPath(hostAndPort, ctx, timeout);
-}
-
-bool isSelfFastPath(const HostAndPort& hostAndPort) {
+bool isSelf(const HostAndPort& hostAndPort, ServiceContext* const ctx) {
     if (MONGO_unlikely(failIsSelfCheck.shouldFail())) {
         LOGV2(356490,
-              "failIsSelfCheck failpoint activated, returning false from isSelfFastPath",
+              "failIsSelfCheck failpoint activated, returning false from isSelf",
               "hostAndPort"_attr = hostAndPort);
         return false;
     }
@@ -248,24 +222,12 @@ bool isSelfFastPath(const HostAndPort& hostAndPort) {
             }
         }
     }
-    return false;
-}
 
-bool isSelfSlowPath(const HostAndPort& hostAndPort,
-                    ServiceContext* const ctx,
-                    Milliseconds timeout) {
     ctx->waitForStartupComplete();
-    if (MONGO_unlikely(failIsSelfCheck.shouldFail())) {
-        LOGV2(6605000,
-              "failIsSelfCheck failpoint activated, returning false from isSelfSlowPath",
-              "hostAndPort"_attr = hostAndPort);
-        return false;
-    }
 
     try {
         DBClientConnection conn;
-        double timeoutSeconds = static_cast<double>(durationCount<Milliseconds>(timeout)) / 1000.0;
-        conn.setSoTimeout(timeoutSeconds);
+        conn.setSoTimeout(30);  // 30 second timeout
 
         // We need to avoid the isMaster call triggered by a normal connect, which would
         // cause a deadlock. 'isSelf' is called by the Replication Coordinator when validating
@@ -293,7 +255,7 @@ bool isSelfSlowPath(const HostAndPort& hostAndPort,
             }
         }
         BSONObj out;
-        bool ok = conn.runCommand(DatabaseName(boost::none, "admin"), BSON("_isSelf" << 1), out);
+        bool ok = conn.runCommand("admin", BSON("_isSelf" << 1), out);
         bool me = ok && out["id"].type() == jstOID && instanceId == out["id"].OID();
 
         return me;
@@ -319,12 +281,12 @@ std::vector<std::string> getBoundAddrs(const bool ipv6enabled) {
 
     ifaddrs* addrs;
 
-    if (getifaddrs(&addrs)) {
-        auto ec = lastSystemError();
+    int err = getifaddrs(&addrs);
+    if (err) {
         LOGV2_WARNING(21210,
                       "getifaddrs failure: {error}",
                       "getifaddrs() failed",
-                      "error"_attr = errorMessage(ec));
+                      "error"_attr = errnoWithDescription(err));
         return out;
     }
     ON_BLOCK_EXIT([&] { freeifaddrs(addrs); });
@@ -337,7 +299,7 @@ std::vector<std::string> getBoundAddrs(const bool ipv6enabled) {
         char host[NI_MAXHOST];
 
         if (family == AF_INET || (ipv6enabled && (family == AF_INET6))) {
-            int err = getnameinfo(
+            err = getnameinfo(
                 addr->ifa_addr,
                 (family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6)),
                 host,
@@ -349,7 +311,7 @@ std::vector<std::string> getBoundAddrs(const bool ipv6enabled) {
                 LOGV2_WARNING(21211,
                               "getnameinfo() failed: {error}",
                               "getnameinfo() failed",
-                              "error"_attr = errorMessage(addrInfoError(err)));
+                              "error"_attr = gai_strerror(err));
                 continue;
             }
             out.push_back(host);
@@ -389,7 +351,7 @@ std::vector<std::string> getBoundAddrs(const bool ipv6enabled) {
         LOGV2_WARNING(21212,
                       "GetAdaptersAddresses() failed: {error}",
                       "GetAdaptersAddresses() failed",
-                      "error"_attr = errorMessage(systemError(err)));
+                      "error"_attr = errnoWithDescription(err));
         return out;
     }
 

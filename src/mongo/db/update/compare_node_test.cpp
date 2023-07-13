@@ -43,7 +43,7 @@
 namespace mongo {
 namespace {
 
-using CompareNodeTest = UpdateTestFixture;
+using CompareNodeTest = UpdateNodeTest;
 using mongo::mutablebson::countChildren;
 using mongo::mutablebson::Element;
 
@@ -68,7 +68,6 @@ TEST_F(CompareNodeTest, ApplyMaxSameNumber) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -87,7 +86,6 @@ TEST_F(CompareNodeTest, ApplyMinSameNumber) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -106,7 +104,6 @@ TEST_F(CompareNodeTest, ApplyMaxNumberIsLess) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -125,7 +122,6 @@ TEST_F(CompareNodeTest, ApplyMinNumberIsMore) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -144,7 +140,6 @@ TEST_F(CompareNodeTest, ApplyMaxSameValInt) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1.0}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -163,7 +158,6 @@ TEST_F(CompareNodeTest, ApplyMaxSameValIntZero) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 0.0}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -182,7 +176,6 @@ TEST_F(CompareNodeTest, ApplyMinSameValIntZero) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 0.0}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -201,11 +194,10 @@ TEST_F(CompareNodeTest, ApplyMissingFieldMinNumber) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 0}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {i: {a: 0}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 0}}"), fromjson("{$v:2, diff: {i: {a: 0}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyExistingNumberMinNumber) {
@@ -220,11 +212,10 @@ TEST_F(CompareNodeTest, ApplyExistingNumberMinNumber) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 0}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {u: {a: 0}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 0}}"), fromjson("{$v:2, diff: {u: {a: 0}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyMissingFieldMaxNumber) {
@@ -239,11 +230,10 @@ TEST_F(CompareNodeTest, ApplyMissingFieldMaxNumber) {
     auto result = node.apply(getApplyParams(doc.root()), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 0}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {i: {a: 0}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 0}}"), fromjson("{$v:2, diff: {i: {a: 0}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyExistingNumberMaxNumber) {
@@ -258,11 +248,10 @@ TEST_F(CompareNodeTest, ApplyExistingNumberMaxNumber) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 2}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {u: {a: 2}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 2}}"), fromjson("{$v:2, diff: {u: {a: 2}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyExistingDateMaxDate) {
@@ -277,11 +266,11 @@ TEST_F(CompareNodeTest, ApplyExistingDateMaxDate) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {$date: 123123123}}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {u: {a: {$date: 123123123}}}}"));
+    assertOplogEntry(fromjson("{$set: {a: {$date: 123123123}}}"),
+                     fromjson("{$v:2, diff: {u: {a: {$date: 123123123}}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyExistingEmbeddedDocMaxDoc) {
@@ -296,11 +285,10 @@ TEST_F(CompareNodeTest, ApplyExistingEmbeddedDocMaxDoc) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b: 3}}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {u: {a: {b: 3}}}}"));
+    assertOplogEntry(fromjson("{$set: {a: {b: 3}}}"), fromjson("{$v:2, diff: {u: {a: {b: 3}}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyExistingEmbeddedDocMaxNumber) {
@@ -315,7 +303,6 @@ TEST_F(CompareNodeTest, ApplyExistingEmbeddedDocMaxNumber) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_TRUE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: {b: 2}}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
@@ -337,11 +324,10 @@ TEST_F(CompareNodeTest, ApplyMinRespectsCollation) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 'dba'}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {u: {a: 'dba'}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 'dba'}}"), fromjson("{$v:2, diff: {u: {a: 'dba'}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyMinRespectsCollationFromSetCollator) {
@@ -360,11 +346,10 @@ TEST_F(CompareNodeTest, ApplyMinRespectsCollationFromSetCollator) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 'dba'}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {u: {a: 'dba'}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 'dba'}}"), fromjson("{$v:2, diff: {u: {a: 'dba'}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyMaxRespectsCollationFromSetCollator) {
@@ -383,11 +368,10 @@ TEST_F(CompareNodeTest, ApplyMaxRespectsCollationFromSetCollator) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_TRUE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 'abd'}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {u: {a: 'abd'}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 'abd'}}"), fromjson("{$v:2, diff: {u: {a: 'abd'}}}"));
 }
 
 DEATH_TEST_REGEX(CompareNodeTest,
@@ -428,11 +412,10 @@ TEST_F(CompareNodeTest, ApplyIndexesNotAffected) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 
-    assertOplogEntry(fromjson("{$v:2, diff: {u: {a: 1}}}"));
+    assertOplogEntry(fromjson("{$set: {a: 1}}"), fromjson("{$v:2, diff: {u: {a: 1}}}"));
 }
 
 TEST_F(CompareNodeTest, ApplyNoIndexDataOrLogBuilder) {
@@ -447,7 +430,6 @@ TEST_F(CompareNodeTest, ApplyNoIndexDataOrLogBuilder) {
     auto result = node.apply(getApplyParams(doc.root()["a"]), getUpdateNodeApplyParams());
     ASSERT_FALSE(result.noop);
     ASSERT_FALSE(result.indexesAffected);
-    ASSERT_EQUALS(result.indexesAffected, getIndexAffectedFromLogEntry());
     ASSERT_EQUALS(fromjson("{a: 1}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
 }

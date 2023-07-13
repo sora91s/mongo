@@ -29,6 +29,7 @@
 #include "mongo/client/sdam/sdam_test_base.h"
 
 #include <boost/algorithm/string.hpp>
+#include <boost/optional/optional_io.hpp>
 #include <ostream>
 #include <set>
 
@@ -390,9 +391,7 @@ TEST_F(ServerDescriptionTestFixture, ShouldPreserveRTTPrecisionForMicroseconds) 
     const int numIterations = 100;
     const int minRttMicros = 100;
 
-    const auto randMicroseconds = [](int m) {
-        return Microseconds(rand.nextInt64(m) + m);
-    };
+    const auto randMicroseconds = [](int m) { return Microseconds(rand.nextInt64(m) + m); };
     auto lastServerDescription = ServerDescriptionBuilder()
                                      .withType(ServerType::kRSPrimary)
                                      .withRtt(randMicroseconds(minRttMicros))
@@ -511,8 +510,9 @@ TEST_F(ServerDescriptionTestFixture, ShouldStoreTopologyVersion) {
     auto response = HelloOutcome(HostAndPort("foo:1234"),
                                  kTopologyVersion,
                                  duration_cast<HelloRTT>(mongo::Milliseconds(40)));
-    auto topologyVersion = TopologyVersion::parse(
-        IDLParserContext("TopologyVersion"), kTopologyVersion.getObjectField("topologyVersion"));
+    auto topologyVersion =
+        TopologyVersion::parse(IDLParserErrorContext("TopologyVersion"),
+                               kTopologyVersion.getObjectField("topologyVersion"));
 
     auto description =
         ServerDescription(clockSource, response, boost::none /*lastRtt*/, topologyVersion);

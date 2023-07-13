@@ -29,10 +29,10 @@
 
 #pragma once
 
+#include "mongo/db/internal_session_pool.h"
 #include "mongo/db/persistent_task_store.h"
 #include "mongo/db/repl/primary_only_service.h"
 #include "mongo/db/s/config/set_user_write_block_mode_coordinator_document_gen.h"
-#include "mongo/db/session/internal_session_pool.h"
 
 namespace mongo {
 
@@ -59,8 +59,6 @@ public:
     ConfigsvrCoordinatorTypeEnum coordinatorType() const {
         return _coordId.getCoordinatorType();
     }
-
-    void checkIfOptionsConflict(const BSONObj& stateDoc) const override {}
 
 protected:
     const ConfigsvrCoordinatorId _coordId;

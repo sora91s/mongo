@@ -58,8 +58,6 @@ public:
 
     DepsTracker::State getDependencies(DepsTracker* deps) const final;
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
-
     DocumentSource::GetModPathsReturn getModifiedPaths() const final;
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain) const;
@@ -81,18 +79,17 @@ private:
     DocumentSourceFindAndModifyImageLookup(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                            bool includeCommitTransactionTimestamp);
 
-    // Downconverts 'findAndModify' or 'applyOps' entries with 'needsRetryImage'. If an oplog entry
-    // document has 'needsRetryImage' set, we downconvert and stash the document as
-    // '_stashedDownconvertedDoc' and then forge a no-op pre- or post-image document and return it.
-    Document _downConvertIfNeedsRetryImage(Document inputDoc);
+    // Forges the no-op pre- or post-image document to be returned. Also downconverts the original
+    // 'findAndModify' or 'applyOps' oplog entry document and stashes it.
+    boost::optional<Document> _forgeNoopImageDoc(Document inputDoc, OperationContext* opCtx);
 
     // Set to true if the input oplog entry documents can have a transaction commit timestamp
     // attached to it.
     bool _includeCommitTransactionTimestamp;
 
-    // Represents the stashed downconverted 'findAndModify' or 'applyOps' oplog entry document.
-    // This indicates that the previous document emitted was a forged pre- or post-image.
-    boost::optional<Document> _stashedDownconvertedDoc;
+    // Represents the stashed 'findAndModify' or 'applyOps' oplog entry document. This indicates
+    // that the previous document emitted was a forged pre- or post-image.
+    boost::optional<Document> _stashedFindAndModifyDoc;
 };
 
 }  // namespace mongo

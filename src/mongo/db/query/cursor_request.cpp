@@ -27,11 +27,13 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/query/cursor_request.h"
 
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobj.h"
-#include "mongo/db/basic_types_gen.h"
+#include "mongo/idl/basic_types_gen.h"
 
 namespace mongo {
 
@@ -52,7 +54,7 @@ Status CursorRequest::parseCommandCursorOptions(const BSONObj& cmdObj,
 
     BSONObj cursor = cursorElem.embeddedObject();
     auto options =
-        SimpleCursorOptions::parse(IDLParserContext("parseCommandCursorOptions"), cursor);
+        SimpleCursorOptions::parse(IDLParserErrorContext("parseCommandCursorOptions"), cursor);
     if (options.getBatchSize()) {
         *batchSize = *options.getBatchSize();
     }

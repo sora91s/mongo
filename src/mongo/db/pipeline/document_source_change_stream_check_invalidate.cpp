@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/db/pipeline/document_source_change_stream_check_invalidate.h"
 #include "mongo/db/query/query_feature_flags_gen.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -86,7 +84,8 @@ DocumentSourceChangeStreamCheckInvalidate::createFromBson(
             spec.type() == Object);
 
     auto parsed = DocumentSourceChangeStreamCheckInvalidateSpec::parse(
-        IDLParserContext("DocumentSourceChangeStreamCheckInvalidateSpec"), spec.embeddedObject());
+        IDLParserErrorContext("DocumentSourceChangeStreamCheckInvalidateSpec"),
+        spec.embeddedObject());
     return new DocumentSourceChangeStreamCheckInvalidate(
         expCtx,
         parsed.getStartAfterInvalidate() ? parsed.getStartAfterInvalidate()->getData()
@@ -98,7 +97,7 @@ DocumentSource::GetNextResult DocumentSourceChangeStreamCheckInvalidate::doGetNe
     // then throws a 'ChangeStreamInvalidated' exception on the next call to this method.
 
     if (_queuedInvalidate) {
-        const auto res = DocumentSource::GetNextResult(std::move(_queuedInvalidate.value()));
+        const auto res = DocumentSource::GetNextResult(std::move(_queuedInvalidate.get()));
         _queuedInvalidate.reset();
         return res;
     }

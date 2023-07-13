@@ -31,6 +31,8 @@
 
 #include "mongo/db/s/balancer/migration_test_fixture.h"
 
+#include "mongo/db/s/type_locks.h"
+
 namespace mongo {
 
 using unittest::assertGet;
@@ -82,24 +84,24 @@ ChunkType MigrationTestFixture::setUpChunk(const UUID& collUUID,
     return chunk;
 }
 
-void MigrationTestFixture::setUpZones(const NamespaceString& collName,
-                                      const StringMap<ChunkRange>& zoneChunkRanges) {
-    for (auto const& zoneChunkRange : zoneChunkRanges) {
-        BSONObjBuilder zoneDocBuilder;
-        zoneDocBuilder.append(
+void MigrationTestFixture::setUpTags(const NamespaceString& collName,
+                                     const StringMap<ChunkRange>& tagChunkRanges) {
+    for (auto const& tagChunkRange : tagChunkRanges) {
+        BSONObjBuilder tagDocBuilder;
+        tagDocBuilder.append(
             "_id",
-            BSON(TagsType::ns(collName.ns()) << TagsType::min(zoneChunkRange.second.getMin())));
-        zoneDocBuilder.append(TagsType::ns(), collName.ns());
-        zoneDocBuilder.append(TagsType::min(), zoneChunkRange.second.getMin());
-        zoneDocBuilder.append(TagsType::max(), zoneChunkRange.second.getMax());
-        zoneDocBuilder.append(TagsType::tag(), zoneChunkRange.first);
+            BSON(TagsType::ns(collName.ns()) << TagsType::min(tagChunkRange.second.getMin())));
+        tagDocBuilder.append(TagsType::ns(), collName.ns());
+        tagDocBuilder.append(TagsType::min(), tagChunkRange.second.getMin());
+        tagDocBuilder.append(TagsType::max(), tagChunkRange.second.getMax());
+        tagDocBuilder.append(TagsType::tag(), tagChunkRange.first);
 
         ASSERT_OK(catalogClient()->insertConfigDocument(
-            operationContext(), TagsType::ConfigNS, zoneDocBuilder.obj(), kMajorityWriteConcern));
+            operationContext(), TagsType::ConfigNS, tagDocBuilder.obj(), kMajorityWriteConcern));
     }
 }
 
-void MigrationTestFixture::removeAllZones(const NamespaceString& collName) {
+void MigrationTestFixture::removeAllTags(const NamespaceString& collName) {
     const auto query = BSON("ns" << collName.ns());
     ASSERT_OK(catalogClient()->removeConfigDocuments(
         operationContext(), TagsType::ConfigNS, query, kMajorityWriteConcern));
@@ -124,7 +126,7 @@ void MigrationTestFixture::setUpMigration(const NamespaceString& ns,
     builder.append(MigrationType::max(), chunk.getMax());
     builder.append(MigrationType::toShard(), toShard.toString());
     builder.append(MigrationType::fromShard(), chunk.getShard().toString());
-    chunk.getVersion().serialize("chunkVersion", &builder);
+    chunk.getVersion().serializeToBSON("chunkVersion", &builder);
     builder.append(MigrationType::forceJumbo(), "doNotForceJumbo");
 
     MigrationType migrationType = assertGet(MigrationType::fromBSON(builder.obj()));
@@ -134,7 +136,7 @@ void MigrationTestFixture::setUpMigration(const NamespaceString& ns,
                                                     kMajorityWriteConcern));
 }
 
-void MigrationTestFixture::checkMigrationsCollectionIsEmpty() {
+void MigrationTestFixture::checkMigrationsCollectionIsEmptyAndLocksAreUnlocked() {
     auto statusWithMigrationsQueryResponse =
         shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
             operationContext(),
@@ -147,6 +149,17 @@ void MigrationTestFixture::checkMigrationsCollectionIsEmpty() {
     Shard::QueryResponse migrationsQueryResponse =
         uassertStatusOK(statusWithMigrationsQueryResponse);
     ASSERT_EQUALS(0U, migrationsQueryResponse.docs.size());
+
+    auto statusWithLocksQueryResponse = shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+        operationContext(),
+        ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+        repl::ReadConcernLevel::kMajorityReadConcern,
+        LocksType::ConfigNS,
+        BSON(LocksType::state(LocksType::LOCKED) << LocksType::name("{ '$ne' : 'balancer'}")),
+        BSONObj(),
+        boost::none);
+    Shard::QueryResponse locksQueryResponse = uassertStatusOK(statusWithLocksQueryResponse);
+    ASSERT_EQUALS(0U, locksQueryResponse.docs.size());
 }
 
 }  // namespace mongo

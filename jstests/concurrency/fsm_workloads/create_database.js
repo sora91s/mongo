@@ -12,31 +12,27 @@
  * @tags: [creates_background_indexes]
  */
 
+load('jstests/concurrency/fsm_workload_helpers/server_types.js');  // for isEphemeralForTest
 load("jstests/concurrency/fsm_workload_helpers/assert_handle_fail_in_transaction.js");
 
 var $config = (function() {
     let data = {
         checkCommandResult: function checkCommandResult(mayFailWithDatabaseDifferCase, res) {
-            if (mayFailWithDatabaseDifferCase)
+            if (mayFailWithDatabaseDifferCase && !res.ok)
                 assertWorkedOrFailedHandleTxnErrors(
                     res,
-                    [
-                        ErrorCodes.StaleDbVersion,
-                        ErrorCodes.IndexBuildAlreadyInProgress,
-                        ErrorCodes.DatabaseDifferCase
-                    ],
-                    [ErrorCodes.StaleDbVersion, ErrorCodes.DatabaseDifferCase]);
+                    [ErrorCodes.IndexBuildAlreadyInProgress, ErrorCodes.DatabaseDifferCase],
+                    ErrorCodes.DatabaseDifferCase);
             else
                 assertWorkedHandleTxnErrors(res, ErrorCodes.IndexBuildAlreadyInProgress);
             return res;
         },
 
         checkWriteResult: function checkWriteResult(mayFailWithDatabaseDifferCase, res) {
-            let expectedWriteErrors = [ErrorCodes.NoProgressMade];
-            if (mayFailWithDatabaseDifferCase) {
-                expectedWriteErrors.push(ErrorCodes.DatabaseDifferCase);
-            }
-            assertAlways.commandWorkedOrFailedWithCode(res, expectedWriteErrors);
+            if (mayFailWithDatabaseDifferCase && res.hasWriteError())
+                assertAlways.writeErrorWithCode(res, ErrorCodes.DatabaseDifferCase);
+            else
+                assertAlways.commandWorked(res);
             return res;
         }
     };
@@ -97,8 +93,8 @@ var $config = (function() {
         },
 
         dropDatabase: function dropDatabase(db, collName) {
-            assertAlways.commandWorkedOrFailedWithCode(this.myDB.dropDatabase(),
-                                                       ErrorCodes.StaleDbVersion);
+            if (this.created)
+                assertAlways.commandWorked(this.myDB.dropDatabase());
         },
 
         listDatabases: function listDatabases(db, collName) {
@@ -144,7 +140,7 @@ var $config = (function() {
         // We only run a few iterations to reduce the amount of data cumulatively
         // written to disk.
         threadCount: 10,
-        iterations: 50,
+        iterations: 120,
         states,
         transitions,
     };

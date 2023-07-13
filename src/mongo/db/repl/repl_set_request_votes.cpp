@@ -30,7 +30,6 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/client.h"
-#include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/repl_set_command.h"
@@ -50,7 +49,7 @@ public:
 
 private:
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string&,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
         Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
@@ -60,10 +59,8 @@ private:
         status = parsedArgs.initialize(cmdObj);
         uassertStatusOK(status);
 
-        // Operations that are part of Replica Set elections are crucial to the stability of the
-        // cluster. Marking it as having Immediate priority will make it skip waiting for ticket
-        // acquisition and Flow Control.
-        SetAdmissionPriorityForLock priority(opCtx, AdmissionContext::Priority::kImmediate);
+        // Any writes that occur as part of an election should not be subject to Flow Control.
+        opCtx->setShouldParticipateInFlowControl(false);
         ReplSetRequestVotesResponse response;
         status = ReplicationCoordinator::get(opCtx)->processReplSetRequestVotes(
             opCtx, parsedArgs, &response);

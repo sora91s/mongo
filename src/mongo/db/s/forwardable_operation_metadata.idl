@@ -30,7 +30,7 @@ global:
     cpp_namespace: "mongo"
 
 imports:
-     - "mongo/db/basic_types.idl"
+     - "mongo/idl/basic_types.idl"
      - "mongo/rpc/metadata/impersonated_user_metadata.idl"
 
 structs:
@@ -44,10 +44,6 @@ structs:
         fields:
             users:
                 type: array<UserName>
-                optional: true
-            user:
-                type: UserName
-                optional: true
             roles:
                 type: array<RoleName>
 

@@ -2,6 +2,7 @@
  * Tests dropping the donor and recipient state doc collections in the middle of a tenant migration.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -10,9 +11,13 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 const kMigrationFpNames = [
     "pauseTenantMigrationAfterPersistingInitialDonorStateDoc",
@@ -21,15 +26,17 @@ const kMigrationFpNames = [
     "abortTenantMigrationBeforeLeavingBlockingState",
     null,
 ];
+const kTenantId = "testTenantId";
+let testNum = 0;
 
 function makeTenantId() {
-    return ObjectId().str;
+    return kTenantId + testNum++;
 }
 
 function makeMigrationOpts(tenantMigrationTest, tenantId) {
     return {
         migrationIdString: extractUUIDFromObject(UUID()),
-        tenantId,
+        tenantId: tenantId,
         recipientConnString: tenantMigrationTest.getRecipientConnString()
     };
 }
@@ -63,8 +70,7 @@ function testDroppingStateDocCollections(tenantMigrationTest, fpName, {
 
     let fp;
     if (fpName) {
-        fp = configureFailPoint(
-            donorPrimary, fpName, {migrationId: migrationOptsBeforeDrop.migrationIdString});
+        fp = configureFailPoint(donorPrimary, fpName, {tenantId: tenantId});
         assert.commandWorked(tenantMigrationTest.startMigration(migrationOptsBeforeDrop));
         fp.wait();
     } else {
@@ -75,7 +81,7 @@ function testDroppingStateDocCollections(tenantMigrationTest, fpName, {
     if (dropDonorsCollection) {
         assert(donorPrimary.getCollection(TenantMigrationTest.kConfigDonorsNS).drop());
         let donorDoc = donorPrimary.getCollection(TenantMigrationTest.kConfigDonorsNS).findOne({
-            _id: UUID(migrationOptsBeforeDrop.migrationIdString),
+            tenantId: tenantId
         });
         assert.eq(donorDoc, null);
 
@@ -94,7 +100,7 @@ function testDroppingStateDocCollections(tenantMigrationTest, fpName, {
         }));
         let recipientDoc =
             recipientPrimary.getCollection(TenantMigrationTest.kConfigRecipientsNS).findOne({
-                _id: UUID(migrationOptsBeforeDrop.migrationIdString),
+                tenantId: tenantId
             });
         assert.eq(recipientDoc, null);
         const currOpRecipient = assert.commandWorked(
@@ -205,3 +211,4 @@ kMigrationFpNames.forEach(fpName => {
     });
     tenantMigrationTest.stop();
 });
+})();

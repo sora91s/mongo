@@ -30,7 +30,7 @@ global:
   cpp_namespace: "mongo"
 
 imports:
-  - "mongo/db/basic_types.idl"
+  - "mongo/idl/basic_types.idl"
   - "mongo/db/pipeline/aggregate_command.idl"
 
 structs:

@@ -56,9 +56,9 @@ public:
     }
 
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
+    virtual Status checkAuthForCommand(Client* client,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj) const {
         return Status::OK();
     }
 
@@ -67,7 +67,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
         auto snapshotManager = getGlobalServiceContext()->getStorageEngine()->getSnapshotManager();
@@ -101,9 +101,9 @@ public:
     }
 
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
+    virtual Status checkAuthForCommand(Client* client,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj) const {
         return Status::OK();
     }
 
@@ -112,7 +112,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
         auto snapshotManager = getGlobalServiceContext()->getStorageEngine()->getSnapshotManager();

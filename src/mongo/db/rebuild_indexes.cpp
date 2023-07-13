@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -40,12 +41,9 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builds_coordinator.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 
-StatusWith<IndexNameObjs> getIndexNameObjs(const Collection* collection,
+StatusWith<IndexNameObjs> getIndexNameObjs(const CollectionPtr& collection,
                                            std::function<bool(const std::string&)> filter) {
     IndexNameObjs ret;
     std::vector<std::string>& indexNames = ret.first;
@@ -91,7 +89,7 @@ StatusWith<IndexNameObjs> getIndexNameObjs(const Collection* collection,
 }
 
 Status rebuildIndexesOnCollection(OperationContext* opCtx,
-                                  const Collection* collection,
+                                  const CollectionPtr& collection,
                                   const std::vector<BSONObj>& indexSpecs,
                                   RepairData repair) {
     // Skip the rest if there are no indexes to rebuild.

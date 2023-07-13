@@ -50,6 +50,7 @@ public:
     explicit ForwardableOperationMetadata(const BSONObj& obj);
     explicit ForwardableOperationMetadata(OperationContext* opCtx);
 
+
     void setOn(OperationContext* opCtx) const;
 };
 

@@ -100,7 +100,6 @@ public:
     static constexpr StringData metaFieldSearchScore = "$searchScore"_sd;
     static constexpr StringData metaFieldSearchHighlights = "$searchHighlights"_sd;
     static constexpr StringData metaFieldSearchScoreDetails = "$searchScoreDetails"_sd;
-    static constexpr StringData metaFieldSearchSortValues = "$searchSortValues"_sd;
     static constexpr StringData metaFieldIndexKey = "$indexKey"_sd;
 
     static const StringDataSet allMetadataFieldNames;
@@ -138,16 +137,16 @@ public:
      * instead.
      */
     template <typename T>
-    Value operator[](T key) const {
+    const Value operator[](T key) const {
         return getField(key);
     }
     template <typename T>
-    Value getField(T key) const {
+    const Value getField(T key) const {
         return storage().getField(key);
     }
 
     /// Look up a field by Position. See positionOf and getNestedField.
-    Value getField(Position pos) const {
+    const Value getField(Position pos) const {
         return storage().getField(pos).val;
     }
 
@@ -156,7 +155,8 @@ public:
      * If 'positions' is non-null, it will be filled with a path suitable to pass to
      * MutableDocument::setNestedField().
      */
-    Value getNestedField(const FieldPath& path, std::vector<Position>* positions = nullptr) const;
+    const Value getNestedField(const FieldPath& path,
+                               std::vector<Position>* positions = nullptr) const;
 
     /**
      * Returns field at given path as either BSONElement or Value, depending on how it is
@@ -259,30 +259,12 @@ public:
     void hash_combine(size_t& seed, const StringData::ComparatorInterface* stringComparator) const;
 
     /**
-     * Returns true, if this document is trivially convertible to BSON, meaning the underlying
-     * storage is already in BSON format and there are no damages.
-     */
-    bool isTriviallyConvertible() const {
-        return !storage().isModified() && !storage().stripMetadata();
-    }
-
-    /**
      * Serializes this document to the BSONObj under construction in 'builder'. Metadata is not
      * included. Throws a AssertionException if 'recursionLevel' exceeds the maximum allowable
      * depth.
      */
     void toBson(BSONObjBuilder* builder, size_t recursionLevel = 1) const;
-
-    template <typename BSONTraits = BSONObj::DefaultSizeTrait>
-    BSONObj toBson() const {
-        if (isTriviallyConvertible()) {
-            return storage().bsonObj();
-        }
-
-        BSONObjBuilder bb;
-        toBson(&bb);
-        return bb.obj<BSONTraits>();
-    }
+    BSONObj toBson() const;
 
     /**
      * Serializes this document iff the conversion is "trivial," meaning that the underlying storage
@@ -353,13 +335,6 @@ public:
      */
     Document getOwned() const&;
     Document getOwned() &&;
-
-    /**
-     * Needed to satisfy the Sorter interface. This method throws an assertion.
-     */
-    void makeOwned() {
-        MONGO_UNREACHABLE;
-    }
 
     /**
      * Returns true if the underlying BSONObj is owned.

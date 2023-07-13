@@ -10,7 +10,6 @@
 //
 // See library home page at http://www.boost.org/libs/system
 
-#include <boost/system/detail/snprintf.hpp>
 #include <boost/winapi/error_handling.hpp>
 #include <boost/winapi/character_code_conversion.hpp>
 #include <boost/winapi/local_memory.hpp>
@@ -28,11 +27,34 @@ namespace system
 namespace detail
 {
 
+#if ( defined(_MSC_VER) && _MSC_VER < 1900 ) || ( defined(__MINGW32__) && !defined(__MINGW64_VERSION_MAJOR) )
+
 inline char const * unknown_message_win32( int ev, char * buffer, std::size_t len )
 {
-    detail::snprintf( buffer, len, "Unknown error (%d)", ev );
+# if defined( BOOST_MSVC )
+#  pragma warning( push )
+#  pragma warning( disable: 4996 )
+# endif
+
+    _snprintf( buffer, len - 1, "Unknown error (%d)", ev );
+
+    buffer[ len - 1 ] = 0;
+    return buffer;
+
+# if defined( BOOST_MSVC )
+#  pragma warning( pop )
+# endif
+}
+
+#else
+
+inline char const * unknown_message_win32( int ev, char * buffer, std::size_t len )
+{
+    std::snprintf( buffer, len, "Unknown error (%d)", ev );
     return buffer;
 }
+
+#endif
 
 inline boost::winapi::UINT_ message_cp_win32()
 {

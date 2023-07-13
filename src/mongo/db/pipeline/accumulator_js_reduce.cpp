@@ -62,11 +62,11 @@ AccumulationExpression AccumulatorInternalJsReduce::parseInternalJsReduce(
     }
     uassert(31245,
             str::stream() << kName
-                          << " requires 'eval' argument, received input: " << obj.toString(false),
+                          << " requires 'eval' argument, recieved input: " << obj.toString(false),
             !funcSource.empty());
     uassert(31349,
             str::stream() << kName
-                          << " requires 'data' argument, received input: " << obj.toString(false),
+                          << " requires 'data' argument, recieved input: " << obj.toString(false),
             argument);
 
     auto factory = [expCtx, funcSource = funcSource]() {
@@ -120,53 +120,52 @@ void AccumulatorInternalJsReduce::processInternal(const Value& input, bool mergi
 Value AccumulatorInternalJsReduce::getValue(bool toBeMerged) {
     if (_values.size() < 1) {
         return Value{};
-    }
-    Value result;
-    if (mrSingleReduceOptimizationEnabled && _values.size() == 1) {
+    } else if (mrSingleReduceOptimizationEnabled && _values.size() == 1) {
         // This optimization existed in the old Pre-4.4 MapReduce implementation. If the flag is
         // set, then we should replicate the optimization. See SERVER-68766 for more details.
-        result = std::move(_values[0]);
-    } else {
-        const auto keySize = _key.getApproximateSize();
+        return _values[0];
+    }
 
-        // Keep reducing until we have exactly one value.
-        while (true) {
-            BSONArrayBuilder bsonValues;
-            size_t numLeft = _values.size();
-            for (; numLeft > 0; numLeft--) {
-                Value val = _values[numLeft - 1];
+    const auto keySize = _key.getApproximateSize();
 
-                // Do not insert if doing so would exceed the the maximum allowed BSONObj size.
-                if (bsonValues.len() + keySize + val.getApproximateSize() > BSONObjMaxUserSize) {
-                    // If we have reached the threshold for maximum allowed BSONObj size and only
-                    // have a single value then no progress will be made on reduce. We must fail
-                    // when this scenario is encountered.
-                    size_t numNextReduce = _values.size() - numLeft;
-                    uassert(31392, "Value too large to reduce", numNextReduce > 1);
-                    break;
-                }
-                bsonValues << val;
-            }
+    Value result;
+    // Keep reducing until we have exactly one value.
+    while (true) {
+        BSONArrayBuilder bsonValues;
+        size_t numLeft = _values.size();
+        for (; numLeft > 0; numLeft--) {
+            Value val = _values[numLeft - 1];
 
-            auto expCtx = getExpressionContext();
-            auto reduceFunc = makeJsFunc(expCtx, _funcSource);
-
-            // Function signature: reduce(key, values).
-            BSONObj params = BSON_ARRAY(_key << bsonValues.arr());
-            // For reduce, the key and values are both passed as 'params' so there's no need to set
-            // 'this'.
-            BSONObj thisObj;
-            Value reduceResult =
-                expCtx->getJsExecWithScope()->callFunction(reduceFunc, params, thisObj);
-            if (numLeft == 0) {
-                result = reduceResult;
+            // Do not insert if doing so would exceed the the maximum allowed BSONObj size.
+            if (bsonValues.len() + keySize + val.getApproximateSize() > BSONObjMaxUserSize) {
+                // If we have reached the threshold for maximum allowed BSONObj size and only have a
+                // single value then no progress will be made on reduce. We must fail when this
+                // scenario is encountered.
+                size_t numNextReduce = _values.size() - numLeft;
+                uassert(31392, "Value too large to reduce", numNextReduce > 1);
                 break;
-            } else {
-                // Remove all values which have been reduced.
-                _values.resize(numLeft);
-                // Include most recent result in the set of values to be reduced.
-                _values.push_back(reduceResult);
             }
+            bsonValues << val;
+        }
+
+        auto expCtx = getExpressionContext();
+        auto reduceFunc = makeJsFunc(expCtx, _funcSource);
+
+        // Function signature: reduce(key, values).
+        BSONObj params = BSON_ARRAY(_key << bsonValues.arr());
+        // For reduce, the key and values are both passed as 'params' so there's no need to set
+        // 'this'.
+        BSONObj thisObj;
+        Value reduceResult =
+            expCtx->getJsExecWithScope()->callFunction(reduceFunc, params, thisObj);
+        if (numLeft == 0) {
+            result = reduceResult;
+            break;
+        } else {
+            // Remove all values which have been reduced.
+            _values.resize(numLeft);
+            // Include most recent result in the set of values to be reduced.
+            _values.push_back(reduceResult);
         }
     }
 
@@ -196,13 +195,8 @@ void AccumulatorInternalJsReduce::reset() {
 // Returns this accumulator serialized as a Value along with the reduce function.
 Document AccumulatorInternalJsReduce::serialize(boost::intrusive_ptr<Expression> initializer,
                                                 boost::intrusive_ptr<Expression> argument,
-                                                bool explain,
-                                                SerializationOptions options) const {
-    if (options.replacementForLiteralArgs) {
-        return DOC(kName << DOC("data" << argument->serialize(options) << "eval"
-                                       << *options.replacementForLiteralArgs));
-    }
-    return DOC(kName << DOC("data" << argument->serialize(options) << "eval" << _funcSource));
+                                                bool explain) const {
+    return DOC(kName << DOC("data" << argument->serialize(explain) << "eval" << _funcSource));
 }
 
 REGISTER_ACCUMULATOR(accumulator, AccumulatorJs::parse);
@@ -240,25 +234,15 @@ std::string parseFunction(StringData fieldName,
 
 Document AccumulatorJs::serialize(boost::intrusive_ptr<Expression> initializer,
                                   boost::intrusive_ptr<Expression> argument,
-                                  bool explain,
-                                  SerializationOptions options) const {
+                                  bool explain) const {
     MutableDocument args;
-
-    args.addField("init",
-                  options.replacementForLiteralArgs ? Value(*options.replacementForLiteralArgs)
-                                                    : Value(_init));
-    args.addField("initArgs", Value(initializer->serialize(options)));
-    args.addField("accumulate",
-                  options.replacementForLiteralArgs ? Value(*options.replacementForLiteralArgs)
-                                                    : Value(_accumulate));
-    args.addField("accumulateArgs", Value(argument->serialize(options)));
-    args.addField("merge",
-                  options.replacementForLiteralArgs ? Value(*options.replacementForLiteralArgs)
-                                                    : Value(_merge));
+    args.addField("init", Value(_init));
+    args.addField("initArgs", Value(initializer->serialize(explain)));
+    args.addField("accumulate", Value(_accumulate));
+    args.addField("accumulateArgs", Value(argument->serialize(explain)));
+    args.addField("merge", Value(_merge));
     if (_finalize) {
-        args.addField("finalize",
-                      options.replacementForLiteralArgs ? Value(*options.replacementForLiteralArgs)
-                                                        : Value(*_finalize));
+        args.addField("finalize", Value(*_finalize));
     }
     args.addField("lang", Value("js"_sd));
     return DOC(kName << args.freeze());

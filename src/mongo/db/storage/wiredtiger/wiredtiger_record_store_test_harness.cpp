@@ -28,6 +28,8 @@
  */
 
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store_test_harness.h"
+
+#include "mongo/db/operation_context_noop.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 
 namespace mongo {
@@ -43,13 +45,14 @@ std::string _testLoggingSettings(std::string extraStrings) {
 WiredTigerHarnessHelper::WiredTigerHarnessHelper(Options options, StringData extraStrings)
     : _dbpath("wt_test"),
       _lockerNoopClientObserverRegisterer(getServiceContext()),
-      _engine(Client::getCurrent()->makeOperationContext().get(),
-              kWiredTigerEngineName,
+      _engine(kWiredTigerEngineName,
               _dbpath.path(),
               &_cs,
               _testLoggingSettings(extraStrings.toString()),
               1,
               0,
+              true,
+              false,
               false,
               false) {
     repl::ReplicationCoordinator::set(
@@ -96,7 +99,9 @@ std::unique_ptr<RecordStore> WiredTigerHarnessHelper::newRecordStore(
     params.overwrite = collOptions.clusteredIndex ? false : true;
     params.isEphemeral = false;
     params.isLogged = WiredTigerUtil::useTableLogging(nss);
+    params.cappedCallback = nullptr;
     params.sizeStorer = nullptr;
+    params.isReadOnly = false;
     params.tracksSizeAdjustments = true;
     params.forceUpdateWithFullDocument = collOptions.timeseries != boost::none;
 
@@ -151,7 +156,9 @@ std::unique_ptr<RecordStore> WiredTigerHarnessHelper::newOplogRecordStoreNoInit(
     params.isLogged = true;
     // Large enough not to exceed capped limits.
     params.oplogMaxSize = 1024 * 1024 * 1024;
+    params.cappedCallback = nullptr;
     params.sizeStorer = nullptr;
+    params.isReadOnly = false;
     params.tracksSizeAdjustments = true;
     params.forceUpdateWithFullDocument = false;
     return std::make_unique<StandardWiredTigerRecordStore>(&_engine, opCtx.get(), params);

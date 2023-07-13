@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -47,9 +48,6 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_key_pattern.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -213,11 +211,11 @@ Status checkForTimeseriesTimeFieldKeyRange(const ChunkRange& range, StringData t
 Status ShardingCatalogManager::addShardToZone(OperationContext* opCtx,
                                               const std::string& shardName,
                                               const std::string& zoneName) {
-    Lock::ExclusiveLock lk(opCtx, _kZoneOpLock);
+    Lock::ExclusiveLock lk(opCtx, opCtx->lockState(), _kZoneOpLock);
 
-    auto updateStatus = _localCatalogClient->updateConfigDocument(
+    auto updateStatus = Grid::get(opCtx)->catalogClient()->updateConfigDocument(
         opCtx,
-        NamespaceString::kConfigsvrShardsNamespace,
+        ShardType::ConfigNS,
         BSON(ShardType::name(shardName)),
         BSON("$addToSet" << BSON(ShardType::tags() << zoneName)),
         false,
@@ -238,22 +236,23 @@ Status ShardingCatalogManager::addShardToZone(OperationContext* opCtx,
 Status ShardingCatalogManager::removeShardFromZone(OperationContext* opCtx,
                                                    const std::string& shardName,
                                                    const std::string& zoneName) {
-    Lock::ExclusiveLock lk(opCtx, _kZoneOpLock);
+    Lock::ExclusiveLock lk(opCtx, opCtx->lockState(), _kZoneOpLock);
 
-    const NamespaceString shardNS(NamespaceString::kConfigsvrShardsNamespace);
+    auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
+    const NamespaceString shardNS(ShardType::ConfigNS);
 
     //
     // Check whether the shard even exist in the first place.
     //
 
     auto findShardExistsStatus =
-        _localConfigShard->exhaustiveFindOnConfig(opCtx,
-                                                  kConfigPrimarySelector,
-                                                  repl::ReadConcernLevel::kLocalReadConcern,
-                                                  shardNS,
-                                                  BSON(ShardType::name() << shardName),
-                                                  BSONObj(),
-                                                  1);
+        configShard->exhaustiveFindOnConfig(opCtx,
+                                            kConfigPrimarySelector,
+                                            repl::ReadConcernLevel::kLocalReadConcern,
+                                            shardNS,
+                                            BSON(ShardType::name() << shardName),
+                                            BSONObj(),
+                                            1);
 
     if (!findShardExistsStatus.isOK()) {
         return findShardExistsStatus.getStatus();
@@ -284,9 +283,9 @@ Status ShardingCatalogManager::removeShardFromZone(OperationContext* opCtx,
     // Perform update.
     //
 
-    auto updateStatus = _localCatalogClient->updateConfigDocument(
+    auto updateStatus = Grid::get(opCtx)->catalogClient()->updateConfigDocument(
         opCtx,
-        NamespaceString::kConfigsvrShardsNamespace,
+        ShardType::ConfigNS,
         BSON(ShardType::name(shardName)),
         BSON("$pull" << BSON(ShardType::tags() << zoneName)),
         false,
@@ -313,13 +312,15 @@ void ShardingCatalogManager::assignKeyRangeToZone(OperationContext* opCtx,
     uassertStatusOK(ShardKeyPattern::checkShardKeyIsValidForMetadataStorage(givenRange.getMin()));
     uassertStatusOK(ShardKeyPattern::checkShardKeyIsValidForMetadataStorage(givenRange.getMax()));
 
-    Lock::ExclusiveLock lk(opCtx, _kZoneOpLock);
+    auto configServer = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
-    auto zoneDoc = uassertStatusOK(_localConfigShard->exhaustiveFindOnConfig(
+    Lock::ExclusiveLock lk(opCtx, opCtx->lockState(), _kZoneOpLock);
+
+    auto zoneDoc = uassertStatusOK(configServer->exhaustiveFindOnConfig(
                                        opCtx,
                                        kConfigPrimarySelector,
                                        repl::ReadConcernLevel::kLocalReadConcern,
-                                       NamespaceString::kConfigsvrShardsNamespace,
+                                       ShardType::ConfigNS,
                                        BSON(ShardType::tags() << zoneName),
                                        BSONObj(),
                                        1))
@@ -331,8 +332,7 @@ void ShardingCatalogManager::assignKeyRangeToZone(OperationContext* opCtx,
     ChunkRange actualRange = givenRange;
     KeyPattern keyPattern;
     try {
-        actualRange =
-            includeFullShardKey(opCtx, _localConfigShard.get(), nss, givenRange, &keyPattern);
+        actualRange = includeFullShardKey(opCtx, configServer.get(), nss, givenRange, &keyPattern);
     } catch (const ExceptionFor<ErrorCodes::NamespaceNotSharded>&) {
         // range remains the same as 'givenRange'
         uassertStatusOK(givenRange.extractKeyPattern(&keyPattern));
@@ -340,9 +340,9 @@ void ShardingCatalogManager::assignKeyRangeToZone(OperationContext* opCtx,
 
     uassertStatusOK(checkHashedShardKeyRange(actualRange, keyPattern));
     uassertStatusOK(checkForOverlappingZonedKeyRange(
-        opCtx, _localConfigShard.get(), nss, actualRange, zoneName, keyPattern));
+        opCtx, configServer.get(), nss, actualRange, zoneName, keyPattern));
     try {
-        const auto& coll = _localCatalogClient->getCollection(
+        const auto& coll = Grid::get(opCtx)->catalogClient()->getCollection(
             opCtx, nss, repl::ReadConcernLevel::kLocalReadConcern);
         const auto& timeseriesField = coll.getTimeseriesFields();
         if (timeseriesField) {
@@ -359,7 +359,7 @@ void ShardingCatalogManager::assignKeyRangeToZone(OperationContext* opCtx,
     updateBuilder.append(TagsType::max(), actualRange.getMax());
     updateBuilder.append(TagsType::tag(), zoneName);
 
-    uassertStatusOK(_localCatalogClient->updateConfigDocument(
+    uassertStatusOK(Grid::get(opCtx)->catalogClient()->updateConfigDocument(
         opCtx,
         TagsType::ConfigNS,
         BSON(TagsType::ns(nss.ns()) << TagsType::min(actualRange.getMin())),
@@ -371,13 +371,14 @@ void ShardingCatalogManager::assignKeyRangeToZone(OperationContext* opCtx,
 void ShardingCatalogManager::removeKeyRangeFromZone(OperationContext* opCtx,
                                                     const NamespaceString& nss,
                                                     const ChunkRange& givenRange) {
-    Lock::ExclusiveLock lk(opCtx, _kZoneOpLock);
+    auto configServer = Grid::get(opCtx)->shardRegistry()->getConfigShard();
+
+    Lock::ExclusiveLock lk(opCtx, opCtx->lockState(), _kZoneOpLock);
 
     ChunkRange actualRange = givenRange;
     KeyPattern keyPattern;
     try {
-        actualRange =
-            includeFullShardKey(opCtx, _localConfigShard.get(), nss, givenRange, &keyPattern);
+        actualRange = includeFullShardKey(opCtx, configServer.get(), nss, givenRange, &keyPattern);
     } catch (const ExceptionFor<ErrorCodes::NamespaceNotSharded>&) {
         // range remains the same as 'givenRange'
         uassertStatusOK(givenRange.extractKeyPattern(&keyPattern));
@@ -388,7 +389,7 @@ void ShardingCatalogManager::removeKeyRangeFromZone(OperationContext* opCtx,
     removeBuilder.append(TagsType::min(), actualRange.getMin());
     removeBuilder.append(TagsType::max(), actualRange.getMax());
 
-    uassertStatusOK(_localCatalogClient->removeConfigDocuments(
+    uassertStatusOK(Grid::get(opCtx)->catalogClient()->removeConfigDocuments(
         opCtx, TagsType::ConfigNS, removeBuilder.obj(), kNoWaitWriteConcern));
 }
 

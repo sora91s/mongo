@@ -2,7 +2,10 @@
  * Tests that writes that are blocked during a tenant migration will still be able to find out
  * migration outcome even if the migration's in memory state has been garbage collected.
  *
+ * Tenant migrations are not expected to be run on servers with ephemeralForTest.
+ *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -10,17 +13,14 @@
  *   serverless,
  * ]
  */
-
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    makeX509OptionsForTest,
-    runMigrationAsync
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+'use strict';
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/uuid_util.js");
-load("jstests/replsets/rslib.js");  // 'createRstArgs'
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 const kGarbageCollectionParams = {
     // Set the delay before a donor state doc is garbage collected to be short to speed up the test.
@@ -35,8 +35,8 @@ const kTenantDefinedDbName = "0";
 const donorRst = new ReplSetTest({
     nodes: 1,
     name: 'donor',
-    nodeOptions:
-        Object.assign(makeX509OptionsForTest().donor, {setParameter: kGarbageCollectionParams})
+    nodeOptions: Object.assign(TenantMigrationUtil.makeX509OptionsForTest().donor,
+                               {setParameter: kGarbageCollectionParams})
 });
 
 function insertDocument(primaryHost, dbName, collName) {
@@ -61,13 +61,13 @@ function insertDocument(primaryHost, dbName, collName) {
     });
 
     const migrationId = UUID();
-    const tenantId = ObjectId().str;
+    const tenantId = "migrationOutcome-committed";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(migrationId),
         recipientConnString: tenantMigrationTest.getRecipientConnString(),
         tenantId,
     };
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     const dbName = tenantMigrationTest.tenantDB(tenantId, kTenantDefinedDbName);
     const primary = donorRst.getPrimary();
@@ -79,7 +79,8 @@ function insertDocument(primaryHost, dbName, collName) {
     assert.commandWorked(primaryDB.runCommand({create: kCollName}));
 
     const blockFp = configureFailPoint(primaryDB, "pauseTenantMigrationBeforeLeavingBlockingState");
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 
     migrationThread.start();
     blockFp.wait();
@@ -117,13 +118,13 @@ function insertDocument(primaryHost, dbName, collName) {
         {name: jsTestName(), donorRst, sharedOptions: {setParameter: kGarbageCollectionParams}});
 
     const migrationId = UUID();
-    const tenantId = ObjectId().str;
+    const tenantId = "migrationOutcome-aborted";
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(migrationId),
         recipientConnString: tenantMigrationTest.getRecipientConnString(),
         tenantId,
     };
-    const donorRstArgs = createRstArgs(donorRst);
+    const donorRstArgs = TenantMigrationUtil.createRstArgs(donorRst);
 
     const dbName = tenantMigrationTest.tenantDB(tenantId, kTenantDefinedDbName);
     const primary = donorRst.getPrimary();
@@ -136,7 +137,8 @@ function insertDocument(primaryHost, dbName, collName) {
 
     const abortFp = configureFailPoint(primaryDB, "abortTenantMigrationBeforeLeavingBlockingState");
     const blockFp = configureFailPoint(primaryDB, "pauseTenantMigrationBeforeLeavingBlockingState");
-    const migrationThread = new Thread(runMigrationAsync, migrationOpts, donorRstArgs);
+    const migrationThread =
+        new Thread(TenantMigrationUtil.runMigrationAsync, migrationOpts, donorRstArgs);
 
     migrationThread.start();
     blockFp.wait();
@@ -162,4 +164,5 @@ function insertDocument(primaryHost, dbName, collName) {
 
     tenantMigrationTest.stop();
     donorRst.stopSet();
+})();
 })();

@@ -65,6 +65,11 @@
 #include "mongo/db/matcher/schema/json_schema_parser.h"
 
 namespace mongo::doc_validation_error {
+    
+void initMyDocVailDationError() {
+
+}
+
 namespace {
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(DocumentValidationFailureInfo);
 
@@ -318,13 +323,11 @@ struct ValidationErrorContext {
     void appendLatestCompleteError(BSONObjBuilder* builder) {
         const static std::string kDetailsString = "details";
         stdx::visit(
-            OverloadedVisitor{[&](const auto& details) -> void {
-                                  verifySizeAndAppend(details, kDetailsString, builder);
-                              },
-                              [&](const std::monostate& state) -> void { MONGO_UNREACHABLE },
-                              [&](const std::string& str) -> void {
-                                  MONGO_UNREACHABLE
-                              }},
+            visit_helper::Overloaded{[&](const auto& details) -> void {
+                                         verifySizeAndAppend(details, kDetailsString, builder);
+                                     },
+                                     [&](const std::monostate& state) -> void { MONGO_UNREACHABLE },
+                                     [&](const std::string& str) -> void { MONGO_UNREACHABLE }},
             latestCompleteError);
     }
     /**
@@ -332,23 +335,22 @@ struct ValidationErrorContext {
      * construct an array as part of their error.
      */
     void appendLatestCompleteError(BSONArrayBuilder* builder) {
-        stdx::visit(OverloadedVisitor{
-                        [&](const BSONObj& obj) -> void { verifySizeAndAppend(obj, builder); },
-                        [&](const std::string& str) -> void { builder->append(str); },
-                        [&](const BSONArray& arr) -> void {
-                            // The '$_internalSchemaAllowedProperties' match expression represents
-                            // two JSONSchema keywords: 'additionalProperties' and
-                            // 'patternProperties'. As such, if both keywords produce an error,
-                            // their errors will be packaged into an array which the parent
-                            // expression must absorb when constructing its array of error details.
-                            for (auto&& elem : arr) {
-                                verifySizeAndAppend(elem, builder);
-                            }
-                        },
-                        [&](const std::monostate& state) -> void {
-                            MONGO_UNREACHABLE
-                        }},
-                    latestCompleteError);
+        stdx::visit(
+            visit_helper::Overloaded{
+                [&](const BSONObj& obj) -> void { verifySizeAndAppend(obj, builder); },
+                [&](const std::string& str) -> void { builder->append(str); },
+                [&](const BSONArray& arr) -> void {
+                    // The '$_internalSchemaAllowedProperties' match expression represents two
+                    // JSONSchema keywords: 'additionalProperties' and 'patternProperties'. As
+                    // such, if both keywords produce an error, their errors will be packaged
+                    // into an array which the parent expression must absorb when constructing
+                    // its array of error details.
+                    for (auto&& elem : arr) {
+                        verifySizeAndAppend(elem, builder);
+                    }
+                },
+                [&](const std::monostate& state) -> void { MONGO_UNREACHABLE }},
+            latestCompleteError);
     }
 
     /**
@@ -533,8 +535,7 @@ BSONArray findAdditionalProperties(const BSONObj& doc,
         if (!properties.contains(fieldName)) {
             bool additional = true;
             for (auto&& pattern : patternProperties) {
-                auto&& re = pattern.first.regex;
-                if (re && re->matchView(fieldName)) {
+                if (pattern.first.regex->PartialMatch(fieldName.toString())) {
                     additional = false;
                     break;
                 }
@@ -587,8 +588,7 @@ BSONElement findFailingProperty(const InternalSchemaAllowedPropertiesMatchExpres
     auto filter = patternSchema.second->getFilter();
     for (auto&& elem : ctx->getCurrentDocument()) {
         auto field = elem.fieldNameStringData();
-        auto&& re = pattern.regex;
-        if (re && *re && re->matchView(field) && !filter->matchesBSONElement(elem)) {
+        if (pattern.regex->PartialMatch(field.toString()) && !filter->matchesBSONElement(elem)) {
             return elem;
         }
     }

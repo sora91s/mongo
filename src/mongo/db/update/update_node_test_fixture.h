@@ -31,17 +31,23 @@
 
 #include "mongo/db/concurrency/locker_noop_service_context_test_fixture.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/update/document_diff_calculator.h"
 #include "mongo/db/update/update_node.h"
-#include "mongo/db/update/update_oplog_entry_serialization.h"
+#include "mongo/db/update/v1_log_builder.h"
 #include "mongo/db/update/v2_log_builder.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
 
-class UpdateTestFixture : public LockerNoopServiceContextTest {
+class UpdateNodeTest : public LockerNoopServiceContextTest {
 public:
-    ~UpdateTestFixture() override = default;
+    ~UpdateNodeTest() override = default;
+
+    void run() {
+        _useV2LogBuilder = false;
+        ServiceContextTest::run();
+        _useV2LogBuilder = true;
+        ServiceContextTest::run();
+    }
 
 protected:
     // Creates a RuntimeUpdatePath from a string, assuming that all numeric path components are
@@ -75,7 +81,11 @@ protected:
         _validateForStorage = true;
         _indexData.reset();
         _logDoc.reset();
-        _logBuilder = std::make_unique<v2_log_builder::V2LogBuilder>();
+        if (_useV2LogBuilder) {
+            _logBuilder = std::make_unique<v2_log_builder::V2LogBuilder>();
+        } else {
+            _logBuilder = std::make_unique<V1LogBuilder>(_logDoc.root());
+        }
         _modifiedPaths.clear();
     }
 
@@ -89,21 +99,6 @@ protected:
         applyParams.modifiedPaths = &_modifiedPaths;
         applyParams.logMode = ApplyParams::LogMode::kGenerateOplogEntry;
         return applyParams;
-    }
-
-    bool getIndexAffectedFromLogEntry() {
-        if (!_logBuilder || !_indexData) {
-            return false;
-        }
-        // Keep the object alive, extractDiffFromOplogEntry returns a subdocument of this document.
-        BSONObj logEntry = getOplogEntry();
-        auto diff = update_oplog_entry::extractDiffFromOplogEntry(logEntry);
-        if (!diff) {
-            return false;
-        }
-        return mongo::doc_diff::anyIndexesMightBeAffected(
-                   *diff, std::vector<const UpdateIndexData*>{_indexData.get()})
-            .any();
     }
 
     UpdateNode::UpdateNodeApplyParams getUpdateNodeApplyParams() {
@@ -160,19 +155,37 @@ protected:
         return _modifiedPaths.toString();
     }
 
+    bool v2LogBuilderUsed() const {
+        return _useV2LogBuilder;
+    }
+
     BSONObj getOplogEntry() const {
         return _logBuilder->serialize();
     }
 
     void assertOplogEntryIsNoop() const {
-        ASSERT_BSONOBJ_BINARY_EQ(getOplogEntry(), fromjson("{$v:2, diff: {}}"));
+        if (v2LogBuilderUsed()) {
+            ASSERT_BSONOBJ_BINARY_EQ(getOplogEntry(), fromjson("{$v:2, diff: {}}"));
+        } else {
+            ASSERT_TRUE(getOplogEntry().isEmpty());
+        }
     }
 
-    void assertOplogEntry(const BSONObj& expectedV2Entry, bool checkBinaryEquality = true) {
-        if (checkBinaryEquality) {
-            ASSERT_BSONOBJ_BINARY_EQ(expectedV2Entry, getOplogEntry());
+    void assertOplogEntry(const BSONObj& expectedV1Entry,
+                          const BSONObj& expectedV2Entry,
+                          bool checkBinaryEquality = true) {
+        auto assertFn = [checkBinaryEquality](auto expected, auto given) {
+            if (checkBinaryEquality) {
+                ASSERT_BSONOBJ_BINARY_EQ(expected, given);
+            } else {
+                ASSERT_BSONOBJ_EQ(expected, given);
+            }
+        };
+
+        if (v2LogBuilderUsed()) {
+            assertFn(expectedV2Entry, getOplogEntry());
         } else {
-            ASSERT_BSONOBJ_EQ(expectedV2Entry, getOplogEntry());
+            assertFn(expectedV1Entry, getOplogEntry());
         }
     }
 
@@ -189,6 +202,8 @@ private:
     mutablebson::Document _logDoc;
     std::unique_ptr<LogBuilderInterface> _logBuilder;
     FieldRefSetWithStorage _modifiedPaths;
+
+    bool _useV2LogBuilder = false;
 };
 
 }  // namespace mongo

@@ -53,8 +53,7 @@ public:
 
 class ShardedAggTestFixture : public CatalogCacheTestFixture {
 public:
-    const NamespaceString kTestAggregateNss =
-        NamespaceString::createNamespaceString_forTest("unittests", "sharded_agg_test");
+    const NamespaceString kTestAggregateNss = NamespaceString{"unittests", "sharded_agg_test"};
 
     void setUp() {
         CatalogCacheTestFixture::setUp();
@@ -81,7 +80,7 @@ public:
                                       const OID epoch,
                                       const Timestamp timestamp,
                                       std::vector<std::pair<ChunkRange, ShardId>> chunkInfos) {
-        ChunkVersion version({epoch, timestamp}, {1, 0});
+        ChunkVersion version(1, 0, epoch, timestamp);
         std::vector<ChunkType> chunks;
         for (auto&& pair : chunkInfos) {
             chunks.emplace_back(uuid, pair.first, version, pair.second);
@@ -102,11 +101,9 @@ public:
         expectGetDatabase(nss);
         expectCollectionAndChunksAggregation(
             nss, epoch, timestamp, UUID::gen(), shardKey, chunkDistribution);
-        expectCollectionAndIndexesAggregation(
-            nss, epoch, timestamp, UUID::gen(), shardKey, boost::none, {});
 
-        const auto cri = future.default_timed_get();
-        ASSERT(cri->cm.isSharded());
+        const auto cm = future.default_timed_get();
+        ASSERT(cm->isSharded());
     }
 
 protected:

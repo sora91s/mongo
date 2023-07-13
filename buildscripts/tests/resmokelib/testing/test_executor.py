@@ -7,7 +7,7 @@ import mock
 from buildscripts.resmokelib.testing import executor
 from buildscripts.resmokelib.testing.suite import Suite
 
-# pylint: disable=protected-access
+# pylint: disable=missing-docstring,protected-access
 
 NS = "buildscripts.resmokelib.testing.executor"
 

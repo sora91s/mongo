@@ -65,7 +65,7 @@ WindowBounds::Bound<T> parseBound(ExpressionContext* expCtx,
 template <class T>
 Value serializeBound(const WindowBounds::Bound<T>& bound) {
     return stdx::visit(
-        OverloadedVisitor{
+        visit_helper::Overloaded{
             [](const WindowBounds::Unbounded&) { return Value(WindowBounds::kValUnbounded); },
             [](const WindowBounds::Current&) { return Value(WindowBounds::kValCurrent); },
             [](const T& n) { return Value(n); },
@@ -219,23 +219,24 @@ WindowBounds WindowBounds::parse(BSONObj args,
     }
 }
 void WindowBounds::serialize(MutableDocument& args) const {
-    stdx::visit(OverloadedVisitor{
-                    [&](const DocumentBased& docBounds) {
-                        args[kArgDocuments] = Value{std::vector<Value>{
-                            serializeBound(docBounds.lower),
-                            serializeBound(docBounds.upper),
-                        }};
-                    },
-                    [&](const RangeBased& rangeBounds) {
-                        args[kArgRange] = Value{std::vector<Value>{
-                            serializeBound(rangeBounds.lower),
-                            serializeBound(rangeBounds.upper),
-                        }};
-                        if (rangeBounds.unit) {
-                            args[kArgUnit] = Value{serializeTimeUnit(*rangeBounds.unit)};
-                        }
-                    },
-                },
-                bounds);
+    stdx::visit(
+        visit_helper::Overloaded{
+            [&](const DocumentBased& docBounds) {
+                args[kArgDocuments] = Value{std::vector<Value>{
+                    serializeBound(docBounds.lower),
+                    serializeBound(docBounds.upper),
+                }};
+            },
+            [&](const RangeBased& rangeBounds) {
+                args[kArgRange] = Value{std::vector<Value>{
+                    serializeBound(rangeBounds.lower),
+                    serializeBound(rangeBounds.upper),
+                }};
+                if (rangeBounds.unit) {
+                    args[kArgUnit] = Value{serializeTimeUnit(*rangeBounds.unit)};
+                }
+            },
+        },
+        bounds);
 }
 }  // namespace mongo

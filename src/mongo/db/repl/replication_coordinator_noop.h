@@ -212,8 +212,6 @@ public:
 
     Status setMaintenanceMode(OperationContext*, bool) final;
 
-    bool shouldDropSyncSourceAfterShardSplit(OID replicaSetId) const final;
-
     Status processReplSetSyncFrom(OperationContext*, const HostAndPort&, BSONObjBuilder*) final;
 
     Status processReplSetFreeze(int, BSONObjBuilder*) final;
@@ -228,9 +226,7 @@ public:
 
     Status doOptimizedReconfig(OperationContext* opCtx, GetNewConfigFn) final;
 
-    Status awaitConfigCommitment(OperationContext* opCtx,
-                                 bool waitForOplogCommitment,
-                                 long long term) final;
+    Status awaitConfigCommitment(OperationContext* opCtx, bool waitForOplogCommitment) final;
 
     Status processReplSetInitiate(OperationContext*, const BSONObj&, BSONObjBuilder*) final;
 
@@ -350,10 +346,6 @@ public:
     };
 
     virtual WriteConcernTagChanges* getWriteConcernTagChanges() override;
-
-    virtual SplitPrepareSessionManager* getSplitPrepareSessionManager() override;
-
-    virtual bool isRetryableWrite(OperationContext* opCtx) const override;
 
 private:
     ServiceContext* const _service;

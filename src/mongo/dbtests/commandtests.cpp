@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -41,9 +42,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/op_msg.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
-
 using namespace mongo;
 
 namespace CommandTests {
@@ -54,7 +52,7 @@ TEST(CommandTests, InputDocumentSequeceWorksEndToEnd) {
 
     NamespaceString nss("test", "doc_seq");
     DBDirectClient db(opCtx);
-    db.dropCollection(nss);
+    db.dropCollection(nss.ns());
     ASSERT_EQ(db.count(nss), 0u);
 
     OpMsgRequest request;
@@ -82,14 +80,14 @@ using std::string;
 class Base {
 public:
     Base() : db(&_opCtx) {
-        db.dropCollection(nss());
+        db.dropCollection(nss().ns());
     }
 
     NamespaceString nss() {
         return NamespaceString("test.testCollection");
     }
-    DatabaseName nsDb() {
-        return {boost::none, "test"};
+    const char* nsDb() {
+        return "test";
     }
     const char* nsColl() {
         return "testCollection";
@@ -104,7 +102,7 @@ public:
 namespace FileMD5 {
 struct Base {
     Base() : db(&_opCtx) {
-        db.dropCollection(nss());
+        db.dropCollection(nss().ns());
         ASSERT_OK(dbtests::createIndex(&_opCtx, nss().ns(), BSON("files_id" << 1 << "n" << 1)));
     }
 
@@ -124,7 +122,7 @@ struct Type0 : Base {
             b.append("files_id", 0);
             b.append("n", 0);
             b.appendBinData("data", 6, BinDataGeneral, "hello ");
-            db.insert(nss(), b.obj());
+            db.insert(nss().ns(), b.obj());
         }
         {
             BSONObjBuilder b;
@@ -132,11 +130,11 @@ struct Type0 : Base {
             b.append("files_id", 0);
             b.append("n", 1);
             b.appendBinData("data", 5, BinDataGeneral, "world");
-            db.insert(nss(), b.obj());
+            db.insert(nss().ns(), b.obj());
         }
 
         BSONObj result;
-        ASSERT(db.runCommand({boost::none, "test"}, BSON("filemd5" << 0), result));
+        ASSERT(db.runCommand("test", BSON("filemd5" << 0), result));
         ASSERT_EQUALS(string("5eb63bbbe01eeed093cb22bb8f5acdc3"), result.getStringField("md5"));
     }
 };
@@ -148,7 +146,7 @@ struct Type2 : Base {
             b.append("files_id", 0);
             b.append("n", 0);
             b.appendBinDataArrayDeprecated("data", "hello ", 6);
-            db.insert(nss(), b.obj());
+            db.insert(nss().ns(), b.obj());
         }
         {
             BSONObjBuilder b;
@@ -156,11 +154,11 @@ struct Type2 : Base {
             b.append("files_id", 0);
             b.append("n", 1);
             b.appendBinDataArrayDeprecated("data", "world", 5);
-            db.insert(nss(), b.obj());
+            db.insert(nss().ns(), b.obj());
         }
 
         BSONObj result;
-        ASSERT(db.runCommand({boost::none, "test"}, BSON("filemd5" << 0), result));
+        ASSERT(db.runCommand("test", BSON("filemd5" << 0), result));
         ASSERT_EQUALS(string("5eb63bbbe01eeed093cb22bb8f5acdc3"), result.getStringField("md5"));
     }
 };
@@ -175,7 +173,7 @@ namespace SymbolArgument {
 class Drop : Base {
 public:
     void run() {
-        ASSERT(db.createCollection(nss()));
+        ASSERT(db.createCollection(nss().ns()));
         {
             BSONObjBuilder cmd;
             cmd.appendSymbol("drop", nsColl());  // Use Symbol for SERVER-16260
@@ -191,7 +189,7 @@ public:
 class DropIndexes : Base {
 public:
     void run() {
-        ASSERT(db.createCollection(nss()));
+        ASSERT(db.createCollection(nss().ns()));
 
         BSONObjBuilder cmd;
         cmd.appendSymbol("dropIndexes", nsColl());  // Use Symbol for SERVER-16260
@@ -207,7 +205,7 @@ public:
 class CreateIndexWithNoKey : Base {
 public:
     void run() {
-        ASSERT(db.createCollection(nss()));
+        ASSERT(db.createCollection(nss().ns()));
 
         BSONObjBuilder indexSpec;
 
@@ -228,7 +226,7 @@ public:
 class CreateIndexWithDuplicateKey : Base {
 public:
     void run() {
-        ASSERT(db.createCollection(nss()));
+        ASSERT(db.createCollection(nss().ns()));
 
         BSONObjBuilder indexSpec;
         indexSpec.append("key", BSON("a" << 1 << "a" << 1 << "b" << 1));
@@ -251,7 +249,7 @@ public:
 class CreateIndexWithEmptyStringAsValue : Base {
 public:
     void run() {
-        ASSERT(db.createCollection(nss()));
+        ASSERT(db.createCollection(nss().ns()));
 
         BSONObjBuilder indexSpec;
         indexSpec.append("key",
@@ -275,13 +273,13 @@ public:
 class FindAndModify : Base {
 public:
     void run() {
-        ASSERT(db.createCollection(nss()));
+        ASSERT(db.createCollection(nss().ns()));
         {
             BSONObjBuilder b;
             b.genOID();
             b.append("name", "Tom");
             b.append("rating", 0);
-            db.insert(nss(), b.obj());
+            db.insert(nss().ns(), b.obj());
         }
 
         BSONObjBuilder cmd;

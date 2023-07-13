@@ -211,12 +211,6 @@ public:
     void reattachToOperationContext(OperationContext* opCtx);
 
     /**
-     * Recursively validate the operation contexts associated with this pipeline. Return true if
-     * all document sources and subpipelines point to the given operation context.
-     */
-    bool validateOperationContext(const OperationContext* opCtx) const;
-
-    /**
      * Releases any resources held by this pipeline such as PlanExecutors or in-memory structures.
      * Must be called before deleting a Pipeline.
      *
@@ -269,11 +263,6 @@ public:
     bool needsShard() const;
 
     /**
-     * Returns 'true' if any stage in the pipeline requires being run on all shards.
-     */
-    bool needsAllShardServers() const;
-
-    /**
      * Returns true if the pipeline can run on mongoS, but is not obliged to; that is, it can run
      * either on mongoS or on a shard.
      */
@@ -312,6 +301,11 @@ public:
     static std::vector<Value> serializeContainer(
         const SourceContainer& container, boost::optional<ExplainOptions::Verbosity> = boost::none);
 
+    /**
+     * Serializes the pipeline into BSON for explain/debug logging purposes.
+     */
+    std::vector<BSONObj> serializeToBSONForDebug() const;
+
     // The initial source is special since it varies between mongos and mongod.
     void addInitialSource(boost::intrusive_ptr<DocumentSource> source);
 
@@ -335,12 +329,6 @@ public:
      * reference unavailable metadata.
      */
     DepsTracker getDependencies(boost::optional<QueryMetadataBitSet> unavailableMetadata) const;
-
-    /**
-     * Populate 'refs' with the variables referred to by this pipeline, including user and system
-     * variables but excluding $$ROOT. Note that field path references are not considered variables.
-     */
-    void addVariableRefs(std::set<Variables::Id>* refs) const;
 
     /**
      * Returns the dependencies needed by the SourceContainer. 'unavailableMetadata' should reflect
@@ -467,12 +455,6 @@ private:
      * why it cannot.
      */
     Status _pipelineCanRunOnMongoS() const;
-
-    /**
-     * Asserts whether operation contexts associated with this pipeline are consistent across
-     * sources.
-     */
-    void checkValidOperationContext() const;
 
     SourceContainer _sources;
 

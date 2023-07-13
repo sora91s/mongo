@@ -79,7 +79,7 @@ public:
         const CollectionPtr* collection,
         PlanYieldPolicy::YieldPolicy yieldPolicy,
         Direction direction = FORWARD,
-        const boost::optional<RecordId>& resumeAfterRecordId = boost::none,
+        boost::optional<RecordId> resumeAfterRecordId = boost::none,
         boost::optional<RecordIdBound> minRecord = boost::none,
         boost::optional<RecordIdBound> maxRecord = boost::none,
         CollectionScanParams::ScanBoundInclusion boundInclusion =
@@ -93,8 +93,7 @@ public:
         PlanYieldPolicy::YieldPolicy yieldPolicy);
 
     /**
-     * Returns a FETCH => DELETE plan, or a FETCH => BATCHED_DELETE plan if 'batchedDeleteParams' is
-     * set.
+     * Returns a FETCH => DELETE plan, or a FETCH => BATCHED_DELETE plan if 'batchParams' is set.
      */
     static std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> deleteWithCollectionScan(
         OperationContext* opCtx,
@@ -106,7 +105,7 @@ public:
         boost::optional<RecordIdBound> maxRecord = boost::none,
         CollectionScanParams::ScanBoundInclusion boundInclusion =
             CollectionScanParams::ScanBoundInclusion::kIncludeBothStartAndEndRecords,
-        std::unique_ptr<BatchedDeleteStageParams> batchedDeleteParams = nullptr,
+        std::unique_ptr<BatchedDeleteStageBatchParams> batchedDeleteParams = nullptr,
         const MatchExpression* filter = nullptr,
         bool shouldReturnEofOnFilterMismatch = false);
 
@@ -125,8 +124,7 @@ public:
         int options = IXSCAN_DEFAULT);
 
     /**
-     * Returns an IXSCAN => FETCH => DELETE plan, or an IXSCAN => FETCH => BATCHED_DELETE plan if
-     * 'batchedDeleteParams' is set.
+     * Returns an IXSCAN => FETCH => DELETE plan.
      */
     static std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> deleteWithIndexScan(
         OperationContext* opCtx,
@@ -137,8 +135,7 @@ public:
         const BSONObj& endKey,
         BoundInclusion boundInclusion,
         PlanYieldPolicy::YieldPolicy yieldPolicy,
-        Direction direction = FORWARD,
-        std::unique_ptr<BatchedDeleteStageParams> batchedDeleteParams = nullptr);
+        Direction direction = FORWARD);
 
     /**
      * Returns a scan over the 'shardKeyIdx'. If the 'shardKeyIdx' is a non-clustered index, returns
@@ -195,9 +192,9 @@ private:
         WorkingSet* ws,
         const CollectionPtr* collection,
         Direction direction,
-        const boost::optional<RecordId>& resumeAfterRecordId = boost::none,
-        const boost::optional<RecordId>& minRecord = boost::none,
-        const boost::optional<RecordId>& maxRecord = boost::none);
+        boost::optional<RecordId> resumeAfterRecordId = boost::none,
+        boost::optional<RecordId> minRecord = boost::none,
+        boost::optional<RecordId> maxRecord = boost::none);
 
     static std::unique_ptr<PlanStage> _collectionScan(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,

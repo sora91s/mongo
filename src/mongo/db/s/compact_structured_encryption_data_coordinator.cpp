@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -35,7 +36,6 @@
 #include "mongo/base/checked_cast.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/catalog/collection_catalog.h"
-#include "mongo/db/commands/create_gen.h"
 #include "mongo/db/commands/fle2_compact.h"
 #include "mongo/db/commands/rename_collection_gen.h"
 #include "mongo/db/dbdirectclient.h"
@@ -43,15 +43,10 @@
 #include "mongo/db/persistent_task_store.h"
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 namespace {
 
 MONGO_FAIL_POINT_DEFINE(fleCompactHangAfterDropTempCollection);
-MONGO_FAIL_POINT_DEFINE(fleCompactHangBeforeECOCCreate);
-MONGO_FAIL_POINT_DEFINE(fleCompactHangAfterECOCCreate);
 
 const auto kMajorityWriteConcern = BSON("writeConcern" << BSON("w"
                                                                << "majority"));
@@ -95,82 +90,61 @@ void doRenameOperation(const CompactStructuredEncryptionDataState& state,
         *skipCompact = true;
         return;
     } else if (hasEcocRenameNow) {
-        if (ecocRenameUuid.value() != state.getEcocRenameUuid().value()) {
+        if (ecocRenameUuid.get() != state.getEcocRenameUuid().value()) {
             LOGV2_DEBUG(6517002,
                         1,
                         "Skipping compaction due to mismatched collection uuid",
                         "ecocRenameNss"_attr = ecocRenameNss,
-                        "uuid"_attr = ecocRenameUuid.value(),
+                        "uuid"_attr = ecocRenameUuid.get(),
                         "expectedUUID"_attr = state.getEcocRenameUuid().value());
             *skipCompact = true;
-            return;
         }
-        // The temp ECOC from a previous compact still exists, so no need to rename.
-        if (hasEcocNow) {
-            // The ECOC already exists, so skip explicitly creating it.
-            return;
-        }
-    } else {
-        if (!hasEcocNow) {
-            // Nothing to rename.
-            LOGV2_DEBUG(6350492,
-                        1,
-                        "Skipping rename stage as there is no source collection",
-                        "ecocNss"_attr = ecocNss);
-            *skipCompact = true;
-            return;
-        } else if (!hasEcocBefore) {
-            // mismatch of before/after state
-            LOGV2_DEBUG(6517003,
-                        1,
-                        "Skipping compaction due to change in collection state",
-                        "ecocNss"_attr = ecocNss);
-            *skipCompact = true;
-            return;
-        } else if (ecocUuid.value() != state.getEcocUuid().value()) {
-            // The generation of the collection to be compacted is different than the one which was
-            // requested.
-            LOGV2_DEBUG(6350491,
-                        1,
-                        "Skipping rename of mismatched collection uuid",
-                        "ecocNss"_attr = ecocNss,
-                        "uuid"_attr = ecocUuid.value(),
-                        "expectedUUID"_attr = state.getEcocUuid().value());
-            *skipCompact = true;
-            return;
-        }
-
-        LOGV2(6517004,
-              "Renaming the encrypted compaction collection",
-              "ecocNss"_attr = ecocNss,
-              "ecocUuid"_attr = ecocUuid.value(),
-              "ecocRenameNss"_attr = ecocRenameNss);
-
-        // Perform the rename so long as the target namespace does not exist.
-        RenameCollectionCommand cmd(ecocNss, ecocRenameNss);
-        cmd.setDropTarget(false);
-        cmd.setCollectionUUID(state.getEcocUuid().value());
-
-        doRunCommand(opCtx.get(), ecocNss.db(), cmd);
-        *newEcocRenameUuid = state.getEcocUuid();
+        // the temp ecoc from a previous compact still exists, so skip rename
+        return;
     }
 
-    if (MONGO_unlikely(fleCompactHangBeforeECOCCreate.shouldFail())) {
-        LOGV2(7140500, "Hanging due to fleCompactHangBeforeECOCCreate fail point");
-        fleCompactHangBeforeECOCCreate.pauseWhileSet();
+    if (!hasEcocNow) {
+        // Nothing to rename.
+        LOGV2_DEBUG(6350492,
+                    1,
+                    "Skipping rename stage as there is no source collection",
+                    "ecocNss"_attr = ecocNss);
+        *skipCompact = true;
+        return;
+    } else if (!hasEcocBefore) {
+        // mismatch of before/after state
+        LOGV2_DEBUG(6517003,
+                    1,
+                    "Skipping compaction due to change in collection state",
+                    "ecocNss"_attr = ecocNss);
+        *skipCompact = true;
+        return;
+    } else if (ecocUuid.get() != state.getEcocUuid().value()) {
+        // The generation of the collection to be compacted is different than the one which was
+        // requested.
+        LOGV2_DEBUG(6350491,
+                    1,
+                    "Skipping rename of mismatched collection uuid",
+                    "ecocNss"_attr = ecocNss,
+                    "uuid"_attr = ecocUuid.get(),
+                    "expectedUUID"_attr = state.getEcocUuid().value());
+        *skipCompact = true;
+        return;
     }
 
-    // Create the new ECOC collection
-    CreateCommand createCmd(ecocNss);
-    mongo::ClusteredIndexSpec clusterIdxSpec(BSON("_id" << 1), true);
-    createCmd.setClusteredIndex(
-        stdx::variant<bool, mongo::ClusteredIndexSpec>(std::move(clusterIdxSpec)));
-    doRunCommand(opCtx.get(), ecocNss.db(), createCmd);
+    LOGV2(6517004,
+          "Renaming the encrypted compaction collection",
+          "ecocNss"_attr = ecocNss,
+          "ecocUuid"_attr = ecocUuid.get(),
+          "ecocRenameNss"_attr = ecocRenameNss);
 
-    if (MONGO_unlikely(fleCompactHangAfterECOCCreate.shouldFail())) {
-        LOGV2(7140501, "Hanging due to fleCompactHangAfterECOCCreate fail point");
-        fleCompactHangAfterECOCCreate.pauseWhileSet();
-    }
+    // Otherwise, perform the rename so long as the target namespace does not exist.
+    RenameCollectionCommand cmd(ecocNss, ecocRenameNss);
+    cmd.setDropTarget(false);
+    cmd.setCollectionUUID(state.getEcocUuid().value());
+
+    doRunCommand(opCtx.get(), ecocNss.db(), cmd);
+    *newEcocRenameUuid = state.getEcocUuid();
 }
 
 CompactStats doCompactOperation(const CompactStructuredEncryptionDataState& state) {
@@ -224,49 +198,85 @@ void doDropOperation(const CompactStructuredEncryptionDataState& state) {
 boost::optional<BSONObj> CompactStructuredEncryptionDataCoordinator::reportForCurrentOp(
     MongoProcessInterface::CurrentOpConnectionsMode connMode,
     MongoProcessInterface::CurrentOpSessionsMode sessionMode) noexcept {
-    auto bob = basicReportBuilder();
+    BSONObjBuilder bob;
 
-    stdx::lock_guard lg{_docMutex};
-    bob.append("escNss", _doc.getEscNss().ns());
-    bob.append("eccNss", _doc.getEccNss().ns());
-    bob.append("ecocNss", _doc.getEcocNss().ns());
-    bob.append("ecocUuid", _doc.getEcocUuid() ? _doc.getEcocUuid().value().toString() : "none");
-    bob.append("ecocRenameNss", _doc.getEcocRenameNss().ns());
-    bob.append("ecocRenameUuid",
-               _doc.getEcocRenameUuid() ? _doc.getEcocRenameUuid().value().toString() : "none");
+    CompactStructuredEncryptionDataPhaseEnum currPhase;
+    std::string nss;
+    std::string escNss;
+    std::string eccNss;
+    std::string ecoNss;
+    std::string ecocNss;
+    std::string ecocRenameUuid;
+    std::string ecocUiid;
+    std::string ecocRenameNss;
+    {
+        stdx::lock_guard l{_docMutex};
+        currPhase = _doc.getPhase();
+        nss = _doc.getId().getNss().ns();
+        escNss = _doc.getEscNss().ns();
+        eccNss = _doc.getEccNss().ns();
+        ecoNss = _doc.getEcocNss().ns();
+        ecocNss = _doc.getEcocNss().ns();
+        ecocRenameUuid =
+            _doc.getEcocRenameUuid() ? _doc.getEcocRenameUuid().value().toString() : "none";
+        ecocUiid = _doc.getEcocUuid() ? _doc.getEcocUuid().value().toString() : "none";
+        ecocRenameNss = _doc.getEcocRenameNss().ns();
+    }
+
+    bob.append("type", "op");
+    bob.append("desc", "CompactStructuredEncryptionDataCoordinator");
+    bob.append("op", "command");
+    bob.append("nss", nss);
+    bob.append("escNss", escNss);
+    bob.append("eccNss", eccNss);
+    bob.append("ecocNss", ecocNss);
+    bob.append("ecocUuid", ecocUiid);
+    bob.append("ecocRenameNss", ecocRenameNss);
+    bob.append("ecocRenameUuid", ecocRenameUuid);
+    bob.append("currentPhase", currPhase);
+    bob.append("active", true);
     return bob.obj();
 }
 
-// TODO: SERVER-68373 remove once 7.0 becomes last LTS
-void CompactStructuredEncryptionDataCoordinator::_enterPhase(const Phase& newPhase) {
-    // Before 6.1, this coordinator persists the result of the doCompactOperation()
+void CompactStructuredEncryptionDataCoordinator::_enterPhase(Phase newPhase) {
+    StateDoc doc(_doc);
+    doc.setPhase(newPhase);
+
+    // This coordinator persists the result of the doCompactOperation()
     // by reusing the compactionTokens field to store the _response BSON.
-    // If newPhase is kDropTempCollection, this override of _enterPhase performs this
-    // replacement on the in-memory state document (_doc), before calling the base _enterPhase()
-    // which persists _doc to disk. In the event that updating the persisted document fails,
-    // the replaced compaction tokens are restored in _doc.
-    using Base = RecoverableShardingDDLCoordinator<CompactStructuredEncryptionDataState,
-                                                   CompactStructuredEncryptionDataPhaseEnum>;
-    bool useOverload = _isPre61Compatible() && (newPhase == Phase::kDropTempCollection);
+    // If newPhase is kDropTempCollection, the compactionTokens field is replaced
+    // on the temporary copy of the state document so that in the event that
+    // updating the persisted document fails, the compaction tokens remain
+    // in the in-memory state document (_doc).
+    if (newPhase == Phase::kDropTempCollection) {
+        doc.setCompactionTokens(_response->toBSON());
+    }
 
-    if (useOverload) {
-        BSONObj compactionTokensCopy;
-        {
-            stdx::lock_guard lg(_docMutex);
-            compactionTokensCopy = _doc.getCompactionTokens().getOwned();
-            _doc.setCompactionTokens(_response->toBSON());
-        }
+    LOGV2_DEBUG(6350490,
+                2,
+                "Transitioning phase for CompactStructuredEncryptionDataCoordinator",
+                "nss"_attr = _doc.getId().getNss().ns(),
+                "escNss"_attr = _doc.getEscNss().ns(),
+                "eccNss"_attr = _doc.getEccNss().ns(),
+                "ecocNss"_attr = _doc.getEcocNss().ns(),
+                "ecocUuid"_attr = _doc.getEcocUuid(),
+                "ecocRenameNss"_attr = _doc.getEcocRenameNss().ns(),
+                "ecocRenameUuid"_attr = _doc.getEcocRenameUuid(),
+                "skipCompact"_attr = _doc.getSkipCompact(),
+                "compactionTokens"_attr = _doc.getCompactionTokens(),
+                "oldPhase"_attr = CompactStructuredEncryptionDataPhase_serializer(_doc.getPhase()),
+                "newPhase"_attr = CompactStructuredEncryptionDataPhase_serializer(newPhase));
 
-        try {
-            Base::_enterPhase(newPhase);
-        } catch (...) {
-            // on error, restore the compaction tokens
-            stdx::lock_guard lg(_docMutex);
-            _doc.setCompactionTokens(std::move(compactionTokensCopy));
-            throw;
-        }
+    if (_doc.getPhase() == Phase::kUnset) {
+        doc = _insertStateDocument(std::move(doc));
     } else {
-        Base::_enterPhase(newPhase);
+        auto opCtx = cc().makeOperationContext();
+        doc = _updateStateDocument(opCtx.get(), std::move(doc));
+    }
+
+    {
+        stdx::unique_lock ul{_docMutex};
+        _doc = std::move(doc);
     }
 }
 
@@ -274,46 +284,40 @@ ExecutorFuture<void> CompactStructuredEncryptionDataCoordinator::_runImpl(
     std::shared_ptr<executor::ScopedTaskExecutor> executor,
     const CancellationToken& token) noexcept {
     return ExecutorFuture<void>(**executor)
-        .then(_buildPhaseHandler(Phase::kRenameEcocForCompact,
-                                 [this, anchor = shared_from_this()]() {
-                                     doRenameOperation(_doc, &_skipCompact, &_ecocRenameUuid);
-                                     stdx::unique_lock ul{_docMutex};
-                                     _doc.setSkipCompact(_skipCompact);
-                                     _doc.setEcocRenameUuid(_ecocRenameUuid);
-                                 }))
-        .then(_buildPhaseHandler(Phase::kCompactStructuredEncryptionData,
-                                 [this, anchor = shared_from_this()]() {
-                                     _response = doCompactOperation(_doc);
-                                     if (!_isPre61Compatible()) {
-                                         stdx::lock_guard lg(_docMutex);
-                                         _doc.setResponse(_response);
-                                     }
-                                 }))
-        .then(_buildPhaseHandler(Phase::kDropTempCollection, [this, anchor = shared_from_this()] {
-            if (!_isPre61Compatible()) {
-                invariant(_doc.getResponse());
-                _response = *_doc.getResponse();
-            } else {
+        .then(_executePhase(Phase::kRenameEcocForCompact,
+                            [this, anchor = shared_from_this()](const auto& state) {
+                                doRenameOperation(state, &_skipCompact, &_ecocRenameUuid);
+                                stdx::unique_lock ul{_docMutex};
+                                _doc.setSkipCompact(_skipCompact);
+                                _doc.setEcocRenameUuid(_ecocRenameUuid);
+                            }))
+        .then(_executePhase(Phase::kCompactStructuredEncryptionData,
+                            [this, anchor = shared_from_this()](const auto& state) {
+                                _response = doCompactOperation(state);
+                            }))
+        .then(_executePhase(
+            Phase::kDropTempCollection, [this, anchor = shared_from_this()](const auto& state) {
                 try {
-                    // restore the response that was stored in the compactionTokens field
-                    IDLParserContext ctxt("response");
+                    // restore the response that was stored in the compactionTokens
+                    // field
+                    IDLParserErrorContext ctxt("response");
                     _response = CompactStructuredEncryptionDataCommandReply::parse(
-                        ctxt, _doc.getCompactionTokens());
+                        ctxt, state.getCompactionTokens());
                 } catch (...) {
                     LOGV2_ERROR(6846101,
                                 "Failed to parse response from "
                                 "CompactStructuredEncryptionDataState document",
-                                "response"_attr = _doc.getCompactionTokens());
+                                "response"_attr = state.getCompactionTokens());
                     // ignore for compatibility with 6.0.0
                 }
-            }
 
-            doDropOperation(_doc);
-            if (MONGO_unlikely(fleCompactHangAfterDropTempCollection.shouldFail())) {
-                LOGV2(6790902, "Hanging due to fleCompactHangAfterDropTempCollection fail point");
-                fleCompactHangAfterDropTempCollection.pauseWhileSet();
-            }
-        }));
+                doDropOperation(state);
+                if (MONGO_unlikely(fleCompactHangAfterDropTempCollection.shouldFail())) {
+                    LOGV2(6790902,
+                          "Hanging due to fleCompactHangAfterDropTempCollection fail point");
+                    fleCompactHangAfterDropTempCollection.pauseWhileSet();
+                }
+            }));
 }
 
 }  // namespace mongo

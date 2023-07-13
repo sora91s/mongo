@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/executor/scoped_task_executor.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/grid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 namespace {
@@ -96,7 +94,6 @@ private:
     // ReplicaSetAwareService methods implementation
 
     void onStartup(OperationContext* opCtx) override {}
-    void onSetCurrentConfig(OperationContext* opCtx) override {}
     void onInitialDataAvailable(OperationContext* opCtx, bool isMajorityDataAvailable) override;
     void onShutdown() override {}
     void onStepUpBegin(OperationContext* opCtx, long long term) override;
@@ -202,7 +199,7 @@ void VectorClockMongoD::onInitialDataAvailable(OperationContext* opCtx,
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
         const auto maxTopologyTime{[&opCtx]() -> boost::optional<Timestamp> {
             DBDirectClient client{opCtx};
-            FindCommandRequest findRequest{NamespaceString::kConfigsvrShardsNamespace};
+            FindCommandRequest findRequest{ShardType::ConfigNS};
             findRequest.setSort(BSON(ShardType::topologyTime << -1));
             findRequest.setLimit(1);
             auto cursor{client.find(std::move(findRequest))};

@@ -44,39 +44,41 @@ using Tree = PolyValue<Leaf, BinaryNode, NaryNode, AtLeastBinaryNode>;
 /**
  * A leaf in the tree. Just contains data - in this case a double.
  */
-class Leaf : public OpFixedArity<Tree, 0> {
+class Leaf : public OpSpecificArity<Tree, Leaf, 0> {
 public:
     Leaf(double x) : x(x) {}
-
     double x;
 };
 
 /**
  * An inner node in the tree with exactly two children.
  */
-class BinaryNode : public OpFixedArity<Tree, 2> {
+class BinaryNode : public OpSpecificArity<Tree, BinaryNode, 2> {
 public:
-    BinaryNode(Tree left, Tree right) : OpFixedArity<Tree, 2>(std::move(left), std::move(right)) {}
+    BinaryNode(Tree left, Tree right)
+        : OpSpecificArity<Tree, BinaryNode, 2>(std::move(left), std::move(right)) {}
 };
 
 /**
  * An inner node in the tree with any number of children, zero or greater.
  */
-class NaryNode : public OpDynamicArity<Tree, 0> {
+class NaryNode : public OpSpecificDynamicArity<Tree, NaryNode, 0> {
 public:
-    NaryNode(std::vector<Tree> children) : OpDynamicArity<Tree, 0>(std::move(children)) {}
+    NaryNode(std::vector<Tree> children)
+        : OpSpecificDynamicArity<Tree, NaryNode, 0>(std::move(children)) {}
 };
 
 /**
  * An inner node in the tree with 2 or more nodes.
  */
-class AtLeastBinaryNode : public OpDynamicArity<Tree, 2> {
+class AtLeastBinaryNode : public OpSpecificDynamicArity<Tree, AtLeastBinaryNode, 2> {
 public:
     /**
      * Notice the required number of nodes are given as separate arguments from the vector.
      */
     AtLeastBinaryNode(std::vector<Tree> children, Tree left, Tree right)
-        : OpDynamicArity<Tree, 2>(std::move(children), std::move(left), std::move(right)) {}
+        : OpSpecificDynamicArity<Tree, AtLeastBinaryNode, 2>(
+              std::move(children), std::move(left), std::move(right)) {}
 };
 
 /**
@@ -87,7 +89,7 @@ public:
  *
  * Notice that each kind of node did not need to fill out some boilerplate "visit()" method or
  * anything like that. The PolyValue templating magic took care of all the boilerplate for us, and
- * the operator classes (e.g. OpFixedArity) exposes the tree structure and children.
+ * the operator classes (e.g. OpSpecificArity) exposes the tree structure and children.
  */
 class NodeTransporter {
 public:
@@ -397,14 +399,14 @@ public:
             child1;  // No need to apply multiplier here, would be applied in the children already.
     }
     double transport(NaryNode& node, double multiplier, std::vector<double> children) {
-        return std::accumulate(children.begin(), children.end(), 0.0);
+        return std::accumulate(children.begin(), children.end(), 0);
     }
     double transport(AtLeastBinaryNode& node,
                      double multiplier,
                      std::vector<double> children,
                      double child0,
                      double child1) {
-        return child0 + child1 + std::accumulate(children.begin(), children.end(), 0.0);
+        return child0 + child1 + std::accumulate(children.begin(), children.end(), 0);
     }
 };
 
@@ -501,14 +503,14 @@ public:
     }
     double transport(NaryNode& node, std::vector<double> children) {
         _depthMultiplier /= 10;
-        return std::accumulate(children.begin(), children.end(), 0.0);
+        return std::accumulate(children.begin(), children.end(), 0);
     }
     double transport(AtLeastBinaryNode& node,
                      std::vector<double> children,
                      double child0,
                      double child1) {
         _depthMultiplier /= 10;
-        return child0 + child1 + std::accumulate(children.begin(), children.end(), 0.0);
+        return child0 + child1 + std::accumulate(children.begin(), children.end(), 0);
     }
 };
 

@@ -27,13 +27,11 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/replica_set_aware_service.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 
@@ -55,12 +53,6 @@ ReplicaSetAwareServiceRegistry& ReplicaSetAwareServiceRegistry::get(
 void ReplicaSetAwareServiceRegistry::onStartup(OperationContext* opCtx) {
     std::for_each(_services.begin(), _services.end(), [&](ReplicaSetAwareInterface* service) {
         service->onStartup(opCtx);
-    });
-}
-
-void ReplicaSetAwareServiceRegistry::onSetCurrentConfig(OperationContext* opCtx) {
-    std::for_each(_services.begin(), _services.end(), [&](ReplicaSetAwareInterface* service) {
-        service->onSetCurrentConfig(opCtx);
     });
 }
 

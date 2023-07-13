@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
@@ -40,10 +41,10 @@
 
 #include "mongo/logv2/log.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
-
 namespace mongo {
+void initMyProcessinfo() {
+    
+}
 
 namespace {
 MONGO_INITIALIZER(initApplicationInfo)(InitializerContext* context) {

@@ -32,7 +32,7 @@ global:
         - "mongo/rpc/metadata/client_metadata.h"
 
 imports:
-    - "mongo/db/basic_types.idl"
+    - "mongo/idl/basic_types.idl"
 
 types:
     ClientMetadata:

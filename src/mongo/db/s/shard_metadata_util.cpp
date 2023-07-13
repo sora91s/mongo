@@ -27,7 +27,13 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/s/shard_metadata_util.h"
+
+#include <memory>
 
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/ops/write_ops.h"
@@ -39,9 +45,8 @@
 #include "mongo/rpc/unique_message.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 namespace mongo {
 namespace shardmetadatautil {
@@ -75,33 +80,31 @@ Status setPersistedRefreshFlags(OperationContext* opCtx, const NamespaceString& 
 
 }  // namespace
 
-QueryAndSort createShardChunkDiffQuery(const ChunkVersion& collectionPlacementVersion) {
-    return {BSON(ChunkType::lastmod()
-                 << BSON("$gte" << Timestamp(collectionPlacementVersion.toLong()))),
+QueryAndSort createShardChunkDiffQuery(const ChunkVersion& collectionVersion) {
+    return {BSON(ChunkType::lastmod() << BSON("$gte" << Timestamp(collectionVersion.toLong()))),
             BSON(ChunkType::lastmod() << 1)};
 }
 
 bool RefreshState::operator==(const RefreshState& other) const {
-    return generation.isSameCollection(other.generation) && (refreshing == other.refreshing) &&
-        (lastRefreshedCollectionPlacementVersion == other.lastRefreshedCollectionPlacementVersion);
+    return (other.epoch == epoch) && (other.refreshing == refreshing) &&
+        (other.lastRefreshedCollectionVersion == lastRefreshedCollectionVersion);
 }
 
 std::string RefreshState::toString() const {
-    return str::stream() << "generation: " << generation.toString()
+    return str::stream() << "epoch: " << epoch
                          << ", refreshing: " << (refreshing ? "true" : "false")
-                         << ", lastRefreshedCollectionPlacementVersion: "
-                         << lastRefreshedCollectionPlacementVersion.toString();
+                         << ", lastRefreshedCollectionVersion: "
+                         << lastRefreshedCollectionVersion.toString();
 }
 
 Status unsetPersistedRefreshFlags(OperationContext* opCtx,
                                   const NamespaceString& nss,
                                   const ChunkVersion& refreshedVersion) {
-    // Set 'refreshing' to false and update the last refreshed collection placement version.
+    // Set 'refreshing' to false and update the last refreshed collection version.
     BSONObjBuilder updateBuilder;
     updateBuilder.append(ShardCollectionType::kRefreshingFieldName, false);
-    updateBuilder.appendTimestamp(
-        ShardCollectionType::kLastRefreshedCollectionMajorMinorVersionFieldName,
-        refreshedVersion.toLong());
+    updateBuilder.appendTimestamp(ShardCollectionType::kLastRefreshedCollectionVersionFieldName,
+                                  refreshedVersion.toLong());
 
     return updateShardCollectionsEntry(opCtx,
                                        BSON(ShardCollectionType::kNssFieldName << nss.ns()),
@@ -122,26 +125,26 @@ StatusWith<RefreshState> getPersistedRefreshFlags(OperationContext* opCtx,
         // If 'refreshing' is present and false, a refresh must have occurred (otherwise the field
         // would never have been added to the document) and there should always be a refresh
         // version.
-        invariant(*entry.getRefreshing() ? true
-                                         : !!entry.getLastRefreshedCollectionPlacementVersion());
+        invariant(*entry.getRefreshing() ? true : !!entry.getLastRefreshedCollectionVersion());
     } else {
         // If 'refreshing' is not present, no refresh version should exist.
-        invariant(!entry.getLastRefreshedCollectionPlacementVersion());
+        invariant(!entry.getLastRefreshedCollectionVersion());
     }
 
-    return RefreshState{CollectionGeneration(entry.getEpoch(), entry.getTimestamp()),
+    return RefreshState{entry.getEpoch(),
                         // If the refreshing field has not yet been added, this means that the first
                         // refresh has started, but no chunks have ever yet been applied, around
                         // which these flags are set. So default to refreshing true because the
                         // chunk metadata is being updated and is not yet ready to be read.
                         entry.getRefreshing() ? *entry.getRefreshing() : true,
-                        entry.getLastRefreshedCollectionPlacementVersion()
-                            ? *entry.getLastRefreshedCollectionPlacementVersion()
-                            : ChunkVersion({entry.getEpoch(), entry.getTimestamp()}, {0, 0})};
+                        entry.getLastRefreshedCollectionVersion()
+                            ? *entry.getLastRefreshedCollectionVersion()
+                            : ChunkVersion(0, 0, entry.getEpoch(), entry.getTimestamp())};
 }
 
 StatusWith<ShardCollectionType> readShardCollectionsEntry(OperationContext* opCtx,
                                                           const NamespaceString& nss) {
+
     try {
         DBDirectClient client(opCtx);
         FindCommandRequest findRequest{NamespaceString::kShardConfigCollectionsNamespace};
@@ -190,7 +193,7 @@ StatusWith<ShardDatabaseType> readShardDatabasesEntry(OperationContext* opCtx, S
         }
 
         BSONObj document = cursor->nextSafe();
-        return ShardDatabaseType(document);
+        return ShardDatabaseType::parse(IDLParserErrorContext("ShardDatabaseType"), document);
     } catch (const DBException& ex) {
         return ex.toStatus(str::stream()
                            << "Failed to read the '" << dbName.toString() << "' entry locally from "
@@ -206,8 +209,7 @@ Status updateShardCollectionsEntry(OperationContext* opCtx,
     if (upsert) {
         // If upserting, this should be an update from the config server that does not have shard
         // refresh / migration inc signal information.
-        invariant(!update.hasField(
-            ShardCollectionType::kLastRefreshedCollectionMajorMinorVersionFieldName));
+        invariant(!update.hasField(ShardCollectionType::kLastRefreshedCollectionVersionFieldName));
     }
 
     try {
@@ -331,7 +333,7 @@ Status updateShardChunks(OperationContext* opCtx,
 
         // This may be the first update, so the first opportunity to create an index.
         // If the index already exists, this is a no-op.
-        client.createIndex(chunksNss, BSON(ChunkType::lastmod() << 1));
+        client.createIndex(chunksNss.ns(), BSON(ChunkType::lastmod() << 1));
 
         /**
          * Here are examples of the operations that can happen on the config server to update
@@ -339,7 +341,7 @@ Status updateShardChunks(OperationContext* opCtx,
          * the operations, which can be read from the config server, not any that were removed, so
          * we must delete any chunks that overlap with the new 'chunks'.
          *
-         * collectionPlacementVersion = 10.3
+         * CollectionVersion = 10.3
          *
          * moveChunk
          * {_id: 3, max: 5, version: 10.1} --> {_id: 3, max: 5, version: 11.0}
@@ -432,10 +434,7 @@ void dropChunks(OperationContext* opCtx, const NamespaceString& nss) {
 
     // Drop the 'config.cache.chunks.<ns>' collection.
     BSONObj result;
-    if (!client.dropCollection(
-            NamespaceStringUtil::deserialize(boost::none, ChunkType::ShardNSPrefix + nss.ns()),
-            kLocalWriteConcern,
-            &result)) {
+    if (!client.dropCollection(ChunkType::ShardNSPrefix + nss.ns(), kLocalWriteConcern, &result)) {
         auto status = getStatusFromCommandResult(result);
         if (status != ErrorCodes::NamespaceNotFound) {
             uassertStatusOK(status);

@@ -1,10 +1,8 @@
-// The test runs commands that are not allowed with security token: ConnectionStatus,
-// connectionStatus, createUser, logout.
 // @tags: [
-//   not_allowed_with_security_token,
 //   assumes_superuser_permissions,
 //   assumes_write_concern_unchanged,
 //   creates_and_authenticates_user,
+//   no_selinux,
 //   requires_auth,
 //   requires_non_retryable_commands,
 //   # This test uses db._authOrThrow which does not use runCommand (required by the
@@ -15,15 +13,9 @@
 // Tests the connectionStatus command
 (function() {
 "use strict";
-
-const kAdminDbName = 'admin';
-const kTestDbName = 'connection_status';
-
-const myDB = db.getSiblingDB(kTestDbName);
-
+var dbName = 'connection_status';
+var myDB = db.getSiblingDB(dbName);
 myDB.dropAllUsers();
-db.logout();  // logout from the current db - anecodtally "test_autocomplete" - to avoid double
-              // authn errors
 
 /**
  * Test that the output of connectionStatus makes sense.
@@ -85,10 +77,9 @@ function validateConnectionStatus(expectedUser, expectedRole, showPrivileges) {
 }
 
 function test(userName) {
-    const user = {user: userName, db: kTestDbName};
-    const role = {role: "root", db: kAdminDbName};
+    var user = {user: userName, db: dbName};
+    var role = {role: "root", db: "admin"};
     myDB.createUser({user: userName, pwd: "weak password", roles: [role]});
-
     myDB.auth(userName, "weak password");
 
     // Validate with and without showPrivileges

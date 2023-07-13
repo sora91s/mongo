@@ -230,9 +230,8 @@ public:
     // The internal change events that are not exposed to the users.
     static constexpr StringData kReshardBeginOpType = "reshardBegin"_sd;
     static constexpr StringData kReshardDoneCatchUpOpType = "reshardDoneCatchUp"_sd;
-
     // Internal op type to signal mongos to open cursors on new shards.
-    static constexpr StringData kNewShardDetectedOpType = "migrateChunkToNewShard"_sd;
+    static constexpr StringData kNewShardDetectedOpType = "kNewShardDetected"_sd;
 
     // These events are guarded behind the 'showExpandedEvents' flag.
     static constexpr StringData kCreateOpType = "create"_sd;
@@ -240,8 +239,6 @@ public:
     static constexpr StringData kDropIndexesOpType = "dropIndexes"_sd;
     static constexpr StringData kShardCollectionOpType = "shardCollection"_sd;
     static constexpr StringData kMigrateLastChunkFromShardOpType = "migrateLastChunkFromShard"_sd;
-    static constexpr StringData kRefineCollectionShardKeyOpType = "refineCollectionShardKey"_sd;
-    static constexpr StringData kReshardCollectionOpType = "reshardCollection"_sd;
     static constexpr StringData kModifyOpType = "modify"_sd;
 
     // Default regex for collections match which prohibits system collections.
@@ -249,10 +246,10 @@ public:
 
     // Regex matching all user collections plus collections exposed when 'showSystemEvents' is set.
     // Does not match a collection named $ or a collection with 'system.' in the name.
-    // However, it will still match collection names starting with system.buckets or
-    // system.resharding, or a collection exactly named system.js
+    // However, it will still match collection names starting with system.buckets or a collection
+    // exactly named system.js.
     static constexpr StringData kRegexAllCollectionsShowSystemEvents =
-        R"((?!(\$|system\.(?!(js$|resharding\.|buckets\.)))))"_sd;
+        R"((?!(\$|system\.(?!(js$|buckets\.)))))"_sd;
 
     static constexpr StringData kRegexAllDBs = R"(^(?!(admin|config|local)\.)[^.]+)"_sd;
     static constexpr StringData kRegexCmdColl = R"(\$cmd$)"_sd;
@@ -288,11 +285,6 @@ public:
      * field has a certain type. Will uassert() if the field does not have the expected type.
      */
     static void checkValueType(Value v, StringData fieldName, BSONType expectedType);
-
-    /**
-     * Same as 'checkValueType', except it tolerates the field being missing.
-     */
-    static void checkValueTypeOrMissing(Value v, StringData fieldName, BSONType expectedType);
 
     /**
      * Extracts the resume token from the given spec. If a 'startAtOperationTime' is specified,

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -42,14 +43,11 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -59,72 +57,67 @@ using std::stringstream;
 
 namespace {
 
-class CmdRenameCollection final : public TypedCommand<CmdRenameCollection> {
+class CmdRenameCollection : public ErrmsgCommandDeprecated {
 public:
-    using Request = RenameCollectionCommand;
-
+    CmdRenameCollection() : ErrmsgCommandDeprecated("renameCollection") {}
     virtual bool adminOnly() const {
         return true;
     }
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return true;
+    }
 
     bool collectsResourceConsumptionMetrics() const override {
         return true;
     }
 
+    virtual Status checkAuthForCommand(Client* client,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj) const {
+        return rename_collection::checkAuthForRenameCollectionCommand(client, dbname, cmdObj);
+    }
     std::string help() const override {
         return " example: { renameCollection: foo.a, to: bar.b }";
     }
 
-    bool allowedWithSecurityToken() const final {
-        return true;
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsFullyQualified(cmdObj);
     }
 
-    class Invocation final : public InvocationBase {
-    public:
-        using InvocationBase::InvocationBase;
+    virtual bool errmsgRun(OperationContext* opCtx,
+                           const string& dbname,
+                           const BSONObj& cmdObj,
+                           string& errmsg,
+                           BSONObjBuilder& result) {
+        auto renameRequest =
+            RenameCollectionCommand::parse(IDLParserErrorContext("renameCollection"), cmdObj);
 
-        void typedRun(OperationContext* opCtx) {
-            const auto& fromNss = ns();
-            const auto& toNss = request().getTo();
+        const auto& fromNss = renameRequest.getCommandParameter();
+        const auto& toNss = renameRequest.getTo();
 
-            uassert(ErrorCodes::IllegalOperation,
-                    "Can't rename a collection to itself",
-                    fromNss != toNss);
+        uassert(
+            ErrorCodes::IllegalOperation, "Can't rename a collection to itself", fromNss != toNss);
 
-            RenameCollectionOptions options;
-            options.stayTemp = request().getStayTemp();
-            options.expectedSourceUUID = request().getCollectionUUID();
-            stdx::visit(OverloadedVisitor{
-                            [&options](bool dropTarget) { options.dropTarget = dropTarget; },
-                            [&options](const UUID& uuid) {
-                                options.dropTarget = true;
-                                options.expectedTargetUUID = uuid;
-                            },
-                        },
-                        request().getDropTarget());
+        RenameCollectionOptions options;
+        options.stayTemp = renameRequest.getStayTemp();
+        options.expectedSourceUUID = renameRequest.getCollectionUUID();
+        stdx::visit(
+            visit_helper::Overloaded{
+                [&options](bool dropTarget) { options.dropTarget = dropTarget; },
+                [&options](const UUID& uuid) {
+                    options.dropTarget = true;
+                    options.expectedTargetUUID = uuid;
+                },
+            },
+            renameRequest.getDropTarget());
 
-            validateAndRunRenameCollection(opCtx, fromNss, toNss, options);
-        }
-
-    private:
-        NamespaceString ns() const override {
-            return request().getCommandParameter();
-        }
-
-        bool supportsWriteConcern() const override {
-            return true;
-        }
-
-        void doCheckAuthorization(OperationContext* opCtx) const override {
-            uassertStatusOK(rename_collection::checkAuthForRenameCollectionCommand(
-                opCtx->getClient(),
-                request().getDbName().toStringWithTenantId(),
-                request().toBSON(BSONObj())));
-        }
-    };
+        validateAndRunRenameCollection(
+            opCtx, renameRequest.getCommandParameter(), renameRequest.getTo(), options);
+        return true;
+    }
 
 } cmdrenamecollection;
 

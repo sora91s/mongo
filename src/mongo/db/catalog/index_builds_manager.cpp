@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -37,7 +38,7 @@
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_repair.h"
 #include "mongo/db/catalog_raii.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/storage_repair_observer.h"
@@ -46,9 +47,6 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/progress_meter.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
@@ -115,8 +113,7 @@ Status IndexBuildsManager::setUpIndexBuild(OperationContext* opCtx,
     std::vector<BSONObj> indexes;
     try {
         indexes = writeConflictRetry(opCtx, "IndexBuildsManager::setUpIndexBuild", nss.ns(), [&]() {
-            return uassertStatusOK(
-                builder->init(opCtx, collection, specs, onInit, options.forRecovery, resumeInfo));
+            return uassertStatusOK(builder->init(opCtx, collection, specs, onInit, resumeInfo));
         });
     } catch (const DBException& ex) {
         return ex.toStatus();
@@ -125,11 +122,10 @@ Status IndexBuildsManager::setUpIndexBuild(OperationContext* opCtx,
     return Status::OK();
 }
 
-Status IndexBuildsManager::startBuildingIndex(
-    OperationContext* opCtx,
-    const CollectionPtr& collection,
-    const UUID& buildUUID,
-    const boost::optional<RecordId>& resumeAfterRecordId) {
+Status IndexBuildsManager::startBuildingIndex(OperationContext* opCtx,
+                                              const CollectionPtr& collection,
+                                              const UUID& buildUUID,
+                                              boost::optional<RecordId> resumeAfterRecordId) {
     auto builder = invariant(_getBuilder(buildUUID));
 
     return builder->insertAllDocumentsInCollection(opCtx, collection, resumeAfterRecordId);
@@ -155,9 +151,7 @@ StatusWith<std::pair<long long, long long>> IndexBuildsManager::startBuildingInd
     {
         stdx::unique_lock<Client> lk(*opCtx->getClient());
         progressMeter.set(
-            lk,
-            CurOp::get(opCtx)->setProgress_inlock(curopMessage, coll->numRecords(opCtx)),
-            opCtx);
+            CurOp::get(opCtx)->setProgress_inlock(curopMessage, coll->numRecords(opCtx)));
     }
 
     auto ns = coll->ns();
@@ -175,7 +169,7 @@ StatusWith<std::pair<long long, long long>> IndexBuildsManager::startBuildingInd
             }
             WriteUnitOfWork wunit(opCtx);
             for (int i = 0; record && i < internalInsertMaxBatchSize.load(); i++) {
-                auto& id = record->id;
+                RecordId id = record->id;
                 RecordData& data = record->data;
                 // We retain decimal data when repairing database even if decimal is disabled.
                 auto validStatus = validateBSON(data.data(), data.size());
@@ -193,12 +187,9 @@ StatusWith<std::pair<long long, long long>> IndexBuildsManager::startBuildingInd
                                   "id"_attr = id,
                                   "error"_attr = redact(validStatus));
                     rs->deleteRecord(opCtx, id);
-                    {
-                        stdx::unique_lock<Client> lk(*opCtx->getClient());
-                        // Must reduce the progress meter's expected total after deleting an invalid
-                        // document from the collection.
-                        progressMeter.get(lk)->setTotalWhileRunning(coll->numRecords(opCtx));
-                    }
+                    // Must reduce the progress meter's expected total after deleting an invalid
+                    // document from the collection.
+                    progressMeter->setTotalWhileRunning(coll->numRecords(opCtx));
                 } else {
                     numRecords++;
                     dataSize += data.size();
@@ -218,10 +209,7 @@ StatusWith<std::pair<long long, long long>> IndexBuildsManager::startBuildingInd
                     if (!insertStatus.isOK()) {
                         return insertStatus;
                     }
-                    {
-                        stdx::unique_lock<Client> lk(*opCtx->getClient());
-                        progressMeter.get(lk)->hit();
-                    }
+                    progressMeter.hit();
                 }
                 record = cursor->next();
             }
@@ -245,16 +233,13 @@ StatusWith<std::pair<long long, long long>> IndexBuildsManager::startBuildingInd
         }
     }
 
-    {
-        stdx::unique_lock<Client> lk(*opCtx->getClient());
-        progressMeter.get(lk)->finished();
-    }
+    progressMeter.finished();
 
     long long recordsRemoved = 0;
     long long bytesRemoved = 0;
 
     const NamespaceString lostAndFoundNss =
-        NamespaceString(DatabaseName::kLocal, "lost_and_found." + coll->uuid().toString());
+        NamespaceString(NamespaceString::kLocalDb, "lost_and_found." + coll->uuid().toString());
 
     // Delete duplicate record and insert it into local lost and found.
     Status status = [&] {
@@ -335,7 +320,7 @@ Status IndexBuildsManager::commitIndexBuild(OperationContext* opCtx,
         [this, builder, buildUUID, opCtx, &collection, nss, &onCreateEachFn, &onCommitFn] {
             WriteUnitOfWork wunit(opCtx);
             auto status = builder->commit(
-                opCtx, collection.getWritableCollection(opCtx), onCreateEachFn, onCommitFn);
+                opCtx, collection.getWritableCollection(), onCreateEachFn, onCommitFn);
             if (!status.isOK()) {
                 return status;
             }
@@ -387,17 +372,6 @@ bool IndexBuildsManager::isBackgroundBuilding(const UUID& buildUUID) {
     return builder->isBackgroundBuilding();
 }
 
-void IndexBuildsManager::appendBuildInfo(const UUID& buildUUID, BSONObjBuilder* builder) const {
-    stdx::unique_lock<Latch> lk(_mutex);
-
-    auto builderIt = _builders.find(buildUUID);
-    if (builderIt == _builders.end()) {
-        return;
-    }
-
-    builderIt->second->appendBuildInfo(builder);
-}
-
 void IndexBuildsManager::verifyNoIndexBuilds_forTestOnly() {
     invariant(_builders.empty());
 }
@@ -409,7 +383,7 @@ void IndexBuildsManager::_registerIndexBuild(UUID buildUUID) {
     invariant(_builders.insert(std::make_pair(buildUUID, std::move(mib))).second);
 }
 
-void IndexBuildsManager::tearDownAndUnregisterIndexBuild(const UUID& buildUUID) {
+void IndexBuildsManager::unregisterIndexBuild(const UUID& buildUUID) {
     stdx::unique_lock<Latch> lk(_mutex);
 
     auto builderIt = _builders.find(buildUUID);

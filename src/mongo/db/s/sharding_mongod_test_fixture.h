@@ -30,6 +30,7 @@
 #pragma once
 
 #include "mongo/db/repl/replication_coordinator_mock.h"
+#include "mongo/db/s/dist_lock_manager.h"
 #include "mongo/db/service_context_d_test_fixture.h"
 #include "mongo/s/sharding_test_fixture_common.h"
 
@@ -56,10 +57,6 @@ protected:
 
     void setUp() override;
     void tearDown() override;
-
-    // Set a catalog cache to be used when initializing the Grid. Must be called before
-    // initializeGlobalShardingStateForMongodForTest() in order to take effect.
-    void setCatalogCache(std::unique_ptr<CatalogCache> cache);
 
     /**
      * Initializes sharding components according to the cluster role in
@@ -111,6 +108,11 @@ protected:
     virtual std::unique_ptr<ShardRegistry> makeShardRegistry(ConnectionString configConnStr);
 
     /**
+     * Allows tests to conditionally construct a DistLockManager
+     */
+    virtual std::unique_ptr<DistLockManager> makeDistLockManager();
+
+    /**
      * Base class returns nullptr.
      */
     virtual std::unique_ptr<ClusterCursorManager> makeClusterCursorManager();
@@ -119,12 +121,6 @@ protected:
      * Base class returns nullptr.
      */
     virtual std::unique_ptr<BalancerConfiguration> makeBalancerConfiguration();
-
-    /**
-     * Base class returns CatalogCache created from the CatalogCacheLoader set on the
-     * ServiceContext.
-     */
-    virtual std::unique_ptr<CatalogCache> makeCatalogCache();
 
     /**
      * Setups the op observer listeners depending on cluster role.

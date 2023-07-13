@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kAccessControl
 
 #include "mongo/platform/basic.h"
 
@@ -35,9 +36,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kAccessControl
-
 
 namespace mongo {
 namespace {
@@ -62,7 +60,7 @@ public:
 
         void typedRun(OperationContext* opCtx) {
             ConfigsvrSetUserWriteBlockMode configsvrSetUserWriteBlockModeCmd;
-            configsvrSetUserWriteBlockModeCmd.setDbName(DatabaseName::kAdmin);
+            configsvrSetUserWriteBlockModeCmd.setDbName(NamespaceString::kAdminDb);
             SetUserWriteBlockModeRequest setUserWriteBlockModeRequest(
                 request().getSetUserWriteBlockModeRequest());
             configsvrSetUserWriteBlockModeCmd.setSetUserWriteBlockModeRequest(
@@ -72,7 +70,7 @@ public:
             auto cmdResponse = uassertStatusOK(configShard->runCommandWithFixedRetryAttempts(
                 opCtx,
                 ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-                DatabaseName::kAdmin.toString(),
+                NamespaceString::kAdminDb.toString(),
                 CommandHelpers::appendMajorityWriteConcern(
                     configsvrSetUserWriteBlockModeCmd.toBSON({}), opCtx->getWriteConcern()),
                 Shard::RetryPolicy::kIdempotent));

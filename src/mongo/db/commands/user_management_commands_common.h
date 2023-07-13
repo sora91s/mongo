@@ -38,7 +38,6 @@
 #include "mongo/db/auth/role_name.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/commands/user_management_commands_gen.h"
-#include "mongo/db/database_name.h"
 
 namespace mongo {
 
@@ -58,7 +57,7 @@ namespace auth {
  * and normalizes them to a vector of RoleNames using a passed dbname fallback.
  */
 std::vector<RoleName> resolveRoleNames(const std::vector<RoleNameOrString>& possibleRoles,
-                                       const DatabaseName& dbname);
+                                       StringData dbname);
 
 //
 // checkAuthorizedTo* methods

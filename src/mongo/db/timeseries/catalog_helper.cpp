@@ -41,9 +41,8 @@ boost::optional<TimeseriesOptions> getTimeseriesOptions(OperationContext* opCtx,
                                                         const NamespaceString& nss,
                                                         bool convertToBucketsNamespace) {
     auto bucketsNs = convertToBucketsNamespace ? nss.makeTimeseriesBucketsNamespace() : nss;
-    // Hold reference to the catalog for collection lookup without locks to be safe.
-    auto catalog = CollectionCatalog::get(opCtx);
-    auto bucketsColl = catalog->lookupCollectionByNamespace(opCtx, bucketsNs);
+    auto bucketsColl =
+        CollectionCatalog::get(opCtx)->lookupCollectionByNamespaceForRead(opCtx, bucketsNs);
     if (!bucketsColl) {
         return boost::none;
     }

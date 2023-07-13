@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/db/timeseries/timeseries_commands_conversion_helper.h"
 
@@ -41,36 +42,11 @@
 #include "mongo/logv2/log.h"
 #include "mongo/logv2/redaction.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo::timeseries {
 
 namespace {
 NamespaceString makeTimeseriesBucketsNamespace(const NamespaceString& nss) {
     return nss.isTimeseriesBucketsCollection() ? nss : nss.makeTimeseriesBucketsNamespace();
-}
-
-/**
- * Converts the key field on time to 'control.min.$timeField' field. Depends on error checking from
- * 'createBucketsSpecFromTimeseriesSpec()' which should be called before this function.
- */
-BSONObj convertToTTLTimeField(const BSONObj& origKeyField, StringData timeField) {
-    BSONObjBuilder keyBuilder;
-    uassert(ErrorCodes::CannotCreateIndex,
-            str::stream() << "TTL indexes are single-field indexes, compound indexes do "
-                             "not support TTL. Index spec: "
-                          << origKeyField,
-            origKeyField.nFields() == 1);
-
-    const auto& firstElem = origKeyField.firstElement();
-    uassert(ErrorCodes::InvalidOptions,
-            "TTL indexes on non-time fields are not supported on time-series collections",
-            firstElem.fieldName() == timeField);
-
-    keyBuilder.appendAs(firstElem,
-                        str::stream() << timeseries::kControlMinFieldNamePrefix << timeField);
-    return keyBuilder.obj();
 }
 }  // namespace
 
@@ -105,17 +81,12 @@ CreateIndexesCommand makeTimeseriesCreateIndexesCommand(OperationContext* opCtx,
     std::vector<mongo::BSONObj> indexes;
     for (const auto& origIndex : origIndexes) {
         BSONObjBuilder builder;
-        BSONObj keyField;
-        BSONObj originalKeyField;
-        bool isTTLIndex = false;
-        bool hasPartialFilterOnMetaField = false;
-        bool includeOriginalSpec = false;
-
+        bool isBucketsIndexSpecCompatibleForDowngrade = true;
         for (const auto& elem : origIndex) {
             if (elem.fieldNameStringData() == IndexDescriptor::kPartialFilterExprFieldName) {
-                if (feature_flags::gTimeseriesMetricIndexes.isEnabled(
-                        serverGlobalParams.featureCompatibility)) {
-                    includeOriginalSpec = true;
+                if (feature_flags::gTimeseriesMetricIndexes.isEnabledAndIgnoreFCV() &&
+                    serverGlobalParams.featureCompatibility.isFCVUpgradingToOrAlreadyLatest()) {
+                    isBucketsIndexSpecCompatibleForDowngrade = false;
                 } else {
                     uasserted(ErrorCodes::InvalidOptions,
                               "Partial indexes are not supported on time-series collections");
@@ -162,7 +133,7 @@ CreateIndexesCommand makeTimeseriesCreateIndexesCommand(OperationContext* opCtx,
                 // planner, this will be true.
                 bool assumeNoMixedSchemaData = true;
 
-                auto [hasMetricPred, bucketPred] =
+                BSONObj bucketPred =
                     BucketSpec::pushdownPredicate(expCtx,
                                                   options,
                                                   collationMatchesDefault,
@@ -171,9 +142,6 @@ CreateIndexesCommand makeTimeseriesCreateIndexesCommand(OperationContext* opCtx,
                                                   includeMetaField,
                                                   assumeNoMixedSchemaData,
                                                   BucketSpec::IneligiblePredicatePolicy::kError);
-
-                hasPartialFilterOnMetaField = !hasMetricPred;
-
                 builder.append(IndexDescriptor::kPartialFilterExprFieldName, bucketPred);
                 continue;
             }
@@ -201,10 +169,10 @@ CreateIndexesCommand makeTimeseriesCreateIndexesCommand(OperationContext* opCtx,
             }
 
             if (elem.fieldNameStringData() == IndexDescriptor::kExpireAfterSecondsFieldName) {
-                isTTLIndex = true;
-                builder.append(elem);
-                continue;
+                uasserted(ErrorCodes::InvalidOptions,
+                          "TTL indexes are not supported on time-series collections");
             }
+
 
             if (elem.fieldNameStringData() == IndexDescriptor::kUniqueFieldName) {
                 uassert(ErrorCodes::InvalidOptions,
@@ -213,28 +181,27 @@ CreateIndexesCommand makeTimeseriesCreateIndexesCommand(OperationContext* opCtx,
             }
 
             if (elem.fieldNameStringData() == NewIndexSpec::kKeyFieldName) {
-                originalKeyField = elem.Obj();
-
-                auto pluginName = IndexNames::findPluginName(originalKeyField);
+                auto pluginName = IndexNames::findPluginName(elem.Obj());
                 uassert(ErrorCodes::InvalidOptions,
                         "Text indexes are not supported on time-series collections",
                         pluginName != IndexNames::TEXT);
 
                 auto bucketsIndexSpecWithStatus =
-                    timeseries::createBucketsIndexSpecFromTimeseriesIndexSpec(options,
-                                                                              originalKeyField);
+                    timeseries::createBucketsIndexSpecFromTimeseriesIndexSpec(options, elem.Obj());
                 uassert(ErrorCodes::CannotCreateIndex,
                         str::stream() << bucketsIndexSpecWithStatus.getStatus().toString()
                                       << " Command request: " << redact(origCmd.toBSON({})),
                         bucketsIndexSpecWithStatus.isOK());
 
-                if (timeseries::shouldIncludeOriginalSpec(
+                if (!timeseries::isBucketsIndexSpecCompatibleForDowngrade(
                         options,
                         BSON(NewIndexSpec::kKeyFieldName
                              << bucketsIndexSpecWithStatus.getValue()))) {
-                    includeOriginalSpec = true;
+                    isBucketsIndexSpecCompatibleForDowngrade = false;
                 }
-                keyField = std::move(bucketsIndexSpecWithStatus.getValue());
+
+                builder.append(NewIndexSpec::kKeyFieldName,
+                               std::move(bucketsIndexSpecWithStatus.getValue()));
                 continue;
             }
 
@@ -243,24 +210,12 @@ CreateIndexesCommand makeTimeseriesCreateIndexesCommand(OperationContext* opCtx,
             builder.append(elem);
         }
 
-        if (isTTLIndex) {
-            uassert(ErrorCodes::InvalidOptions,
-                    "TTL indexes are not supported on time-series collections",
-                    feature_flags::gTimeseriesScalabilityImprovements.isEnabled(
-                        serverGlobalParams.featureCompatibility));
-            uassert(ErrorCodes::InvalidOptions,
-                    "TTL indexes on time-series collections require a partialFilterExpression on "
-                    "the metaField",
-                    hasPartialFilterOnMetaField);
-            keyField = convertToTTLTimeField(originalKeyField, options.getTimeField());
-        }
-        builder.append(NewIndexSpec::kKeyFieldName, std::move(keyField));
-
-        if (feature_flags::gTimeseriesMetricIndexes.isEnabled(
-                serverGlobalParams.featureCompatibility) &&
-            includeOriginalSpec) {
+        if (feature_flags::gTimeseriesMetricIndexes.isEnabledAndIgnoreFCV() &&
+            !isBucketsIndexSpecCompatibleForDowngrade) {
             // Store the original user index definition on the transformed index definition for the
-            // time-series buckets collection.
+            // time-series buckets collection if this is a newly supported index type on time-series
+            // collections. This is to avoid any additional downgrade steps for index types already
+            // supported in 5.0.
             builder.appendObject(IndexDescriptor::kOriginalSpecFieldName, origIndex.objdata());
         }
 

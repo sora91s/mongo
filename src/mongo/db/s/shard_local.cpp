@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -35,7 +36,7 @@
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog_raii.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -46,9 +47,6 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/scopeguard.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 
 ShardLocal::ShardLocal(const ShardId& id) : Shard(id) {
@@ -57,7 +55,7 @@ ShardLocal::ShardLocal(const ShardId& id) : Shard(id) {
     invariant(serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
 }
 
-ConnectionString ShardLocal::getConnString() const {
+const ConnectionString ShardLocal::getConnString() const {
     return repl::ReplicationCoordinator::get(getGlobalServiceContext())
         ->getConfigConnectionString();
 }
@@ -71,12 +69,39 @@ void ShardLocal::updateReplSetMonitor(const HostAndPort& remoteHost,
     MONGO_UNREACHABLE;
 }
 
+void ShardLocal::updateLastCommittedOpTime(LogicalTime lastCommittedOpTime) {
+    MONGO_UNREACHABLE;
+}
+
+LogicalTime ShardLocal::getLastCommittedOpTime() const {
+    MONGO_UNREACHABLE;
+}
+
 std::string ShardLocal::toString() const {
     return getId().toString() + ":<local>";
 }
 
 bool ShardLocal::isRetriableError(ErrorCodes::Error code, RetryPolicy options) {
-    return localIsRetriableError(code, options);
+    switch (options) {
+        case Shard::RetryPolicy::kNoRetry: {
+            return false;
+        } break;
+
+        case Shard::RetryPolicy::kIdempotent: {
+            return code == ErrorCodes::WriteConcernFailed;
+        } break;
+
+        case Shard::RetryPolicy::kIdempotentOrCursorInvalidated: {
+            return isRetriableError(code, Shard::RetryPolicy::kIdempotent) ||
+                ErrorCodes::isCursorInvalidatedError(code);
+        } break;
+
+        case Shard::RetryPolicy::kNotIdempotent: {
+            return false;
+        } break;
+    }
+
+    MONGO_UNREACHABLE;
 }
 
 StatusWith<Shard::CommandResponse> ShardLocal::_runCommand(OperationContext* opCtx,
@@ -107,6 +132,84 @@ StatusWith<Shard::QueryResponse> ShardLocal::_exhaustiveFindOnConfig(
     const boost::optional<BSONObj>& hint) {
     return _rsLocalClient.queryOnce(
         opCtx, readPref, readConcernLevel, nss, query, sort, limit, hint);
+}
+
+Status createIndexOnConfigCollection(OperationContext* opCtx,
+                                     const NamespaceString& ns,
+                                     const BSONObj& keys,
+                                     bool unique) {
+    invariant(ns.db() == "config" || ns.db() == "admin");
+
+    try {
+        // TODO SERVER-50983: Create abstraction for creating collection when using
+        // AutoGetCollection
+        AutoGetCollection autoColl(opCtx, ns, MODE_X);
+        const Collection* collection = autoColl.getCollection().get();
+        if (!collection) {
+            CollectionOptions options;
+            options.uuid = UUID::gen();
+            writeConflictRetry(opCtx, "createIndexOnConfigCollection", ns.ns(), [&] {
+                WriteUnitOfWork wunit(opCtx);
+                auto db = autoColl.ensureDbExists(opCtx);
+                collection = db->createCollection(opCtx, ns, options);
+                invariant(collection,
+                          str::stream() << "Failed to create collection " << ns.ns()
+                                        << " in config database for indexes: " << keys);
+                wunit.commit();
+            });
+        }
+        auto indexCatalog = collection->getIndexCatalog();
+        IndexSpec index;
+        index.addKeys(keys);
+        index.unique(unique);
+        index.version(int(IndexDescriptor::kLatestIndexVersion));
+        auto removeIndexBuildsToo = false;
+        auto indexSpecs = indexCatalog->removeExistingIndexes(
+            opCtx,
+            CollectionPtr(collection, CollectionPtr::NoYieldTag{}),
+            uassertStatusOK(
+                collection->addCollationDefaultsToIndexSpecsForCreate(opCtx, {index.toBSON()})),
+            removeIndexBuildsToo);
+
+        if (indexSpecs.empty()) {
+            return Status::OK();
+        }
+
+        auto fromMigrate = false;
+        if (!collection->isEmpty(opCtx)) {
+            // We typically create indexes on config/admin collections for sharding while setting up
+            // a sharded cluster, so we do not expect to see data in the collection.
+            // Therefore, it is ok to log this index build.
+            const auto& indexSpec = indexSpecs[0];
+            LOGV2(5173300,
+                  "Creating index on sharding collection with existing data",
+                  logAttrs(ns),
+                  "uuid"_attr = collection->uuid(),
+                  "index"_attr = indexSpec);
+            auto indexConstraints = IndexBuildsManager::IndexConstraints::kEnforce;
+            IndexBuildsCoordinator::get(opCtx)->createIndex(
+                opCtx, collection->uuid(), indexSpec, indexConstraints, fromMigrate);
+        } else {
+            writeConflictRetry(opCtx, "createIndexOnConfigCollection", ns.ns(), [&] {
+                WriteUnitOfWork wunit(opCtx);
+                CollectionWriter collWriter(opCtx, collection->uuid());
+                IndexBuildsCoordinator::get(opCtx)->createIndexesOnEmptyCollection(
+                    opCtx, collWriter, indexSpecs, fromMigrate);
+                wunit.commit();
+            });
+        }
+    } catch (const DBException& e) {
+        return e.toStatus();
+    }
+
+    return Status::OK();
+}
+
+Status ShardLocal::createIndexOnConfig(OperationContext* opCtx,
+                                       const NamespaceString& ns,
+                                       const BSONObj& keys,
+                                       bool unique) {
+    return createIndexOnConfigCollection(opCtx, ns, keys, unique);
 }
 
 void ShardLocal::runFireAndForgetCommand(OperationContext* opCtx,

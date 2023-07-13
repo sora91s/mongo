@@ -30,7 +30,6 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/change_stream_options_manager.h"
-#include "mongo/db/change_stream_pre_images_collection_manager.h"
 #include "mongo/db/pipeline/change_stream_expired_pre_image_remover.h"
 #include "mongo/db/service_context_test_fixture.h"
 #include "mongo/unittest/unittest.h"
@@ -73,7 +72,7 @@ TEST_F(ChangeStreamPreImageExpirationPolicyTest, getPreImageExpirationTimeWithVa
 
     auto currentTime = Date_t::now();
     auto receivedExpireAfterSeconds =
-        change_stream_pre_image_helpers::getPreImageExpirationTime(opCtx.get(), currentTime);
+        preImageRemoverInternal::getPreImageExpirationTime(opCtx.get(), currentTime);
     ASSERT(receivedExpireAfterSeconds);
     ASSERT_EQ(*receivedExpireAfterSeconds, currentTime - Seconds(expireAfterSeconds));
 }
@@ -83,7 +82,7 @@ TEST_F(ChangeStreamPreImageExpirationPolicyTest, getPreImageExpirationTimeWithUn
 
     auto currentTime = Date_t::now();
     auto receivedExpireAfterSeconds =
-        change_stream_pre_image_helpers::getPreImageExpirationTime(opCtx.get(), currentTime);
+        preImageRemoverInternal::getPreImageExpirationTime(opCtx.get(), currentTime);
     ASSERT_FALSE(receivedExpireAfterSeconds);
 }
 
@@ -95,7 +94,7 @@ TEST_F(ChangeStreamPreImageExpirationPolicyTest, getPreImageExpirationTimeWithOf
 
     auto currentTime = Date_t::now();
     auto receivedExpireAfterSeconds =
-        change_stream_pre_image_helpers::getPreImageExpirationTime(opCtx.get(), currentTime);
+        preImageRemoverInternal::getPreImageExpirationTime(opCtx.get(), currentTime);
     ASSERT_FALSE(receivedExpireAfterSeconds);
 }
 }  // namespace

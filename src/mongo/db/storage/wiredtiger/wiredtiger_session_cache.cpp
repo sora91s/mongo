@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -35,7 +36,7 @@
 #include <memory>
 
 #include "mongo/base/error_codes.h"
-#include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/global_settings.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/storage/journal_listener.h"
@@ -46,13 +47,11 @@
 #include "mongo/stdx/thread.h"
 #include "mongo/util/scopeguard.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
-
 namespace mongo {
 
 WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn, uint64_t epoch, uint64_t cursorEpoch)
     : _epoch(epoch),
+      _cursorEpoch(cursorEpoch),
       _session(nullptr),
       _cursorGen(0),
       _cursorsOut(0),
@@ -65,6 +64,7 @@ WiredTigerSession::WiredTigerSession(WT_CONNECTION* conn,
                                      uint64_t epoch,
                                      uint64_t cursorEpoch)
     : _epoch(epoch),
+      _cursorEpoch(cursorEpoch),
       _cache(cache),
       _session(nullptr),
       _cursorGen(0),
@@ -187,6 +187,20 @@ void WiredTigerSession::closeAllCursors(const std::string& uri) {
     }
 }
 
+void WiredTigerSession::closeCursorsForQueuedDrops(WiredTigerKVEngine* engine) {
+    invariant(_session);
+
+    _cursorEpoch = _cache->getCursorEpoch();
+    auto toDrop = engine->filterCursorsWithQueuedDrops(&_cursors);
+
+    for (auto i = toDrop.begin(); i != toDrop.end(); i++) {
+        WT_CURSOR* cursor = i->_cursor;
+        if (cursor) {
+            invariantWTOK(cursor->close(cursor), _session);
+        }
+    }
+}
+
 namespace {
 AtomicWord<unsigned long long> nextTableId(WiredTigerSession::kLastTableId);
 }
@@ -267,13 +281,13 @@ void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
     // WT_CONNECTION, i.e: replication is on) requires `forceCheckpoint` to be true and journaling
     // to be enabled.
     if (syncType == Fsync::kCheckpointStableTimestamp && getGlobalReplSettings().usingReplSets()) {
-        invariant(!isEphemeral());
+        invariant(_engine->isDurable());
     }
 
     // When forcing a checkpoint with journaling enabled, don't synchronize with other
     // waiters, as a log flush is much cheaper than a full checkpoint.
     if ((syncType == Fsync::kCheckpointStableTimestamp || syncType == Fsync::kCheckpointAll) &&
-        !isEphemeral()) {
+        _engine->isDurable()) {
         UniqueWiredTigerSession session = getSession();
         WT_SESSION* s = session->getSession();
         {
@@ -295,11 +309,10 @@ void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
 
             auto config = syncType == Fsync::kCheckpointStableTimestamp ? "use_timestamp=true"
                                                                         : "use_timestamp=false";
-
             invariantWTOK(s->checkpoint(s, config), s);
 
             if (token) {
-                journalListener->onDurable(token.value());
+                journalListener->onDurable(token.get());
             }
         }
         LOGV2_DEBUG(22418, 4, "created checkpoint (forced)");
@@ -343,7 +356,7 @@ void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
     }
 
     // Use the journal when available, or a checkpoint otherwise.
-    if (!isEphemeral()) {
+    if (_engine && _engine->isDurable()) {
         invariantWTOK(_waitUntilDurableSession->log_flush(_waitUntilDurableSession, "sync=on"),
                       _waitUntilDurableSession);
         LOGV2_DEBUG(22419, 4, "flushed journal");
@@ -354,24 +367,16 @@ void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
     }
 
     if (token) {
-        journalListener->onDurable(token.value());
+        journalListener->onDurable(token.get());
     }
 }
 
 void WiredTigerSessionCache::waitUntilPreparedUnitOfWorkCommitsOrAborts(OperationContext* opCtx,
                                                                         std::uint64_t lastCount) {
     invariant(opCtx);
-
-    // It is possible for a prepared transaction to block on bonus eviction inside WiredTiger after
-    // it commits or rolls-back, but this delays it from signalling us to wake up. In the very
-    // worst case that the only evictable page is the one pinned by our cursor, AND there are no
-    // other prepared transactions committing or aborting, we could reach a deadlock. Since the
-    // caller is already expecting spurious wakeups, we impose a large timeout to periodically force
-    // the caller to retry its operation.
-    const auto deadline = Date_t::now() + Seconds(1);
     stdx::unique_lock<Latch> lk(_prepareCommittedOrAbortedMutex);
     if (lastCount == _prepareCommitOrAbortCounter.loadRelaxed()) {
-        opCtx->waitForConditionOrInterruptUntil(_prepareCommittedOrAbortedCond, lk, deadline, [&] {
+        opCtx->waitForConditionOrInterrupt(_prepareCommittedOrAbortedCond, lk, [&] {
             return _prepareCommitOrAbortCounter.loadRelaxed() > lastCount;
         });
     }
@@ -388,6 +393,16 @@ void WiredTigerSessionCache::closeAllCursors(const std::string& uri) {
     stdx::lock_guard<Latch> lock(_cacheLock);
     for (SessionCache::iterator i = _sessions.begin(); i != _sessions.end(); i++) {
         (*i)->closeAllCursors(uri);
+    }
+}
+
+void WiredTigerSessionCache::closeCursorsForQueuedDrops() {
+    // Increment the cursor epoch so that all cursors from this epoch are closed.
+    _cursorEpoch.fetchAndAdd(1);
+
+    stdx::lock_guard<Latch> lock(_cacheLock);
+    for (SessionCache::iterator i = _sessions.begin(); i != _sessions.end(); i++) {
+        (*i)->closeCursorsForQueuedDrops(_engine);
     }
 }
 
@@ -465,7 +480,8 @@ UniqueWiredTigerSession WiredTigerSessionCache::getSession() {
     }
 
     // Outside of the cache partition lock, but on release will be put back on the cache
-    return UniqueWiredTigerSession(new WiredTigerSession(_conn, this, _epoch.load()));
+    return UniqueWiredTigerSession(
+        new WiredTigerSession(_conn, this, _epoch.load(), _cursorEpoch.load()));
 }
 
 void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
@@ -503,10 +519,18 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
         invariantWTOK(ss->reset(ss), ss);
     }
 
+    // If the cursor epoch has moved on, close all cursors in the session.
+    uint64_t cursorEpoch = _cursorEpoch.load();
+    if (session->_getCursorEpoch() != cursorEpoch)
+        session->closeCursorsForQueuedDrops(_engine);
+
     bool returnedToCache = false;
     uint64_t currentEpoch = _epoch.load();
+    bool dropQueuedIdentsAtSessionEnd = session->isDropQueuedIdentsAtSessionEndAllowed();
 
-    // Set the time this session got idle at.
+    // Reset this session's flag for dropping queued idents to default, before returning it to
+    // session cache. Also set the time this session got idle at.
+    session->dropQueuedIdentsAtSessionEndAllowed(true);
     session->setIdleExpireTime(_clockSource->now());
 
     if (session->_getEpoch() == currentEpoch) {  // check outside of lock to reduce contention
@@ -520,6 +544,9 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
 
     if (!returnedToCache)
         delete session;
+
+    if (dropQueuedIdentsAtSessionEnd && _engine && _engine->haveDropsQueued())
+        _engine->dropSomeQueuedIdents();
 }
 
 

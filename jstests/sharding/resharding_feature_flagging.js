@@ -46,7 +46,7 @@ assert.commandFailedWithCode(
 
 const serverStatusCmd = ({serverStatus: 1, shardingStatistics: 1});
 let res = assert.commandWorked(configPrimary.adminCommand(serverStatusCmd));
-assert(!res.shardingStatistics.hasOwnProperty("resharding"), res.shardingStatistics);
+assert(!res.hasOwnProperty("shardingStatistics"), res.shardingStatistics);
 
 const shardPrimary = st.shard0.rs.getPrimary();
 res = assert.commandWorked(shardPrimary.adminCommand(serverStatusCmd));

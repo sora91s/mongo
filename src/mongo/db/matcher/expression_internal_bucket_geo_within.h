@@ -94,7 +94,7 @@ public:
         return false;
     }
 
-    void serialize(BSONObjBuilder* builder, SerializationOptions opts) const final;
+    void serialize(BSONObjBuilder* builder, bool includePath) const final;
 
     std::unique_ptr<MatchExpression> shallowClone() const final;
 
@@ -107,14 +107,14 @@ public:
     }
 
     MatchExpression* getChild(size_t i) const final {
-        MONGO_UNREACHABLE_TASSERT(6400208);
+        MONGO_UNREACHABLE;
     }
 
     void resetChild(size_t, MatchExpression*) {
         MONGO_UNREACHABLE;
     };
 
-    std::string getField() const {
+    const std::string getField() const {
         return _field;
     }
 
@@ -122,7 +122,7 @@ public:
         return *_geoContainer;
     }
 
-    StringData path() const final {
+    const StringData path() const final {
         return _indexField;
     }
 
@@ -141,15 +141,17 @@ public:
 
 private:
     ExpressionOptimizerFunc getOptimizer() const final {
-        return [](std::unique_ptr<MatchExpression> expression) {
-            return expression;
-        };
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
     }
 
     /**
      * Helper function for matches() and matchesSingleElement().
      */
     bool _matchesBSONObj(const BSONObj& obj) const;
+
+    void _doAddDependencies(DepsTracker* deps) const final {
+        deps->needWholeDocument = true;
+    }
 
     std::shared_ptr<GeometryContainer> _geoContainer;
     std::string _indexField;

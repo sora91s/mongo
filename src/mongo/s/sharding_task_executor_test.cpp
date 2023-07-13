@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kExecutor
 
 #include "mongo/platform/basic.h"
 
@@ -38,9 +39,6 @@
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/s/sharding_router_test_fixture.h"
 #include "mongo/s/sharding_task_executor.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kExecutor
-
 
 namespace mongo {
 namespace {
@@ -76,8 +74,7 @@ protected:
 
         ASSERT(opCtxLsid);
 
-        auto cmdObjLsid =
-            LogicalSessionFromClient::parse(IDLParserContext{"lsid"}, cmdObj["lsid"].Obj());
+        auto cmdObjLsid = LogicalSessionFromClient::parse("lsid"_sd, cmdObj["lsid"].Obj());
 
         ASSERT_EQ(opCtxLsid->getId(), cmdObjLsid.getId());
         ASSERT_EQ(opCtxLsid->getUid(), *cmdObjLsid.getUid());

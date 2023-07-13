@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/util/concurrency/thread_name.h"
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -48,9 +52,7 @@
 #include "mongo/logv2/log.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/process_id.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
+#include "mongo/util/thread_context.h"
 
 namespace mongo {
 using namespace fmt::literals;
@@ -109,7 +111,7 @@ void setOSThreadName(const std::string& threadName) {
         LOGV2(23102,
               "Ignoring error from setting thread name: {error}",
               "Ignoring error from setting thread name",
-              "error"_attr = errorMessage(posixError(error)));
+              "error"_attr = errnoWithDescription(error));
     }
 #elif defined(__linux__) && defined(MONGO_CONFIG_HAVE_PTHREAD_SETNAME_NP)
     // Do not set thread name on the main() thread. Setting the name on main thread breaks
@@ -131,11 +133,11 @@ void setOSThreadName(const std::string& threadName) {
     }
 
     int error = pthread_setname_np(pthread_self(), truncName);
-    if (auto ec = posixError(error)) {
+    if (error) {
         LOGV2(23103,
               "Ignoring error from setting thread name: {error}",
               "Ignoring error from setting thread name",
-              "error"_attr = errorMessage(ec));
+              "error"_attr = errnoWithDescription(error));
     }
 #endif
 }
@@ -149,7 +151,9 @@ void setOSThreadName(const std::string& threadName) {
  * ThreadNameInfo is an auxiliary resource to the OS thread name, available to
  * the LOGV2 system and to GDB.
  *
- * ThreadNameInfo are per-thread and managed by thread_local storage.
+ * ThreadNameInfo is a decoration of ThreadContext.
+ * ThreadContext are held by thread_local storage and so threads started
+ * after server initialization will have an associated ThreadNameInfo.
  *
  * A name is "active" when it has been pushed to the OS by `setHandle`. The
  * association can be abandoned by calling `release`. This doesn't affect the
@@ -201,22 +205,16 @@ public:
 
     /**
      * Get a pointer to this thread's ThreadNameInfo.
-     * Can return null during thread_local destructors.
+     * Returns null if there's no ThreadContext to get it from.
      */
     static ThreadNameInfo* forThisThread() {
-        struct Tls {
-            ~Tls() {
-                delete std::exchange(info, nullptr);
-            }
-            // A pointer has no destructor, so loading it after
-            // destruction should be ok.
-            ThreadNameInfo* info = new ThreadNameInfo;
-        };
-        thread_local const Tls tls;
-        return tls.info;
+        auto& context = ThreadContext::get();
+        return context ? &_decoration(*context) : nullptr;
     }
 
 private:
+    inline static auto _decoration = ThreadContext::declareDecoration<ThreadNameInfo>();
+
     /**
      * Main thread always gets "main". Other threads are sequentially
      * named as "thread1", "thread2", etc.

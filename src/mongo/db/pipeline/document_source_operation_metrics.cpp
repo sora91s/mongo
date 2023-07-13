@@ -89,13 +89,13 @@ intrusive_ptr<DocumentSource> DocumentSourceOperationMetrics::createFromBson(
     BSONElement elem, const intrusive_ptr<ExpressionContext>& pExpCtx) {
     if (!ResourceConsumption::isMetricsAggregationEnabled()) {
         uasserted(ErrorCodes::CommandNotSupported,
-                  "The aggregateOperationResourceConsumptionMetrics server parameter is not set");
+                  "The aggregateOperationResourceConsumption server parameter is not set");
     }
 
     const NamespaceString& nss = pExpCtx->ns;
     uassert(ErrorCodes::InvalidNamespace,
             "$operationMetrics must be run against the 'admin' database with {aggregate: 1}",
-            nss.db() == DatabaseName::kAdmin.db() && nss.isCollectionlessAggregateNS());
+            nss.db() == NamespaceString::kAdminDb && nss.isCollectionlessAggregateNS());
 
     uassert(ErrorCodes::BadValue,
             "The $operationMetrics stage specification must be an object",

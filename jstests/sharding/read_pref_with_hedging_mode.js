@@ -16,12 +16,12 @@ assert.commandWorked(st.s.adminCommand({shardCollection: ns, key: {x: 1}}));
 
 // Test "hedge" read preference validation.
 assert.commandFailedWithCode(
-    testDB.runCommand({count: collName, $readPreference: {mode: "primary", hedge: {}}}),
+    testDB.runCommand({query: {count: collName}, $readPreference: {mode: "primary", hedge: {}}}),
     ErrorCodes.InvalidOptions);
 
 assert.commandFailedWithCode(
     testDB.runCommand(
-        {count: collName, $readPreference: {mode: "secondaryPreferred", hedge: "_1"}}),
+        {query: {count: collName}, $readPreference: {mode: "secondaryPreferred", hedge: "_1"}}),
     ErrorCodes.TypeMismatch);
 
 // Test "readHedgingMode" server parameter validation.
@@ -33,17 +33,21 @@ assert.commandWorked(st.s.adminCommand({setParameter: 1, maxTimeMSForHedgedReads
 
 // Test hedging with maxTimeMS.
 assert.commandWorked(st.s.getDB(dbName).runCommand(
-    {find: collName, maxTimeMS: 1000, $readPreference: {mode: "nearest", hedge: {}}}));
+    {query: {find: collName, maxTimeMS: 1000}, $readPreference: {mode: "nearest", hedge: {}}}));
 
 // Test hedging without maxTimeMS.
-assert.commandWorked(st.s.getDB(dbName).runCommand(
-    {count: collName, $readPreference: {mode: "secondaryPreferred", hedge: {enabled: true}}}));
+assert.commandWorked(st.s.getDB(dbName).runCommand({
+    query: {count: collName},
+    $readPreference: {mode: "secondaryPreferred", hedge: {enabled: true}}
+}));
 
 // Set "readHedgingMode" to "off", expect no hedging.
 st.s.adminCommand({setParameter: 1, readHedgingMode: "off"});
 
-assert.commandWorked(st.s.getDB(dbName).runCommand(
-    {distinct: collName, key: "x", $readPreference: {mode: "primaryPreferred", hedge: {}}}));
+assert.commandWorked(st.s.getDB(dbName).runCommand({
+    query: {distinct: collName, key: "x"},
+    $readPreference: {mode: "primaryPreferred", hedge: {}}
+}));
 
 st.stop();
 })();

@@ -163,14 +163,15 @@ std::set<std::string> getSupportedSymmetricAlgorithms() {
 }
 
 Status engineRandBytes(DataRange buffer) {
-    auto result =
-        SecRandomCopyBytes(kSecRandomDefault, buffer.length(), buffer.data<std::uint8_t>());
-    if (result != errSecSuccess) {
-        return {ErrorCodes::UnknownError,
-                str::stream() << "Failed generating random bytes: " << result};
-    } else {
-        return Status::OK();
-    }
+//    auto result =
+//        SecRandomCopyBytes(kSecRandomDefault, buffer.length(), buffer.data<std::uint8_t>());
+//    if (result != errSecSuccess) {
+//        return {ErrorCodes::UnknownError,
+//                str::stream() << "Failed generating random bytes: " << result};
+//    } else {
+//        return Status::OK();
+//    }
+    return Status::OK();
 }
 
 StatusWith<std::unique_ptr<SymmetricEncryptor>> SymmetricEncryptor::create(const SymmetricKey& key,

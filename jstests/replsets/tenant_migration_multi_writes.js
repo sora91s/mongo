@@ -7,6 +7,7 @@
  * cloning on recipient, adapt this test to handle file cleanup on recipient.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -16,19 +17,19 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {
-    makeX509OptionsForTest,
-} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
 const donorRst = new ReplSetTest({
     nodes: [{}, {rsConfig: {priority: 0}}, {rsConfig: {priority: 0}}],
     name: "TenantMigrationTest_donor",
-    nodeOptions: Object.assign(makeX509OptionsForTest().donor, {
+    nodeOptions: Object.assign(TenantMigrationUtil.makeX509OptionsForTest().donor, {
         setParameter: {
             // Set the delay before a donor state doc is garbage collected to be short to speed up
             // the test.
@@ -48,12 +49,13 @@ const tenantMigrationTest =
 const recipientRst = tenantMigrationTest.getRecipientRst();
 const donorPrimary = donorRst.getPrimary();
 
+const kTenantIdPrefix = "testTenantId";
 const kCollName = "testColl";
 const kTenantDefinedDbName = "0";
-const kTenantId = ObjectId().str;
+const kTenantId = `${kTenantIdPrefix}-multiWrites`;
 const kDbName = tenantMigrationTest.tenantDB(kTenantId, kTenantDefinedDbName);
 
-const kRecords = 500;
+const kRecords = 2000;
 const kUpdateCycles = 600;
 
 function prepareDatabase(dbName) {
@@ -155,3 +157,4 @@ readWriteConcerns.forEach(concerns => {
 
 tenantMigrationTest.stop();
 donorRst.stopSet();
+})();

@@ -56,7 +56,6 @@ struct noinit_adaptor
     template<class U>
     void destroy(U* p) {
         p->~U();
-        (void)p;
     }
 };
 

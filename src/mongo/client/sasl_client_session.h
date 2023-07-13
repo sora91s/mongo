@@ -70,7 +70,6 @@ public:
         parameterUser,
         parameterPassword,
         parameterAWSSessionToken,
-        parameterOIDCAccessToken,
         numParameters  // Must be last
     };
 

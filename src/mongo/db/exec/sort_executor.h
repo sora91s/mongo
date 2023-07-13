@@ -55,8 +55,9 @@ public:
     class Comparator {
     public:
         Comparator(const SortPattern& sortPattern) : _sortKeyComparator(sortPattern) {}
-        int operator()(const Value& lhs, const Value& rhs) const {
-            return _sortKeyComparator(lhs, rhs);
+        int operator()(const typename DocumentSorter::Data& lhs,
+                       const typename DocumentSorter::Data& rhs) const {
+            return _sortKeyComparator(lhs.first, rhs.first);
         }
 
     private:
@@ -78,9 +79,6 @@ public:
             _sortPattern.serialize(SortPattern::SortKeySerialization::kForExplain).toBson();
         _stats.limit = limit;
         _stats.maxMemoryUsageBytes = maxMemoryUsageBytes;
-        if (allowDiskUse) {
-            _sorterFileStats = std::make_unique<SorterFileStats>(nullptr);
-        }
     }
 
     const SortPattern& sortPattern() const {
@@ -120,20 +118,6 @@ public:
         return _stats;
     }
 
-    SorterFileStats* getSorterFileStats() const {
-        if (!_sorterFileStats) {
-            return nullptr;
-        }
-        return _sorterFileStats.get();
-    }
-
-    long long spilledDataStorageSize() const {
-        if (!_sorterFileStats) {
-            return 0;
-        }
-        return _sorterFileStats->bytesSpilled();
-    }
-
     /**
      * Add data item to be sorted of type T with sort key specified by Value to the sort executor.
      * Should only be called before 'loadingDone()' is called.
@@ -154,10 +138,9 @@ public:
             _sorter.reset(DocumentSorter::make(makeSortOptions(), Comparator(_sortPattern)));
         }
         _output.reset(_sorter->done());
-        _stats.keysSorted += _sorter->stats().numSorted();
-        _stats.spills += _sorter->stats().spilledRanges();
-        _stats.totalDataSizeBytes += _sorter->stats().bytesSorted();
-        _stats.spilledDataStorageSize += spilledDataStorageSize();
+        _stats.keysSorted += _sorter->numSorted();
+        _stats.spills += _sorter->numSpills();
+        _stats.totalDataSizeBytes += _sorter->totalDataSizeSorted();
         _sorter.reset();
     }
 
@@ -203,7 +186,6 @@ private:
         if (_diskUseAllowed) {
             opts.extSortAllowed = true;
             opts.tempDir = _tempDir;
-            opts.sorterFileStats = _sorterFileStats.get();
         }
 
         return opts;
@@ -213,7 +195,6 @@ private:
     const std::string _tempDir;
     const bool _diskUseAllowed;
 
-    std::unique_ptr<SorterFileStats> _sorterFileStats;
     std::unique_ptr<DocumentSorter> _sorter;
     std::unique_ptr<typename DocumentSorter::Iterator> _output;
 

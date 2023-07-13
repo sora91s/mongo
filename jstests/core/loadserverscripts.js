@@ -3,8 +3,6 @@
 //   requires_non_retryable_writes,
 //   uses_multiple_connections,
 //   uses_parallel_shell,
-//   # This test has statements that do not support non-local read concern.
-//   does_not_support_causal_consistency,
 // ]
 
 // Test db.loadServerScripts()

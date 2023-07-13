@@ -200,20 +200,16 @@ inline StringData mapValue(const char* value) {
     return value;
 }
 
-inline BSONObj mapValue(BSONObj const& value) {
+inline const BSONObj mapValue(BSONObj const& value) {
     return value;
 }
-inline BSONArray mapValue(BSONArray const& value) {
+inline const BSONArray mapValue(BSONArray const& value) {
     return value;
 }
 inline CustomAttributeValue mapValue(BSONElement const& val) {
     CustomAttributeValue custom;
-    custom.BSONSerialize = [&val](BSONObjBuilder& builder) {
-        builder.appendElements(val.wrap());
-    };
-    custom.toString = [&val]() {
-        return val.toString();
-    };
+    custom.BSONSerialize = [&val](BSONObjBuilder& builder) { builder.appendElements(val.wrap()); };
+    custom.toString = [&val]() { return val.toString(); };
     return custom;
 }
 inline CustomAttributeValue mapValue(boost::none_t val) {
@@ -223,9 +219,7 @@ inline CustomAttributeValue mapValue(boost::none_t val) {
     custom.BSONAppend = [](BSONObjBuilder& builder, StringData fieldName) {
         builder.appendNull(fieldName);
     };
-    custom.toString = [&val]() {
-        return constants::kNullOptionalString.toString();
-    };
+    custom.toString = [&val]() { return constants::kNullOptionalString.toString(); };
     return custom;
 }
 
@@ -238,9 +232,7 @@ template <typename T, std::enable_if_t<std::is_enum_v<T>, int> = 0>
 auto mapValue(T val) {
     if constexpr (hasNonMemberToString<T>) {
         CustomAttributeValue custom;
-        custom.toString = [val]() {
-            return toString(val);
-        };
+        custom.toString = [val]() { return toString(val); };
         return custom;
     } else if constexpr (hasNonMemberToStringReturnStringData<T>) {
         CustomAttributeValue custom;
@@ -257,24 +249,16 @@ auto mapValue(T val) {
 template <typename T, std::enable_if_t<isContainer<T> && !hasMappedType<T>, int> = 0>
 CustomAttributeValue mapValue(const T& val) {
     CustomAttributeValue custom;
-    custom.toBSONArray = [&val]() {
-        return seqLog(val).toBSONArray();
-    };
-    custom.stringSerialize = [&val](fmt::memory_buffer& buffer) {
-        seqLog(val).serialize(buffer);
-    };
+    custom.toBSONArray = [&val]() { return seqLog(val).toBSONArray(); };
+    custom.stringSerialize = [&val](fmt::memory_buffer& buffer) { seqLog(val).serialize(buffer); };
     return custom;
 }
 
 template <typename T, std::enable_if_t<isContainer<T> && hasMappedType<T>, int> = 0>
 CustomAttributeValue mapValue(const T& val) {
     CustomAttributeValue custom;
-    custom.BSONSerialize = [&val](BSONObjBuilder& builder) {
-        mapLog(val).serialize(&builder);
-    };
-    custom.stringSerialize = [&val](fmt::memory_buffer& buffer) {
-        mapLog(val).serialize(buffer);
-    };
+    custom.BSONSerialize = [&val](BSONObjBuilder& builder) { mapLog(val).serialize(&builder); };
+    custom.stringSerialize = [&val](fmt::memory_buffer& buffer) { mapLog(val).serialize(buffer); };
     return custom;
 }
 
@@ -298,17 +282,13 @@ CustomAttributeValue mapValue(const T& val) {
     }
 
     if constexpr (hasBSONSerialize<T>) {
-        custom.BSONSerialize = [&val](BSONObjBuilder& builder) {
-            val.serialize(&builder);
-        };
+        custom.BSONSerialize = [&val](BSONObjBuilder& builder) { val.serialize(&builder); };
     } else if constexpr (hasToBSON<T>) {
         custom.BSONSerialize = [&val](BSONObjBuilder& builder) {
             builder.appendElements(val.toBSON());
         };
     } else if constexpr (hasToBSONArray<T>) {
-        custom.toBSONArray = [&val]() {
-            return val.toBSONArray();
-        };
+        custom.toBSONArray = [&val]() { return val.toBSONArray(); };
     } else if constexpr (hasNonMemberToBSON<T>) {
         custom.BSONSerialize = [&val](BSONObjBuilder& builder) {
             builder.appendElements(toBSON(val));
@@ -316,22 +296,16 @@ CustomAttributeValue mapValue(const T& val) {
     }
 
     if constexpr (hasStringSerialize<T>) {
-        custom.stringSerialize = [&val](fmt::memory_buffer& buffer) {
-            val.serialize(buffer);
-        };
+        custom.stringSerialize = [&val](fmt::memory_buffer& buffer) { val.serialize(buffer); };
     } else if constexpr (hasToString<T>) {
-        custom.toString = [&val]() {
-            return val.toString();
-        };
+        custom.toString = [&val]() { return val.toString(); };
     } else if constexpr (hasToStringReturnStringData<T>) {
         custom.stringSerialize = [&val](fmt::memory_buffer& buffer) {
             StringData sd = val.toString();
             buffer.append(sd.begin(), sd.end());
         };
     } else if constexpr (hasNonMemberToString<T>) {
-        custom.toString = [&val]() {
-            return toString(val);
-        };
+        custom.toString = [&val]() { return toString(val); };
     } else if constexpr (hasNonMemberToStringReturnStringData<T>) {
         custom.stringSerialize = [&val](fmt::memory_buffer& buffer) {
             StringData sd = toString(val);

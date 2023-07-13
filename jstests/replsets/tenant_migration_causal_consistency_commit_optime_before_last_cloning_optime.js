@@ -7,6 +7,7 @@
  * for shard merge.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_shard_merge,
  *   incompatible_with_windows_tls,
@@ -16,11 +17,12 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {makeX509OptionsForTest} from "jstests/replsets/libs/tenant_migration_util.js";
+(function() {
+"use strict";
 
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_test.js");
 load("jstests/replsets/rslib.js");
 
 function assertCanFindWithReadConcern(conn, dbName, collName, expectedDoc, readConcern) {
@@ -30,9 +32,14 @@ function assertCanFindWithReadConcern(conn, dbName, collName, expectedDoc, readC
     assert.eq(expectedDoc, res.cursor.firstBatch[0], tojson(res));
 }
 
+let counter = 0;
+let makeTenantId = function() {
+    return "tenant-" + counter++;
+};
+
 // Local read concern case.
 (() => {
-    const migrationX509Options = makeX509OptionsForTest();
+    const migrationX509Options = TenantMigrationUtil.makeX509OptionsForTest();
 
     // Simulate a lagged node by setting secondaryDelaySecs on one recipient secondary. Verify this
     // does not prevent reading all the tenant's data after the migration commits.
@@ -50,13 +57,13 @@ function assertCanFindWithReadConcern(conn, dbName, collName, expectedDoc, readC
 
     const tmt = new TenantMigrationTest({name: jsTestName(), recipientRst});
 
-    const tenantId = ObjectId().str;
+    const tenantId = makeTenantId();
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
-        tenantId,
+        tenantId: tenantId,
     };
 
-    const dbName = `${tenantId}_test`;
+    const dbName = tenantId + "_test";
     const collName = "foo";
 
     // Insert tenant data to be copied. Save the operationTime to use for afterClusterTime reads
@@ -108,13 +115,13 @@ function assertCanFindWithReadConcern(conn, dbName, collName, expectedDoc, readC
 (() => {
     const tmt = new TenantMigrationTest({name: jsTestName(), sharedOptions: {nodes: 3}});
 
-    const tenantId = ObjectId().str;
+    const tenantId = makeTenantId();
     const migrationOpts = {
         migrationIdString: extractUUIDFromObject(UUID()),
-        tenantId,
+        tenantId: tenantId,
     };
 
-    const dbName = `${tenantId}_test`;
+    const dbName = tenantId + "_test";
     const collName = "foo";
 
     // Insert tenant data to be copied.
@@ -198,3 +205,4 @@ function assertCanFindWithReadConcern(conn, dbName, collName, expectedDoc, readC
 })();
 
 // Snapshot read concern is tested in replsets/tenant_migration_concurrent_reads_on_recipient.js
+})();

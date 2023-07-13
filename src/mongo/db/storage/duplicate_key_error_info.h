@@ -36,8 +36,8 @@
 #include "mongo/stdx/variant.h"
 
 namespace mongo {
-
-enum class IncludeDuplicateRecordId { kOff, kOn };
+    
+void initMyDuplicateKeyErrorInfo();
 
 /**
  * Represents an error returned from the storage engine when an attempt to insert a
@@ -54,8 +54,7 @@ public:
     explicit DuplicateKeyErrorInfo(const BSONObj& keyPattern,
                                    const BSONObj& keyValue,
                                    const BSONObj& collation,
-                                   FoundValue&& foundValue,
-                                   boost::optional<RecordId> duplicateRid);
+                                   FoundValue&& foundValue);
 
     void serialize(BSONObjBuilder* bob) const override;
 
@@ -73,14 +72,6 @@ public:
         return _keyValue;
     }
 
-    const FoundValue& getFoundValue() const {
-        return _foundValue;
-    }
-
-    boost::optional<RecordId> getDuplicateRid() const {
-        return _duplicateRid;
-    }
-
 private:
     BSONObj _keyPattern;
     BSONObj _keyValue;
@@ -94,9 +85,6 @@ private:
     // the duplicate document. If the error came from a clustered collection, then the value will be
     // the duplicate document itself.
     FoundValue _foundValue;
-
-    // Optionally, the record id found at the cursor which produced the DuplicateKey error.
-    boost::optional<RecordId> _duplicateRid;
 };
 
 }  // namespace mongo

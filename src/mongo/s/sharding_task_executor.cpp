@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -44,9 +45,6 @@
 #include "mongo/s/is_mongos.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace executor {
@@ -136,8 +134,8 @@ StatusWith<TaskExecutor::CallbackHandle> ShardingTaskExecutor::scheduleRemoteCom
         }
 
         if (request.cmdObj.hasField("lsid")) {
-            auto cmdObjLsid = LogicalSessionFromClient::parse(IDLParserContext{"lsid"},
-                                                              request.cmdObj["lsid"].Obj());
+            auto cmdObjLsid =
+                LogicalSessionFromClient::parse("lsid"_sd, request.cmdObj["lsid"].Obj());
 
             if (cmdObjLsid.getUid()) {
                 invariant(*cmdObjLsid.getUid() == request.opCtx->getLogicalSessionId()->getUid());

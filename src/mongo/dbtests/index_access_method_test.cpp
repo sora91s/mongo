@@ -228,8 +228,7 @@ TEST(IndexAccessMethodSetDifference, ShouldNotReportOverlapsFromNonDisjointSets)
 TEST(IndexAccessMethodInsertKeys, DuplicatesCheckingOnSecondaryUniqueIndexes) {
     ServiceContext::UniqueOperationContext opCtxRaii = cc().makeOperationContext();
     OperationContext* opCtx = opCtxRaii.get();
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest(
-        "unittests.DuplicatesCheckingOnSecondaryUniqueIndexes");
+    NamespaceString nss("unittests.DuplicatesCheckingOnSecondaryUniqueIndexes");
     auto indexName = "a_1";
     auto indexSpec = BSON("name" << indexName << "key" << BSON("a" << 1) << "unique" << true << "v"
                                  << static_cast<int>(IndexDescriptor::IndexVersion::kV2));
@@ -264,8 +263,7 @@ TEST(IndexAccessMethodInsertKeys, InsertWhenPrepareUnique) {
     if (feature_flags::gCollModIndexUnique.isEnabled(serverGlobalParams.featureCompatibility)) {
         ServiceContext::UniqueOperationContext opCtxRaii = cc().makeOperationContext();
         OperationContext* opCtx = opCtxRaii.get();
-        NamespaceString nss =
-            NamespaceString::createNamespaceString_forTest("unittests.InsertWhenPrepareUnique");
+        NamespaceString nss("unittests.InsertWhenPrepareUnique");
         auto indexName = "a_1";
         auto indexSpec =
             BSON("name" << indexName << "key" << BSON("a" << 1) << "prepareUnique" << true << "v"
@@ -301,8 +299,7 @@ TEST(IndexAccessMethodUpdateKeys, UpdateWhenPrepareUnique) {
     if (feature_flags::gCollModIndexUnique.isEnabled(serverGlobalParams.featureCompatibility)) {
         ServiceContext::UniqueOperationContext opCtxRaii = cc().makeOperationContext();
         OperationContext* opCtx = opCtxRaii.get();
-        NamespaceString nss =
-            NamespaceString::createNamespaceString_forTest("unittests.UpdateWhenPrepareUnique");
+        NamespaceString nss("unittests.UpdateWhenPrepareUnique");
         auto indexName = "a_1";
         auto indexSpec =
             BSON("name" << indexName << "key" << BSON("a" << 1) << "prepareUnique" << true << "v"

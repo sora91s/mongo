@@ -4,6 +4,7 @@
 // @tags: [
 //   requires_majority_read_concern,
 //   uses_change_streams,
+//   bf25011,
 // ]
 (function() {
 "use strict";
@@ -38,10 +39,10 @@ mongosColl.update({_id: 1}, {$set: {updated: true}});
 // Verify that the document is successfully retrieved from the single-collection and whole-db
 // change streams.
 assert.soon(() => stream.hasNext());
-assert.docEq({_id: 1, updated: true}, stream.next().fullDocument);
+assert.docEq(stream.next().fullDocument, {_id: 1, updated: true});
 
 assert.soon(() => wholeDbStream.hasNext());
-assert.docEq({_id: 1, updated: true}, wholeDbStream.next().fullDocument);
+assert.docEq(wholeDbStream.next().fullDocument, {_id: 1, updated: true});
 
 stream.close();
 wholeDbStream.close();

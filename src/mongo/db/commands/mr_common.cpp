@@ -34,7 +34,6 @@
 
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
-#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/commands.h"
@@ -175,7 +174,7 @@ auto translateOutReplace(boost::intrusive_ptr<ExpressionContext> expCtx,
 
 auto translateOutMerge(boost::intrusive_ptr<ExpressionContext> expCtx,
                        NamespaceString targetNss,
-                       boost::optional<ChunkVersion> targetCollectionPlacementVersion) {
+                       boost::optional<ChunkVersion> targetCollectionVersion) {
     return DocumentSourceMerge::create(std::move(targetNss),
                                        expCtx,
                                        MergeWhenMatchedModeEnum::kReplace,
@@ -183,12 +182,12 @@ auto translateOutMerge(boost::intrusive_ptr<ExpressionContext> expCtx,
                                        boost::none,  // Let variables
                                        boost::none,  // pipeline
                                        std::set<FieldPath>{FieldPath("_id"s)},
-                                       std::move(targetCollectionPlacementVersion));
+                                       std::move(targetCollectionVersion));
 }
 
 auto translateOutReduce(boost::intrusive_ptr<ExpressionContext> expCtx,
                         NamespaceString targetNss,
-                        boost::optional<ChunkVersion> targetCollectionPlacementVersion,
+                        boost::optional<ChunkVersion> targetCollectionVersion,
                         std::string reduceCode,
                         boost::optional<MapReduceJavascriptCodeOrNull> finalizeCode) {
     // Because of communication for sharding, $merge must hold on to a serializable BSON object
@@ -207,7 +206,7 @@ auto translateOutReduce(boost::intrusive_ptr<ExpressionContext> expCtx,
     if (finalizeCode && finalizeCode->hasCode()) {
         auto finalizeObj = BSON("args" << BSON_ARRAY("$_id"
                                                      << "$value")
-                                       << "body" << finalizeCode->getCode().value() << "lang"
+                                       << "body" << finalizeCode->getCode().get() << "lang"
                                        << ExpressionFunction::kJavaScript);
         auto finalizeSpec =
             BSON(DocumentSourceProject::kStageName
@@ -222,12 +221,12 @@ auto translateOutReduce(boost::intrusive_ptr<ExpressionContext> expCtx,
                                        boost::none,  // Let variables
                                        pipelineSpec,
                                        std::set<FieldPath>{FieldPath("_id"s)},
-                                       std::move(targetCollectionPlacementVersion));
+                                       std::move(targetCollectionVersion));
 }
 
 void rejectRequestsToCreateShardedCollections(
     const MapReduceOutOptions& outOptions,
-    const boost::optional<ChunkVersion>& targetCollectionPlacementVersion) {
+    const boost::optional<ChunkVersion>& targetCollectionVersion) {
     uassert(ErrorCodes::InvalidOptions,
             "Combination of 'out.sharded' and 'replace' output mode is not supported. Cannot "
             "replace an existing sharded collection or create a new sharded collection. Please "
@@ -237,30 +236,29 @@ void rejectRequestsToCreateShardedCollections(
     uassert(ErrorCodes::InvalidOptions,
             "Cannot use mapReduce to create a new sharded collection. Please create and shard the"
             " target collection before proceeding.",
-            targetCollectionPlacementVersion || !outOptions.isSharded());
+            targetCollectionVersion || !outOptions.isSharded());
 }
 
 auto translateOut(boost::intrusive_ptr<ExpressionContext> expCtx,
                   const MapReduceOutOptions& outOptions,
                   NamespaceString targetNss,
-                  boost::optional<ChunkVersion> targetCollectionPlacementVersion,
+                  boost::optional<ChunkVersion> targetCollectionVersion,
                   std::string reduceCode,
                   boost::optional<MapReduceJavascriptCodeOrNull> finalizeCode) {
-    rejectRequestsToCreateShardedCollections(outOptions, targetCollectionPlacementVersion);
+    rejectRequestsToCreateShardedCollections(outOptions, targetCollectionVersion);
 
     switch (outOptions.getOutputType()) {
         case OutputType::Replace:
             return boost::make_optional(translateOutReplace(expCtx, std::move(targetNss)));
         case OutputType::Merge:
             return boost::make_optional(translateOutMerge(
-                expCtx, std::move(targetNss), std::move(targetCollectionPlacementVersion)));
+                expCtx, std::move(targetNss), std::move(targetCollectionVersion)));
         case OutputType::Reduce:
-            return boost::make_optional(
-                translateOutReduce(expCtx,
-                                   std::move(targetNss),
-                                   std::move(targetCollectionPlacementVersion),
-                                   std::move(reduceCode),
-                                   std::move(finalizeCode)));
+            return boost::make_optional(translateOutReduce(expCtx,
+                                                           std::move(targetNss),
+                                                           std::move(targetCollectionVersion),
+                                                           std::move(reduceCode),
+                                                           std::move(finalizeCode)));
         case OutputType::InMemory:;
     }
     return boost::optional<boost::intrusive_ptr<mongo::DocumentSource>>{};
@@ -332,22 +330,18 @@ OutputOptions parseOutputOptions(const std::string& dbname, const BSONObj& cmdOb
     return outputOptions;
 }
 
-Status checkAuthForMapReduce(const BasicCommand* commandTemplate,
-                             OperationContext* opCtx,
-                             const DatabaseName& dbName,
-                             const BSONObj& cmdObj) {
-    OutputOptions outputOptions = parseOutputOptions(dbName.db(), cmdObj);
+void addPrivilegesRequiredForMapReduce(const BasicCommand* commandTemplate,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) {
+    OutputOptions outputOptions = parseOutputOptions(dbname, cmdObj);
 
-    ResourcePattern inputResource(commandTemplate->parseResourcePattern(dbName.db(), cmdObj));
+    ResourcePattern inputResource(commandTemplate->parseResourcePattern(dbname, cmdObj));
     uassert(ErrorCodes::InvalidNamespace,
             str::stream() << "Invalid input namespace " << inputResource.databaseToMatch() << "."
                           << cmdObj["mapReduce"].String(),
             inputResource.isExactNamespacePattern());
-
-    auto* as = AuthorizationSession::get(opCtx->getClient());
-    if (!as->isAuthorizedForActionsOnResource(inputResource, ActionType::find)) {
-        return {ErrorCodes::Unauthorized, "unauthorized"};
-    }
+    out->push_back(Privilege(inputResource, ActionType::find));
 
     if (outputOptions.outType != OutputType::InMemory) {
         ActionSet outputActions;
@@ -369,12 +363,8 @@ Status checkAuthForMapReduce(const BasicCommand* commandTemplate,
                 outputResource.ns().isValid());
 
         // TODO: check if outputNs exists and add createCollection privilege if not
-        if (!as->isAuthorizedForActionsOnResource(outputResource, outputActions)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
+        out->push_back(Privilege(outputResource, outputActions));
     }
-
-    return Status::OK();
 }
 
 bool mrSupportsWriteConcern(const BSONObj& cmd) {
@@ -395,11 +385,11 @@ std::unique_ptr<Pipeline, PipelineDeleter> translateFromMR(
                                   parsedMr.getOutOptions().getCollectionName()};
 
     std::set<FieldPath> shardKey;
-    boost::optional<ChunkVersion> targetCollectionPlacementVersion;
+    boost::optional<ChunkVersion> targetCollectionVersion;
     // If non-inline output, verify that the target collection is *not* sharded by anything other
     // than _id.
     if (parsedMr.getOutOptions().getOutputType() != OutputType::InMemory) {
-        std::tie(shardKey, targetCollectionPlacementVersion) =
+        std::tie(shardKey, targetCollectionVersion) =
             expCtx->mongoProcessInterface->ensureFieldsUniqueOrResolveDocumentKey(
                 expCtx, boost::none, boost::none, outNss);
         uassert(31313,
@@ -424,7 +414,7 @@ std::unique_ptr<Pipeline, PipelineDeleter> translateFromMR(
                 translateOut(expCtx,
                              parsedMr.getOutOptions(),
                              std::move(outNss),
-                             std::move(targetCollectionPlacementVersion),
+                             std::move(targetCollectionVersion),
                              parsedMr.getReduce().getCode(),
                              parsedMr.getFinalize())),
             expCtx);

@@ -7,6 +7,7 @@
  * @tags: [
  *   uses_transactions,
  *   uses_prepare_transaction,
+ *   live_record_incompatible,
  * ]
  */
 

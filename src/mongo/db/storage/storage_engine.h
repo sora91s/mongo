@@ -37,9 +37,9 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/catalog/index_builds.h"
-#include "mongo/db/database_name.h"
 #include "mongo/db/resumable_index_builds_gen.h"
 #include "mongo/db/storage/temporary_record_store.h"
+#include "mongo/db/tenant_database_name.h"
 #include "mongo/util/functional.h"
 #include "mongo/util/str.h"
 
@@ -67,9 +67,9 @@ public:
     /**
      * This is the minimum valid timestamp; it can be used for reads that need to see all
      * untimestamped data but no timestamped data. We cannot use 0 here because 0 means see all
-     * timestamped data. The high-order 4 bytes are for the seconds field in a Timestamp object.
+     * timestamped data.
      */
-    static const unsigned long long kMinimumTimestamp = 1ULL << 32;
+    static const uint64_t kMinimumTimestamp = 1;
 
     /**
      * When the storage engine needs to know how much oplog to preserve for the sake of active
@@ -100,7 +100,8 @@ public:
         virtual ~Factory() {}
 
         /**
-         * Return a new instance of the StorageEngine. Caller owns the returned pointer.
+         * Return a new instance of the StorageEngine. The lockFile parameter may be null if
+         * params.readOnly is set. Caller owns the returned pointer.
          */
         virtual std::unique_ptr<StorageEngine> create(
             OperationContext* opCtx,
@@ -160,11 +161,13 @@ public:
         virtual BSONObj createMetadataOptions(const StorageGlobalParams& params) const = 0;
 
         /**
-         * Returns whether the engine supports queryable backup mode. If queryable backup mode is
-         * enabled, user writes are not permitted but internally generated writes are still
-         * permitted.
+         * Returns whether the engine supports read-only mode. If read-only mode is enabled, the
+         * engine may be started on a read-only filesystem (either mounted read-only or with
+         * read-only permissions). If readOnly mode is enabled, it is undefined behavior to call
+         * methods that write data (e.g. insertRecord). This method is provided on the Factory
+         * because it must be called before the storageEngine is instantiated.
          */
-        virtual bool supportsQueryableBackupMode() const {
+        virtual bool supportsReadOnly() const {
             return false;
         }
     };
@@ -199,8 +202,7 @@ public:
     /**
      * List the databases stored in this storage engine.
      */
-    virtual std::vector<DatabaseName> listDatabases(
-        boost::optional<TenantId> tenantId = boost::none) const = 0;
+    virtual std::vector<TenantDatabaseName> listDatabases() const = 0;
 
     /**
      * Returns whether the storage engine supports capped collections.
@@ -208,9 +210,9 @@ public:
     virtual bool supportsCappedCollections() const = 0;
 
     /**
-     * Returns whether the storage engine supports checkpoints.
+     * Returns whether the engine supports a journalling concept or not.
      */
-    virtual bool supportsCheckpoints() const = 0;
+    virtual bool isDurable() const = 0;
 
     /**
      * Returns true if the engine does not persist data to disk; false otherwise.
@@ -227,15 +229,20 @@ public:
      * caller. For example, on starting from a previous unclean shutdown, we may try to recover
      * orphaned idents, which are known to the storage engine but not referenced in the catalog.
      */
-    virtual void loadCatalog(OperationContext* opCtx,
-                             boost::optional<Timestamp> stableTs,
-                             LastShutdownState lastShutdownState) = 0;
+    virtual void loadCatalog(OperationContext* opCtx, LastShutdownState lastShutdownState) = 0;
     virtual void closeCatalog(OperationContext* opCtx) = 0;
+
+    /**
+     * Closes all file handles associated with a database.
+     */
+    virtual Status closeDatabase(OperationContext* opCtx,
+                                 const TenantDatabaseName& tenantDbName) = 0;
 
     /**
      * Deletes all data and metadata for a database.
      */
-    virtual Status dropDatabase(OperationContext* opCtx, const DatabaseName& dbName) = 0;
+    virtual Status dropDatabase(OperationContext* opCtx,
+                                const TenantDatabaseName& tenantDbName) = 0;
 
     /**
      * Checkpoints the data to disk.
@@ -378,7 +385,7 @@ public:
      * On error, the storage engine should assert and crash.
      * There is intentionally no uncleanShutdown().
      */
-    virtual void cleanShutdown(ServiceContext* svcCtx) = 0;
+    virtual void cleanShutdown() = 0;
 
     /**
      * Returns the SnapshotManager for this StorageEngine or NULL if not supported.
@@ -416,11 +423,11 @@ public:
     virtual bool supportsReadConcernMajority() const = 0;
 
     /**
-     * Returns true if the storage engine uses oplog truncate markers to more finely control
+     * Returns true if the storage engine uses oplog stones to more finely control
      * deletion of oplog history, instead of the standard capped collection controls on
      * the oplog collection size.
      */
-    virtual bool supportsOplogTruncateMarkers() const = 0;
+    virtual bool supportsOplogStones() const = 0;
 
     virtual bool supportsResumableIndexBuilds() const = 0;
 
@@ -452,20 +459,6 @@ public:
                                      DropIdentCallback&& onDrop = nullptr) = 0;
 
     /**
-     * Drops all unreferenced drop-pending idents with drop timestamps before 'ts', as well as all
-     * unreferenced idents with Timestamp::min() drop timestamps (untimestamped on standalones).
-     */
-    virtual void dropIdentsOlderThan(OperationContext* opCtx, const Timestamp& ts) = 0;
-
-    /**
-     * Marks the ident as in use and prevents the reaper from dropping the ident.
-     *
-     * Returns nullptr if the ident is not known to the reaper, is already being dropped, or is
-     * already dropped.
-     */
-    virtual std::shared_ptr<Ident> markIdentInUse(StringData ident) = 0;
-
-    /**
      * Starts the timestamp monitor. This periodically drops idents queued by addDropPendingIdent,
      * and removes historical ident entries no longer necessary.
      */
@@ -474,9 +467,8 @@ public:
     /**
      * Called when the checkpoint thread instructs the storage engine to take a checkpoint. The
      * underlying storage engine must take a checkpoint at this point.
-     * Acquires a resource mutex before taking the checkpoint.
      */
-    virtual void checkpoint(OperationContext* opCtx) = 0;
+    virtual void checkpoint() = 0;
 
     /**
      * Recovers the storage engine state to the last stable timestamp. "Stable" in this case
@@ -595,9 +587,8 @@ public:
     };
 
     /**
-     * Drop abandoned idents using two-phase drop at the stable timestamp. Idents may be needed for
-     * reads between the oldest and stable timestamps. If successful, returns a ReconcileResult with
-     * indexes that need to be rebuilt or builds that need to be restarted.
+     * Drop abandoned idents. If successful, returns a ReconcileResult with indexes that need to be
+     * rebuilt or builds that need to be restarted.
      *
      * Abandoned internal idents require special handling based on the context known only to the
      * caller. For example, on starting from a previous unclean shutdown, we would always drop all
@@ -605,7 +596,7 @@ public:
      * information for resuming index builds.
      */
     virtual StatusWith<ReconcileResult> reconcileCatalogAndIdents(
-        OperationContext* opCtx, Timestamp stableTs, LastShutdownState lastShutdownState) = 0;
+        OperationContext* opCtx, LastShutdownState lastShutdownState) = 0;
 
     /**
      * Returns the all_durable timestamp. All transactions with timestamps earlier than the
@@ -635,9 +626,10 @@ public:
     /**
      * Returns the path to the directory which has the data files of database with `dbName`.
      */
-    virtual std::string getFilesystemPathForDb(const DatabaseName& dbName) const = 0;
+    virtual std::string getFilesystemPathForDb(const TenantDatabaseName& tenantDbName) const = 0;
 
-    virtual int64_t sizeOnDiskForDb(OperationContext* opCtx, const DatabaseName& dbName) = 0;
+    virtual int64_t sizeOnDiskForDb(OperationContext* opCtx,
+                                    const TenantDatabaseName& tenantDbName) = 0;
 
     virtual bool isUsingDirectoryPerDb() const = 0;
 
@@ -679,13 +671,6 @@ public:
      */
     virtual void setPinnedOplogTimestamp(const Timestamp& pinnedTimestamp) = 0;
 
-    /**
-     * Returns the input storage engine options, sanitized to remove options that may not apply to
-     * this node, such as encryption. Might be called for both collection and index options. See
-     * SERVER-68122.
-     */
-    virtual StatusWith<BSONObj> getSanitizedStorageOptionsForSecondaryReplication(
-        const BSONObj& options) const = 0;
     /**
      * Instructs the storage engine to dump its internal state.
      */

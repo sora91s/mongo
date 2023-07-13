@@ -19,10 +19,9 @@
 #include <boost/program_options/detail/utf8_codecvt_facet.hpp>
 #include <boost/throw_exception.hpp>
 
-#include <boost/bind/bind.hpp>
+#include <boost/bind.hpp>
 
 using namespace std;
-using namespace boost::placeholders;
 
 namespace boost { namespace detail {
 

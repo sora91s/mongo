@@ -56,7 +56,7 @@ protected:
     }
 
     void addWildcardIndex(BSONObj keyPattern,
-                          const OrderedPathSet& multikeyPathSet = {},
+                          const std::set<std::string>& multikeyPathSet = {},
                           BSONObj wildcardProjection = BSONObj{},
                           MatchExpression* partialFilterExpr = nullptr,
                           CollatorInterface* collator = nullptr,
@@ -95,9 +95,7 @@ protected:
 // General planning tests.
 //
 
-DEATH_TEST_F(QueryPlannerWildcardTest,
-             CannotExpandPreExpandedWildcardIndexEntry,
-             "Tripwire assertion") {
+DEATH_TEST_F(QueryPlannerWildcardTest, CannotExpandPreExpandedWildcardIndexEntry, "Invariant") {
     addWildcardIndex(BSON("$**" << 1));
     ASSERT_EQ(params.indices.size(), 2U);
 
@@ -107,7 +105,7 @@ DEATH_TEST_F(QueryPlannerWildcardTest,
     ASSERT_EQ(expandedIndex.size(), 1U);
     params.indices.push_back(expandedIndex.front());
 
-    // Now run a query. This will tassert when the planner expands the expanded index.
+    // Now run a query. This will invariant when the planner expands the expanded index.
     runQuery(fromjson("{a: 1}"));
 }
 
@@ -631,8 +629,7 @@ TEST_F(QueryPlannerWildcardTest, DottedFieldCovering) {
 }
 
 TEST_F(QueryPlannerWildcardTest, CoveredIxscanForCountOnIndexedPath) {
-    params.options = QueryPlannerParams::DEFAULT;
-    setIsCountLike();
+    params.options = QueryPlannerParams::IS_COUNT;
     addWildcardIndex(BSON("$**" << 1));
     runQuery(fromjson("{a: 5}"));
 

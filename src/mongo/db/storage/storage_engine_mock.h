@@ -41,23 +41,24 @@ public:
     RecoveryUnit* newRecoveryUnit() final {
         return nullptr;
     }
-    std::vector<DatabaseName> listDatabases(boost::optional<TenantId> tenantId) const final {
+    std::vector<TenantDatabaseName> listDatabases() const final {
         return {};
     }
     bool supportsCappedCollections() const final {
         return true;
     }
-    bool supportsCheckpoints() const final {
+    bool isDurable() const final {
         return false;
     }
     bool isEphemeral() const final {
         return true;
     }
-    void loadCatalog(OperationContext* opCtx,
-                     boost::optional<Timestamp> stableTs,
-                     LastShutdownState lastShutdownState) final {}
+    void loadCatalog(OperationContext* opCtx, LastShutdownState lastShutdownState) final {}
     void closeCatalog(OperationContext* opCtx) final {}
-    Status dropDatabase(OperationContext* opCtx, const DatabaseName& dbName) final {
+    Status closeDatabase(OperationContext* opCtx, const TenantDatabaseName& tenantDbName) final {
+        return Status::OK();
+    }
+    Status dropDatabase(OperationContext* opCtx, const TenantDatabaseName& tenantDbName) final {
         return Status::OK();
     }
     void flushAllFiles(OperationContext* opCtx, bool callerHoldsReadLock) final {}
@@ -99,7 +100,7 @@ public:
         OperationContext* opCtx, StringData ident) final {
         return {};
     }
-    void cleanShutdown(ServiceContext* svcCtx) final {}
+    void cleanShutdown() final {}
     SnapshotManager* getSnapshotManager() const final {
         return nullptr;
     }
@@ -116,7 +117,7 @@ public:
     bool supportsReadConcernMajority() const final {
         return false;
     }
-    bool supportsOplogTruncateMarkers() const final {
+    bool supportsOplogStones() const final {
         return false;
     }
     bool supportsResumableIndexBuilds() const final {
@@ -152,7 +153,7 @@ public:
         OldestActiveTransactionTimestampCallback callback) final {}
 
     StatusWith<StorageEngine::ReconcileResult> reconcileCatalogAndIdents(
-        OperationContext* opCtx, Timestamp stableTs, LastShutdownState lastShutdownState) final {
+        OperationContext* opCtx, LastShutdownState lastShutdownState) final {
         return ReconcileResult{};
     }
     Timestamp getAllDurableTimestamp() const final {
@@ -161,7 +162,7 @@ public:
     boost::optional<Timestamp> getOplogNeededForCrashRecovery() const final {
         return boost::none;
     }
-    std::string getFilesystemPathForDb(const DatabaseName& dbName) const final {
+    std::string getFilesystemPathForDb(const TenantDatabaseName& tenantDbName) const final {
         return "";
     }
     std::set<std::string> getDropPendingIdents() const final {
@@ -170,15 +171,11 @@ public:
     void addDropPendingIdent(const Timestamp& dropTimestamp,
                              std::shared_ptr<Ident> ident,
                              DropIdentCallback&& onDrop) final {}
-    void dropIdentsOlderThan(OperationContext* opCtx, const Timestamp& ts) final {}
-    std::shared_ptr<Ident> markIdentInUse(StringData ident) final {
-        return nullptr;
-    }
     void startTimestampMonitor() final {}
 
-    void checkpoint(OperationContext* opCtx) final {}
+    void checkpoint() final {}
 
-    int64_t sizeOnDiskForDb(OperationContext* opCtx, const DatabaseName& dbName) final {
+    int64_t sizeOnDiskForDb(OperationContext* opCtx, const TenantDatabaseName& tenantDbName) final {
         return 0;
     }
     bool isUsingDirectoryPerDb() const final {
@@ -210,11 +207,6 @@ public:
     void unpinOldestTimestamp(const std::string& requestingServiceName) final {}
 
     void setPinnedOplogTimestamp(const Timestamp& pinnedTimestamp) final {}
-
-    StatusWith<BSONObj> getSanitizedStorageOptionsForSecondaryReplication(
-        const BSONObj& options) const final {
-        return options;
-    }
 
     void dump() const final {}
 };

@@ -35,6 +35,10 @@
 
 namespace mongo {
 
+void initMytxnRetryOldInfo() {
+    
+}
+
 namespace {
 
 MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(TxnRetryCounterTooOldInfo);

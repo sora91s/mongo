@@ -27,51 +27,49 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationRollback
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/repl/rollback_impl.h"
+#include "mongo/db/repl/rollback_impl_gen.h"
 
 #include <fmt/format.h>
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/catalog/import_collection_oplog_entry_gen.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/concurrency/exception_util.h"
 #include "mongo/db/concurrency/replication_state_transition_lock_guard.h"
-#include "mongo/db/database_name.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
-#include "mongo/db/global_index.h"
 #include "mongo/db/index_builds_coordinator.h"
+#include "mongo/db/kill_sessions_local.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/query/get_executor.h"
 #include "mongo/db/repl/apply_ops.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/roll_back_local_operations.h"
-#include "mongo/db/repl/rollback_impl_gen.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/tenant_migration_access_blocker_util.h"
 #include "mongo/db/repl/transaction_oplog_application.h"
 #include "mongo/db/s/type_shard_identity.h"
 #include "mongo/db/server_recovery.h"
-#include "mongo/db/serverless/serverless_operation_lock_registry.h"
-#include "mongo/db/session/kill_sessions_local.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/session/session_txn_record_gen.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/session_txn_record_gen.h"
 #include "mongo/db/storage/historical_ident_tracker.h"
 #include "mongo/db/storage/remove_saver.h"
-#include "mongo/db/transaction/transaction_history_iterator.h"
+#include "mongo/db/tenant_database_name.h"
+#include "mongo/db/transaction_history_iterator.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/type_config_version.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kReplicationRollback
 
 namespace mongo {
 namespace repl {
@@ -93,8 +91,6 @@ RollbackImpl::Listener kNoopListener;
 constexpr auto kInsertCmdName = "insert"_sd;
 constexpr auto kUpdateCmdName = "update"_sd;
 constexpr auto kDeleteCmdName = "delete"_sd;
-constexpr auto kInsertGlobalIndexKeyCmdName = "insertGlobalIndexKey"_sd;
-constexpr auto kDeleteGlobalIndexKeyCmdName = "deleteGlobalIndexKey"_sd;
 constexpr auto kNumRecordsFieldName = "numRecords"_sd;
 constexpr auto kToFieldName = "to"_sd;
 constexpr auto kDropTargetFieldName = "dropTarget"_sd;
@@ -361,7 +357,7 @@ void RollbackImpl::_stopAndWaitForIndexBuilds(OperationContext* opCtx) {
 
     // Get a list of all databases.
     StorageEngine* storageEngine = opCtx->getServiceContext()->getStorageEngine();
-    std::vector<DatabaseName> dbs;
+    std::vector<TenantDatabaseName> dbs;
     {
         Lock::GlobalLock lk(opCtx, MODE_IS);
         dbs = storageEngine->listDatabases();
@@ -370,10 +366,10 @@ void RollbackImpl::_stopAndWaitForIndexBuilds(OperationContext* opCtx) {
     // Wait for all background operations to complete by waiting on each database. Single-phase
     // index builds are not stopped before rollback, so we must wait for these index builds to
     // complete.
-    std::vector<DatabaseName> dbNames(dbs.begin(), dbs.end());
+    std::vector<TenantDatabaseName> tenantDbNames(dbs.begin(), dbs.end());
     LOGV2(21595, "Waiting for all background operations to complete before starting rollback");
-    for (auto dbName : dbNames) {
-        auto numInProg = IndexBuildsCoordinator::get(opCtx)->numInProgForDb(dbName);
+    for (auto tenantDbName : tenantDbNames) {
+        auto numInProg = IndexBuildsCoordinator::get(opCtx)->numInProgForDb(tenantDbName.dbName());
         if (numInProg > 0) {
             LOGV2_DEBUG(21596,
                         1,
@@ -381,8 +377,9 @@ void RollbackImpl::_stopAndWaitForIndexBuilds(OperationContext* opCtx) {
                         "background operations to complete on database '{db}'",
                         "Waiting for background operations to complete",
                         "numBackgroundOperationsInProgress"_attr = numInProg,
-                        "db"_attr = dbName);
-            IndexBuildsCoordinator::get(opCtx)->awaitNoBgOpInProgForDb(opCtx, dbName);
+                        "db"_attr = tenantDbName);
+            IndexBuildsCoordinator::get(opCtx)->awaitNoBgOpInProgForDb(opCtx,
+                                                                       tenantDbName.dbName());
         }
     }
 
@@ -418,10 +415,8 @@ StatusWith<std::set<NamespaceString>> RollbackImpl::_namespacesForOp(const Oplog
         switch (oplogEntry.getCommandType()) {
             case OplogEntry::CommandType::kRenameCollection: {
                 // Add both the 'from' and 'to' namespaces.
-                namespaces.insert(NamespaceStringUtil::deserialize(
-                    opNss.tenantId(), firstElem.valueStringDataSafe()));
-                namespaces.insert(
-                    NamespaceStringUtil::deserialize(opNss.tenantId(), obj.getStringField("to")));
+                namespaces.insert(NamespaceString(firstElem.valueStringDataSafe()));
+                namespaces.insert(NamespaceString(obj.getStringField("to")));
                 break;
             }
             case OplogEntry::CommandType::kDropDatabase: {
@@ -438,9 +433,6 @@ StatusWith<std::set<NamespaceString>> RollbackImpl::_namespacesForOp(const Oplog
                     << "' during rollback.";
                 return Status(ErrorCodes::UnrecoverableRollbackError, message);
             }
-            case OplogEntry::CommandType::kModifyCollectionShardingIndexCatalog:
-            case OplogEntry::CommandType::kCreateGlobalIndex:
-            case OplogEntry::CommandType::kDropGlobalIndex:
             case OplogEntry::CommandType::kCreate:
             case OplogEntry::CommandType::kDrop:
             case OplogEntry::CommandType::kImportCollection:
@@ -453,7 +445,7 @@ StatusWith<std::set<NamespaceString>> RollbackImpl::_namespacesForOp(const Oplog
                 // For all other command types, we should be able to parse the collection name from
                 // the first command argument.
                 try {
-                    auto cmdNss = CommandHelpers::parseNsCollectionRequired(opNss.dbName(), obj);
+                    auto cmdNss = CommandHelpers::parseNsCollectionRequired(opNss.db(), obj);
                     namespaces.insert(cmdNss);
                 } catch (const DBException& ex) {
                     return ex.toStatus();
@@ -531,14 +523,14 @@ void RollbackImpl::_restoreTxnsTableEntryFromRetryableWrites(OperationContext* o
         }
         const auto nss = NamespaceString::kSessionTransactionsTableNamespace;
         writeConflictRetry(opCtx, "updateSessionTransactionsTableInRollback", nss.ns(), [&] {
-            opCtx->recoveryUnit()->allowUntimestampedWrite();
             AutoGetCollection collection(opCtx, nss, MODE_IX);
             auto filter = BSON(SessionTxnRecord::kSessionIdFieldName << sessionId.toBSON());
             UnreplicatedWritesBlock uwb(opCtx);
             // Perform an untimestamped write so that it will not be rolled back on recovering
             // to the 'stableTimestamp' if we were to crash. This is safe because this update is
             // meant to be consistent with the 'stableTimestamp' and not the common point.
-            Helpers::upsert(opCtx, nss, filter, sessionTxnRecord.toBSON(), /*fromMigrate=*/false);
+            Helpers::upsert(
+                opCtx, nss.ns(), filter, sessionTxnRecord.toBSON(), /*fromMigrate=*/false);
         });
     }
     // Take a stable checkpoint so that writes to the 'config.transactions' table are
@@ -587,8 +579,7 @@ void RollbackImpl::_runPhaseFromAbortToReconstructPreparedTxns(
     // We invalidate sessions before we recover so that we avoid invalidating sessions that had
     // just recovered prepared transactions.
     if (!_observerInfo.rollbackSessionIds.empty()) {
-        auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
-        mongoDSessionCatalog->invalidateAllSessions(opCtx);
+        MongoDSessionCatalog::invalidateAllSessions(opCtx);
     }
 
     // Recover to the stable timestamp.
@@ -607,13 +598,13 @@ void RollbackImpl::_runPhaseFromAbortToReconstructPreparedTxns(
         auto it = m.find(key);
         return (it == m.end()) ? 0 : it->second;
     };
-    LOGV2(6984700,
-          "Operations reverted by rollback",
+    LOGV2(21599,
+          "Rollback reverted {insert} insert operations, {update} update operations and {delete} "
+          "delete operations.",
+          "Rollback reverted command counts",
           "insert"_attr = getCommandCount(kInsertCmdName),
           "update"_attr = getCommandCount(kUpdateCmdName),
-          "delete"_attr = getCommandCount(kDeleteCmdName),
-          "insertGlobalIndexKey"_attr = getCommandCount(kInsertGlobalIndexKeyCmdName),
-          "deleteGlobalIndexKey"_attr = getCommandCount(kDeleteGlobalIndexKeyCmdName));
+          "delete"_attr = getCommandCount(kDeleteCmdName));
 
     // Retryable writes create derived updates to the transactions table which can be coalesced into
     // one operation, so certain session operations history may be lost after restoring to the
@@ -659,7 +650,6 @@ void RollbackImpl::_runPhaseFromAbortToReconstructPreparedTxns(
     _correctRecordStoreCounts(opCtx);
 
     tenant_migration_access_blocker::recoverTenantMigrationAccessBlockers(opCtx);
-    ServerlessOperationLockRegistry::recoverLocks(opCtx);
 
     // Reconstruct prepared transactions after counts have been adjusted. Since prepared
     // transactions were aborted (i.e. the in-memory counts were rolled-back) before computing
@@ -715,13 +705,13 @@ void RollbackImpl::_correctRecordStoreCounts(OperationContext* opCtx) {
                   "namespace"_attr = nss.ns(),
                   "uuid"_attr = uuid.toString());
             AutoGetCollectionForRead collToScan(opCtx, nss);
-            invariant(coll == collToScan.getCollection().get(),
+            invariant(coll == collToScan.getCollection(),
                       str::stream() << "Catalog returned invalid collection: " << nss.ns() << " ("
                                     << uuid.toString() << ")");
-            auto exec = getCollectionScanExecutor(opCtx,
-                                                  collToScan.getCollection(),
-                                                  PlanYieldPolicy::YieldPolicy::INTERRUPT_ONLY,
-                                                  CollectionScanDirection::kForward);
+            auto exec = collToScan->makePlanExecutor(opCtx,
+                                                     collToScan.getCollection(),
+                                                     PlanYieldPolicy::YieldPolicy::INTERRUPT_ONLY,
+                                                     Collection::ScanDirection::kForward);
             long long countFromScan = 0;
             PlanExecutor::ExecState state;
             while (PlanExecutor::ADVANCED ==
@@ -925,32 +915,23 @@ Status RollbackImpl::_processRollbackOp(OperationContext* opCtx, const OplogEntr
 
     // Keep track of the _ids of inserted and updated documents, as we may need to write them out to
     // a rollback file.
-    if (opType == OpTypeEnum::kInsert || opType == OpTypeEnum::kUpdate ||
-        opType == OpTypeEnum::kInsertGlobalIndexKey) {
+    if (opType == OpTypeEnum::kInsert || opType == OpTypeEnum::kUpdate) {
         const auto uuid = oplogEntry.getUuid();
         invariant(uuid,
                   str::stream() << "Oplog entry to roll back is unexpectedly missing a UUID: "
                                 << redact(oplogEntry.toBSONForLogging()));
-        const auto idElem = [&]() {
-            if (opType == OpTypeEnum::kInsertGlobalIndexKey) {
-                // As global indexes currently lack support for multi-key, a key can be uniquely
-                // identified by its document key, which maps the _id field in the global index
-                // container (collection).
-                return oplogEntry.getObject()[global_index::kOplogEntryDocKeyFieldName];
-            }
-            return oplogEntry.getIdElement();
-        }();
+        const auto idElem = oplogEntry.getIdElement();
         if (!idElem.eoo()) {
             // We call BSONElement::wrap() on each _id element to create a new BSONObj with an owned
             // buffer, as the underlying storage may be gone when we access this map to write
             // rollback files.
-            _observerInfo.rollbackDeletedIdsMap[uuid.value()].insert(idElem.wrap());
+            _observerInfo.rollbackDeletedIdsMap[uuid.get()].insert(idElem.wrap());
             const auto cmdName = opType == OpTypeEnum::kInsert ? kInsertCmdName : kUpdateCmdName;
             ++_observerInfo.rollbackCommandCounts[cmdName];
         }
     }
 
-    if (opType == OpTypeEnum::kInsert || opType == OpTypeEnum::kInsertGlobalIndexKey) {
+    if (opType == OpTypeEnum::kInsert) {
         auto idVal = oplogEntry.getObject().getStringField("_id");
         if (serverGlobalParams.clusterRole == ClusterRole::ShardServer &&
             opNss == NamespaceString::kServerConfigurationNamespace &&
@@ -973,20 +954,19 @@ Status RollbackImpl::_processRollbackOp(OperationContext* opCtx, const OplogEntr
         }
 
         // Rolling back an insert must decrement the count by 1.
-        _countDiffs[oplogEntry.getUuid().value()] -= 1;
-    } else if (opType == OpTypeEnum::kDelete || opType == OpTypeEnum::kDeleteGlobalIndexKey) {
+        _countDiffs[oplogEntry.getUuid().get()] -= 1;
+    } else if (opType == OpTypeEnum::kDelete) {
         // Rolling back a delete must increment the count by 1.
-        _countDiffs[oplogEntry.getUuid().value()] += 1;
+        _countDiffs[oplogEntry.getUuid().get()] += 1;
     } else if (opType == OpTypeEnum::kCommand) {
-        if (oplogEntry.getCommandType() == OplogEntry::CommandType::kCreate ||
-            oplogEntry.getCommandType() == OplogEntry::CommandType::kCreateGlobalIndex) {
+        if (oplogEntry.getCommandType() == OplogEntry::CommandType::kCreate) {
             // If we roll back a create, then we do not need to change the size of that uuid.
-            _countDiffs.erase(oplogEntry.getUuid().value());
-            _pendingDrops.erase(oplogEntry.getUuid().value());
-            _newCounts.erase(oplogEntry.getUuid().value());
+            _countDiffs.erase(oplogEntry.getUuid().get());
+            _pendingDrops.erase(oplogEntry.getUuid().get());
+            _newCounts.erase(oplogEntry.getUuid().get());
         } else if (oplogEntry.getCommandType() == OplogEntry::CommandType::kImportCollection) {
             auto importEntry = mongo::ImportCollectionOplogEntry::parse(
-                IDLParserContext("importCollectionOplogEntry"), oplogEntry.getObject());
+                IDLParserErrorContext("importCollectionOplogEntry"), oplogEntry.getObject());
             // Nothing to roll back if this is a dryRun.
             if (!importEntry.getDryRun()) {
                 const auto& catalogEntry = importEntry.getCatalogEntry();
@@ -1000,16 +980,14 @@ Status RollbackImpl::_processRollbackOp(OperationContext* opCtx, const OplogEntr
                 _pendingDrops.erase(importTargetUUID);
                 _newCounts.erase(importTargetUUID);
             }
-        } else if (oplogEntry.getCommandType() == OplogEntry::CommandType::kDrop ||
-                   oplogEntry.getCommandType() == OplogEntry::CommandType::kDropGlobalIndex) {
-            // The collection count at collection drop time is op-logged in the 'o2' field.
-            // In the common case where the drop-pending collection is managed by the storage
-            // engine, the collection metadata - including the number of records at drop time -
-            // is not accessible through the catalog.
-            // Keep track of the record count stored in the 'o2' field via the _newCounts variable.
-            // This allows for cheaply restoring the collection count post rollback without an
-            // expensive collection scan.
-            const auto uuid = oplogEntry.getUuid().value();
+        } else if (oplogEntry.getCommandType() == OplogEntry::CommandType::kDrop) {
+            // If we roll back a collection drop, parse the o2 field for the collection count for
+            // use later by _findRecordStoreCounts().
+            // This will be used to reconcile collection counts in the case where the drop-pending
+            // collection is managed by the storage engine and is not accessible through the UUID
+            // catalog.
+            // Adding a _newCounts entry ensures that the count will be set after the rollback.
+            const auto uuid = oplogEntry.getUuid().get();
             invariant(_countDiffs.find(uuid) == _countDiffs.end(),
                       str::stream() << "Unexpected existing count diff for " << uuid.toString()
                                     << " op: " << redact(oplogEntry.toBSONForLogging()));
@@ -1017,8 +995,8 @@ Status RollbackImpl::_processRollbackOp(OperationContext* opCtx, const OplogEntr
                 PendingDropInfo info;
                 info.count = *countResult;
                 const auto& opNss = oplogEntry.getNss();
-                info.nss = CommandHelpers::parseNsCollectionRequired(opNss.dbName(),
-                                                                     oplogEntry.getObject());
+                info.nss =
+                    CommandHelpers::parseNsCollectionRequired(opNss.db(), oplogEntry.getObject());
                 _pendingDrops[uuid] = info;
                 _newCounts[uuid] = info.count;
             } else {
@@ -1044,8 +1022,7 @@ Status RollbackImpl::_processRollbackOp(OperationContext* opCtx, const OplogEntr
             if (auto countResult = _parseDroppedCollectionCount(oplogEntry)) {
                 PendingDropInfo info;
                 info.count = *countResult;
-                info.nss = NamespaceStringUtil::deserialize(
-                    opNss.tenantId(), oplogEntry.getObject()[kToFieldName].String());
+                info.nss = NamespaceString(oplogEntry.getObject()[kToFieldName].String());
                 _pendingDrops[dropTargetUUID] = info;
                 _newCounts[dropTargetUUID] = info.count;
             } else {
@@ -1078,12 +1055,6 @@ Status RollbackImpl::_processRollbackOp(OperationContext* opCtx, const OplogEntr
     }
     if (opType == OpTypeEnum::kDelete) {
         ++_observerInfo.rollbackCommandCounts[kDeleteCmdName];
-    }
-    if (opType == OpTypeEnum::kInsertGlobalIndexKey) {
-        ++_observerInfo.rollbackCommandCounts[kInsertGlobalIndexKeyCmdName];
-    }
-    if (opType == OpTypeEnum::kDeleteGlobalIndexKey) {
-        ++_observerInfo.rollbackCommandCounts[kDeleteGlobalIndexKeyCmdName];
     }
 
     return Status::OK();
@@ -1242,7 +1213,7 @@ boost::optional<BSONObj> RollbackImpl::_findDocumentById(OperationContext* opCtx
                                                          UUID uuid,
                                                          NamespaceString nss,
                                                          BSONElement id) {
-    auto document = _storageInterface->findById(opCtx, {nss.dbName(), uuid}, id);
+    auto document = _storageInterface->findById(opCtx, {nss.db().toString(), uuid}, id);
     if (document.isOK()) {
         return document.getValue();
     } else if (document.getStatus().code() == ErrorCodes::NoSuchKey) {
@@ -1395,10 +1366,12 @@ void RollbackImpl::_resetDropPendingState(OperationContext* opCtx) {
     auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
     storageEngine->clearDropPendingState();
 
-    std::vector<DatabaseName> dbNames = storageEngine->listDatabases();
-    for (const auto& dbName : dbNames) {
-        Lock::DBLock dbLock(opCtx, dbName, MODE_X);
-        checkForIdIndexesAndDropPendingCollections(opCtx, dbName);
+    std::vector<TenantDatabaseName> tenantDbNames = storageEngine->listDatabases();
+    auto databaseHolder = DatabaseHolder::get(opCtx);
+    for (const auto& tenantDbName : tenantDbNames) {
+        Lock::DBLock dbLock(opCtx, tenantDbName.dbName(), MODE_X);
+        auto db = databaseHolder->openDb(opCtx, tenantDbName);
+        db->checkForIdIndexesAndDropPendingCollections(opCtx);
     }
 }
 

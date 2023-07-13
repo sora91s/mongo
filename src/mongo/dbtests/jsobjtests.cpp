@@ -31,13 +31,13 @@
  * Tests for jsobj.{h,cpp} code
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
 #include <cmath>
 #include <iostream>
 
-#include "mongo/bson/bson_validate.h"
 #include "mongo/bson/bsonobj_comparator.h"
 #include "mongo/bson/simple_bsonelement_comparator.h"
 #include "mongo/bson/util/builder.h"
@@ -52,9 +52,6 @@
 #include "mongo/util/embedded_builder.h"
 #include "mongo/util/str.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kDefault
-
 
 namespace mongo {
 
@@ -508,7 +505,7 @@ public:
             bb << "a" << 1;
             BSONObj tmp = bb.asTempObj();
             ASSERT(tmp.objsize() == 4 + (1 + 2 + 4) + 1);
-            ASSERT(validateBSON(tmp).isOK());
+            ASSERT(tmp.valid());
             ASSERT(tmp.hasField("a"));
             ASSERT(!tmp.hasField("b"));
             ASSERT_BSONOBJ_EQ(tmp, BSON("a" << 1));
@@ -516,7 +513,7 @@ public:
             bb << "b" << 2;
             BSONObj obj = bb.obj();
             ASSERT_EQUALS(obj.objsize(), 4 + (1 + 2 + 4) + (1 + 2 + 4) + 1);
-            ASSERT(validateBSON(obj).isOK());
+            ASSERT(obj.valid());
             ASSERT(obj.hasField("a"));
             ASSERT(obj.hasField("b"));
             ASSERT_BSONOBJ_EQ(obj, BSON("a" << 1 << "b" << 2));
@@ -526,7 +523,7 @@ public:
             bb << "a" << GT << 1;
             BSONObj tmp = bb.asTempObj();
             ASSERT(tmp.objsize() == 4 + (1 + 2 + (4 + 1 + 4 + 4 + 1)) + 1);
-            ASSERT(validateBSON(tmp).isOK());
+            ASSERT(tmp.valid());
             ASSERT(tmp.hasField("a"));
             ASSERT(!tmp.hasField("b"));
             ASSERT_BSONOBJ_EQ(tmp, BSON("a" << BSON("$gt" << 1)));
@@ -535,7 +532,7 @@ public:
             BSONObj obj = bb.obj();
             ASSERT(obj.objsize() ==
                    4 + (1 + 2 + (4 + 1 + 4 + 4 + 1)) + (1 + 2 + (4 + 1 + 4 + 4 + 1)) + 1);
-            ASSERT(validateBSON(obj).isOK());
+            ASSERT(obj.valid());
             ASSERT(obj.hasField("a"));
             ASSERT(obj.hasField("b"));
             ASSERT_BSONOBJ_EQ(obj, BSON("a" << BSON("$gt" << 1) << "b" << BSON("$lt" << 2)));
@@ -545,7 +542,7 @@ public:
             bb << "a" << 1;
             BSONObj tmp = bb.asTempObj();
             ASSERT(tmp.objsize() == 4 + (1 + 2 + 4) + 1);
-            ASSERT(validateBSON(tmp).isOK());
+            ASSERT(tmp.valid());
             ASSERT(tmp.hasField("a"));
             ASSERT(!tmp.hasField("b"));
             ASSERT_BSONOBJ_EQ(tmp, BSON("a" << 1));
@@ -557,7 +554,7 @@ public:
             }
             bb << "b" << arr.arr();
             BSONObj obj = bb.obj();
-            ASSERT(validateBSON(obj).isOK());
+            ASSERT(obj.valid());
             ASSERT(obj.hasField("a"));
             ASSERT(obj.hasField("b"));
         }
@@ -759,8 +756,8 @@ class Base {
 public:
     virtual ~Base() {}
     void run() {
-        ASSERT(validateBSON(valid()).isOK());
-        ASSERT(!validateBSON(invalid()).isOK());
+        ASSERT(valid().valid());
+        ASSERT(!invalid().valid());
     }
 
 protected:
@@ -809,7 +806,7 @@ public:
         b.appendNull("a");
         BSONObj o = b.done();
         set(o, 4, mongo::Undefined);
-        ASSERT(validateBSON(o).isOK());
+        ASSERT(o.valid());
     }
 };
 
@@ -993,7 +990,7 @@ public:
     void run() {
         const char data[] = {0x07, 0x00, 0x00, 0x00, char(type_), 'a', 0x00};
         BSONObj o(data);
-        ASSERT(!validateBSON(o).isOK());
+        ASSERT(!o.valid());
     }
 
 private:
@@ -1332,7 +1329,7 @@ public:
         b2.done();
         b1.append("f", 10.0);
         BSONObj ret = b1.done();
-        ASSERT(validateBSON(ret).isOK());
+        ASSERT(ret.valid());
         ASSERT(ret.woCompare(fromjson("{a:'bcd',foo:{ggg:44},f:10}")) == 0);
     }
 };
@@ -1353,7 +1350,7 @@ public:
         BSONObj o = BSON("now" << DATENOW);
         Date_t after = jsTime();
 
-        ASSERT(validateBSON(o).isOK());
+        ASSERT(o.valid());
 
         BSONElement e = o["now"];
         ASSERT(e.type() == Date);
@@ -1371,7 +1368,7 @@ public:
         b.appendTimeT("now", aTime);
         BSONObj o = b.obj();
 
-        ASSERT(validateBSON(o).isOK());
+        ASSERT(o.valid());
 
         BSONElement e = o["now"];
         ASSERT_EQUALS(Date, e.type());
@@ -1385,8 +1382,8 @@ public:
         BSONObj min = BSON("a" << MINKEY);
         BSONObj max = BSON("b" << MAXKEY);
 
-        ASSERT(validateBSON(min).isOK());
-        ASSERT(validateBSON(max).isOK());
+        ASSERT(min.valid());
+        ASSERT(max.valid());
 
         BSONElement minElement = min["a"];
         BSONElement maxElement = max["b"];
@@ -1556,9 +1553,7 @@ struct BSONArrayBuilderTest {
         BSONObjBuilder objb;
         BSONArrayBuilder arrb;
 
-        auto fieldNameGenerator = [i = 0]() mutable {
-            return std::to_string(i++);
-        };
+        auto fieldNameGenerator = [i = 0]() mutable { return std::to_string(i++); };
 
         objb << fieldNameGenerator() << 100;
         arrb << 100;

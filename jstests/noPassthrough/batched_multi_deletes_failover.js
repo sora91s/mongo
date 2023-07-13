@@ -6,7 +6,6 @@
  *  does_not_support_transactions,
  *  exclude_from_large_txns,
  *  requires_replication,
- *  requires_fcv_61
  * ]
  */
 (function() {
@@ -90,10 +89,13 @@ const rst = new ReplSetTest({
 });
 const nodes = rst.startSet();
 rst.initiate();
-rst.awaitNodesAgreeOnPrimary();
 
-const dbName = "test";
-const collName = "collHangBatchedDelete";
+// '__internalBatchedDeletesTesting.Collection0' is a special, hardcoded namespace that batches
+// multi-doc deletes if the 'internalBatchUserMultiDeletesForTest' server parameter is set.
+// TODO (SERVER-63044): remove this special handling - but preserve a test specific namespace do the
+// failpoint does not interfere with other background operations.
+const dbName = "__internalBatchedDeletesTesting";
+const collName = "Collection0";
 
 function runTest(failoverFn, clustered, expectNetworkErrorOnDelete) {
     let primary = rst.getPrimary();
@@ -113,7 +115,7 @@ function runTest(failoverFn, clustered, expectNetworkErrorOnDelete) {
 
     const docs = [...Array(collCount).keys()].map(x => ({_id: x, a: "a".repeat(1024), b: 2 * x}));
 
-    assert.commandWorked(coll.insertMany(docs, {ordered: false}));
+    assert.commandWorked(coll.insertMany(docs));
 
     // Create secondary indexes.
     assert.commandWorked(coll.createIndex({a: 1, b: -1}));
@@ -123,6 +125,9 @@ function runTest(failoverFn, clustered, expectNetworkErrorOnDelete) {
     const hangAfterApproxNDocs = Random.randInt(collCount);
     jsTestLog(`About to hang batched delete after evaluating approximately ${
         hangAfterApproxNDocs} documents`);
+
+    assert.commandWorked(
+        testDB.adminCommand({setParameter: 1, internalBatchUserMultiDeletesForTest: 1}));
 
     // When the delete fails, the failpoint will automatically unpause. If the connection is killed,
     // it is unsafe to try and disable the failpoint tied to testDB's original connection.

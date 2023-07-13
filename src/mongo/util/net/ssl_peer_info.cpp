@@ -36,13 +36,11 @@ namespace {
 const transport::Session::Decoration<SSLPeerInfo> peerInfoForSession =
     transport::Session::declareDecoration<SSLPeerInfo>();
 }
-
-SSLPeerInfo& SSLPeerInfo::forSession(const std::shared_ptr<transport::Session>& session) {
+SSLPeerInfo& SSLPeerInfo::forSession(const transport::SessionHandle& session) {
     return peerInfoForSession(session.get());
 }
 
-const SSLPeerInfo& SSLPeerInfo::forSession(
-    const std::shared_ptr<const transport::Session>& session) {
+const SSLPeerInfo& SSLPeerInfo::forSession(const transport::ConstSessionHandle& session) {
     return peerInfoForSession(session.get());
 }
 }  // namespace mongo

@@ -18,6 +18,16 @@ load('jstests/libs/collection_drop_recreate.js');  // For 'assertDropCollection'
 
 const testDB = db.getSiblingDB(jsTestName());
 
+if (!isChangeStreamsVisibilityEnabled(testDB)) {
+    assert.commandFailedWithCode(testDB.runCommand({
+        aggregate: 1,
+        pipeline: [{$changeStream: {showSystemEvents: true}}],
+        cursor: {},
+    }),
+                                 6189301);
+    return;
+}
+
 // Assert that the flag is not allowed with 'apiStrict'.
 assert.commandFailedWithCode(testDB.runCommand({
     aggregate: 1,
@@ -72,7 +82,26 @@ function runWholeDbChangeStreamTestWithoutSystemEvents(test, cursor, nonSystemCo
     // Delete from a system collection.
     assert.commandWorked(testDB.system.js.remove({_id: 3}));
 
-    // We don't see any of the preceding CRUD operations on the system collection.
+    // Rename the system collection.
+    assert.commandWorked(testDB.system.js.renameCollection(collRenamed));
+    // Rename back to system collection.
+    assert.commandWorked(testDB[collRenamed].renameCollection(systemNS.coll));
+
+    // We should see both renames because they involve a normal namespace. However, we don't see any
+    // of the preceding CRUD operations on the system collection.
+    expectedChanges = [
+        {
+            ns: {db: testDB.getName(), coll: systemNS.coll},
+            to: {db: testDB.getName(), coll: collRenamed},
+            operationType: "rename",
+        },
+        {
+            ns: {db: testDB.getName(), coll: collRenamed},
+            to: {db: testDB.getName(), coll: systemNS.coll},
+            operationType: "rename",
+        }
+    ];
+    test.assertNextChangesEqual({cursor: cursor, expectedChanges: expectedChanges});
 
     // Once again write to the 'normal' collection.
     assert.commandWorked(nonSystemColl.insert({_id: 2, a: 1}));
@@ -145,6 +174,25 @@ function runWholeDbChangeStreamTestWithSystemEvents(test, cursor, nonSystemColl)
         operationType: "delete",
     };
     test.assertNextChangesEqual({cursor: cursor, expectedChanges: [expected]});
+
+    // Rename the system collection.
+    assert.commandWorked(testDB.system.js.renameCollection(collRenamed));
+    // Rename back to system collection.
+    assert.commandWorked(testDB[collRenamed].renameCollection(systemNS.coll));
+
+    expectedChanges = [
+        {
+            ns: {db: testDB.getName(), coll: systemNS.coll},
+            to: {db: testDB.getName(), coll: collRenamed},
+            operationType: "rename",
+        },
+        {
+            ns: {db: testDB.getName(), coll: collRenamed},
+            to: {db: testDB.getName(), coll: systemNS.coll},
+            operationType: "rename",
+        }
+    ];
+    test.assertNextChangesEqual({cursor: cursor, expectedChanges: expectedChanges});
 }
 
 function runSingleCollectionChangeStreamTest(test, cursor, nonSystemColl) {
@@ -163,6 +211,11 @@ function runSingleCollectionChangeStreamTest(test, cursor, nonSystemColl) {
     assert.commandWorked(testDB.system.js.update({_id: 1}, {a: 2}));
     // Delete from a system collection.
     assert.commandWorked(testDB.system.js.remove({_id: 1}));
+
+    // Rename the system collection.
+    assert.commandWorked(testDB.system.js.renameCollection(collRenamed));
+    // Rename back to system collection.
+    assert.commandWorked(testDB[collRenamed].renameCollection(systemNS.coll));
 
     // Write again to the 'normal' collection as a sentinel write.
     assert.commandWorked(nonSystemColl.insert({_id: 2, a: 2}));

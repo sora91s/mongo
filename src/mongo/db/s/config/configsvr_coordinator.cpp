@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -36,13 +37,9 @@
 #include "mongo/logv2/log.h"
 #include "mongo/util/future_util.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 
 MONGO_FAIL_POINT_DEFINE(hangBeforeRunningConfigsvrCoordinatorInstance);
-MONGO_FAIL_POINT_DEFINE(hangAndEndBeforeRunningConfigsvrCoordinatorInstance);
 
 namespace {
 
@@ -51,8 +48,8 @@ const Backoff kExponentialBackoff(Seconds(1), Milliseconds::max());
 }  // namespace
 
 ConfigsvrCoordinatorMetadata extractConfigsvrCoordinatorMetadata(const BSONObj& stateDoc) {
-    return ConfigsvrCoordinatorMetadata::parse(IDLParserContext("ConfigsvrCoordinatorMetadata"),
-                                               stateDoc);
+    return ConfigsvrCoordinatorMetadata::parse(
+        IDLParserErrorContext("ConfigsvrCoordinatorMetadata"), stateDoc);
 }
 
 ConfigsvrCoordinator::ConfigsvrCoordinator(const BSONObj& stateDoc)
@@ -102,11 +99,6 @@ void ConfigsvrCoordinator::interrupt(Status status) noexcept {
 
 SemiFuture<void> ConfigsvrCoordinator::run(std::shared_ptr<executor::ScopedTaskExecutor> executor,
                                            const CancellationToken& token) noexcept {
-    if (hangAndEndBeforeRunningConfigsvrCoordinatorInstance.shouldFail()) {
-        hangAndEndBeforeRunningConfigsvrCoordinatorInstance.pauseWhileSet();
-        _completionPromise.emplaceValue();
-        return Status::OK();
-    }
     return ExecutorFuture<void>(**executor)
         .then([this, executor, token, anchor = shared_from_this()] {
             hangBeforeRunningConfigsvrCoordinatorInstance.pauseWhileSet();
@@ -118,14 +110,13 @@ SemiFuture<void> ConfigsvrCoordinator::run(std::shared_ptr<executor::ScopedTaskE
         })
         .onCompletion([this, executor, token, anchor = shared_from_this()](const Status& status) {
             if (!status.isOK()) {
-                LOGV2_ERROR(
-                    6347301, "Error executing ConfigsvrCoordinator", "error"_attr = redact(status));
+                if (!status.isA<ErrorCategory::NotPrimaryError>() &&
+                    !status.isA<ErrorCategory::ShutdownError>()) {
+                    LOGV2_ERROR(6347301,
+                                "Error executing ConfigsvrCoordinator",
+                                "error"_attr = redact(status));
+                }
 
-                // Nothing else to do, the _completionPromise will be cancelled once the coordinator
-                // is interrupted, because the only reasons to stop forward progress in this node is
-                // because of a stepdown happened or the coordinator was canceled.
-                dassert((token.isCanceled() && status.isA<ErrorCategory::CancellationError>()) ||
-                        status.isA<ErrorCategory::NotPrimaryError>());
                 return status;
             }
 

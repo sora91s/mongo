@@ -102,10 +102,11 @@ void MatchExpressionParameterizationVisitor::visitComparisonMatchExpression(
         case BSONType::DBRef:
         case BSONType::MaxKey:
         case BSONType::Undefined:
-        case BSONType::Object:
+            // ignore such values
             break;
 
         case BSONType::String:
+        case BSONType::Object:
         case BSONType::BinData:
         case BSONType::jstOID:
         case BSONType::Bool:
@@ -142,7 +143,6 @@ void MatchExpressionParameterizationVisitor::visit(InMatchExpression* expr) {
         switch (equality.type()) {
             case BSONType::jstNULL:
             case BSONType::Array:
-            case BSONType::Object:
                 // We don't set inputParamId if a InMatchExpression contains one of the values
                 // above.
                 return;

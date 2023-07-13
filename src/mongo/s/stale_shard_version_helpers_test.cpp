@@ -27,14 +27,15 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/logv2/log.h"
-#include "mongo/s/shard_version_factory.h"
 #include "mongo/s/sharding_router_test_fixture.h"
 #include "mongo/s/stale_shard_version_helpers.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 namespace mongo {
 namespace {
@@ -42,7 +43,7 @@ namespace {
 class AsyncShardVersionRetry : public ShardingTestFixture {
 public:
     NamespaceString nss() const {
-        return NamespaceString::createNamespaceString_forTest("test", "foo");
+        return NamespaceString("test", "foo");
     }
 
     StringData desc() const {
@@ -94,18 +95,12 @@ TEST_F(AsyncShardVersionRetry, LimitedStaleErrorsShouldReturnCorrectValue) {
     auto future = shardVersionRetry(
         service(), nss(), catalogCache, desc(), getExecutor(), token, [&](OperationContext*) {
             if (++tries < 5) {
-                const CollectionGeneration gen1(OID::gen(), Timestamp(1, 0));
-                const CollectionGeneration gen2(OID::gen(), Timestamp(1, 0));
-                uassert(
-                    StaleConfigInfo(
-                        nss(),
-                        ShardVersionFactory::make(ChunkVersion(gen1, {5, 23}),
-                                                  boost::optional<CollectionIndexes>(boost::none)),
-                        ShardVersionFactory::make(ChunkVersion(gen2, {6, 99}),
-                                                  boost::optional<CollectionIndexes>(boost::none)),
-                        ShardId("sB")),
-                    "testX",
-                    false);
+                uassert(StaleConfigInfo(nss(),
+                                        ChunkVersion(5, 23, OID::gen(), {}),
+                                        ChunkVersion(6, 99, OID::gen(), {}),
+                                        ShardId("sB")),
+                        "testX",
+                        false);
             }
 
             return 10;

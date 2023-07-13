@@ -81,17 +81,11 @@ public:
 
     /**
      * Sort the results, if there is a sort required.
-     *
-     * The mandatory output parameters 'blockingSortOut' and 'explodeForSortOut' indicate if the
-     * generated sub-plan contains a blocking QSN, such as 'SortNode', and if the sub-plan was
-     * "exploded" to obtain an indexed sort (see QueryPlannerAnalysis::explodeForSort()).
      */
-    static std::unique_ptr<QuerySolutionNode> analyzeSort(
-        const CanonicalQuery& query,
-        const QueryPlannerParams& params,
-        std::unique_ptr<QuerySolutionNode> solnRoot,
-        bool* blockingSortOut,
-        bool* explodeForSortOut);
+    static QuerySolutionNode* analyzeSort(const CanonicalQuery& query,
+                                          const QueryPlannerParams& params,
+                                          QuerySolutionNode* solnRoot,
+                                          bool* blockingSortOut);
 
     /**
      * Internal helper function used by analyzeSort.
@@ -118,7 +112,7 @@ public:
      */
     static bool explodeForSort(const CanonicalQuery& query,
                                const QueryPlannerParams& params,
-                               std::unique_ptr<QuerySolutionNode>* solnRoot);
+                               QuerySolutionNode** solnRoot);
 
     /**
      * Walks the QuerySolutionNode tree rooted in 'soln', and looks for a ProjectionNodeSimple that
@@ -126,17 +120,8 @@ public:
      * set of the GroupNode. If that condition is met the ProjectionNodeSimple is redundant and can
      * thus be elimiated to improve performance of the plan. Otherwise, this is a noop.
      */
-    static std::unique_ptr<QuerySolution> removeInclusionProjectionBelowGroup(
+    static std::unique_ptr<QuerySolution> removeProjectSimpleBelowGroup(
         std::unique_ptr<QuerySolution> soln);
-
-    /**
-     * Walks the QuerySolutionNode tree rooted in 'soln', and looks for a ColumnScan that
-     * is a child of either a Group or Projection.  If the ColumnScan's parent will ignore
-     * extra fields, then eliminate its row store expression, allowing it to return extra fields
-     * in cases when it falls back to pulling the full document from the row store.
-     * If these conditions are not met this is a noop.
-     */
-    static void removeUselessColumnScanRowStoreExpression(QuerySolutionNode& root);
 
     /**
      * For the provided 'foreignCollName' and 'foreignFieldName' corresponding to an EqLookupNode,
@@ -151,17 +136,11 @@ public:
      */
     static std::pair<EqLookupNode::LookupStrategy, boost::optional<IndexEntry>>
     determineLookupStrategy(
-        const NamespaceString& foreignCollName,
+        const std::string& foreignCollName,
         const std::string& foreignField,
         const std::map<NamespaceString, SecondaryCollectionInfo>& collectionsInfo,
         bool allowDiskUse,
         const CollatorInterface* collator);
-
-    /**
-     * Checks if the foreign collection is eligible for the hash join algorithm. We conservatively
-     * choose the hash join algorithm for cases when the hash table is unlikely to spill to disk.
-     */
-    static bool isEligibleForHashJoin(const SecondaryCollectionInfo& foreignCollInfo);
 };
 
 }  // namespace mongo

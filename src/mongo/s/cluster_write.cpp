@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/logv2/log.h"
 
@@ -36,11 +37,8 @@
 
 #include "mongo/db/fle_crud.h"
 #include "mongo/db/not_primary_error_tracker.h"
-#include "mongo/s/collection_routing_info_targeter.h"
+#include "mongo/s/chunk_manager_targeter.h"
 #include "mongo/s/grid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace cluster {
@@ -62,7 +60,7 @@ void write(OperationContext* opCtx,
     NotPrimaryErrorTracker::Disabled scopeDisabledTracker(
         &NotPrimaryErrorTracker::get(opCtx->getClient()));
 
-    CollectionRoutingInfoTargeter targeter(opCtx, request.getNS(), targetEpoch);
+    ChunkManagerTargeter targeter(opCtx, request.getNS(), targetEpoch);
 
     LOGV2_DEBUG_OPTIONS(
         4817400, 2, {logv2::LogComponent::kShardMigrationPerf}, "Starting batch write");
@@ -71,17 +69,6 @@ void write(OperationContext* opCtx,
 
     LOGV2_DEBUG_OPTIONS(
         4817401, 2, {logv2::LogComponent::kShardMigrationPerf}, "Finished batch write");
-}
-
-std::vector<BulkWriteReplyItem> bulkWrite(OperationContext* opCtx,
-                                          const BulkWriteCommandRequest& request) {
-    std::vector<std::unique_ptr<NSTargeter>> targeters;
-    targeters.reserve(request.getNsInfo().size());
-    for (const auto& nsInfo : request.getNsInfo()) {
-        targeters.push_back(std::make_unique<CollectionRoutingInfoTargeter>(opCtx, nsInfo.getNs()));
-    }
-
-    return bulkWriteExec::execute(opCtx, targeters, request);
 }
 
 }  // namespace cluster

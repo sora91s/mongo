@@ -69,10 +69,7 @@ CollectionType ShardingCatalogClientMock::getCollection(OperationContext* opCtx,
 }
 
 std::vector<CollectionType> ShardingCatalogClientMock::getCollections(
-    OperationContext* opCtx,
-    StringData dbName,
-    repl::ReadConcernLevel readConcernLevel,
-    const BSONObj& sort) {
+    OperationContext* opCtx, StringData dbName, repl::ReadConcernLevel readConcernLevel) {
     uasserted(ErrorCodes::InternalError, "Method not implemented");
 }
 
@@ -107,20 +104,9 @@ std::pair<CollectionType, std::vector<ChunkType>> ShardingCatalogClientMock::get
     uasserted(ErrorCodes::InternalError, "Method not implemented");
 }
 
-std::pair<CollectionType, std::vector<IndexCatalogType>>
-ShardingCatalogClientMock::getCollectionAndShardingIndexCatalogEntries(
-    OperationContext* opCtx, const NamespaceString& nss, const repl::ReadConcernArgs& readConcern) {
-    uasserted(ErrorCodes::InternalError, "Method not implemented");
-}
-
 StatusWith<std::vector<TagsType>> ShardingCatalogClientMock::getTagsForCollection(
     OperationContext* opCtx, const NamespaceString& nss) {
     return {ErrorCodes::InternalError, "Method not implemented"};
-}
-
-std::vector<NamespaceString> ShardingCatalogClientMock::getAllNssThatHaveZonesForDatabase(
-    OperationContext* opCtx, const StringData& dbName) {
-    uasserted(ErrorCodes::InternalError, "Method not implemented");
 }
 
 StatusWith<repl::OpTimeWith<std::vector<ShardType>>> ShardingCatalogClientMock::getAllShards(
@@ -133,6 +119,17 @@ bool ShardingCatalogClientMock::runUserManagementReadCommand(OperationContext* o
                                                              const BSONObj& cmdObj,
                                                              BSONObjBuilder* result) {
     return true;
+}
+
+Status ShardingCatalogClientMock::applyChunkOpsDeprecated(OperationContext* opCtx,
+                                                          const BSONArray& updateOps,
+                                                          const BSONArray& preCondition,
+                                                          const UUID& uuid,
+                                                          const NamespaceString& nss,
+                                                          const ChunkVersion& lastChunkVersion,
+                                                          const WriteConcernOptions& writeConcern,
+                                                          repl::ReadConcernLevel readConcern) {
+    return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
 StatusWith<BSONObj> ShardingCatalogClientMock::getGlobalSettings(OperationContext* opCtx,
@@ -151,6 +148,12 @@ Status ShardingCatalogClientMock::insertConfigDocument(OperationContext* opCtx,
                                                        const WriteConcernOptions& writeConcern) {
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
+
+void ShardingCatalogClientMock::insertConfigDocumentsAsRetryableWrite(
+    OperationContext* opCtx,
+    const NamespaceString& nss,
+    std::vector<BSONObj> docs,
+    const WriteConcernOptions& writeConcern) {}
 
 StatusWith<bool> ShardingCatalogClientMock::updateConfigDocument(
     OperationContext* opCtx,
@@ -208,25 +211,4 @@ ShardingCatalogClientMock::_exhaustiveFindOnConfig(OperationContext* opCtx,
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
-HistoricalPlacement ShardingCatalogClientMock::getShardsThatOwnDataForCollAtClusterTime(
-    OperationContext* opCtx, const NamespaceString& collName, const Timestamp& clusterTime) {
-    uasserted(ErrorCodes::InternalError, "Method not implemented");
-}
-
-HistoricalPlacement ShardingCatalogClientMock::getShardsThatOwnDataForDbAtClusterTime(
-    OperationContext* opCtx, const NamespaceString& dbName, const Timestamp& clusterTime) {
-    uasserted(ErrorCodes::InternalError, "Method not implemented");
-}
-
-HistoricalPlacement ShardingCatalogClientMock::getShardsThatOwnDataAtClusterTime(
-    OperationContext* opCtx, const Timestamp& clusterTime) {
-    uasserted(ErrorCodes::InternalError, "Method not implemented");
-}
-
-HistoricalPlacement ShardingCatalogClientMock::getHistoricalPlacement(
-    OperationContext* opCtx,
-    const Timestamp& atClusterTime,
-    const boost::optional<NamespaceString>& nss) {
-    uasserted(ErrorCodes::InternalError, "Method not implemented");
-}
 }  // namespace mongo

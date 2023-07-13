@@ -1,8 +1,6 @@
 // check notablescan mode
 //
-// The test runs commands that are not allowed with security token: setParameter.
 // @tags: [
-//   not_allowed_with_security_token,
 //   assumes_against_mongod_not_mongos,
 //   # This test attempts to perform read operations after having enabled the notablescan server
 //   # parameter. The former operations may be routed to a secondary in the replica set, whereas the
@@ -46,8 +44,8 @@ try {
     err = assert.throws(function() {
         t.find({a: 1}).hint({$natural: 1}).toArray();
     });
-    assert.includes(err.toString(), "$natural");
-    assert.includes(err.toString(), "notablescan");
+    assert.includes(err.toString(),
+                    "hint $natural is not allowed, because 'notablescan' is enabled");
 
     t.createIndex({a: 1});
     assert.eq(0, t.find({a: 1, b: 1}).itcount());

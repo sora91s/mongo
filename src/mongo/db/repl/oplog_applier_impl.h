@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "mongo/db/commands/fsync.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/replication_state_transition_lock_guard.h"
 #include "mongo/db/repl/initial_syncer.h"
@@ -75,7 +76,7 @@ public:
 
     void fillWriterVectors_forTest(OperationContext* opCtx,
                                    std::vector<OplogEntry>* ops,
-                                   std::vector<std::vector<ApplierOperation>>* writerVectors,
+                                   std::vector<std::vector<const OplogEntry*>>* writerVectors,
                                    std::vector<std::vector<OplogEntry>>* derivedOps) noexcept;
 
 private:
@@ -103,7 +104,7 @@ private:
 
     void _deriveOpsAndFillWriterVectors(OperationContext* opCtx,
                                         std::vector<OplogEntry>* ops,
-                                        std::vector<std::vector<ApplierOperation>>* writerVectors,
+                                        std::vector<std::vector<const OplogEntry*>>* writerVectors,
                                         std::vector<std::vector<OplogEntry>>* derivedOps,
                                         SessionUpdateTracker* sessionUpdateTracker) noexcept;
 
@@ -124,7 +125,7 @@ private:
 
     void fillWriterVectors(OperationContext* opCtx,
                            std::vector<OplogEntry>* ops,
-                           std::vector<std::vector<ApplierOperation>>* writerVectors,
+                           std::vector<std::vector<const OplogEntry*>>* writerVectors,
                            std::vector<std::vector<OplogEntry>>* derivedOps) noexcept;
 
 protected:
@@ -138,7 +139,7 @@ protected:
      * application.
      */
     virtual Status applyOplogBatchPerWorker(OperationContext* opCtx,
-                                            std::vector<ApplierOperation>* ops,
+                                            std::vector<const OplogEntry*>* ops,
                                             WorkerMultikeyPathInfo* workerMultikeyPathInfo,
                                             bool isDataConsistent);
 };

@@ -30,20 +30,15 @@
 #include "mongo/db/exec/sbe/abt/sbe_abt_test_util.h"
 
 #include "mongo/db/exec/sbe/abt/abt_lower.h"
-#include "mongo/db/pipeline/abt/document_source_visitor.h"
+#include "mongo/db/pipeline/abt/abt_document_source_visitor.h"
 #include "mongo/db/pipeline/aggregate_command_gen.h"
 #include "mongo/db/pipeline/document_source_queue.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
-#include "mongo/db/query/cqf_command_utils.h"
 #include "mongo/db/query/optimizer/explain.h"
 #include "mongo/db/query/optimizer/opt_phase_manager.h"
-#include "mongo/db/query/optimizer/utils/unit_test_utils.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/plan_executor_factory.h"
-#include "mongo/logv2/log.h"
 #include "mongo/unittest/temp_dir.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 namespace mongo::optimizer {
 
@@ -71,16 +66,11 @@ ABT createValueArray(const std::vector<std::string>& jsonVector) {
     const auto [tag, val] = sbe::value::makeNewArray();
     auto outerArrayPtr = sbe::value::getArrayView(val);
 
-    // TODO: SERVER-69566. Use makeArray.
-    for (size_t i = 0; i < jsonVector.size(); i++) {
+    for (const std::string& s : jsonVector) {
         const auto [tag1, val1] = sbe::value::makeNewArray();
         auto innerArrayPtr = sbe::value::getArrayView(val1);
 
-        // Add record id.
-        const auto [recordTag, recordVal] = sbe::value::makeNewRecordId(i);
-        innerArrayPtr->push_back(recordTag, recordVal);
-
-        const BSONObj& bsonObj = fromjson(jsonVector.at(i));
+        const BSONObj& bsonObj = fromjson(s);
         const auto [tag2, val2] =
             sbe::value::copyValue(sbe::value::TypeTags::bsonObject,
                                   sbe::value::bitcastFrom<const char*>(bsonObj.objdata()));
@@ -95,53 +85,47 @@ ABT createValueArray(const std::vector<std::string>& jsonVector) {
 std::vector<BSONObj> runSBEAST(OperationContext* opCtx,
                                const std::string& pipelineStr,
                                const std::vector<std::string>& jsonVector) {
-    auto prefixId = PrefixId::createForTests();
+    PrefixId prefixId;
     Metadata metadata{{}};
 
     auto pipeline = parsePipeline(pipelineStr, NamespaceString("test"), opCtx);
 
-    ABT valueArray = createValueArray(jsonVector);
+    ABT tree = createValueArray(jsonVector);
 
     const ProjectionName scanProjName = prefixId.getNextId("scan");
-    ABT tree = translatePipelineToABT(metadata,
-                                      *pipeline.get(),
-                                      scanProjName,
-                                      make<ValueScanNode>(ProjectionNameVector{scanProjName},
-                                                          boost::none,
-                                                          std::move(valueArray),
-                                                          true /*hasRID*/),
-                                      prefixId);
+    tree = translatePipelineToABT(
+        metadata,
+        *pipeline.get(),
+        scanProjName,
+        make<ValueScanNode>(ProjectionNameVector{scanProjName}, std::move(tree)),
+        prefixId);
 
-    OPTIMIZER_DEBUG_LOG(
-        6264807, 5, "SBE translated ABT", "explain"_attr = ExplainGenerator::explainV2(tree));
+    std::cerr << "********* Translated ABT *********\n";
+    std::cerr << ExplainGenerator::explainV2(tree);
+    std::cerr << "********* Translated ABT *********\n";
 
-    auto phaseManager = makePhaseManager(OptPhaseManager::getAllRewritesSet(),
-                                         prefixId,
-                                         {{}},
-                                         boost::none /*costModel*/,
-                                         DebugInfo::kDefaultForTests);
+    OptPhaseManager phaseManager(
+        OptPhaseManager::getAllRewritesSet(), prefixId, {{}}, DebugInfo::kDefaultForTests);
+    ASSERT_TRUE(phaseManager.optimize(tree));
 
-    PlanAndProps planAndProps = phaseManager.optimizeAndReturnProps(std::move(tree));
-
-    OPTIMIZER_DEBUG_LOG(6264808,
-                        5,
-                        "SBE optimized ABT",
-                        "explain"_attr = ExplainGenerator::explainV2(planAndProps._node));
+    std::cerr << "********* Optimized ABT *********\n";
+    std::cerr << ExplainGenerator::explainV2(tree);
+    std::cerr << "********* Optimized ABT *********\n";
 
     SlotVarMap map;
-    boost::optional<sbe::value::SlotId> ridSlot;
-    auto runtimeEnv = std::make_unique<sbe::RuntimeEnvironment>();
     sbe::value::SlotIdGenerator ids;
 
-    auto env = VariableEnvironment::build(planAndProps._node);
-    SBENodeLowering g{
-        env, *runtimeEnv, ids, phaseManager.getMetadata(), planAndProps._map, ScanOrder::Forward};
-    auto sbePlan = g.optimize(planAndProps._node, map, ridSlot);
-    ASSERT_EQ(1, map.size());
-    tassert(6624260, "Unexpected rid slot", !ridSlot);
+    auto env = VariableEnvironment::build(tree);
+    SBENodeLowering g{env,
+                      map,
+                      ids,
+                      phaseManager.getMetadata(),
+                      phaseManager.getNodeToGroupPropsMap(),
+                      phaseManager.getRIDProjections()};
+    auto sbePlan = g.optimize(tree);
     uassert(6624249, "Cannot optimize SBE plan", sbePlan != nullptr);
 
-    sbe::CompileCtx ctx(std::move(runtimeEnv));
+    sbe::CompileCtx ctx(std::make_unique<sbe::RuntimeEnvironment>());
     sbePlan->prepare(ctx);
 
     std::vector<sbe::value::SlotAccessor*> accessors;

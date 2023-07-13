@@ -93,7 +93,7 @@ public:
         }
 
     private:
-        ClockSource* _clockSource;
+        ClockSource* const _clockSource;
         Date_t _start;
     };
 

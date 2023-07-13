@@ -37,7 +37,7 @@
 #include "mongo/db/exec/document_value/value.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/pipeline.h"
-#include "mongo/db/shard_id.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/cancellation.h"
 #include "mongo/util/future.h"
@@ -61,7 +61,19 @@ class ServiceContext;
  */
 class ReshardingCollectionCloner {
 public:
-    ReshardingCollectionCloner(ReshardingMetrics* metrics,
+    class Env {
+    public:
+        explicit Env(ReshardingMetrics* metrics) : _metrics(metrics) {}
+
+        ReshardingMetrics* metrics() const {
+            return _metrics;
+        }
+
+    private:
+        ReshardingMetrics* const _metrics;
+    };
+
+    ReshardingCollectionCloner(std::unique_ptr<Env> env,
                                ShardKeyPattern newShardKeyPattern,
                                NamespaceString sourceNss,
                                const UUID& sourceUUID,
@@ -99,7 +111,7 @@ private:
 
     std::unique_ptr<Pipeline, PipelineDeleter> _restartPipeline(OperationContext* opCtx);
 
-    ReshardingMetrics* _metrics;
+    const std::unique_ptr<Env> _env;
     const ShardKeyPattern _newShardKeyPattern;
     const NamespaceString _sourceNss;
     const UUID _sourceUUID;

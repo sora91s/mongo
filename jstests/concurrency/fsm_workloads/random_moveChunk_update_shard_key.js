@@ -40,7 +40,7 @@ var $config = extendWorkload($config, function($config, $super) {
              // So, if the range deleter has not yet cleaned up that document when the chunk is
              // moved back to the original shard, the moveChunk may fail as a result of a duplicate
              // key error on the recipient.
-             err.message.includes("Location51008") || err.message.includes("Location6718402"));
+             err.message.includes("Location51008"));
     };
 
     $config.data.runningWithStepdowns =
@@ -79,6 +79,8 @@ var $config = extendWorkload($config, function($config, $super) {
         // filter out those errors.
         let skippableErrors = [
             ErrorCodes.StaleConfig,
+            // TODO (SERVER-64449): Get rid of this exception
+            ErrorCodes.OBSOLETE_StaleShardVersion,
             ErrorCodes.WriteConflict,
             ErrorCodes.LockTimeout,
             ErrorCodes.PreparedTransactionInProgress,

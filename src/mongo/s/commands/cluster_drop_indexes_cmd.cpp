@@ -27,19 +27,16 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -63,20 +60,16 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(parseResourcePattern(dbName.db(), cmdObj),
-                                                  ActionType::dropIndex)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const override {
+        ActionSet actions;
+        actions.addAction(ActionType::dropIndex);
+        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
     void validateResult(const BSONObj& resultObj) final {
-        auto ctx = IDLParserContext("DropIndexesReply");
+        auto ctx = IDLParserErrorContext("DropIndexesReply");
         if (!checkIsErrorStatus(resultObj, ctx)) {
             Reply::parse(ctx, resultObj.removeField(kRawFieldName));
             if (resultObj.hasField(kRawFieldName)) {
@@ -98,7 +91,7 @@ public:
     }
 
     bool runWithRequestParser(OperationContext* opCtx,
-                              const DatabaseName& dbName,
+                              const std::string& dbName,
                               const BSONObj& cmdObj,
                               const RequestParser& requestParser,
                               BSONObjBuilder& output) final {
@@ -106,11 +99,11 @@ public:
 
         uassert(ErrorCodes::IllegalOperation,
                 "Cannot drop indexes in 'config' database in sharded cluster",
-                nss.dbName() != DatabaseName::kConfig);
+                nss.db() != NamespaceString::kConfigDb);
 
         uassert(ErrorCodes::IllegalOperation,
                 "Cannot drop indexes in 'admin' database in sharded cluster",
-                nss.dbName() != DatabaseName::kAdmin);
+                nss.db() != NamespaceString::kAdminDb);
 
         LOGV2_DEBUG(22751,
                     1,
@@ -122,14 +115,12 @@ public:
         ShardsvrDropIndexes shardsvrDropIndexCmd(nss);
         shardsvrDropIndexCmd.setDropIndexesRequest(requestParser.request().getDropIndexesRequest());
 
-        // TODO SERVER-67797 Change CatalogCache to use DatabaseName object
-        const CachedDatabaseInfo dbInfo = uassertStatusOK(
-            Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, dbName.toStringWithTenantId()));
+        const CachedDatabaseInfo dbInfo =
+            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, dbName));
 
-        // TODO SERVER-67411 change executeCommandAgainstDatabasePrimary to take in DatabaseName
         auto cmdResponse = executeCommandAgainstDatabasePrimary(
             opCtx,
-            dbName.toStringWithTenantId(),
+            dbName,
             dbInfo,
             CommandHelpers::appendMajorityWriteConcern(shardsvrDropIndexCmd.toBSON({}),
                                                        opCtx->getWriteConcern()),

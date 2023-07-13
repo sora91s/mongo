@@ -72,10 +72,10 @@ NUMACTL_ARGS="--interleave=all"
 if which numactl >/dev/null 2>/dev/null && numactl $NUMACTL_ARGS ls / >/dev/null 2>/dev/null
 then
     NUMACTL="`which numactl` -- $NUMACTL_ARGS"
-    DAEMON_OPTS=${DAEMON_OPTS:-"--config $CONF --fork --pidfilepath $PIDFILE"}
+    DAEMON_OPTS=${DAEMON_OPTS:-"--config $CONF"}
 else
     NUMACTL=""
-    DAEMON_OPTS="-- "${DAEMON_OPTS:-"--config $CONF --fork --pidfilepath $PIDFILE"}
+    DAEMON_OPTS="-- "${DAEMON_OPTS:-"--config $CONF"}
 fi
 
 
@@ -248,7 +248,7 @@ case "$1" in
 
         log_daemon_msg "Checking status of $DESC" "$NAME"
         if running ;  then
-            log_success_msg "running"
+            log_successs_msg "running"
             log_end_msg 0
         else
             log_failure_msg "apparently not running"

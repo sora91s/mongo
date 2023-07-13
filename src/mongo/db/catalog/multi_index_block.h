@@ -114,7 +114,6 @@ public:
         CollectionWriter& collection,
         const std::vector<BSONObj>& specs,
         OnInitFn onInit,
-        bool forRecovery,
         const boost::optional<ResumeIndexInfo>& resumeInfo = boost::none);
     StatusWith<std::vector<BSONObj>> init(OperationContext* opCtx,
                                           CollectionWriter& collection,
@@ -154,7 +153,7 @@ public:
     Status insertAllDocumentsInCollection(
         OperationContext* opCtx,
         const CollectionPtr& collection,
-        const boost::optional<RecordId>& resumeAfterRecordId = boost::none);
+        boost::optional<RecordId> resumeAfterRecordId = boost::none);
 
     /**
      * Call this after init() for each document in the collection.
@@ -306,11 +305,6 @@ public:
 
     void setIndexBuildMethod(IndexBuildMethod indexBuildMethod);
 
-    /**
-     * Appends the current state information of the index build to the builder.
-     */
-    void appendBuildInfo(BSONObjBuilder* builder) const;
-
 private:
     struct IndexToBuild {
         std::unique_ptr<IndexBuildBlock> block;
@@ -345,7 +339,7 @@ private:
      */
     void _doCollectionScan(OperationContext* opCtx,
                            const CollectionPtr& collection,
-                           const boost::optional<RecordId>& resumeAfterRecordId,
+                           boost::optional<RecordId> resumeAfterRecordId,
                            ProgressMeterHolder* progress);
 
     // Is set during init() and ensures subsequent function calls act on the same Collection.

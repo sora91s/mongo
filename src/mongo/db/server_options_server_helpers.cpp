@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/db/server_options_server_helpers.h"
 
@@ -58,9 +59,6 @@
 #include "mongo/util/options_parser/options_parser.h"
 #include "mongo/util/options_parser/startup_options.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 using std::endl;
 using std::string;
@@ -360,11 +358,10 @@ Status storeServerOptions(const moe::Environment& params) {
                 serverGlobalParams.bind_ips.emplace_back("::");
             }
         } else {
-            boost::split(
-                serverGlobalParams.bind_ips,
-                bind_ip,
-                [](char c) { return c == ','; },
-                boost::token_compress_on);
+            boost::split(serverGlobalParams.bind_ips,
+                         bind_ip,
+                         [](char c) { return c == ','; },
+                         boost::token_compress_on);
         }
     }
 

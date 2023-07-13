@@ -48,7 +48,7 @@ public:
     static constexpr StringData kName = "$_internalSchemaUniqueItems"_sd;
 
     explicit InternalSchemaUniqueItemsMatchExpression(
-        boost::optional<StringData> path, clonable_ptr<ErrorAnnotation> annotation = nullptr)
+        StringData path, clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : ArrayMatchingMatchExpression(
               MatchExpression::INTERNAL_SCHEMA_UNIQUE_ITEMS, path, std::move(annotation)) {}
 
@@ -57,7 +57,7 @@ public:
     }
 
     MatchExpression* getChild(size_t i) const final {
-        MONGO_UNREACHABLE_TASSERT(6400219);
+        MONGO_UNREACHABLE;
     }
 
     void resetChild(size_t i, MatchExpression*) final override {
@@ -86,7 +86,7 @@ public:
 
     bool equivalent(const MatchExpression* other) const final;
 
-    BSONObj getSerializedRightHandSide(SerializationOptions opts) const final;
+    BSONObj getSerializedRightHandSide() const final;
 
     std::unique_ptr<MatchExpression> shallowClone() const final;
 
@@ -100,9 +100,7 @@ public:
 
 private:
     ExpressionOptimizerFunc getOptimizer() const final {
-        return [](std::unique_ptr<MatchExpression> expression) {
-            return expression;
-        };
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
     }
 
     // The comparator to use when comparing BSONElements, which will never use a collation.

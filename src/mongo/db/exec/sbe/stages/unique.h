@@ -53,10 +53,7 @@ namespace mongo::sbe {
  */
 class UniqueStage final : public PlanStage {
 public:
-    UniqueStage(std::unique_ptr<PlanStage> input,
-                value::SlotVector keys,
-                PlanNodeId planNodeId,
-                bool participateInTrialRunTracking = true);
+    UniqueStage(std::unique_ptr<PlanStage> input, value::SlotVector keys, PlanNodeId planNodeId);
 
     std::unique_ptr<PlanStage> clone() const final;
 

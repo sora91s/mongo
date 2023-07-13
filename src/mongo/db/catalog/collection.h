@@ -29,35 +29,46 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
+#include "mongo/bson/mutable/damage_vector.h"
 #include "mongo/bson/timestamp.h"
-#include "mongo/db/catalog/capped_visibility.h"
 #include "mongo/db/catalog/collection_operation_source.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/session/logical_session_id.h"
 #include "mongo/db/storage/bson_collection_catalog_entry.h"
-#include "mongo/db/storage/durable_catalog_entry.h"
+#include "mongo/db/storage/capped_callback.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/snapshot.h"
 #include "mongo/db/yieldable.h"
 #include "mongo/logv2/log_attr.h"
 #include "mongo/platform/mutex.h"
-#include "mongo/s/shard_key_pattern.h"
+#include "mongo/stdx/condition_variable.h"
 #include "mongo/util/decorable.h"
 
 namespace mongo {
+
+class CappedCallback;
+class CollectionPtr;
+class IndexCatalog;
+class IndexCatalogEntry;
+class MatchExpression;
+class OpDebug;
+class OperationContext;
+class RecordCursor;
 
 /**
  * Holds information update an update operation.
@@ -65,16 +76,10 @@ namespace mongo {
 struct CollectionUpdateArgs {
     enum class StoreDocOption { None, PreImage, PostImage };
 
-    CollectionUpdateArgs() = delete;
-    CollectionUpdateArgs(BSONObj preImageDoc_) : preImageDoc(preImageDoc_) {}
-
     std::vector<StmtId> stmtIds = {kUninitializedStmtId};
 
-    // The unique sample id for this update if it has been chosen for sampling.
-    boost::optional<UUID> sampleId;
-
     // The document before modifiers were applied.
-    const BSONObj preImageDoc;
+    boost::optional<BSONObj> preImageDoc;
 
     // Fully updated document with damages (update modifiers) applied.
     BSONObj updatedDoc;
@@ -89,12 +94,64 @@ struct CollectionUpdateArgs {
     OperationSource source = OperationSource::kStandard;
 
     StoreDocOption storeDocOption = StoreDocOption::None;
+    bool preImageRecordingEnabledForCollection = false;
     bool changeStreamPreAndPostImagesEnabledForCollection = false;
-
-    bool retryableWrite = false;
 
     // Set if OpTimes were reserved for the update ahead of time.
     std::vector<OplogSlot> oplogSlots;
+};
+
+/**
+ * Queries with the awaitData option use this notifier object to wait for more data to be
+ * inserted into the capped collection.
+ */
+class CappedInsertNotifier {
+public:
+    /**
+     * Wakes up all threads waiting.
+     */
+    void notifyAll() const;
+
+    /**
+     * Waits until 'deadline', or until notifyAll() is called to indicate that new
+     * data is available in the capped collection.
+     *
+     * NOTE: Waiting threads can be signaled by calling kill or notify* methods.
+     */
+    void waitUntil(uint64_t prevVersion, Date_t deadline) const;
+
+    /**
+     * Returns the version for use as an additional wake condition when used above.
+     */
+    uint64_t getVersion() const {
+        return _version;
+    }
+
+    /**
+     * Cancels the notifier if the collection is dropped/invalidated, and wakes all waiting.
+     */
+    void kill();
+
+    /**
+     * Returns true if no new insert notification will occur.
+     */
+    bool isDead();
+
+private:
+    // Signalled when a successful insert is made into a capped collection.
+    mutable stdx::condition_variable _notifier;
+
+    // Mutex used with '_notifier'. Protects access to '_version'.
+    mutable Mutex _mutex = MONGO_MAKE_LATCH("CappedInsertNotifier::_mutex");
+
+    // A counter, incremented on insertion of new data into the capped collection.
+    //
+    // The condition which '_cappedNewDataNotifier' is being notified of is an increment of this
+    // counter. Access to this counter is synchronized with '_mutex'.
+    mutable uint64_t _version = 0;
+
+    // True once the notifier is dead.
+    bool _dead = false;
 };
 
 /**
@@ -113,6 +170,8 @@ public:
 
 class Collection : public Decorable<Collection> {
 public:
+    enum class StoreDeletedDoc { Off, On };
+
     /**
      * Direction of collection scan plan executor returned by makePlanExecutor().
      */
@@ -204,6 +263,11 @@ public:
         StatusWith<std::shared_ptr<MatchExpression>> filter = {nullptr};
     };
 
+    /**
+     * Callback function for callers of insertDocumentForBulkLoader().
+     */
+    using OnRecordInsertedFn = std::function<Status(const RecordId& loc)>;
+
     Collection() = default;
     virtual ~Collection() = default;
 
@@ -222,17 +286,6 @@ public:
     virtual SharedCollectionDecorations* getSharedDecorations() const = 0;
 
     virtual void init(OperationContext* opCtx) {}
-
-    /**
-     * Initializes a collection representative at the provided read timestamp using the shared state
-     * from an already existing, later collection.
-     *
-     * Returns the SnapshotTooOld error if the underlying data files have already been removed.
-     */
-    virtual Status initFromExisting(OperationContext* opCtx,
-                                    const std::shared_ptr<const Collection>& collection,
-                                    const DurableCatalogEntry& catalogEntry,
-                                    boost::optional<Timestamp> readTimestamp) = 0;
 
     virtual bool isCommitted() const {
         return true;
@@ -273,12 +326,7 @@ public:
      */
     virtual std::shared_ptr<Ident> getSharedIdent() const = 0;
 
-    /**
-     * Sets the Ident for this collection.
-     */
-    virtual void setIdent(std::shared_ptr<Ident> newIdent) = 0;
-
-    virtual BSONObj getValidatorDoc() const = 0;
+    virtual const BSONObj getValidatorDoc() const = 0;
 
     /**
      * Returns 'kPass' with an ok Status if the document passes this collection's schema validator.
@@ -294,30 +342,136 @@ public:
     virtual std::pair<SchemaValidationResult, Status> checkValidation(
         OperationContext* opCtx, const BSONObj& document) const = 0;
 
-    /**
-     * Extension of `checkValidation` above which converts the tri-modal return value into either a
-     * successful or failed status, printing warning if necessary.
-     */
-    virtual Status checkValidationAndParseResult(OperationContext* opCtx,
-                                                 const BSONObj& document) const = 0;
-
     virtual bool requiresIdIndex() const = 0;
 
-    virtual Snapshotted<BSONObj> docFor(OperationContext* opCtx, const RecordId& loc) const = 0;
+    virtual Snapshotted<BSONObj> docFor(OperationContext* opCtx, RecordId loc) const = 0;
 
     /**
      * @param out - contents set to the right docs if exists, or nothing.
      * @return true iff loc exists
      */
     virtual bool findDoc(OperationContext* opCtx,
-                         const RecordId& loc,
+                         RecordId loc,
                          Snapshotted<BSONObj>* out) const = 0;
 
     virtual std::unique_ptr<SeekableRecordCursor> getCursor(OperationContext* opCtx,
                                                             bool forward = true) const = 0;
 
+    /**
+     * Deletes the document with the given RecordId from the collection. For a description of the
+     * parameters, see the overloaded function below.
+     */
+    virtual void deleteDocument(OperationContext* opCtx,
+                                StmtId stmtId,
+                                RecordId loc,
+                                OpDebug* opDebug,
+                                bool fromMigrate = false,
+                                bool noWarn = false,
+                                StoreDeletedDoc storeDeletedDoc = StoreDeletedDoc::Off,
+                                CheckRecordId checkRecordId = CheckRecordId::Off) const = 0;
+
+    /**
+     * Deletes the document from the collection.
+     *
+     * 'doc' the document to be deleted.
+     * 'fromMigrate' indicates whether the delete was induced by a chunk migration, and
+     * so should be ignored by the user as an internal maintenance operation and not a
+     * real delete.
+     * 'loc' key to uniquely identify a record in a collection.
+     * 'opDebug' Optional argument. When not null, will be used to record operation statistics.
+     * 'noWarn' if unindexing the record causes an error, if noWarn is true the error
+     * will not be logged.
+     * 'storeDeletedDoc' whether to store the document deleted in the oplog.
+     * 'checkRecordId' whether to confirm the recordId matches the record we are removing when
+     * unindexing.
+     */
+    virtual void deleteDocument(OperationContext* opCtx,
+                                Snapshotted<BSONObj> doc,
+                                StmtId stmtId,
+                                RecordId loc,
+                                OpDebug* opDebug,
+                                bool fromMigrate = false,
+                                bool noWarn = false,
+                                StoreDeletedDoc storeDeletedDoc = StoreDeletedDoc::Off,
+                                CheckRecordId checkRecordId = CheckRecordId::Off) const = 0;
+
+    /*
+     * Inserts all documents inside one WUOW.
+     * Caller should ensure vector is appropriately sized for this.
+     * If any errors occur (including WCE), caller should retry documents individually.
+     *
+     * 'opDebug' Optional argument. When not null, will be used to record operation statistics.
+     */
+    virtual Status insertDocuments(OperationContext* opCtx,
+                                   std::vector<InsertStatement>::const_iterator begin,
+                                   std::vector<InsertStatement>::const_iterator end,
+                                   OpDebug* opDebug,
+                                   bool fromMigrate = false) const = 0;
+
+    /**
+     * this does NOT modify the doc before inserting
+     * i.e. will not add an _id field for documents that are missing it
+     *
+     * 'opDebug' Optional argument. When not null, will be used to record operation statistics.
+     */
+    virtual Status insertDocument(OperationContext* opCtx,
+                                  const InsertStatement& doc,
+                                  OpDebug* opDebug,
+                                  bool fromMigrate = false) const = 0;
+
+    /**
+     * Callers must ensure no document validation is performed for this collection when calling
+     * this method.
+     */
+    virtual Status insertDocumentsForOplog(OperationContext* opCtx,
+                                           std::vector<Record>* records,
+                                           const std::vector<Timestamp>& timestamps) const = 0;
+
+    /**
+     * Inserts a document into the record store for a bulk loader that manages the index building
+     * outside this Collection. The bulk loader is notified with the RecordId of the document
+     * inserted into the RecordStore.
+     *
+     * NOTE: It is up to caller to commit the indexes.
+     */
+    virtual Status insertDocumentForBulkLoader(
+        OperationContext* opCtx,
+        const BSONObj& doc,
+        const OnRecordInsertedFn& onRecordInserted) const = 0;
+
+    /**
+     * Updates the document @ oldLocation with newDoc.
+     *
+     * If the document fits in the old space, it is put there; if not, it is moved.
+     * Sets 'args.updatedDoc' to the updated version of the document with damages applied, on
+     * success.
+     * 'opDebug' Optional argument. When not null, will be used to record operation statistics.
+     * @return the post update location of the doc (may or may not be the same as oldLocation)
+     */
+    virtual RecordId updateDocument(OperationContext* opCtx,
+                                    RecordId oldLocation,
+                                    const Snapshotted<BSONObj>& oldDoc,
+                                    const BSONObj& newDoc,
+                                    bool indexesAffected,
+                                    OpDebug* opDebug,
+                                    CollectionUpdateArgs* args) const = 0;
+
     virtual bool updateWithDamagesSupported() const = 0;
 
+    /**
+     * Not allowed to modify indexes.
+     * Illegal to call if updateWithDamagesSupported() returns false.
+     * Sets 'args.updatedDoc' to the updated version of the document with damages applied, on
+     * success.
+     * @return the contents of the updated record.
+     */
+    virtual StatusWith<RecordData> updateDocumentWithDamages(
+        OperationContext* opCtx,
+        RecordId loc,
+        const Snapshotted<RecordData>& oldRec,
+        const char* damageSource,
+        const mutablebson::DamageVector& damages,
+        CollectionUpdateArgs* args) const = 0;
 
     // -----------
 
@@ -330,6 +484,19 @@ public:
      * on the collection.
      */
     virtual Status truncate(OperationContext* opCtx) = 0;
+
+    /**
+     * Truncate documents newer than the document at 'end' from the capped
+     * collection.  The collection cannot be completely emptied using this
+     * function.  An assertion will be thrown if that is attempted.
+     * @param inclusive - Truncate 'end' as well iff true
+     *
+     * The caller should hold a collection X lock and ensure there are no index builds in progress
+     * on the collection.
+     */
+    virtual void cappedTruncateAfter(OperationContext* opCtx,
+                                     RecordId end,
+                                     bool inclusive) const = 0;
 
     /**
      * Returns a non-ok Status if validator is not legal for this collection.
@@ -360,6 +527,9 @@ public:
                                    boost::optional<ValidationActionEnum> newAction) = 0;
 
     virtual Status checkValidatorAPIVersionCompatability(OperationContext* opCtx) const = 0;
+
+    virtual bool getRecordPreImages() const = 0;
+    virtual void setRecordPreImages(OperationContext* opCtx, bool val) = 0;
 
     virtual bool isChangeStreamPreAndPostImagesEnabled() const = 0;
     virtual void setChangeStreamPreAndPostImages(OperationContext* opCtx,
@@ -466,10 +636,10 @@ public:
                                             bool prepareUnique) = 0;
 
     /**
-     * Repairs invalid index options on all indexes in this collection. Returns a list of
-     * index names that were repaired.
+     * Removes invalid index options on all indexes in this collection. Returns a list of index
+     * names that contained invalid index options.
      */
-    virtual std::vector<std::string> repairInvalidIndexOptions(OperationContext* opCtx) = 0;
+    virtual std::vector<std::string> removeInvalidIndexOptions(OperationContext* opCtx) = 0;
 
     /**
      * Updates the 'temp' setting for this collection.
@@ -560,55 +730,6 @@ public:
     virtual void replaceMetadata(OperationContext* opCtx,
                                  std::shared_ptr<BSONCollectionCatalogEntry::MetaData> md) = 0;
 
-    virtual bool isMetadataEqual(const BSONObj& otherMetadata) const = 0;
-
-    /**
-     * Specifies whether writes to this collection should X-lock the metadata resource. It is only
-     * set for replicated, non-clustered capped collections. Such collections require writes to be
-     * serialized on the secondary in order to guarantee insertion order (SERVER-21483). This
-     * exclusive access to the metadata resource prevents the primary from executing with more
-     * concurrency than secondaries - thus helping secondaries keep up, and protects the
-     * 'cappedFirstRecord' value for the collection. See SERVER-21646.
-     *
-     * On the other hand, capped clustered collections with a monotonically increasing cluster key
-     * natively guarantee preservation of the insertion order, and don't need serialisation, so we
-     * allow concurrent inserts for clustered capped collections.
-     */
-    virtual bool needsCappedLock() const = 0;
-
-    /**
-     * Checks whether the collection is capped and if the current data size or number of records
-     * exceeds cappedMaxSize or cappedMaxDocs respectively.
-     */
-    virtual bool isCappedAndNeedsDelete(OperationContext* opCtx) const = 0;
-
-    /**
-     * When true, this collection uses the CappedSnapshots API to track concurrent writes and safely
-     * handle visibility for readers.
-     */
-    virtual bool usesCappedSnapshots() const = 0;
-
-    virtual std::vector<RecordId> reserveCappedRecordIds(OperationContext* opCtx,
-                                                         size_t nIds) const = 0;
-
-    /**
-     * When we write to a capped collection, we call this so that that the storage engine can manage
-     * the visibility of documents to ensure they are ordered by RecordId.
-     *
-     * Since this is called inside of a WriteUnitOfWork while holding a std::mutex, it is
-     * illegal to acquire any LockManager locks inside of this function.
-     */
-    virtual void registerCappedInserts(OperationContext* opCtx,
-                                       const RecordId& minRecord,
-                                       const RecordId& maxRecord) const = 0;
-    void registerCappedInsert(OperationContext* opCtx, const RecordId& recordId) const {
-        registerCappedInserts(opCtx, recordId, recordId);
-    }
-
-    virtual CappedVisibilityObserver* getCappedVisibilityObserver() const = 0;
-    virtual CappedVisibilitySnapshot takeCappedVisibilitySnapshot() const = 0;
-
-
     //
     // Stats
     //
@@ -617,12 +738,28 @@ public:
     virtual long long getCappedMaxDocs() const = 0;
     virtual long long getCappedMaxSize() const = 0;
 
+    /**
+     * Returns a pointer to a capped callback object.
+     * The storage engine interacts with capped collections through a CappedCallback interface.
+     */
+    virtual CappedCallback* getCappedCallback() = 0;
+    virtual const CappedCallback* getCappedCallback() const = 0;
+
+    /**
+     * Get a pointer to a capped insert notifier object. The caller can wait on this object
+     * until it is notified of a new insert into the capped collection.
+     *
+     * It is invalid to call this method unless the collection is capped.
+     */
+    virtual std::shared_ptr<CappedInsertNotifier> getCappedInsertNotifier() const = 0;
+
     virtual long long numRecords(OperationContext* opCtx) const = 0;
 
     /**
      * Return uncompressed collection data size in bytes
      */
     virtual long long dataSize(OperationContext* opCtx) const = 0;
+
 
     /**
      * Returns true if the collection does not contain any records.
@@ -650,19 +787,6 @@ public:
     virtual boost::optional<Timestamp> getMinimumVisibleSnapshot() const = 0;
 
     virtual void setMinimumVisibleSnapshot(Timestamp name) = 0;
-
-
-    /**
-     * Get the timestamp this Collection instance was most recently changed at.
-     * TODO SERVER-68270: Should currently not be used until min visible snapshot is removed
-     */
-    virtual boost::optional<Timestamp> getMinimumValidSnapshot() const = 0;
-
-    /**
-     * Sets the timestamp this Collection instance was most recently changed at.
-     * TODO SERVER-68270: Should currently not be used until min visible snapshot is removed
-     */
-    virtual void setMinimumValidSnapshot(Timestamp name) = 0;
 
     /**
      * Returns the time-series options for this buckets collection, or boost::none if not a
@@ -700,7 +824,25 @@ public:
     virtual StatusWith<std::vector<BSONObj>> addCollationDefaultsToIndexSpecsForCreate(
         OperationContext* opCtx, const std::vector<BSONObj>& indexSpecs) const = 0;
 
+    /**
+     * Returns a plan executor for a collection scan over this collection.
+     */
+    virtual std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> makePlanExecutor(
+        OperationContext* opCtx,
+        const CollectionPtr& yieldableCollection,
+        PlanYieldPolicy::YieldPolicy yieldPolicy,
+        ScanDirection scanDirection,
+        boost::optional<RecordId> resumeAfterRecordId = boost::none) const = 0;
+
     virtual void indexBuildSuccess(OperationContext* opCtx, IndexCatalogEntry* index) = 0;
+
+    /**
+     * Use this Collection as the new cached pointer to the local oplog.
+     *
+     * Called by catalog::openCatalog() to re-establish the oplog collection pointer while holding
+     * onto the global lock in exclusive mode.
+     */
+    virtual void establishOplogCollectionForLogging(OperationContext* opCtx) const = 0;
 
     /**
      * Called when this Collection is deregistered from the catalog
@@ -715,7 +857,8 @@ public:
 /**
  * Smart-pointer'esque type to handle yielding of Collection lock that may invalidate pointers when
  * resuming. CollectionPtr will re-load the Collection from the Catalog when restoring from a yield
- * that dropped locks.
+ * that dropped locks. The yield and restore behavior can be disabled by constructing this type from
+ * a writable Collection or by specifying NoYieldTag.
  */
 class CollectionPtr : public Yieldable {
 public:
@@ -725,11 +868,16 @@ public:
     // yield
     using RestoreFn = std::function<const Collection*(OperationContext*, UUID)>;
 
-    // Creates non-yieldable CollectionPtr, performing yield/restore will invariant. To make this
-    // CollectionPtr yieldable call `makeYieldable` and provide appropriate implementation depending
-    // on context.
-    CollectionPtr() = default;
-    explicit CollectionPtr(const Collection* collection);
+    CollectionPtr();
+
+    // Creates a Yieldable CollectionPtr that reloads the Collection pointer from the catalog when
+    // restoring from yield
+    CollectionPtr(OperationContext* opCtx, const Collection* collection, RestoreFn restoreFn);
+
+    // Creates non-yieldable CollectionPtr, performing yield/restore will be a no-op.
+    struct NoYieldTag {};
+    CollectionPtr(const Collection* collection, NoYieldTag);
+    CollectionPtr(Collection* collection);
 
     CollectionPtr(const CollectionPtr&) = delete;
     CollectionPtr(CollectionPtr&&);
@@ -755,45 +903,41 @@ public:
         return _collection;
     }
 
-    // Makes this CollectionPtr yieldable. The RestoreFn provides an implementation on how to setup
-    // the correct state after yield and fetches the internal Collection pointer.
-    void makeYieldable(OperationContext* opCtx, RestoreFn restoreFn) {
-        _opCtx = opCtx;
-        _restoreFn = std::move(restoreFn);
-    }
-
     void reset() {
         *this = CollectionPtr();
     }
 
-    bool yieldable() const override;
     void yield() const override;
     void restore() const override;
 
     friend std::ostream& operator<<(std::ostream& os, const CollectionPtr& coll);
 
-    void setShardKeyPattern(const BSONObj& shardKeyPattern);
-    const ShardKeyPattern& getShardKeyPattern() const;
+    void setShardKeyPattern(const BSONObj& shardKeyPattern) {
+        _shardKeyPattern = shardKeyPattern.getOwned();
+    }
+    const BSONObj& getShardKeyPattern() const;
 
     bool isSharded() const {
         return static_cast<bool>(_shardKeyPattern);
     }
 
 private:
+    bool _canYield() const;
+
     // These members needs to be mutable so the yield/restore interface can be const. We don't want
     // yield/restore to require a non-const instance when it otherwise could be const.
-    mutable const Collection* _collection = nullptr;
+    mutable const Collection* _collection;
 
     // If the collection is currently in the 'yielded' state (i.e. yield() has been called), this
     // field will contain what was the UUID of the collection at the time of yield.
     mutable boost::optional<UUID> _yieldedUUID;
 
-    OperationContext* _opCtx = nullptr;
+    OperationContext* _opCtx;
     RestoreFn _restoreFn;
 
     // Stores a consistent view of shard key with the collection that will be needed during the
     // operation. If _shardKeyPattern is set, that indicates that the collection is sharded.
-    boost::optional<ShardKeyPattern> _shardKeyPattern = boost::none;
+    boost::optional<BSONObj> _shardKeyPattern = boost::none;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const CollectionPtr& coll) {
@@ -809,5 +953,4 @@ inline ValidationActionEnum validationActionOrDefault(
 inline ValidationLevelEnum validationLevelOrDefault(boost::optional<ValidationLevelEnum> level) {
     return level.value_or(ValidationLevelEnum::strict);
 }
-
 }  // namespace mongo

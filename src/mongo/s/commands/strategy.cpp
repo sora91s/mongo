@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -47,6 +48,8 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/error_labels.h"
 #include "mongo/db/initialize_api_parameters.h"
+#include "mongo/db/initialize_operation_session_info.h"
+#include "mongo/db/logical_session_id_helpers.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/namespace_string.h"
@@ -58,8 +61,6 @@
 #include "mongo/db/query/query_request_helper.h"
 #include "mongo/db/read_write_concern_defaults.h"
 #include "mongo/db/repl/repl_server_parameters_gen.h"
-#include "mongo/db/session/initialize_operation_session_info.h"
-#include "mongo/db/session/logical_session_id_helpers.h"
 #include "mongo/db/stats/api_version_metrics.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/transaction_validation.h"
@@ -67,7 +68,6 @@
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/logv2/log.h"
-#include "mongo/rpc/check_allowed_op_query_cmd.h"
 #include "mongo/rpc/factory.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/metadata/client_metadata.h"
@@ -75,12 +75,12 @@
 #include "mongo/rpc/op_msg.h"
 #include "mongo/rpc/op_msg_rpc_impls.h"
 #include "mongo/rpc/rewrite_state_change_errors.h"
+#include "mongo/rpc/warn_unsupported_wire_ops.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/commands/cluster_explain.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/is_mongos.h"
 #include "mongo/s/load_balancer_support.h"
 #include "mongo/s/mongos_topology_coordinator.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
@@ -97,9 +97,6 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 namespace mongo {
 namespace {
 MONGO_FAIL_POINT_DEFINE(hangBeforeCheckingMongosShutdownInterrupt);
@@ -117,18 +114,17 @@ MONGO_FAIL_POINT_DEFINE(allowSkippingAppendRequiredFieldsToResponse);
 
 Future<void> runCommandInvocation(std::shared_ptr<RequestExecutionContext> rec,
                                   std::shared_ptr<CommandInvocation> invocation) {
-    bool useDedicatedThread = [&] {
-        auto client = rec->getOpCtx()->getClient();
+    auto threadingModel = [client = rec->getOpCtx()->getClient()] {
         if (auto context = transport::ServiceExecutorContext::get(client); context) {
-            return context->useDedicatedThread();
+            return context->getThreadingModel();
         }
         tassert(5453902,
                 "Threading model may only be absent for internal and direct clients",
                 !client->hasRemote() || client->isInDirectClient());
-        return true;
+        return transport::ServiceExecutor::ThreadingModel::kDedicated;
     }();
     return CommandHelpers::runCommandInvocation(
-        std::move(rec), std::move(invocation), useDedicatedThread);
+        std::move(rec), std::move(invocation), threadingModel);
 }
 
 /**
@@ -259,7 +255,7 @@ void ExecCommandClient::_prologue() {
     const auto dbname = request.getDatabase();
     uassert(ErrorCodes::IllegalOperation,
             "Can't use 'local' database through mongos",
-            dbname != DatabaseName::kLocal.db());
+            dbname != NamespaceString::kLocalDb);
     uassert(ErrorCodes::InvalidNamespace,
             "Invalid database name: '{}'"_format(dbname),
             NamespaceString::validDBName(dbname, NamespaceString::DollarInDbNameBehavior::Allow));
@@ -357,7 +353,7 @@ void ExecCommandClient::_onCompletion() {
     if (!_invocation->isSafeForBorrowedThreads()) {
         // If the last command wasn't safe for a borrowed thread, then let's move
         // off of it.
-        seCtx->setUseDedicatedThread(true);
+        seCtx->setThreadingModel(transport::ServiceExecutor::ThreadingModel::kDedicated);
     }
 }
 
@@ -430,6 +426,14 @@ public:
 
     explicit RunInvocation(ParseAndRunCommand* parc) : _parc(parc) {}
 
+    ~RunInvocation() {
+        if (!_shouldAffectCommandCounter)
+            return;
+        auto opCtx = _parc->_rec->getOpCtx();
+        Grid::get(opCtx)->catalogCache()->checkAndRecordOperationBlockedByRefresh(
+            opCtx, mongo::LogicalOp::opCommand);
+    }
+
     Future<void> run();
 
 private:
@@ -438,6 +442,7 @@ private:
     ParseAndRunCommand* const _parc;
 
     boost::optional<RouterOperationContextSession> _routerSession;
+    bool _shouldAffectCommandCounter = false;
 };
 
 /*
@@ -497,9 +502,7 @@ void ParseAndRunCommand::_updateStatsAndApplyErrorLabels(const Status& status) {
                                           status.code(),
                                           boost::none,
                                           false /* isInternalClient */,
-                                          true /* isMongos */,
-                                          repl::OpTime{},
-                                          repl::OpTime{});
+                                          true /* isMongos */);
 
 
         _errorBuilder->appendElements(errorLabels);
@@ -530,7 +533,7 @@ void ParseAndRunCommand::_parseCommand() {
     Client* client = opCtx->getClient();
     const auto session = client->session();
     if (session) {
-        if (!opCtx->isExhaust() || !_isHello.value()) {
+        if (!opCtx->isExhaust() || !_isHello.get()) {
             InExhaustHello::get(session.get())->setInExhaust(false, _commandName);
         }
     }
@@ -564,8 +567,6 @@ void ParseAndRunCommand::_parseCommand() {
         APIParameters::get(opCtx) = APIParameters::fromClient(apiParamsFromClient);
     }
 
-    rpc::readRequestMetadata(opCtx, request, command->requiresAuth());
-
     _invocation = command->parse(opCtx, request);
     CommandInvocation::set(opCtx, _invocation);
 
@@ -577,7 +578,7 @@ void ParseAndRunCommand::_parseCommand() {
         (request.getDatabase() == *_ns ? NamespaceString(*_ns, "$cmd") : NamespaceString(*_ns));
 
     // Fill out all currentOp details.
-    CurOp::get(opCtx)->setGenericOpRequestDetails(nss, command, request.body, _opType);
+    CurOp::get(opCtx)->setGenericOpRequestDetails(opCtx, nss, command, request.body, _opType);
 
     _osi.emplace(initializeOperationSessionInfo(opCtx,
                                                 request.body,
@@ -585,7 +586,9 @@ void ParseAndRunCommand::_parseCommand() {
                                                 command->attachLogicalSessionsToOpCtx(),
                                                 true));
 
-    auto allowTransactionsOnConfigDatabase = !isMongos();
+    // TODO SERVER-28756: Change allowTransactionsOnConfigDatabase to true once we fix the bug
+    // where the mongos custom write path incorrectly drops the client's txnNumber.
+    auto allowTransactionsOnConfigDatabase = false;
     validateSessionOptions(*_osi, command->getName(), nss, allowTransactionsOnConfigDatabase);
 
     _wc.emplace(uassertStatusOK(WriteConcernOptions::extractWCFromCommand(request.body)));
@@ -606,11 +609,6 @@ void ParseAndRunCommand::_parseCommand() {
     }
 }
 
-bool isInternalClient(OperationContext* opCtx) {
-    return (opCtx->getClient()->session() &&
-            (opCtx->getClient()->session()->getTags() & transport::Session::kInternalClient));
-}
-
 Status ParseAndRunCommand::RunInvocation::_setup() {
     auto invocation = _parc->_invocation;
     auto opCtx = _parc->_rec->getOpCtx();
@@ -627,7 +625,7 @@ Status ParseAndRunCommand::RunInvocation::_setup() {
     if (MONGO_unlikely(
             hangBeforeCheckingMongosShutdownInterrupt.shouldFail([&](const BSONObj& data) {
                 if (data.hasField("cmdName") && data.hasField("ns")) {
-                    std::string cmdNS = _parc->_ns.value();
+                    std::string cmdNS = _parc->_ns.get();
                     return ((data.getStringField("cmdName") == _parc->_commandName) &&
                             (data.getStringField("ns") == cmdNS));
                 }
@@ -645,7 +643,7 @@ Status ParseAndRunCommand::RunInvocation::_setup() {
         return Status(ErrorCodes::SkipCommandExecution, status.reason());
     };
 
-    if (_parc->_isHello.value()) {
+    if (_parc->_isHello.get()) {
         // Preload generic ClientMetadata ahead of our first hello request. After the first
         // request, metaElement should always be empty.
         auto metaElem = request.body[kMetadataDocumentName];
@@ -660,6 +658,8 @@ Status ParseAndRunCommand::RunInvocation::_setup() {
         auto appName = clientMetadata->getApplicationName().toString();
         apiVersionMetrics.update(appName, apiParams);
     }
+
+    rpc::readRequestMetadata(opCtx, request, command->requiresAuth());
 
     CommandHelpers::evaluateFailCommandFailPoint(opCtx, invocation.get());
     bool startTransaction = false;
@@ -703,12 +703,14 @@ Status ParseAndRunCommand::RunInvocation::_setup() {
     // the client supplied a WC or not.
     bool clientSuppliedWriteConcern = !_parc->_wc->usedDefaultConstructedWC;
     bool customDefaultWriteConcernWasApplied = false;
-    bool isInternalClientValue = isInternalClient(opCtx);
+    bool isInternalClient =
+        (opCtx->getClient()->session() &&
+         (opCtx->getClient()->session()->getTags() & transport::Session::kInternalClient));
 
     if (supportsWriteConcern && !clientSuppliedWriteConcern &&
-        (!TransactionRouter::get(opCtx) || command->isTransactionCommand()) &&
+        (!TransactionRouter::get(opCtx) || isTransactionCommand(_parc->_commandName)) &&
         !opCtx->getClient()->isInDirectClient()) {
-        if (isInternalClientValue) {
+        if (isInternalClient) {
             uassert(
                 5569900,
                 "received command without explicit writeConcern on an internalClient connection {}"_format(
@@ -756,7 +758,7 @@ Status ParseAndRunCommand::RunInvocation::_setup() {
                 provenance.setSource(ReadWriteConcernProvenance::Source::clientSupplied);
             } else if (customDefaultWriteConcernWasApplied) {
                 provenance.setSource(ReadWriteConcernProvenance::Source::customDefault);
-            } else if (opCtx->getClient()->isInDirectClient() || isInternalClientValue) {
+            } else if (opCtx->getClient()->isInDirectClient() || isInternalClient) {
                 provenance.setSource(ReadWriteConcernProvenance::Source::internalWriteDefault);
             } else {
                 provenance.setSource(ReadWriteConcernProvenance::Source::implicitDefault);
@@ -805,7 +807,7 @@ Status ParseAndRunCommand::RunInvocation::_setup() {
                 const auto readConcernSource = rwcDefaults.getDefaultReadConcernSource();
                 customDefaultReadConcernWasApplied =
                     (readConcernSource &&
-                     readConcernSource.value() == DefaultReadConcernSourceEnum::kGlobal);
+                     readConcernSource.get() == DefaultReadConcernSourceEnum::kGlobal);
 
                 applyDefaultReadConcern(*rcDefault);
             }
@@ -896,6 +898,7 @@ Status ParseAndRunCommand::RunInvocation::_setup() {
 
     if (command->shouldAffectCommandCounter()) {
         globalOpCounters.gotCommand();
+        _shouldAffectCommandCounter = true;
     }
 
     return Status::OK();
@@ -993,7 +996,7 @@ void ParseAndRunCommand::RunAndRetry::_checkRetryForTransaction(Status& status) 
         if (!txnRouter.canContinueOnStaleShardOrDbError(_parc->_commandName, status)) {
             if (status.code() == ErrorCodes::ShardInvalidatedForTargeting) {
                 auto catalogCache = Grid::get(opCtx)->catalogCache();
-                (void)catalogCache->getCollectionRoutingInfoWithPlacementRefresh(
+                (void)catalogCache->getCollectionRoutingInfoWithRefresh(
                     opCtx, status.extraInfo<ShardInvalidatedForTargetingInfo>()->getNss());
             }
 
@@ -1186,8 +1189,7 @@ private:
 void ClientCommand::_parseMessage() try {
     const auto& msg = _rec->getMessage();
     _rec->setReplyBuilder(rpc::makeReplyBuilder(rpc::protocolForMessage(msg)));
-    auto opMsgReq = rpc::opMsgRequestFromAnyProtocol(msg, _rec->getOpCtx()->getClient());
-
+    auto opMsgReq = rpc::opMsgRequestFromAnyProtocol(msg);
     if (msg.operation() == dbQuery) {
         checkAllowedOpQueryCommand(*(_rec->getOpCtx()->getClient()), opMsgReq.getCommandName());
     }
@@ -1274,8 +1276,6 @@ DbResponse ClientCommand::_produceResponse() {
     if (OpMsg::isFlagSet(m, OpMsg::kMoreToCome)) {
         return {};  // Don't reply.
     }
-
-    CommandHelpers::checkForInternalError(reply, isInternalClient(_rec->getOpCtx()));
 
     DbResponse dbResponse;
     if (OpMsg::isFlagSet(m, OpMsg::kExhaustSupported)) {

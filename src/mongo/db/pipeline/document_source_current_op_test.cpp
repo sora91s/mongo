@@ -53,9 +53,7 @@ const std::string kMockShardName = "testshard";
 class DocumentSourceCurrentOpTest : public AggregationContextFixture {
 public:
     DocumentSourceCurrentOpTest()
-        : AggregationContextFixture(
-              NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "admin"))) {
-    }
+        : AggregationContextFixture(NamespaceString::makeCollectionlessAggregateNSS("admin")) {}
 };
 
 /**
@@ -100,8 +98,7 @@ TEST_F(DocumentSourceCurrentOpTest, ShouldFailToParseIfSpecIsNotObject) {
 
 TEST_F(DocumentSourceCurrentOpTest, ShouldFailToParseIfNotRunOnAdmin) {
     const auto specObj = fromjson("{$currentOp:{}}");
-    getExpCtx()->ns =
-        NamespaceString::makeCollectionlessAggregateNSS(DatabaseName(boost::none, "foo"));
+    getExpCtx()->ns = NamespaceString::makeCollectionlessAggregateNSS("foo");
     ASSERT_THROWS_CODE(DocumentSourceCurrentOp::createFromBson(specObj.firstElement(), getExpCtx()),
                        AssertionException,
                        ErrorCodes::InvalidNamespace);
@@ -109,7 +106,7 @@ TEST_F(DocumentSourceCurrentOpTest, ShouldFailToParseIfNotRunOnAdmin) {
 
 TEST_F(DocumentSourceCurrentOpTest, ShouldFailToParseIfNotRunWithAggregateOne) {
     const auto specObj = fromjson("{$currentOp:{}}");
-    getExpCtx()->ns = NamespaceString::createNamespaceString_forTest("admin.foo");
+    getExpCtx()->ns = NamespaceString("admin.foo");
     ASSERT_THROWS_CODE(DocumentSourceCurrentOp::createFromBson(specObj.firstElement(), getExpCtx()),
                        AssertionException,
                        ErrorCodes::InvalidNamespace);

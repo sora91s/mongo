@@ -19,7 +19,7 @@ fi
 EXTRACT_DIR="build/crypt-lib-${version}"
 SOPATH="${EXTRACT_DIR}/lib/mongo_crypt_v1.so"
 UNITTEST_PATH="${EXTRACT_DIR}/bin/mongo_crypt_shlib_test"
-GDB_PATH="/opt/mongodbtoolchain/v4/bin/gdb"
+GDB_PATH="/opt/mongodbtoolchain/v3/bin/gdb"
 
 # dump the contents of the extract dir to log
 find $EXTRACT_DIR
@@ -34,21 +34,22 @@ fi
 #
 echo "Running Mongo Crypt Shared Library exported symbols test"
 
-expect='mongo_crypt_v1_analyze_query@@MONGO_CRYPT_1.0
-mongo_crypt_v1_bson_free@@MONGO_CRYPT_1.0
-mongo_crypt_v1_get_version@@MONGO_CRYPT_1.0
-mongo_crypt_v1_get_version_str@@MONGO_CRYPT_1.0
-mongo_crypt_v1_lib_create@@MONGO_CRYPT_1.0
-mongo_crypt_v1_lib_destroy@@MONGO_CRYPT_1.0
-mongo_crypt_v1_query_analyzer_create@@MONGO_CRYPT_1.0
-mongo_crypt_v1_query_analyzer_destroy@@MONGO_CRYPT_1.0
-mongo_crypt_v1_status_create@@MONGO_CRYPT_1.0
-mongo_crypt_v1_status_destroy@@MONGO_CRYPT_1.0
-mongo_crypt_v1_status_get_code@@MONGO_CRYPT_1.0
-mongo_crypt_v1_status_get_error@@MONGO_CRYPT_1.0
-mongo_crypt_v1_status_get_explanation@@MONGO_CRYPT_1.0'
+expect='A MONGO_CRYPT_1.0
+T mongo_crypt_v1_analyze_query
+T mongo_crypt_v1_bson_free
+T mongo_crypt_v1_get_version
+T mongo_crypt_v1_get_version_str
+T mongo_crypt_v1_lib_create
+T mongo_crypt_v1_lib_destroy
+T mongo_crypt_v1_query_analyzer_create
+T mongo_crypt_v1_query_analyzer_destroy
+T mongo_crypt_v1_status_create
+T mongo_crypt_v1_status_destroy
+T mongo_crypt_v1_status_get_code
+T mongo_crypt_v1_status_get_error
+T mongo_crypt_v1_status_get_explanation'
 
-actual="$(readelf -W --dyn-syms "$SOPATH" | awk '$5 == "GLOBAL" && $7 != "UND" && $7 != "ABS" {print $8}' | sort)"
+actual="$(nm --extern-only --defined-only "$SOPATH" | awk '{ print $2, $3 }' | sort)"
 
 if [ "$actual" != "$expect" ]; then
   echo "Error: symbols are not as expected in: $SOPATH"

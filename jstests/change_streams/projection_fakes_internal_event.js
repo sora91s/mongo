@@ -114,19 +114,15 @@ function assertChangeStreamBehaviour(projection, expectedEvents, expectedErrorCo
                                     }
                                 ])
                                 .toArray();
-        assert.eq(openCursors.length,
-                  numShards,
-                  // Dump all the running operations for better debuggability.
-                  () => tojson(adminDB.aggregate([{$currentOp: {idleCursors: true}}]).toArray()));
+        assert.eq(openCursors.length, numShards, openCursors);
     }
 
     // Close the change stream when we are done.
     csCursor.close();
 }
 
-// Test that a projection which fakes a 'migrateChunkToNewShard' event is swallowed but has no
-// effect.
-let testProjection = {operationType: "migrateChunkToNewShard"};
+// Test that a projection which fakes a 'kNewShardDetected' event is swallowed but has no effect.
+let testProjection = {operationType: "kNewShardDetected"};
 assertChangeStreamBehaviour(testProjection, []);
 
 // Test that a projection which fakes an event on config.shards with a non-string operationType is

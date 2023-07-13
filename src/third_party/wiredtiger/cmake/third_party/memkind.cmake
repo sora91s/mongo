@@ -1,11 +1,6 @@
 if(NOT HAVE_LIBMEMKIND)
-    # We can't construct a memkind library target.
+    # We don't need to construct a memkind library target.
     return()
-endif()
-
-if (NOT ENABLE_MEMKIND)
-  # We don't want to construct a memkind library target.
-  return()
 endif()
 
 if(TARGET wt::memkind)

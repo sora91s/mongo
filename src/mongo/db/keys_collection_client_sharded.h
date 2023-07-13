@@ -47,7 +47,7 @@ public:
         OperationContext* opCtx,
         StringData purpose,
         const LogicalTime& newerThanThis,
-        bool tryUseMajority) override;
+        bool useMajority) override;
 
     /**
      * Returns validation-only keys copied from other clusters that match the given purpose.
@@ -61,9 +61,8 @@ public:
      */
     Status insertNewKey(OperationContext* opCtx, const BSONObj& doc) override;
 
-    bool mustUseLocalReads() const final {
-        // Reads are always made against the config server with majority read concern.
-        return false;
+    bool supportsMajorityReads() const final {
+        return true;
     }
 
 private:

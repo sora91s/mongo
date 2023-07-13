@@ -1,6 +1,5 @@
 /**
  * Test of complex sharding initialization
- * @tags: [temporary_catalog_shard_incompatible]
  */
 
 (function() {

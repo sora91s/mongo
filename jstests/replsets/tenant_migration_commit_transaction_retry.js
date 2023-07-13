@@ -2,6 +2,7 @@
  * Tests that the client can retry commitTransaction on the tenant migration recipient.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
@@ -10,14 +11,18 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
+(function() {
+"use strict";
+
+load("jstests/replsets/libs/tenant_migration_test.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 load("jstests/replsets/rslib.js");
 load("jstests/libs/uuid_util.js");
 
 const tenantMigrationTest = new TenantMigrationTest(
     {name: jsTestName(), sharedOptions: {nodes: 1}, quickGarbageCollection: true});
 
-const kTenantId = ObjectId().str;
+const kTenantId = "testTenantId";
 const kDbName = tenantMigrationTest.tenantDB(kTenantId, "testDB");
 const kCollName = "testColl";
 const kNs = `${kDbName}.${kCollName}`;
@@ -42,8 +47,8 @@ assert.commandWorked(donorPrimary.getCollection(kNs).insert(
     session.endSession();
 }
 
-const pauseTenantMigrationBeforeLeavingDataSyncState =
-    configureFailPoint(donorPrimary, "pauseTenantMigrationBeforeLeavingDataSyncState");
+const waitAfterStartingOplogApplier = configureFailPoint(
+    recipientPrimary, "fpAfterStartingOplogApplierMigrationRecipientInstance", {action: "hang"});
 
 jsTestLog("Run a migration to completion");
 const migrationId = UUID();
@@ -55,7 +60,7 @@ tenantMigrationTest.startMigration(migrationOpts);
 
 // Hang the recipient during oplog application before we continue to run more transactions on the
 // donor. This is to test applying multiple transactions on multiple sessions in the same batch.
-pauseTenantMigrationBeforeLeavingDataSyncState.wait();
+waitAfterStartingOplogApplier.wait();
 const waitInOplogApplier = configureFailPoint(recipientPrimary, "hangInTenantOplogApplication");
 tenantMigrationTest.insertDonorDB(kDbName, kCollName, [{_id: 3, x: 3}, {_id: 4, x: 4}]);
 
@@ -78,7 +83,7 @@ for (let i = 0; i < 5; i++) {
     session.endSession();
 }
 
-pauseTenantMigrationBeforeLeavingDataSyncState.off();
+waitAfterStartingOplogApplier.off();
 waitInOplogApplier.off();
 
 TenantMigrationTest.assertCommitted(tenantMigrationTest.waitForMigrationToComplete(migrationOpts));
@@ -132,3 +137,4 @@ tenantMigrationTest2.waitForMigrationGarbageCollection(migrationId2, kTenantId);
 
 tenantMigrationTest2.stop();
 tenantMigrationTest.stop();
+})();

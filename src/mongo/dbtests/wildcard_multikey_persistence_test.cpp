@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include <memory>
 
@@ -40,9 +41,6 @@
 #include "mongo/logv2/log.h"
 #include "mongo/unittest/unittest.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo {
 namespace {
 
@@ -52,8 +50,7 @@ static const RecordId kMetadataId = record_id_helpers::reservedIdFor(
     record_id_helpers::ReservationId::kWildcardMultikeyMetadataId, KeyFormat::Long);
 
 static const int kIndexVersion = static_cast<int>(IndexDescriptor::kLatestIndexVersion);
-static const NamespaceString kDefaultNSS =
-    NamespaceString::createNamespaceString_forTest("wildcard_multikey_persistence.test");
+static const NamespaceString kDefaultNSS{"wildcard_multikey_persistence.test"};
 static const std::string kDefaultIndexName{"wildcard_multikey"};
 static const BSONObj kDefaultIndexKey = fromjson("{'$**': 1}");
 static const BSONObj kDefaultPathProjection;
@@ -140,7 +137,7 @@ protected:
      * Verifes that the index access method associated with 'indexName' in the collection identified
      * by 'nss' reports 'expectedPaths' as the set of multikey paths.
      */
-    void assertMultikeyPathSetEquals(const OrderedPathSet& expectedPaths,
+    void assertMultikeyPathSetEquals(const std::set<std::string>& expectedPaths,
                                      const NamespaceString& nss = kDefaultNSS,
                                      const std::string& indexName = kDefaultIndexName) {
         // Convert the set of std::string to a set of FieldRef.
@@ -200,11 +197,11 @@ protected:
         BSONObjBuilder bob = std::move(BSONObjBuilder() << "name" << name << "key" << key);
 
         if (!pathProjection.isEmpty())
-            bob << IndexDescriptor::kWildcardProjectionFieldName << pathProjection;
+            bob << IndexDescriptor::kPathProjectionFieldName << pathProjection;
 
         auto indexSpec = (bob << "v" << kIndexVersion << "background" << background).obj();
 
-        Lock::DBLock dbLock(opCtx(), nss.dbName(), MODE_X);
+        Lock::DBLock dbLock(opCtx(), nss.db(), MODE_X);
         AutoGetCollection autoColl(opCtx(), nss, MODE_X);
         CollectionWriter coll(opCtx(), autoColl);
 
@@ -220,7 +217,7 @@ protected:
 
         WriteUnitOfWork wunit(opCtx());
         ASSERT_OK(indexer.commit(opCtx(),
-                                 coll.getWritableCollection(opCtx()),
+                                 coll.getWritableCollection(),
                                  MultiIndexBlock::kNoopOnCreateEachFn,
                                  MultiIndexBlock::kNoopOnCommitFn));
         abortOnExit.dismiss();

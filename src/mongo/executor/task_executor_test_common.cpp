@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -47,9 +48,6 @@
 #include "mongo/util/cancellation.h"
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 namespace mongo {
 namespace executor {
@@ -115,9 +113,7 @@ public:
     void CET_##TEST_NAME::_doTest()
 
 auto makeSetStatusClosure(Status* target) {
-    return [target](const TaskExecutor::CallbackArgs& cbData) {
-        *target = cbData.status;
-    };
+    return [target](const TaskExecutor::CallbackArgs& cbData) { *target = cbData.status; };
 }
 
 auto makeSetStatusAndShutdownClosure(Status* target) {
@@ -366,6 +362,7 @@ COMMON_EXECUTOR_TEST(EventWaitingWithTimeoutTest) {
 
     auto serviceContext = ServiceContext::make();
 
+    serviceContext->registerClientObserver(std::make_unique<LockerNoopClientObserver>());
     serviceContext->setFastClockSource(std::make_unique<ClockSourceMock>());
     auto mockClock = static_cast<ClockSourceMock*>(serviceContext->getFastClockSource());
 
@@ -388,6 +385,7 @@ COMMON_EXECUTOR_TEST(EventSignalWithTimeoutTest) {
 
     auto serviceContext = ServiceContext::make();
 
+    serviceContext->registerClientObserver(std::make_unique<LockerNoopClientObserver>());
     serviceContext->setFastClockSource(std::make_unique<ClockSourceMock>());
     auto mockClock = static_cast<ClockSourceMock*>(serviceContext->getFastClockSource());
 
@@ -1113,7 +1111,7 @@ COMMON_EXECUTOR_TEST(ScheduleExhaustRemoteCommandFutureIsResolvedWithErrorOnCanc
 
 void addTestsForExecutor(const std::string& suiteName, ExecutorFactory makeExecutor) {
     auto& suite = unittest::Suite::getSuite(suiteName);
-    for (const auto& testCase : executorTestCaseRegistry()) {
+    for (auto testCase : executorTestCaseRegistry()) {
         suite.add(str::stream() << suiteName << "::" << testCase.first,
                   __FILE__,
                   [testCase, makeExecutor] { testCase.second(makeExecutor)->run(); });

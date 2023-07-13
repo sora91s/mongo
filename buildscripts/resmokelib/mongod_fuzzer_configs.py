@@ -4,7 +4,7 @@ import random
 from buildscripts.resmokelib import utils
 
 
-def generate_eviction_configs(rng, mode):
+def generate_eviction_configs(rng):
     """Generate random configurations for wiredTigerEngineConfigString parameter."""
     eviction_checkpoint_target = rng.randint(1, 99)
     eviction_target = rng.randint(50, 95)
@@ -21,49 +21,17 @@ def generate_eviction_configs(rng, mode):
     assert eviction_dirty_trigger > eviction_dirty_target
     assert eviction_dirty_trigger <= trigger_max
 
-    # Fuzz eviction_updates_target and eviction_updates_trigger. These are by default half the
-    # values of the corresponding eviction dirty target and trigger. They need to stay less than the
-    # dirty equivalents. The default updates target is 2.5% of the cache, so let's start fuzzing
-    # from 2%.
-    updates_target_min = 2 if eviction_dirty_target <= 100 else 20 * 1024 * 1024  # 2% of 1GB cache
-    eviction_updates_target = rng.randint(updates_target_min, eviction_dirty_target - 1)
-    eviction_updates_trigger = rng.randint(eviction_updates_target + 1, eviction_dirty_trigger - 1)
-
-    # Fuzz File manager settings
     close_idle_time_secs = rng.randint(1, 100)
     close_handle_minimum = rng.randint(0, 1000)
     close_scan_interval = rng.randint(1, 100)
 
-    # The debug_mode for WiredTiger offers some settings to change internal behavior that could help
-    # find bugs. Settings to fuzz:
-    # eviction - Turns aggressive eviction on/off
-    # realloc_exact - Finds more memory bugs by allocating the memory for the exact size asked
-    # rollback_error - Forces WiredTiger to return a rollback error every Nth call
-    # slow_checkpoint - Adds internal delays in processing internal leaf pages during a checkpoint
-    dbg_eviction = rng.choice(['true', 'false'])
-    dbg_realloc_exact = rng.choice(['true', 'false'])
-    # Rollback every Nth transaction. The values have been tuned after looking at how many
-    # WiredTiger transactions happen per second for the config-fuzzed jstests.
-    # The setting is trigerring bugs, disabled until they get resolved.
-    # dbg_rollback_error = rng.choice([0, rng.randint(250, 1500)])
-    dbg_rollback_error = 0
-    dbg_slow_checkpoint = 'false' if mode != 'stress' else rng.choice(['true', 'false'])
-
-    return "debug_mode=(eviction={0},realloc_exact={1},rollback_error={2}, slow_checkpoint={3}),"\
-           "eviction_checkpoint_target={4},eviction_dirty_target={5},eviction_dirty_trigger={6},"\
-           "eviction_target={7},eviction_trigger={8},eviction_updates_target={9},"\
-           "eviction_updates_trigger={10},file_manager=(close_handle_minimum={11},"\
-           "close_idle_time={12},close_scan_interval={13})".format(dbg_eviction,
-                                                                 dbg_realloc_exact,
-                                                                 dbg_rollback_error,
-                                                                 dbg_slow_checkpoint,
-                                                                 eviction_checkpoint_target,
+    return "eviction_checkpoint_target={0},eviction_dirty_target={1},eviction_dirty_trigger={2},"\
+           "eviction_target={3},eviction_trigger={4},file_manager=(close_handle_minimum={5},"\
+           "close_idle_time={6},close_scan_interval={7})".format(eviction_checkpoint_target,
                                                                  eviction_dirty_target,
                                                                  eviction_dirty_trigger,
                                                                  eviction_target,
                                                                  eviction_trigger,
-                                                                 eviction_updates_target,
-                                                                 eviction_updates_trigger,
                                                                  close_handle_minimum,
                                                                  close_idle_time_secs,
                                                                  close_scan_interval)
@@ -112,31 +80,28 @@ def generate_flow_control_parameters(rng):
     return configs
 
 
-def generate_independent_parameters(rng, mode):
+def generate_independent_parameters(rng):
     """Return a dictionary with values for each independent parameter."""
     ret = {}
     ret["wiredTigerCursorCacheSize"] = rng.randint(-100, 100)
     ret["wiredTigerSessionCloseIdleTimeSecs"] = rng.randint(0, 300)
-    ret["storageEngineConcurrencyAdjustmentAlgorithm"] = ""
-    ret["wiredTigerConcurrentWriteTransactions"] = rng.randint(5, 32)
-    ret["wiredTigerConcurrentReadTransactions"] = rng.randint(5, 32)
-    ret["wiredTigerStressConfig"] = False if mode != 'stress' else rng.choice([True, False])
+    ret["wiredTigerConcurrentWriteTransactions"] = rng.randint(16, 256)
+    ret["wiredTigerConcurrentReadTransactions"] = rng.randint(16, 256)
+    ret["wiredTigerStressConfig"] = rng.choice([True, False])
     if rng.choice(3 * [True] + [False]):
         # The old retryable writes format is used by other variants. Weight towards turning on the
         # new retryable writes format on in this one.
         ret["storeFindAndModifyImagesInSideCollection"] = True
-    ret["syncdelay"] = rng.choice([60, rng.randint(15, 180)])
-    ret["minSnapshotHistoryWindowInSeconds"] = rng.choice([300, rng.randint(5, 600)])
 
     return ret
 
 
-def fuzz_set_parameters(mode, seed, user_provided_params):
+def fuzz_set_parameters(seed, user_provided_params):
     """Randomly generate mongod configurations and wiredTigerConnectionString."""
     rng = random.Random(seed)
 
     ret = {}
-    params = [generate_flow_control_parameters(rng), generate_independent_parameters(rng, mode)]
+    params = [generate_flow_control_parameters(rng), generate_independent_parameters(rng)]
     for dct in params:
         for key, value in dct.items():
             ret[key] = value
@@ -144,5 +109,5 @@ def fuzz_set_parameters(mode, seed, user_provided_params):
     for key, value in utils.load_yaml(user_provided_params).items():
         ret[key] = value
 
-    return utils.dump_yaml(ret), generate_eviction_configs(rng, mode), generate_table_configs(rng), \
+    return utils.dump_yaml(ret), generate_eviction_configs(rng), generate_table_configs(rng), \
         generate_table_configs(rng)

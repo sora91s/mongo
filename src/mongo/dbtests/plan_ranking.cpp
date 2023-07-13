@@ -31,6 +31,11 @@
  * This file tests db/query/plan_ranker.cpp and db/query/multi_plan_runner.cpp.
  */
 
+#include "mongo/platform/basic.h"
+
+#include <iostream>
+#include <memory>
+
 #include "mongo/client/dbclient_cursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
@@ -62,7 +67,12 @@ extern AtomicWord<int> internalQueryMaxBlockingSortMemoryUsageBytes;
 
 extern AtomicWord<int> internalQueryPlanEvaluationMaxResults;
 
+}  // namespace mongo
+
 namespace PlanRankingTests {
+
+using std::unique_ptr;
+using std::vector;
 
 static const NamespaceString nss("unittests.PlanRankingTests");
 
@@ -79,7 +89,7 @@ public:
         ASSERT_GTE(N, internalQueryPlanEvaluationWorks.load() + 1000);
 
         dbtests::WriteContextForTests ctx(&_opCtx, nss.ns());
-        _client.dropCollection(nss);
+        _client.dropCollection(nss.ns());
     }
 
     virtual ~PlanRankingTestBase() {
@@ -90,7 +100,7 @@ public:
 
     void insert(const BSONObj& obj) {
         dbtests::WriteContextForTests ctx(&_opCtx, nss.ns());
-        _client.insert(nss, obj);
+        _client.insert(nss.ns(), obj);
     }
 
     void addIndex(const BSONObj& obj) {
@@ -118,7 +128,7 @@ public:
 
         // Fill out the MPR.
         _mps.reset(new MultiPlanStage(_expCtx.get(), collection.getCollection(), cq));
-        std::unique_ptr<WorkingSet> ws(new WorkingSet());
+        unique_ptr<WorkingSet> ws(new WorkingSet());
         // Put each solution from the planner into the MPR.
         for (size_t i = 0; i < solutions.size(); ++i) {
             auto&& root = stage_builder::buildClassicExecutableTree(
@@ -171,7 +181,7 @@ private:
     // of the test.
     bool _enableHashIntersection;
 
-    std::unique_ptr<MultiPlanStage> _mps;
+    unique_ptr<MultiPlanStage> _mps;
 
     DBDirectClient _client;
 };
@@ -226,7 +236,7 @@ public:
         findCommand->setSort(BSON("d" << 1));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         ASSERT_OK(statusWithCQ.getStatus());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(cq);
 
         auto soln = pickBestPlan(cq.get());
@@ -275,7 +285,7 @@ public:
         addIndex(BSON("a" << 1));
         addIndex(BSON("b" << 1));
 
-        std::unique_ptr<CanonicalQuery> cq;
+        unique_ptr<CanonicalQuery> cq;
 
         // Run the query {a:4, b:1}.
         {
@@ -338,7 +348,7 @@ public:
         findCommand->setFilter(BSON("a" << 1 << "b" << BSON("$gt" << 1)));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         verify(statusWithCQ.isOK());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         // Turn on the "force intersect" option.
@@ -379,7 +389,7 @@ public:
         findCommand->setProjection(BSON("_id" << 0 << "a" << 1 << "b" << 1));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         ASSERT_OK(statusWithCQ.getStatus());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         auto soln = pickBestPlan(cq.get());
@@ -414,7 +424,7 @@ public:
         findCommand->setFilter(BSON("a" << 1 << "b" << 1 << "c" << 99));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         ASSERT_OK(statusWithCQ.getStatus());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         auto soln = pickBestPlan(cq.get());
@@ -453,7 +463,7 @@ public:
 
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         ASSERT_OK(statusWithCQ.getStatus());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         auto soln = pickBestPlan(cq.get());
@@ -487,7 +497,7 @@ public:
         findCommand->setFilter(BSON("a" << N + 1 << "b" << 1));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         verify(statusWithCQ.isOK());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         // {a: 100} is super selective so choose that.
@@ -524,7 +534,7 @@ public:
         findCommand->setFilter(BSON("a" << BSON("$gte" << N + 1) << "b" << 1));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         verify(statusWithCQ.isOK());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         // {a: 100} is super selective so choose that.
@@ -555,7 +565,7 @@ public:
         findCommand->setSort(BSON("c" << 1));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         ASSERT_OK(statusWithCQ.getStatus());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
         auto soln = pickBestPlan(cq.get());
 
@@ -585,7 +595,7 @@ public:
         findCommand->setFilter(BSON("foo" << 2001));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         verify(statusWithCQ.isOK());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         auto soln = pickBestPlan(cq.get());
@@ -620,7 +630,7 @@ public:
         findCommand->setSort(BSON("d" << 1));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         ASSERT_OK(statusWithCQ.getStatus());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         // No results will be returned during the trial period,
@@ -658,7 +668,7 @@ public:
         findCommand->setFilter(fromjson("{a: 1, b: 1, c: {$gte: 5000}}"));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         ASSERT_OK(statusWithCQ.getStatus());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         // Use index on 'b'.
@@ -691,7 +701,7 @@ public:
         findCommand->setFilter(fromjson("{a: 9, b: {$ne: 10}, c: 9}"));
         auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(findCommand));
         ASSERT_OK(statusWithCQ.getStatus());
-        std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+        unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
         ASSERT(nullptr != cq.get());
 
         // Expect to use index {a: 1, b: 1}.
@@ -726,4 +736,3 @@ public:
 OldStyleSuiteInitializer<All> planRankingAll;
 
 }  // namespace PlanRankingTests
-}  // namespace mongo

@@ -221,8 +221,6 @@ public:
 
     Status setMaintenanceMode(OperationContext*, bool) override;
 
-    bool shouldDropSyncSourceAfterShardSplit(OID replicaSetId) const override;
-
     Status processReplSetSyncFrom(OperationContext*, const HostAndPort&, BSONObjBuilder*) override;
 
     Status processReplSetFreeze(int, BSONObjBuilder*) override;
@@ -237,9 +235,7 @@ public:
 
     Status doOptimizedReconfig(OperationContext* opCtx, GetNewConfigFn getNewConfig) override;
 
-    Status awaitConfigCommitment(OperationContext* opCtx,
-                                 bool waitForOplogCommitment,
-                                 long long term) override;
+    Status awaitConfigCommitment(OperationContext* opCtx, bool waitForOplogCommitment) override;
 
     Status processReplSetInitiate(OperationContext*, const BSONObj&, BSONObjBuilder*) override;
 
@@ -360,10 +356,6 @@ public:
     };
 
     virtual WriteConcernTagChanges* getWriteConcernTagChanges() override;
-
-    virtual repl::SplitPrepareSessionManager* getSplitPrepareSessionManager() override;
-
-    virtual bool isRetryableWrite(OperationContext* opCtx) const override;
 
 private:
     // Back pointer to the ServiceContext that has started the instance.

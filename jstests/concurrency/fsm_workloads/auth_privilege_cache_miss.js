@@ -5,7 +5,8 @@
  *
  * Validate user permission consistency during cache miss and slow load.
  *
- * @tags: [incompatible_with_concurrency_simultaneous]
+ * @tags: [
+ * ]
  */
 
 // Use the auth_privilege_consistency workload as a base.

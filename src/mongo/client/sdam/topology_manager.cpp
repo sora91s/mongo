@@ -26,6 +26,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/client/sdam/topology_manager.h"
 
@@ -34,9 +35,6 @@
 #include "mongo/client/sdam/topology_state_machine.h"
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/topology_version_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo::sdam {
 namespace {
@@ -118,7 +116,7 @@ bool TopologyManagerImpl::onServerDescription(const HelloOutcome& helloOutcome) 
     return true;
 }
 
-std::shared_ptr<TopologyDescription> TopologyManagerImpl::getTopologyDescription() const {
+const std::shared_ptr<TopologyDescription> TopologyManagerImpl::getTopologyDescription() const {
     stdx::lock_guard<mongo::Mutex> lock(_mutex);
     return _topologyDescription;
 }

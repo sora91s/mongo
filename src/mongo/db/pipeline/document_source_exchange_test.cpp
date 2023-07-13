@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -45,8 +46,6 @@
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/system_clock_source.h"
 #include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 
 namespace mongo {
@@ -87,8 +86,7 @@ struct ThreadInfo {
 };
 }  // namespace
 
-const NamespaceString kTestNss =
-    NamespaceString::createNamespaceString_forTest("test.docSourceExchange"_sd);
+const NamespaceString kTestNss = NamespaceString("test.docSourceExchange"_sd);
 
 class DocumentSourceExchangeTest : public AggregationContextFixture {
 protected:
@@ -140,7 +138,7 @@ protected:
     }
 
     auto parseSpec(const BSONObj& spec) {
-        IDLParserContext ctx("internalExchange");
+        IDLParserErrorContext ctx("internalExchange");
         return ExchangeSpec::parse(ctx, spec);
     }
 

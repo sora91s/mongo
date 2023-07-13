@@ -58,7 +58,8 @@ void registerTerminationHook() noexcept {
 [[maybe_unused]] const int initializeTerminationHandler = []() noexcept {
     registerTerminationHook();
     return 0;
-}();
+}
+();
 
 }  // namespace
 }  // namespace stdx

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -35,6 +36,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/balancer/balancer.h"
@@ -44,9 +46,6 @@
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/configure_collection_balancing_gen.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -61,10 +60,25 @@ public:
         using InvocationBase::InvocationBase;
 
         void typedRun(OperationContext* opCtx) {
-            opCtx->setAlwaysInterruptAtStepDownOrUp_UNSAFE();
+            opCtx->setAlwaysInterruptAtStepDownOrUp();
+
+            // Hold the FCV region to serialize with the setFeatureCompatibilityVersion command
+            FixedFCVRegion fcvRegion(opCtx);
+            uassert(ErrorCodes::IllegalOperation,
+                    "_configsvrConfigureCollectionBalancing can only be run when the cluster is in "
+                    "feature "
+                    "compatibility versions greater or equal than 5.3.",
+                    serverGlobalParams.featureCompatibility.isGreaterThanOrEqualTo(
+                        multiversion::FeatureCompatibilityVersion::kVersion_5_3));
+
             uassert(ErrorCodes::IllegalOperation,
                     str::stream() << Request::kCommandName << " can only be run on config servers",
                     serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
+
+            uassert(8423309,
+                    str::stream() << Request::kCommandName << " command not supported",
+                    mongo::feature_flags::gPerCollBalancingSettings.isEnabled(
+                        serverGlobalParams.featureCompatibility));
 
             const NamespaceString& nss = ns();
 
@@ -78,8 +92,7 @@ public:
                 nss,
                 request().getChunkSizeMB(),
                 request().getDefragmentCollection(),
-                request().getEnableAutoSplitter(),
-                request().getEnableAutoMerger());
+                request().getEnableAutoSplitter());
         }
 
     private:

@@ -9,6 +9,8 @@ from buildscripts.resmokelib import suitesconfig
 
 parser.set_run_options()
 
+# pylint: disable=missing-docstring
+
 RESMOKELIB = "buildscripts.resmokelib"
 
 

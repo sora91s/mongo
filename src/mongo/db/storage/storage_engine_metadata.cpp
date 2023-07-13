@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -55,9 +56,6 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/file.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 namespace mongo {
 
@@ -207,7 +205,7 @@ Status StorageEngineMetadata::read() {
         if (!storageEngineOptionsElement.isABSONObj()) {
             return Status(ErrorCodes::FailedToParse,
                           str::stream()
-                              << "The 'storage.options' field in metadata must be an object: "
+                              << "The 'storage.options' field in metadata must be a string: "
                               << storageEngineOptionsElement.toString());
         }
         setStorageEngineOptions(storageEngineOptionsElement.Obj());
@@ -236,15 +234,13 @@ void flushMyDirectory(const boost::filesystem::path& file) {
     LOGV2_DEBUG(22284, 1, "flushing directory {dir_string}", "dir_string"_attr = dir.string());
 
     int fd = ::open(dir.string().c_str(), O_RDONLY);  // DO NOT THROW OR ASSERT BEFORE CLOSING
-    if (fd < 0) {
-        auto ec = lastPosixError();
-        msgasserted(13650,
-                    str::stream() << "Couldn't open directory '" << dir.string()
-                                  << "' for flushing: " << errorMessage(ec));
-    }
+    massert(13650,
+            str::stream() << "Couldn't open directory '" << dir.string()
+                          << "' for flushing: " << errnoWithDescription(),
+            fd >= 0);
     if (fsync(fd) != 0) {
-        auto ec = lastPosixError();
-        if (ec == posixError(EINVAL)) {  // indicates filesystem does not support synchronization
+        int e = errno;
+        if (e == EINVAL) {  // indicates filesystem does not support synchronization
             if (!_warnedAboutFilesystem) {
                 LOGV2_OPTIONS(
                     22285,
@@ -256,9 +252,10 @@ void flushMyDirectory(const boost::filesystem::path& file) {
             }
         } else {
             close(fd);
-            msgasserted(13651,
-                        str::stream() << "Couldn't fsync directory '" << dir.string()
-                                      << "': " << errorMessage(ec));
+            massert(13651,
+                    str::stream() << "Couldn't fsync directory '" << dir.string()
+                                  << "': " << errnoWithDescription(e),
+                    false);
         }
     }
     close(fd);
@@ -276,20 +273,20 @@ Status StorageEngineMetadata::write() const {
     {
         std::ofstream ofs(metadataTempPath.c_str(), std::ios_base::out | std::ios_base::binary);
         if (!ofs) {
-            auto ec = lastSystemError();
             return Status(ErrorCodes::FileNotOpen,
-                          str::stream() << "Failed to write metadata to "
-                                        << metadataTempPath.string() << ": " << errorMessage(ec));
+                          str::stream()
+                              << "Failed to write metadata to " << metadataTempPath.string() << ": "
+                              << errnoWithDescription());
         }
 
         BSONObj obj = BSON(
             "storage" << BSON("engine" << _storageEngine << "options" << _storageEngineOptions));
         ofs.write(obj.objdata(), obj.objsize());
         if (!ofs) {
-            auto ec = lastSystemError();
             return Status(ErrorCodes::OperationFailed,
-                          str::stream() << "Failed to write BSON data to "
-                                        << metadataTempPath.string() << ": " << errorMessage(ec));
+                          str::stream()
+                              << "Failed to write BSON data to " << metadataTempPath.string()
+                              << ": " << errnoWithDescription());
         }
     }
 

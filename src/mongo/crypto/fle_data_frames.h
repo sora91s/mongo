@@ -51,16 +51,9 @@ inline StatusWith<size_t> aeadGetMaximumPlainTextLength(size_t cipherTextLen) {
 }
 
 /**
- * Returns the maximum expected length of the plaintext output given the ciphertext length.
- * Only for FLE2 AEAD. Valid for modes aesMode::ctr and aesMode::cbc.
+ * Returns the length of the plaintext output given the ciphertext length. Only for FLE2 AEAD.
  */
-inline StatusWith<size_t> fle2AeadGetMaximumPlainTextLength(size_t cipherTextLen) {
-
-    // For CTR mode, the expected plaintext length is always equal to the length of the
-    // ciphertext after the IV and HMAC signature are removed.
-    // For CBC mode, the expected plaintext length is bounded above by the length of the
-    // ciphertext (always block aligned) after the IV and HMAC signature are removed.
-    static_assert(crypto::aesCTRIVSize == crypto::aesCBCIVSize);
+inline StatusWith<size_t> fle2AeadGetPlainTextLength(size_t cipherTextLen) {
     if (cipherTextLen > (crypto::aesCTRIVSize + kHmacOutSize)) {
         return cipherTextLen - crypto::aesCTRIVSize - kHmacOutSize;
     }
@@ -119,7 +112,7 @@ public:
 
     FLEEncryptionFrame() : _plaintext(ConstDataRange(nullptr, 0)){};
 
-    ConstDataRange get() const& {
+    const ConstDataRange get() const& {
         return ConstDataRange(_data);
     }
 
@@ -127,11 +120,11 @@ public:
         return _key;
     }
 
-    ConstDataRange getPlaintext() const {
+    const ConstDataRange getPlaintext() const {
         return _plaintext;
     }
 
-    ConstDataRange getAssociatedData() const {
+    const ConstDataRange getAssociatedData() const {
         return ConstDataRange(_data.data(), kAssociatedDataLength);
     }
 
@@ -143,7 +136,7 @@ public:
     uint8_t* getCiphertextMutable() && = delete;
 
     FleAlgorithmInt getFLEAlgorithmType() {
-        return FleAlgorithmInt_parse(IDLParserContext("root"), _data[0]);
+        return FleAlgorithmInt_parse(IDLParserErrorContext("root"), _data[0]);
     }
 
     size_t getDataLength() const {
@@ -184,7 +177,7 @@ public:
         return _key;
     }
 
-    ConstDataRange getAssociatedData() const {
+    const ConstDataRange getAssociatedData() const {
         return ConstDataRange(_data.data(), kAssociatedDataLength);
     }
 
@@ -211,7 +204,7 @@ public:
 
 private:
     FleAlgorithmInt getFLEAlgorithmType() const {
-        return FleAlgorithmInt_parse(IDLParserContext("root"), *_data.data<uint8_t>());
+        return FleAlgorithmInt_parse(IDLParserErrorContext("root"), *_data.data<uint8_t>());
     }
 
     size_t getDataLength() const {

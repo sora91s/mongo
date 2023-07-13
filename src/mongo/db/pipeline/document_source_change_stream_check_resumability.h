@@ -68,8 +68,7 @@ public:
     enum class ResumeStatus {
         kFoundToken,      // The stream produced a document satisfying the client resume token.
         kSurpassedToken,  // The stream's latest document is more recent than the resume token.
-        kCheckNextDoc,    // The next document produced by the stream may contain the resume token.
-        kNeedsSplit       // We found a candidate resume token but the event must be split.
+        kCheckNextDoc     // The next document produced by the stream may contain the resume token.
     };
 
     const char* getSourceName() const override;
@@ -92,8 +91,6 @@ public:
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain) const override;
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
-
     static boost::intrusive_ptr<DocumentSourceChangeStreamCheckResumability> createFromBson(
         BSONElement spec, const boost::intrusive_ptr<ExpressionContext>& expCtx);
 
@@ -101,8 +98,10 @@ public:
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
         const DocumentSourceChangeStreamSpec& spec);
 
-    static ResumeStatus compareAgainstClientResumeToken(const Document& eventFromResumedStream,
-                                                        const ResumeTokenData& tokenDataFromClient);
+    static ResumeStatus compareAgainstClientResumeToken(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        const Document& documentFromResumedStream,
+        const ResumeTokenData& tokenDataFromClient);
 
 protected:
     /**

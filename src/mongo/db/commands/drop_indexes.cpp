@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -43,24 +44,20 @@
 #include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/drop_indexes_gen.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builds_coordinator.h"
-#include "mongo/db/op_observer/op_observer.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/timeseries/catalog_helper.h"
 #include "mongo/db/timeseries/timeseries_commands_conversion_helper.h"
 #include "mongo/db/vector_clock.h"
 #include "mongo/logv2/log.h"
-#include "mongo/util/assert_util.h"
 #include "mongo/util/exit_code.h"
 #include "mongo/util/quick_exit.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 
@@ -78,9 +75,6 @@ public:
     }
     std::string help() const override {
         return "drop indexes for a collection";
-    }
-    bool allowedWithSecurityToken() const final {
-        return true;
     }
     class Invocation final : public InvocationBaseGen {
     public:
@@ -122,7 +116,7 @@ public:
     };
 } cmdDropIndexes;
 
-class CmdReIndex : public BasicCommand {
+class CmdReIndex : public ErrmsgCommandDeprecated {
 public:
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         // Even though reIndex is a standalone-only command, this will return that the command is
@@ -136,31 +130,26 @@ public:
     std::string help() const override {
         return "re-index a collection (can only be run on a standalone mongod)";
     }
-
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
-        if (!as->isAuthorizedForActionsOnResource(parseResourcePattern(dbName.db(), cmdObj),
-                                                  ActionType::reIndex)) {
-            return {ErrorCodes::Unauthorized, "unauthorized"};
-        }
-
-        return Status::OK();
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {
+        ActionSet actions;
+        actions.addAction(ActionType::reIndex);
+        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
+    CmdReIndex() : ErrmsgCommandDeprecated("reIndex") {}
 
-    CmdReIndex() : BasicCommand("reIndex") {}
-
-    bool run(OperationContext* opCtx,
-             const DatabaseName& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
+    bool errmsgRun(OperationContext* opCtx,
+                   const std::string& dbname,
+                   const BSONObj& jsobj,
+                   std::string& errmsg,
+                   BSONObjBuilder& result) {
         LOGV2_WARNING(6508600,
                       "The reIndex command is deprecated. For more information, see "
                       "https://mongodb.com/docs/manual/reference/command/reIndex/");
 
         const NamespaceString toReIndexNss =
-            CommandHelpers::parseNsCollectionRequired(dbName, cmdObj);
+            CommandHelpers::parseNsCollectionRequired(dbname, jsobj);
 
         LOGV2(20457, "CMD: reIndex {namespace}", "CMD reIndex", "namespace"_attr = toReIndexNss);
 
@@ -186,7 +175,7 @@ public:
             collection->uuid());
 
         // This is necessary to set up CurOp and update the Top stats.
-        OldClientContext ctx(opCtx, toReIndexNss);
+        OldClientContext ctx(opCtx, toReIndexNss.ns());
 
         const auto defaultIndexVersion = IndexDescriptor::getDefaultIndexVersion();
 
@@ -227,12 +216,12 @@ public:
                 const BSONObj key = spec.getObjectField("key");
                 const Status keyStatus =
                     index_key_validate::validateKeyPattern(key, defaultIndexVersion);
-
-                uassertStatusOKWithContext(
-                    keyStatus,
-                    str::stream()
+                if (!keyStatus.isOK()) {
+                    errmsg = str::stream()
                         << "Cannot rebuild index " << spec << ": " << keyStatus.reason()
-                        << " For more info see http://dochub.mongodb.org/core/index-validation");
+                        << " For more info see http://dochub.mongodb.org/core/index-validation";
+                    return false;
+                }
             }
         }
 
@@ -244,11 +233,11 @@ public:
                                                             "Uninitialized");
         writeConflictRetry(opCtx, "dropAllIndexes", toReIndexNss.ns(), [&] {
             WriteUnitOfWork wunit(opCtx);
-            collection.getWritableCollection(opCtx)->getIndexCatalog()->dropAllIndexes(
-                opCtx, collection.getWritableCollection(opCtx), true, {});
+            collection.getWritableCollection()->getIndexCatalog()->dropAllIndexes(
+                opCtx, collection.getWritableCollection(), true, {});
 
-            swIndexesToRebuild = indexer->init(
-                opCtx, collection, all, MultiIndexBlock::kNoopOnInitFn, /*forRecovery=*/false);
+            swIndexesToRebuild =
+                indexer->init(opCtx, collection, all, MultiIndexBlock::kNoopOnInitFn);
             uassertStatusOK(swIndexesToRebuild.getStatus());
             wunit.commit();
         });
@@ -260,7 +249,7 @@ public:
 
         if (MONGO_unlikely(reIndexCrashAfterDrop.shouldFail())) {
             LOGV2(20458, "Exiting because 'reIndexCrashAfterDrop' fail point was set");
-            quickExit(ExitCode::abrupt);
+            quickExit(EXIT_ABRUPT);
         }
 
         // The following function performs its own WriteConflict handling, so don't wrap it in a
@@ -272,7 +261,7 @@ public:
         writeConflictRetry(opCtx, "commitReIndex", toReIndexNss.ns(), [&] {
             WriteUnitOfWork wunit(opCtx);
             uassertStatusOK(indexer->commit(opCtx,
-                                            collection.getWritableCollection(opCtx),
+                                            collection.getWritableCollection(),
                                             MultiIndexBlock::kNoopOnCreateEachFn,
                                             MultiIndexBlock::kNoopOnCommitFn));
             wunit.commit();

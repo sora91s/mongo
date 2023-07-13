@@ -56,8 +56,7 @@ struct argument {
     typename tuple_element<N, TupleT>::type
     eval(TupleT const& args) const
     {
-        tuple_index<N> const idx;
-        return args[idx];
+        return args[tuple_index<N>()];
     }
 };
 

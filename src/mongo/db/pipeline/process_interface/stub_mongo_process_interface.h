@@ -82,14 +82,6 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    Status insertTimeseries(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                            const NamespaceString& ns,
-                            std::vector<BSONObj>&& objs,
-                            const WriteConcernOptions& wc,
-                            boost::optional<OID> targetEpoch) override {
-        MONGO_UNREACHABLE;
-    }
-
     StatusWith<UpdateResult> update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                     const NamespaceString& ns,
                                     BatchedObjects&& batch,
@@ -117,13 +109,6 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    void createTimeseries(OperationContext* opCtx,
-                          const NamespaceString& ns,
-                          const BSONObj& options,
-                          bool createView) final {
-        MONGO_UNREACHABLE;
-    }
-
     boost::optional<BSONObj> getCatalogEntry(OperationContext* opCtx,
                                              const NamespaceString& ns) const override {
         MONGO_UNREACHABLE;
@@ -139,8 +124,7 @@ public:
     Status appendStorageStats(OperationContext* opCtx,
                               const NamespaceString& nss,
                               const StorageStatsSpec& spec,
-                              BSONObjBuilder* builder,
-                              const boost::optional<BSONObj>& filterObj) const override {
+                              BSONObjBuilder* builder) const override {
         MONGO_UNREACHABLE;
     }
 
@@ -162,18 +146,15 @@ public:
 
     void renameIfOptionsAndIndexesHaveNotChanged(
         OperationContext* opCtx,
-        const NamespaceString& sourceNs,
+        const BSONObj& renameCommandObj,
         const NamespaceString& targetNs,
-        bool dropTarget,
-        bool stayTemp,
-        bool allowBuckets,
         const BSONObj& originalCollectionOptions,
         const std::list<BSONObj>& originalIndexes) override {
         MONGO_UNREACHABLE;
     }
 
     void createCollection(OperationContext* opCtx,
-                          const DatabaseName& dbName,
+                          const std::string& dbName,
                           const BSONObj& cmdObj) override {
         MONGO_UNREACHABLE;
     }
@@ -201,6 +182,11 @@ public:
 
     std::unique_ptr<Pipeline, PipelineDeleter> attachCursorSourceToPipelineForLocalRead(
         Pipeline* pipeline) override {
+        MONGO_UNREACHABLE;
+    }
+
+    std::unique_ptr<ShardFilterer> getShardFilterer(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx) const override {
         MONGO_UNREACHABLE;
     }
 
@@ -257,11 +243,11 @@ public:
         return BackupCursorState{UUID::gen(), boost::none, nullptr, {}};
     }
 
-    void closeBackupCursor(OperationContext* opCtx, const UUID& backupId) override {}
+    void closeBackupCursor(OperationContext* opCtx, const UUID& backupId) final {}
 
     BackupCursorExtendState extendBackupCursor(OperationContext* opCtx,
                                                const UUID& backupId,
-                                               const Timestamp& extendTo) override {
+                                               const Timestamp& extendTo) final {
         return {{}};
     }
 
@@ -277,7 +263,7 @@ public:
         return true;
     }
 
-    boost::optional<ShardVersion> refreshAndGetCollectionVersion(
+    boost::optional<ChunkVersion> refreshAndGetCollectionVersion(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
         const NamespaceString& nss) const override {
         return boost::none;
@@ -294,16 +280,15 @@ public:
     }
 
     std::pair<std::set<FieldPath>, boost::optional<ChunkVersion>>
-    ensureFieldsUniqueOrResolveDocumentKey(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        boost::optional<std::set<FieldPath>> fieldPaths,
-        boost::optional<ChunkVersion> targetCollectionPlacementVersion,
-        const NamespaceString& outputNs) const override {
+    ensureFieldsUniqueOrResolveDocumentKey(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                           boost::optional<std::set<FieldPath>> fieldPaths,
+                                           boost::optional<ChunkVersion> targetCollectionVersion,
+                                           const NamespaceString& outputNs) const override {
         if (!fieldPaths) {
-            return {std::set<FieldPath>{"_id"}, targetCollectionPlacementVersion};
+            return {std::set<FieldPath>{"_id"}, targetCollectionVersion};
         }
 
-        return {*fieldPaths, targetCollectionPlacementVersion};
+        return {*fieldPaths, targetCollectionVersion};
     }
 
     std::unique_ptr<ScopedExpectUnshardedCollection> expectUnshardedCollectionInScope(

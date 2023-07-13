@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
 
 #include "mongo/platform/basic.h"
 
@@ -51,9 +52,6 @@
 #include "mongo/util/str.h"
 
 #include <tomcrypt.h>
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kStorage
-
 
 #ifdef MONGO_CONFIG_SSL
 #error This file should not be included if compiling with SSL support

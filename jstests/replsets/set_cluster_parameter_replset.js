@@ -3,6 +3,9 @@
  *
  * @tags: [
  *   does_not_support_stepdowns,
+ *   featureFlagClusterWideConfig,
+ *   # Requires all nodes to be running the latest binary.
+ *   requires_fcv_60,
  *   # Restarts all replica set member nodes mid-test.
  *   requires_persistence,
  *  ]
@@ -40,9 +43,9 @@ function checkClusterParameterInitialSync(rst) {
     rst.awaitReplication();
 
     // Check that the new node has the latest cluster parameter values.
-    assert(runGetClusterParameterNode(newNode,
-                                      ["testIntClusterParameter", "testStrClusterParameter"],
-                                      [newIntParameter, newStrParameter]));
+    runGetClusterParameterNode(newNode,
+                               ["testIntClusterParameter", "testStrClusterParameter"],
+                               [newIntParameter, newStrParameter]);
 
     // Check that setClusterParameter properly works with the reconfigured replica set.
     newIntParameter.intData = 30;

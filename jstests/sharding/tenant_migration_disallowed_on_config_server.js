@@ -2,6 +2,7 @@
  * Tests that tenant migration commands cannot be run on sharded clusters for config servers.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_windows_tls,
  *   requires_majority_read_concern,
  *   requires_persistence,
@@ -10,16 +11,14 @@
  * ]
  */
 
-import {TenantMigrationTest} from "jstests/replsets/libs/tenant_migration_test.js";
-import {donorStartMigrationWithProtocol} from "jstests/replsets/libs/tenant_migration_util.js";
-
 (function() {
-load("jstests/libs/catalog_shard_util.js");
+"use strict";
+
+load("jstests/replsets/libs/tenant_migration_test.js");
 
 const st = new ShardingTest({shards: 1});
 const donorRstShard = st.rs0;
 const donorRstConfig = st.configRS;
-
 const recipientRst = new ReplSetTest({nodes: 1});
 recipientRst.startSet();
 recipientRst.initiate();
@@ -30,14 +29,14 @@ const tenantMigrationTest =
 // Run tenant migration commands on config servers.
 let donorPrimary = donorRstConfig.getPrimary();
 
-let cmdObj = donorStartMigrationWithProtocol({
+let cmdObj = TenantMigrationUtil.donorStartMigrationWithProtocol({
     donorStartMigration: 1,
-    tenantId: ObjectId().str,
+    tenantId: "kTenantTest",
     migrationId: UUID(),
     recipientConnectionString: tenantMigrationTest.getRecipientConnString(),
     readPreference: {mode: "primary"}
 },
-                                             donorPrimary.getDB("admin"));
+                                                                 donorPrimary.getDB("admin"));
 assert.commandFailedWithCode(donorPrimary.adminCommand(cmdObj), ErrorCodes.IllegalOperation);
 
 cmdObj = {
@@ -56,7 +55,7 @@ cmdObj = {
     recipientSyncData: 1,
     migrationId: UUID(),
     donorConnectionString: tenantMigrationTest.getRecipientRst().getURL(),
-    tenantId: ObjectId().str,
+    tenantId: "kTenantTest",
     readPreference: {mode: "primary"},
     startMigrationDonorTimestamp: Timestamp(1, 1)
 };
@@ -66,7 +65,7 @@ cmdObj = {
     recipientForgetMigration: 1,
     migrationId: UUID(),
     donorConnectionString: tenantMigrationTest.getRecipientRst().getURL(),
-    tenantId: ObjectId().str,
+    tenantId: "kTenantTest",
     readPreference: {mode: "primary"},
 };
 assert.commandFailedWithCode(donorPrimary.adminCommand(cmdObj), ErrorCodes.IllegalOperation);

@@ -91,7 +91,7 @@ TEST_F(FreeMonQueueTest, TestBasic) {
 
     auto item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource());
 
-    ASSERT(item.value()->getType() == FreeMonMessageType::RegisterServer);
+    ASSERT(item.get()->getType() == FreeMonMessageType::RegisterServer);
 }
 
 Date_t fromNow(int millis) {
@@ -107,10 +107,10 @@ TEST_F(FreeMonQueueTest, TestDeadlinePriority) {
     queue.enqueue(
         FreeMonMessage::createWithDeadline(FreeMonMessageType::RegisterCommand, fromNow(50)));
 
-    auto item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).value();
+    auto item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).get();
     ASSERT(item->getType() == FreeMonMessageType::RegisterCommand);
 
-    item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).value();
+    item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).get();
     ASSERT(item->getType() == FreeMonMessageType::RegisterServer);
 }
 
@@ -124,13 +124,13 @@ TEST_F(FreeMonQueueTest, TestFIFO) {
     queue.enqueue(
         FreeMonMessage::createWithDeadline(FreeMonMessageType::RegisterCommand, Date_t()));
 
-    auto item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).value();
+    auto item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).get();
     ASSERT(item->getType() == FreeMonMessageType::RegisterServer);
 
-    item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).value();
+    item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).get();
     ASSERT(item->getType() == FreeMonMessageType::AsyncRegisterComplete);
 
-    item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).value();
+    item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource()).get();
     ASSERT(item->getType() == FreeMonMessageType::RegisterCommand);
 }
 
@@ -150,7 +150,7 @@ TEST_F(FreeMonQueueTest, TestQueueStop) {
 
             // Try to dequeue from a stopped task queue
             auto item = queue.dequeue(_opCtx.get()->getServiceContext()->getPreciseClockSource());
-            ASSERT_FALSE(item.has_value());
+            ASSERT_FALSE(item.is_initialized());
         });
 
     ASSERT_OK(swSchedule.getStatus());

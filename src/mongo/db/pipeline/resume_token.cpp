@@ -31,6 +31,7 @@
 
 #include "mongo/db/pipeline/resume_token.h"
 
+#include <boost/optional/optional_io.hpp>
 #include <limits>
 
 #include "mongo/bson/bsonmisc.h"
@@ -40,11 +41,21 @@
 #include "mongo/db/pipeline/document_source_change_stream_gen.h"
 #include "mongo/db/storage/key_string.h"
 #include "mongo/util/hex.h"
-#include "mongo/util/optional_util.h"
 
 namespace mongo {
 constexpr StringData ResumeToken::kDataFieldName;
 constexpr StringData ResumeToken::kTypeBitsFieldName;
+
+namespace {
+// Helper function for makeHighWaterMarkToken and isHighWaterMarkToken.
+ResumeTokenData makeHighWaterMarkResumeTokenData(Timestamp clusterTime, int version) {
+    ResumeTokenData tokenData;
+    tokenData.version = version;
+    tokenData.clusterTime = clusterTime;
+    tokenData.tokenType = ResumeTokenData::kHighWaterMarkToken;
+    return tokenData;
+}
+}  // namespace
 
 ResumeTokenData::ResumeTokenData(Timestamp clusterTimeIn,
                                  int versionIn,
@@ -77,8 +88,7 @@ bool ResumeTokenData::operator==(const ResumeTokenData& other) const {
     return clusterTime == other.clusterTime && version == other.version &&
         tokenType == other.tokenType && txnOpIndex == other.txnOpIndex &&
         fromInvalidate == other.fromInvalidate && uuid == other.uuid &&
-        (Value::compare(this->eventIdentifier, other.eventIdentifier, nullptr) == 0) &&
-        fragmentNum == other.fragmentNum;
+        (Value::compare(this->eventIdentifier, other.eventIdentifier, nullptr) == 0);
 }
 
 std::ostream& operator<<(std::ostream& out, const ResumeTokenData& tokenData) {
@@ -91,12 +101,8 @@ std::ostream& operator<<(std::ostream& out, const ResumeTokenData& tokenData) {
     if (tokenData.version > 0) {
         out << ", fromInvalidate: " << static_cast<bool>(tokenData.fromInvalidate);
     }
-    out << ", uuid: " << optional_io::Extension{tokenData.uuid};
-    out << ", eventIdentifier: " << tokenData.eventIdentifier;
-    if (tokenData.version >= 2) {
-        out << ", fragmentNum: " << optional_io::Extension{tokenData.fragmentNum};
-    }
-    out << "}";
+    out << ", uuid: " << tokenData.uuid;
+    out << ", eventIdentifier: " << tokenData.eventIdentifier << "}";
     return out;
 }
 
@@ -156,14 +162,6 @@ ResumeToken::ResumeToken(const ResumeTokenData& data) {
         builder.appendNull("");
     }
     data.eventIdentifier.addToBsonObj(&builder, "");
-
-    if (data.fragmentNum) {
-        uassert(7182504,
-                str::stream() << "Tokens of version " << data.version
-                              << " cannot have a fragmentNum",
-                data.version >= 2);
-        builder.appendNumber("", static_cast<long long>(*data.fragmentNum));
-    }
 
     auto keyObj = builder.obj();
     KeyString::Builder encodedToken(KeyString::Version::V1, keyObj, Ordering::make(BSONObj()));
@@ -287,14 +285,6 @@ ResumeTokenData ResumeToken::getData() const {
             "Resume Token eventIdentifier is not an object",
             result.eventIdentifier.getType() == BSONType::Object);
 
-    if (i.more() && result.version >= 2) {
-        auto fragmentNum = i.next();
-        uassert(7182501,
-                "Resume token 'fragmentNum' must be a non-negative integer.",
-                fragmentNum.type() == BSONType::NumberInt && fragmentNum.numberInt() >= 0);
-        result.fragmentNum = fragmentNum.numberInt();
-    }
-
     uassert(40646, "invalid oversized resume token", !i.more());
     return result;
 }
@@ -307,20 +297,12 @@ ResumeToken ResumeToken::parse(const Document& resumeDoc) {
     return ResumeToken(resumeDoc);
 }
 
-ResumeTokenData ResumeToken::makeHighWaterMarkTokenData(Timestamp clusterTime, int version) {
-    ResumeTokenData tokenData;
-    tokenData.version = version;
-    tokenData.clusterTime = clusterTime;
-    tokenData.tokenType = ResumeTokenData::kHighWaterMarkToken;
-    return tokenData;
-}
-
 ResumeToken ResumeToken::makeHighWaterMarkToken(Timestamp clusterTime, int version) {
-    return ResumeToken(makeHighWaterMarkTokenData(clusterTime, version));
+    return ResumeToken(makeHighWaterMarkResumeTokenData(clusterTime, version));
 }
 
 bool ResumeToken::isHighWaterMarkToken(const ResumeTokenData& tokenData) {
-    return tokenData == makeHighWaterMarkTokenData(tokenData.clusterTime, tokenData.version);
+    return tokenData == makeHighWaterMarkResumeTokenData(tokenData.clusterTime, tokenData.version);
 }
 
 }  // namespace mongo

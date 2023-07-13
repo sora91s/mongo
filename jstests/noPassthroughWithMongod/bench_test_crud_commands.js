@@ -73,7 +73,10 @@ function testWriteConcern() {
     testInsert(docs, {"w": "majority"});
     testInsert(docs, {"w": 1, "j": false});
 
-    if (jsTestOptions().storageEngine != "inMemory") {
+    var storageEnginesWithoutJournaling = new Set(["ephemeralForTest", "inMemory"]);
+    var runningWithoutJournaling = TestData.noJournal ||
+        storageEnginesWithoutJournaling.has(db.serverStatus().storageEngine.name);
+    if (!runningWithoutJournaling) {
         // Only test journaled writes if the server actually supports them.
         testInsert(docs, {"j": true});
     }

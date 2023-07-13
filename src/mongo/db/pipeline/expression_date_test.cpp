@@ -34,7 +34,6 @@
 
 #include "mongo/db/exec/document_value/document_value_test_util.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
-#include "mongo/db/pipeline/expression_dependencies.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -1350,7 +1349,7 @@ TEST_F(ExpressionDateFromStringTest, ReturnsOnErrorForParseFailures) {
 
     std::vector<std::string> invalidDates = {
         "60.Monday1770/06:59", "July 4th", "12:50:53", "2017, 12:50:53"};
-    for (const auto& date : invalidDates) {
+    for (auto date : invalidDates) {
         auto spec = BSON("$dateFromString" << BSON("dateString" << date << "onError"
                                                                 << "Error default"));
         auto dateExp = Expression::parseExpression(expCtx.get(), spec, expCtx->variablesParseState);
@@ -1363,7 +1362,7 @@ TEST_F(ExpressionDateFromStringTest, ReturnsOnErrorForFormatMismatch) {
 
     const std::string date = "2018/02/06";
     std::vector<std::string> unmatchedFormats = {"%Y", "%Y/%m/%d:%H", "Y/m/d"};
-    for (const auto& format : unmatchedFormats) {
+    for (auto format : unmatchedFormats) {
         auto spec =
             BSON("$dateFromString" << BSON("dateString" << date << "format" << format << "onError"
                                                         << "Error default"));
@@ -1625,9 +1624,8 @@ TEST_F(ExpressionDateDiffTest, EvaluatesExpression) {
          Value{"century"_sd},
          utc,
          null,
-         ErrorCodes::FailedToParse,  // Error code.
-         "$dateDiff parameter 'unit' value parsing failed :: caused by :: unknown time unit value: "
-         "century"},
+         5439014,  // Error code.
+         "$dateDiff parameter 'unit' value cannot be recognized as a time unit: century"},
         {// Invalid 'timezone' value.
          anyDate,
          anyDate,
@@ -1770,10 +1768,10 @@ TEST_F(ExpressionDateDiffTest, AddsDependencies) {
                                                             Value{"$startOfWeekField"_sd});
 
     // Verify that dependencies for $dateDiff expression are determined correctly.
-    auto depsTracker = expression::getDependencies(dateDiffExpression.get());
+    auto depsTracker = dateDiffExpression->getDependencies();
     ASSERT_TRUE(
         (depsTracker.fields ==
-         OrderedPathSet{
+         std::set<std::string>{
              "startDateField", "endDateField", "unitField", "timezoneField", "startOfWeekField"}));
 }
 }  // namespace ExpressionDateDiffTest
@@ -1868,10 +1866,10 @@ TEST_F(ExpressionDateTruncTest, AddsDependencies) {
                                                                    Value{"$startOfWeekField"_sd});
 
     // Verify that dependencies for $dateTrunc expression are determined correctly.
-    const auto depsTracker = expression::getDependencies(dateTruncExpression.get());
+    const auto depsTracker = dateTruncExpression->getDependencies();
     ASSERT_TRUE(
         (depsTracker.fields ==
-         OrderedPathSet{
+         std::set<std::string>{
              "dateField", "unitField", "binSizeField", "timezoneField", "startOfWeekField"}));
 }
 }  // namespace
@@ -1994,9 +1992,9 @@ TEST_F(ExpressionDateArithmeticsTest, ThrowsExceptionOnInvalidInput) {
             {BSON(expName << BSON("startDate"
                                   << "myDate"
                                   << "unit" << 123 << "amount" << 1)),
-             5439013},
+             5166403},
             {BSON(expName << BSON("startDate" << Date_t{} << "unit" << 123 << "amount" << 1)),
-             5439013},
+             5166404},
             {BSON(expName << BSON("startDate" << Date_t{} << "unit"
                                               << "decade"
                                               << "amount" << 1)),
@@ -2178,7 +2176,7 @@ TEST_F(ExpressionDateArithmeticsTest, AddsDependencies) {
         auto dateAddExp =
             Expression::parseExpression(expCtx.get(), doc, expCtx->variablesParseState);
         DepsTracker dependencies;
-        expression::addDependencies(dateAddExp.get(), &dependencies);
+        dateAddExp->addDependencies(&dependencies);
         ASSERT_EQ(dependencies.fields.size(), 4UL);
         ASSERT_EQ(dependencies.fields.count("date"), 1UL);
         ASSERT_EQ(dependencies.fields.count("unit"), 1UL);

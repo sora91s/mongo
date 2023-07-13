@@ -53,7 +53,7 @@ public:
 
 void addToWindowCovariance(WindowFunctionCovariance* covariance,
                            const std::vector<Value>& valToAdd) {
-    for (const auto& val : valToAdd) {
+    for (auto val : valToAdd) {
         covariance->add(val);
     }
 }

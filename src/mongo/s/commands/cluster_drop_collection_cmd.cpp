@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -43,9 +44,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
 #include "mongo/util/scopeguard.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -80,11 +78,11 @@ public:
             auto nss = request().getNamespace();
             uassert(ErrorCodes::IllegalOperation,
                     "Cannot drop collection in 'config' database in sharded cluster",
-                    nss.dbName() != DatabaseName::kConfig);
+                    nss.db() != NamespaceString::kConfigDb);
 
             uassert(ErrorCodes::IllegalOperation,
                     "Cannot drop collection in 'admin' database in sharded cluster",
-                    nss.dbName() != DatabaseName::kAdmin);
+                    nss.db() != NamespaceString::kAdminDb);
 
             try {
                 // Invalidate the routing table cache entry for this collection so that we reload it
@@ -92,7 +90,6 @@ public:
                 // fails due to e.g. a NetworkError.
                 ON_BLOCK_EXIT([opCtx, nss] {
                     Grid::get(opCtx)->catalogCache()->invalidateCollectionEntry_LINEARIZABLE(nss);
-                    Grid::get(opCtx)->catalogCache()->invalidateIndexEntry_LINEARIZABLE(nss);
                 });
 
                 const auto dbInfo =
@@ -118,9 +115,9 @@ public:
                 auto resultObj = result.obj();
                 uassertStatusOK(getStatusFromCommandResult(resultObj));
                 // Ensure our reply conforms to the IDL-defined reply structure.
-                return DropReply::parse(IDLParserContext{"drop"}, resultObj);
+                return DropReply::parse({"drop"}, resultObj);
             } catch (const ExceptionFor<ErrorCodes::NamespaceNotFound>&) {
-                uassert(CollectionUUIDMismatchInfo(request().getDbName(),
+                uassert(CollectionUUIDMismatchInfo(request().getDbName().toString(),
                                                    *request().getCollectionUUID(),
                                                    request().getNamespace().coll().toString(),
                                                    boost::none),

@@ -50,14 +50,12 @@ DEFAULT_GENNY_EXECUTABLE = os.path.normpath("genny/build/src/driver/genny")
 
 # Names below correspond to how they are specified via the command line or in the options YAML file.
 DEFAULTS = {
-    "auto_kill": "on",
     "always_use_log_files": False,
     "archive_limit_mb": 5000,
     "archive_limit_tests": 10,
     "base_port": 20000,
     "backup_on_restart_dir": None,
     "buildlogger_url": "https://logkeeper2.build.10gen.cc",
-    "catalog_shard": None,
     "continue_on_failure": False,
     "dbpath_prefix": None,
     "dbtest_executable": None,
@@ -65,7 +63,7 @@ DEFAULTS = {
     "exclude_with_any_tags": None,
     "flow_control": None,
     "flow_control_tickets": None,
-    "fuzz_mongod_configs": None,
+    "fuzz_mongod_configs": False,
     "config_fuzz_seed": None,
     "genny_executable": None,
     "include_with_any_tags": None,
@@ -93,9 +91,8 @@ DEFAULTS = {
     "report_failure_status": "fail",
     "report_file": None,
     "run_all_feature_flag_tests": False,
-    "run_no_feature_flag_tests": False,
+    "run_all_feature_flags_no_tests": False,
     "additional_feature_flags": None,
-    "additional_feature_flags_file": None,
     "seed": int(time.time() * 256),  # Taken from random.py code in Python 2.7.
     "service_executor": None,
     "shell_conn_string": None,
@@ -268,9 +265,6 @@ class MultiversionOptions(object):
 # Variables that are set by the user at the command line or with --options.
 ##
 
-# Allow resmoke permission to automatically kill existing rogue mongo processes.
-AUTO_KILL = "on"
-
 # Log to files located in the db path and don't clean dbpaths after tests.
 ALWAYS_USE_LOG_FILES = False
 
@@ -300,9 +294,6 @@ DBTEST_EXECUTABLE = None
 # If set to "tests", then resmoke.py will output the tests that would be run by each suite (without
 # actually running them).
 DRY_RUN = None
-
-# If set, specifies which node is the catalog shard. Can also be set to 'any'.
-CATALOG_SHARD = None
 
 # URL to connect to the Evergreen service.
 EVERGREEN_URL = None
@@ -355,7 +346,7 @@ EXCLUDED_TAG = "__TEMPORARILY_DISABLED__"
 # If true, then a test failure or error will cause resmoke.py to exit and not run any more tests.
 FAIL_FAST = None
 
-FUZZ_MONGOD_CONFIGS = None
+FUZZ_MONGOD_CONFIGS = False
 CONFIG_FUZZ_SEED = None
 
 # Executable file for genny, passed in as a command line arg.
@@ -384,11 +375,8 @@ INSTALL_DIR = None
 # Whether to run tests for feature flags.
 RUN_ALL_FEATURE_FLAG_TESTS = None
 
-# Whether to run the tests with enabled feature flags
-RUN_NO_FEATURE_FLAG_TESTS = None
-
-# the path to a file containing feature flags
-ADDITIONAL_FEATURE_FLAGS_FILE = None
+# Whether to run the server with feature flags. Defaults to true if `RUN_ALL_FEATURE_FLAG_TESTS` is true.
+RUN_ALL_FEATURE_FLAGS = None
 
 # List of enabled feature flags.
 ENABLED_FEATURE_FLAGS = []

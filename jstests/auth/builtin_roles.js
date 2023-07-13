@@ -64,7 +64,6 @@ function runTest(mongo) {
         'killCursors',
         'listCollections',
         'listIndexes',
-        'listSearchIndexes',
         'planCacheRead'
     ];
     const kAdminReadPrivs = [

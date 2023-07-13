@@ -148,11 +148,11 @@ class Fixture(object, metaclass=registry.make_registry_metaclass(_FIXTURES)):  #
         """
         pass
 
-    def is_running(self):
+    def is_running(self):  # pylint: disable=no-self-use
         """Return true if the fixture is still operating and more tests and can be run."""
         return True
 
-    def get_node_info(self):
+    def get_node_info(self):  # pylint: disable=no-self-use
         """Return a list of NodeInfo objects."""
         return []
 
@@ -185,15 +185,14 @@ class Fixture(object, metaclass=registry.make_registry_metaclass(_FIXTURES)):  #
         raise NotImplementedError(
             "get_driver_connection_url must be implemented by Fixture subclasses")
 
-    def mongo_client(self, read_preference=pymongo.ReadPreference.PRIMARY, timeout_millis=30000,
-                     **kwargs):
+    def mongo_client(self, read_preference=pymongo.ReadPreference.PRIMARY, timeout_millis=30000):
         """Return a pymongo.MongoClient connecting to this fixture with specified 'read_preference'.
 
         The PyMongo driver will wait up to 'timeout_millis' milliseconds
         before concluding that the server is unavailable.
         """
 
-        kwargs["connectTimeoutMS"] = timeout_millis
+        kwargs = {"connectTimeoutMS": timeout_millis}
         if pymongo.version_tuple[0] >= 3:
             kwargs["serverSelectionTimeoutMS"] = timeout_millis
             kwargs["connect"] = True
@@ -290,7 +289,7 @@ class NoOpFixture(Fixture):
         """:return: any pids owned by this fixture (none for NopFixture)."""
         return []
 
-    def mongo_client(self, read_preference=None, timeout_millis=None, **kwargs):
+    def mongo_client(self, read_preference=None, timeout_millis=None):
         """Return the mongo_client connection."""
         raise NotImplementedError("NoOpFixture does not support a mongo_client")
 
@@ -403,15 +402,13 @@ def create_fixture_table(fixture):
     return "Fixture status:\n" + table
 
 
-def build_client(node, auth_options=None, read_preference=pymongo.ReadPreference.PRIMARY):
+def authenticate(client, auth_options=None):
     """Authenticate client for the 'authenticationDatabase' and return the client."""
     if auth_options is not None:
-        return node.mongo_client(
-            username=auth_options["username"], password=auth_options["password"],
-            authSource=auth_options["authenticationDatabase"],
-            authMechanism=auth_options["authenticationMechanism"], read_preference=read_preference)
-    else:
-        return node.mongo_client(read_preference=read_preference)
+        auth_db = client[auth_options["authenticationDatabase"]]
+        auth_db.authenticate(auth_options["username"], password=auth_options["password"],
+                             mechanism=auth_options["authenticationMechanism"])
+    return client
 
 
 # Represents a row in a node info table.

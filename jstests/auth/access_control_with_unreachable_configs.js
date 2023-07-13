@@ -7,7 +7,6 @@
 // The config servers are not reachable at shutdown.
 TestData.skipCheckingIndexesConsistentAcrossCluster = true;
 TestData.skipCheckOrphans = true;
-TestData.skipCheckShardFilteringMetadata = true;
 
 var st = new ShardingTest({
     shards: 1,

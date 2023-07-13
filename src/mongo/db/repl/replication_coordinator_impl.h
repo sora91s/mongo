@@ -36,6 +36,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/bson/timestamp.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/replication_state_transition_lock_guard.h"
 #include "mongo/db/repl/delayable_timeout_callback.h"
 #include "mongo/db/repl/initial_syncer.h"
@@ -274,8 +275,6 @@ public:
 
     virtual bool getMaintenanceMode() override;
 
-    virtual bool shouldDropSyncSourceAfterShardSplit(OID replicaSetId) const override;
-
     virtual Status processReplSetSyncFrom(OperationContext* opCtx,
                                           const HostAndPort& target,
                                           BSONObjBuilder* resultObj) override;
@@ -293,8 +292,7 @@ public:
     virtual Status doOptimizedReconfig(OperationContext* opCtx, GetNewConfigFn) override;
 
     virtual Status awaitConfigCommitment(OperationContext* opCtx,
-                                         bool waitForOplogCommitment,
-                                         long long term) override;
+                                         bool waitForOplogCommitment) override;
 
     virtual Status processReplSetInitiate(OperationContext* opCtx,
                                           const BSONObj& configObj,
@@ -409,8 +407,8 @@ public:
         boost::optional<TopologyVersion> clientTopologyVersion,
         boost::optional<Date_t> deadline) override;
 
-    virtual StatusWith<OpTime> getLatestWriteOpTime(
-        OperationContext* opCtx) const noexcept override;
+    virtual StatusWith<OpTime> getLatestWriteOpTime(OperationContext* opCtx) const
+        noexcept override;
 
     virtual HostAndPort getCurrentPrimaryHostAndPort() const override;
 
@@ -425,8 +423,6 @@ public:
     virtual void restartScheduledHeartbeats_forTest() override;
 
     virtual void recordIfCWWCIsSetOnConfigServerOnStartup(OperationContext* opCtx) final;
-
-    virtual SplitPrepareSessionManager* getSplitPrepareSessionManager() override;
 
     // ================== Test support API ===================
 
@@ -471,7 +467,7 @@ public:
     executor::TaskExecutor::CallbackHandle getCatchupTakeoverCbh_forTest() const;
 
     /**
-     * Simple wrappers around _setLastOptimeForMember to make it easier to test.
+     * Simple wrappers around _setLastOptime to make it easier to test.
      */
     Status setLastAppliedOptime_forTest(long long cfgVer,
                                         long long memberId,
@@ -590,8 +586,6 @@ public:
      * Returns a pointer to the WriteConcernTagChanges used by this instance.
      */
     WriteConcernTagChanges* getWriteConcernTagChanges() override;
-
-    bool isRetryableWrite(OperationContext* opCtx) const override;
 
 private:
     using CallbackFn = executor::TaskExecutor::CallbackFn;
@@ -1103,19 +1097,8 @@ private:
      * This is only valid to call on replica sets.
      * "configVersion" will be populated with our config version if it and the configVersion
      * of "args" differ.
-     *
-     * If either applied or durable optime has changed, returns the later of the two (even if
-     * that's not the one which changed).  Otherwise returns a null optime.
      */
-    StatusWith<OpTime> _setLastOptimeForMember(WithLock lk,
-                                               const UpdatePositionArgs::UpdateInfo& args);
-
-    /**
-     * Helper for processReplSetUpdatePosition, companion to _setLastOptimeForMember above.  Updates
-     * replication coordinator state and notifies waiters after remote optime updates.  Must be
-     * called within the same critical section as _setLastOptimeForMember.
-     */
-    void _updateStateAfterRemoteOpTimeUpdates(WithLock lk, const OpTime& maxRemoteOpTime);
+    Status _setLastOptime(WithLock lk, const UpdatePositionArgs::UpdateInfo& args);
 
     /**
      * This function will report our position externally (like upstream) if necessary.
@@ -1364,18 +1347,20 @@ private:
     void _scheduleHeartbeatReconfig(WithLock lk, const ReplSetConfig& newConfig);
 
     /**
-     * Accepts a ReplSetConfig and resolves it either to itself, or the embedded shard split
-     * recipient config if it's present and self is a shard split recipient. Returns a tuple of the
-     * resolved config and a boolean indicating whether a recipient config was found.
+     * Check if the node should use the recipientConfig contained within newConfig.
      */
-    std::tuple<StatusWith<ReplSetConfig>, bool> _resolveConfigToApply(const ReplSetConfig& config);
+    bool _shouldUseRecipientConfig(WithLock lk, const ReplSetConfig& newConfig);
+
+    /**
+     * Check if the recipient config provided can be applied to the current node.
+     */
+    Status _isRecipientConfigValid(WithLock lk, const ReplSetConfig& newConfig);
 
     /**
      * Method to write a configuration transmitted via heartbeat message to stable storage.
      */
     void _heartbeatReconfigStore(const executor::TaskExecutor::CallbackArgs& cbd,
-                                 const ReplSetConfig& newConfig,
-                                 bool isSplitRecipientConfig = false);
+                                 const ReplSetConfig& newConfig);
 
     /**
      * Conclusion actions of a heartbeat-triggered reconfiguration.
@@ -1452,13 +1437,6 @@ private:
      */
     void _updateLastCommittedOpTimeAndWallTime(WithLock lk);
 
-    /** Terms only increase, so if an incoming term is less than or equal to our
-     * current term (_termShadow), there is no need to take the mutex and call _updateTerm_inlock.
-     * Since _termShadow may be lagged, this may return true when the term does not need to be
-     * updated, which is harmless because _updateTerm_inlock will do nothing in that case.
-     */
-    bool _needToUpdateTerm(long long term);
-
     /**
      * Callback that attempts to set the current term in topology coordinator and
      * relinquishes primary if the term actually changes and we are primary.
@@ -1479,6 +1457,17 @@ private:
      * Returns the finish event which is invalid if the process has already finished.
      */
     EventHandle _processReplSetMetadata_inlock(const rpc::ReplSetMetadata& replMetadata);
+
+    /**
+     * Prepares a metadata object for ReplSetMetadata.
+     */
+    void _prepareReplSetMetadata_inlock(const OpTime& lastOpTimeFromClient,
+                                        BSONObjBuilder* builder) const;
+
+    /**
+     * Prepares a metadata object for OplogQueryMetadata.
+     */
+    void _prepareOplogQueryMetadata_inlock(int rbid, BSONObjBuilder* builder) const;
 
     /**
      * Blesses a snapshot to be used for new committed reads.
@@ -1570,12 +1559,6 @@ private:
      * Finish catch-up mode and start drain mode.
      */
     void _enterDrainMode_inlock();
-
-    /**
-     * Enter drain mode which does not result in a primary stepup. Returns a future which becomes
-     * ready when the oplog buffers have completed draining.
-     */
-    Future<void> _drainForShardSplit();
 
     /**
      * Waits for the config state to leave kConfigStartingUp, which indicates that start() has
@@ -1732,6 +1715,9 @@ private:
     // Current ReplicaSet state.
     MemberState _memberState;  // (M)
 
+    // Used to signal threads waiting for changes to _memberState.
+    stdx::condition_variable _drainFinishedCond;  // (M)
+
     ReplicationCoordinator::ApplierState _applierState = ApplierState::Running;  // (M)
 
     // Used to signal threads waiting for changes to _rsConfigState.
@@ -1857,12 +1843,6 @@ private:
     // Construct used to synchronize default write concern changes with config write concern
     // changes.
     WriteConcernTagChangesImpl _writeConcernTagChanges;
-
-    // An optional promise created when entering drain mode for shard split.
-    boost::optional<Promise<void>> _finishedDrainingPromise;  // (M)
-
-    // Pointer to the SplitPrepareSessionManager owned by this ReplicationCoordinator.
-    SplitPrepareSessionManager _splitSessionManager;  // (S)
 };
 
 }  // namespace repl

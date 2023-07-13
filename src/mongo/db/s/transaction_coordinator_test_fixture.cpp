@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -42,9 +43,6 @@
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/unittest/unittest.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
-
 namespace mongo {
 namespace {
 
@@ -59,7 +57,7 @@ void TransactionCoordinatorTestFixture::setUp() {
 
     ASSERT_OK(ServerParameterSet::getNodeParameterSet()
                   ->get("logComponentVerbosity")
-                  ->setFromString("{transaction: {verbosity: 3}}", boost::none));
+                  ->setFromString("{transaction: {verbosity: 3}}"));
 
     for (const auto& shardId : kThreeShardIdList) {
         auto shardTargeter = RemoteCommandTargeterMock::get(

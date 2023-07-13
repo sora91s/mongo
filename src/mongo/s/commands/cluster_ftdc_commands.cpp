@@ -65,28 +65,27 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
 
-        if (!as->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                  ActionType::serverStatus)) {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::serverStatus)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
 
-        if (!as->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                  ActionType::replSetGetStatus)) {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::replSetGetStatus)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
 
-        if (!as->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                  ActionType::connPoolStats)) {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::connPoolStats)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
 
-        if (!as->isAuthorizedForActionsOnResource(
-                ResourcePattern::forExactNamespace(NamespaceString::kRsOplogNamespace),
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forExactNamespace(NamespaceString("local", "oplog.rs")),
                 ActionType::collStats)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }

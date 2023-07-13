@@ -33,11 +33,14 @@
 
 #include "mongo/db/auth/authorization_session_for_test.h"
 #include "mongo/db/auth/authz_manager_external_state_local.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_impl.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/database_holder_impl.h"
 #include "mongo/db/client.h"
 #include "mongo/db/index/index_access_method.h"
-#include "mongo/db/op_observer/op_observer_registry.h"
+#include "mongo/db/index/index_access_method_factory_impl.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
@@ -49,7 +52,6 @@
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/vector_clock_mutable.h"
 #include "mongo/transport/service_entry_point_impl.h"
-#include "mongo/util/periodic_runner_factory.h"
 
 namespace mongo {
 
@@ -90,14 +92,12 @@ OpMsgFuzzerFixture::OpMsgFuzzerFixture(bool skipGlobalInitializers)
     auto observerRegistry = std::make_unique<OpObserverRegistry>();
     _serviceContext->setOpObserver(std::move(observerRegistry));
 
-    _serviceContext->setPeriodicRunner(makePeriodicRunner(_serviceContext));
-
     _clientStrand = ClientStrand::make(_serviceContext->makeClient("test", _session));
     auto clientGuard = _clientStrand->bind();
     auto opCtx = _serviceContext->makeOperationContext(clientGuard.get());
 
     storageGlobalParams.dbpath = _dir.path();
-    storageGlobalParams.engine = "wiredTiger";
+    storageGlobalParams.engine = "ephemeralForTest";
     storageGlobalParams.engineSetByUser = true;
     storageGlobalParams.repair = false;
     serverGlobalParams.enableMajorityReadConcern = false;
@@ -113,6 +113,8 @@ OpMsgFuzzerFixture::OpMsgFuzzerFixture(bool skipGlobalInitializers)
         _serviceContext,
         std::make_unique<CollectionShardingStateFactoryStandalone>(_serviceContext));
     DatabaseHolder::set(_serviceContext, std::make_unique<DatabaseHolderImpl>());
+    IndexAccessMethodFactory::set(_serviceContext,
+                                  std::make_unique<IndexAccessMethodFactoryImpl>());
     Collection::Factory::set(_serviceContext, std::make_unique<CollectionImpl::FactoryImpl>());
 
     // Setup the repl coordinator in standalone mode so we don't need an oplog etc.
@@ -124,17 +126,24 @@ OpMsgFuzzerFixture::OpMsgFuzzerFixture(bool skipGlobalInitializers)
 }
 
 OpMsgFuzzerFixture::~OpMsgFuzzerFixture() {
-    CollectionShardingStateFactory::clear(_serviceContext);
+    // The following ensures a thread-local instance of `ThreadContext` is available when running
+    // the destructor code. This is necessary as the main thread uses static storage for the
+    // instance of `OpMsgFuzzerFixture`, which is not destroyed until after all thread-locals are
+    // destructed. See SERVER-58194 for more details.
+    stdx::thread thread([this] {
+        CollectionShardingStateFactory::clear(_serviceContext);
 
-    {
-        auto clientGuard = _clientStrand->bind();
-        auto opCtx = _serviceContext->makeOperationContext(clientGuard.get());
-        Lock::GlobalLock glk(opCtx.get(), MODE_X);
-        auto databaseHolder = DatabaseHolder::get(opCtx.get());
-        databaseHolder->closeAll(opCtx.get());
-    }
+        {
+            auto clientGuard = _clientStrand->bind();
+            auto opCtx = _serviceContext->makeOperationContext(clientGuard.get());
+            Lock::GlobalLock glk(opCtx.get(), MODE_X);
+            auto databaseHolder = DatabaseHolder::get(opCtx.get());
+            databaseHolder->closeAll(opCtx.get());
+        }
 
-    shutdownGlobalStorageEngineCleanly(_serviceContext);
+        shutdownGlobalStorageEngineCleanly(_serviceContext);
+    });
+    thread.join();
 }
 
 int OpMsgFuzzerFixture::testOneInput(const char* Data, size_t Size) {

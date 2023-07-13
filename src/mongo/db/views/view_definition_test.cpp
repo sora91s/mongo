@@ -44,18 +44,14 @@
 namespace mongo {
 namespace {
 
-const NamespaceString viewNss = NamespaceString::createNamespaceString_forTest("testdb.testview");
-const NamespaceString backingNss =
-    NamespaceString::createNamespaceString_forTest("testdb.testcoll");
-const NamespaceString bucketsColl =
-    NamespaceString::createNamespaceString_forTest("testdb.system.buckets.testcoll");
-const NamespaceString timeseriesColl =
-    NamespaceString::createNamespaceString_forTest("testdb.testcoll");
+const NamespaceString viewNss("testdb.testview");
+const NamespaceString backingNss("testdb.testcoll");
+const NamespaceString bucketsColl("testdb.system.buckets.testcoll");
 const BSONObj samplePipeline = BSON_ARRAY(BSON("limit" << 9));
 
 TEST(ViewDefinitionTest, ViewDefinitionCreationCorrectlyBuildsNamespaceStrings) {
     ViewDefinition viewDef(
-        viewNss.dbName(), viewNss.coll(), backingNss.coll(), samplePipeline, nullptr);
+        viewNss.db(), viewNss.coll(), backingNss.coll(), samplePipeline, nullptr);
     ASSERT_EQ(viewDef.name(), viewNss);
     ASSERT_EQ(viewDef.viewOn(), backingNss);
 }
@@ -64,7 +60,7 @@ TEST(ViewDefinitionTest, CopyConstructorProperlyClonesAllFields) {
     auto collator =
         std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
     ViewDefinition originalView(
-        viewNss.dbName(), viewNss.coll(), backingNss.coll(), samplePipeline, std::move(collator));
+        viewNss.db(), viewNss.coll(), backingNss.coll(), samplePipeline, std::move(collator));
     ViewDefinition copiedView(originalView);
 
     ASSERT_EQ(originalView.name(), copiedView.name());
@@ -82,7 +78,7 @@ TEST(ViewDefinitionTest, CopyAssignmentOperatorProperlyClonesAllFields) {
     auto collator =
         std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
     ViewDefinition originalView(
-        viewNss.dbName(), viewNss.coll(), backingNss.coll(), samplePipeline, std::move(collator));
+        viewNss.db(), viewNss.coll(), backingNss.coll(), samplePipeline, std::move(collator));
     ViewDefinition copiedView = originalView;
 
     ASSERT_EQ(originalView.name(), copiedView.name());
@@ -99,19 +95,17 @@ DEATH_TEST_REGEX(ViewDefinitionTest,
                  SetViewOnFailsIfNewViewOnNotInSameDatabaseAsView,
                  R"#(Invariant failure.*_viewNss.db\(\) == viewOnNss.db\(\))#") {
     ViewDefinition viewDef(
-        viewNss.dbName(), viewNss.coll(), backingNss.coll(), samplePipeline, nullptr);
-    NamespaceString badViewOn =
-        NamespaceString::createNamespaceString_forTest("someOtherDb.someOtherCollection");
+        viewNss.db(), viewNss.coll(), backingNss.coll(), samplePipeline, nullptr);
+    NamespaceString badViewOn("someOtherDb.someOtherCollection");
     viewDef.setViewOn(badViewOn);
 }
 
 TEST(ViewDefinitionTest, SetViewOnSucceedsIfNewViewOnIsInSameDatabaseAsView) {
     ViewDefinition viewDef(
-        viewNss.dbName(), viewNss.coll(), backingNss.coll(), samplePipeline, nullptr);
+        viewNss.db(), viewNss.coll(), backingNss.coll(), samplePipeline, nullptr);
     ASSERT_EQ(viewDef.viewOn(), backingNss);
 
-    NamespaceString newViewOn =
-        NamespaceString::createNamespaceString_forTest("testdb.othercollection");
+    NamespaceString newViewOn("testdb.othercollection");
     viewDef.setViewOn(newViewOn);
     ASSERT_EQ(newViewOn, viewDef.viewOn());
 }
@@ -135,33 +129,8 @@ TEST(ViewDefinitionTest, SetPipelineSucceedsOnValidArrayBSONElement) {
 
 TEST(ViewDefinitionTest, ViewDefinitionCreationCorrectlySetsTimeseries) {
     ViewDefinition viewDef(
-        viewNss.dbName(), viewNss.coll(), bucketsColl.coll(), samplePipeline, nullptr);
-    ASSERT_FALSE(viewDef.timeseries());
-
-    ViewDefinition timeseriesDef(timeseriesColl.dbName(),
-                                 timeseriesColl.coll(),
-                                 bucketsColl.coll(),
-                                 samplePipeline,
-                                 nullptr);
-    ASSERT_TRUE(timeseriesDef.timeseries());
-}
-
-TEST(ViewDefinitionTest, ViewDefinitionCreationCorrectlyBuildsNamespaceStringsWithTenantIds) {
-    TenantId tenantId(OID::gen());
-    NamespaceString viewNss =
-        NamespaceString::createNamespaceString_forTest(tenantId, "testdb.testview");
-    NamespaceString backingNss =
-        NamespaceString::createNamespaceString_forTest(tenantId, "testdb.testcoll");
-
-    ViewDefinition viewDef(
-        viewNss.dbName(), viewNss.coll(), backingNss.coll(), samplePipeline, nullptr);
-    ASSERT(viewDef.name().tenantId());
-    ASSERT_EQ(*viewDef.name().tenantId(), tenantId);
-    ASSERT_EQ(viewDef.name(), viewNss);
-
-    ASSERT(viewDef.viewOn().tenantId());
-    ASSERT_EQ(*viewDef.viewOn().tenantId(), tenantId);
-    ASSERT_EQ(viewDef.viewOn(), backingNss);
+        viewNss.db(), viewNss.coll(), bucketsColl.coll(), samplePipeline, nullptr);
+    ASSERT(viewDef.timeseries());
 }
 }  // namespace
 }  // namespace mongo

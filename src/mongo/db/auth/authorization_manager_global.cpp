@@ -89,17 +89,15 @@ ServiceContext::ConstructorActionRegisterer createAuthorizationManager(
 }  // namespace
 
 void AuthzVersionParameter::append(OperationContext* opCtx,
-                                   BSONObjBuilder* b,
-                                   StringData name,
-                                   const boost::optional<TenantId>&) {
+                                   BSONObjBuilder& b,
+                                   const std::string& name) {
     int authzVersion;
     uassertStatusOK(AuthorizationManager::get(opCtx->getServiceContext())
                         ->getAuthorizationVersion(opCtx, &authzVersion));
-    b->append(name, authzVersion);
+    b.append(name, authzVersion);
 }
 
-Status AuthzVersionParameter::setFromString(StringData newValueString,
-                                            const boost::optional<TenantId>&) {
+Status AuthzVersionParameter::setFromString(const std::string& newValueString) {
     return {ErrorCodes::InternalError, "set called on unsettable server parameter"};
 }
 

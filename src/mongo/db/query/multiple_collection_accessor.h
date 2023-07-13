@@ -60,8 +60,8 @@ public:
                 // Even if the collection corresponding to 'secondaryNss' doesn't exist, we
                 // still want to include it. It is the responsibility of consumers of this class
                 // to verify that a collection exists before accessing it.
-                auto collPtr = catalog->lookupCollectionByNamespace(opCtx, secondaryNss);
-                _secondaryColls.emplace(std::move(secondaryNss), std::move(collPtr));
+                _secondaryColls.emplace(std::move(secondaryNss),
+                                        catalog->lookupCollectionByNamespace(opCtx, secondaryNss));
             }
         }
     }
@@ -99,17 +99,6 @@ public:
     void clear() {
         _mainColl = &CollectionPtr::null;
         _secondaryColls.clear();
-    }
-
-    void forEach(std::function<void(const CollectionPtr&)> func) const {
-        if (hasMainCollection()) {
-            func(getMainCollection());
-        }
-        for (const auto& [name, coll] : getSecondaryCollections()) {
-            if (coll) {
-                func(coll);
-            }
-        }
     }
 
 private:

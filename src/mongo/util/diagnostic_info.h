@@ -114,5 +114,6 @@ private:
         : _timestamp(timestamp), _captureName(captureName), _backtrace(std::move(backtrace)) {}
 };
 
+void initDiagnosticInfo();
 
 }  // namespace mongo

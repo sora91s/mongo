@@ -42,6 +42,13 @@
 
 namespace mongo {
 
+namespace {
+
+// mms-automation stores its document in local.clustermanager
+static const NamespaceString localClusterManagerNss("local.clustermanager");
+
+}  // namespace
+
 constexpr StringData FreeMonStorage::kFreeMonDocIdKey;
 
 boost::optional<FreeMonStorageState> FreeMonStorage::read(OperationContext* opCtx) {
@@ -67,7 +74,7 @@ boost::optional<FreeMonStorageState> FreeMonStorage::read(OperationContext* opCt
         uassertStatusOK(swObj.getStatus());
     }
 
-    return FreeMonStorageState::parse(IDLParserContext("FreeMonStorage"), swObj.getValue());
+    return FreeMonStorageState::parse(IDLParserErrorContext("FreeMonStorage"), swObj.getValue());
 }
 
 void FreeMonStorage::replace(OperationContext* opCtx, const FreeMonStorageState& doc) {
@@ -117,8 +124,7 @@ boost::optional<BSONObj> FreeMonStorage::readClusterManagerState(OperationContex
 
     AutoGetCollectionForRead autoRead(opCtx, NamespaceString::kServerConfigurationNamespace);
 
-    auto swObj =
-        storageInterface->findSingleton(opCtx, NamespaceString::kLocalClusterManagerNamespace);
+    auto swObj = storageInterface->findSingleton(opCtx, localClusterManagerNss);
     if (!swObj.isOK()) {
         // Ignore errors about not-finding documents or having too many documents
         if (swObj.getStatus() == ErrorCodes::NamespaceNotFound ||

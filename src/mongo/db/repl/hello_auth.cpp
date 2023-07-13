@@ -39,10 +39,7 @@
 
 namespace mongo {
 
-void handleHelloAuth(OperationContext* opCtx,
-                     const DatabaseName& dbName,
-                     const HelloCommand& cmd,
-                     BSONObjBuilder* result) {
+void handleHelloAuth(OperationContext* opCtx, const HelloCommand& cmd, BSONObjBuilder* result) {
     // saslSupportedMechs: UserName -> List[String]
     if (auto userNameVariant = cmd.getSaslSupportedMechs()) {
         auto userName = UserName::parseFromVariant(userNameVariant.value());
@@ -61,10 +58,6 @@ void handleHelloAuth(OperationContext* opCtx,
     if (!specAuth) {
         return;
     }
-
-    uassert(6656100,
-            "Cannot specify speculativeAuthenticate with a tenantId",
-            !dbName.tenantId() || dbName.tenantId() == TenantId::systemTenantId());
 
     uassert(ErrorCodes::BadValue,
             str::stream() << "hello." << auth::kSpeculativeAuthenticate

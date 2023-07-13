@@ -17,6 +17,8 @@
 (function() {
 'use strict';
 
+load("jstests/libs/logv2_helpers.js");
+
 function resetProfiler(db) {
     assert.commandWorked(db.setProfilingLevel(0, {slowms: 0}));
     db.system.profile.drop();

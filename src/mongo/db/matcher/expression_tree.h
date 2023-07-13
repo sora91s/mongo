@@ -61,7 +61,6 @@ public:
     }
 
     MatchExpression* getChild(size_t i) const final {
-        tassert(6400201, "Out-of-bounds access to child of MatchExpression.", i < numChildren());
         return _expressions[i].get();
     }
 
@@ -99,7 +98,7 @@ public:
 protected:
     void _debugList(StringBuilder& debug, int indentationLevel) const;
 
-    void _listToBSON(BSONArrayBuilder* out, SerializationOptions opts) const;
+    void _listToBSON(BSONArrayBuilder* out, bool includePath) const;
 
 private:
     ExpressionOptimizerFunc getOptimizer() const final;
@@ -138,7 +137,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int indentationLevel = 0) const;
 
-    virtual void serialize(BSONObjBuilder* out, SerializationOptions opts) const;
+    virtual void serialize(BSONObjBuilder* out, bool includePath) const;
 
     bool isTriviallyTrue() const final;
 
@@ -182,7 +181,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int indentationLevel = 0) const;
 
-    virtual void serialize(BSONObjBuilder* out, SerializationOptions opts) const;
+    virtual void serialize(BSONObjBuilder* out, bool includePath) const;
 
     bool isTriviallyFalse() const final;
 
@@ -226,7 +225,7 @@ public:
 
     virtual void debugString(StringBuilder& debug, int indentationLevel = 0) const;
 
-    virtual void serialize(BSONObjBuilder* out, SerializationOptions opts) const;
+    virtual void serialize(BSONObjBuilder* out, bool includePath) const;
 
     void acceptVisitor(MatchExpressionMutableVisitor* visitor) final {
         visitor->visit(this);
@@ -239,7 +238,6 @@ public:
 
 class NotMatchExpression final : public MatchExpression {
 public:
-    static constexpr int kNumChildren = 1;
     explicit NotMatchExpression(MatchExpression* e,
                                 clonable_ptr<ErrorAnnotation> annotation = nullptr)
         : MatchExpression(NOT, std::move(annotation)), _exp(e) {}
@@ -267,16 +265,15 @@ public:
 
     virtual void debugString(StringBuilder& debug, int indentationLevel = 0) const;
 
-    virtual void serialize(BSONObjBuilder* out, SerializationOptions opts) const;
+    virtual void serialize(BSONObjBuilder* out, bool includePath) const;
 
     bool equivalent(const MatchExpression* other) const final;
 
     size_t numChildren() const final {
-        return kNumChildren;
+        return 1;
     }
 
     MatchExpression* getChild(size_t i) const final {
-        tassert(6400210, "Out-of-bounds access to child of MatchExpression.", i < kNumChildren);
         return _exp.get();
     }
 
@@ -309,7 +306,7 @@ public:
 private:
     static void serializeNotExpressionToNor(MatchExpression* exp,
                                             BSONObjBuilder* out,
-                                            SerializationOptions opts);
+                                            bool includePath);
 
     ExpressionOptimizerFunc getOptimizer() const final;
 

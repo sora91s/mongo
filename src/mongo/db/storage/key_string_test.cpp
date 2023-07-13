@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -53,9 +54,6 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/timer.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 using std::string;
 using namespace mongo;
@@ -748,7 +746,7 @@ TEST_F(KeyStringBuilderTest, InvalidInfinityDecimalV0) {
 
 TEST_F(KeyStringBuilderTest, ReasonableSize) {
     // Tests that KeyString::Builders do not use an excessive amount of memory for small key
-    // generation. These upper bounds were the calculated sizes of each type at the time this
+    // generation. These upper bounds were the calculate sizes of each type at the time this
     // test was written.
     KeyString::Builder stackBuilder(KeyString::Version::kLatestVersion, BSONObj(), ALL_ASCENDING);
     static_assert(sizeof(stackBuilder) <= 624);
@@ -757,13 +755,8 @@ TEST_F(KeyStringBuilderTest, ReasonableSize) {
         KeyString::Version::kLatestVersion, BSONObj(), ALL_ASCENDING);
     static_assert(sizeof(heapBuilder) <= 104);
 
-    // Use a small block size to ensure we do not use more. Additionally, the minimum allocation
-    // size is 64.
-    const auto minSize = 64;
-    SharedBufferFragmentBuilder fragmentBuilder(
-        minSize,
-        SharedBufferFragmentBuilder::DoubleGrowStrategy(
-            SharedBufferFragmentBuilder::kDefaultMaxBlockSize));
+    // Use large 1KB blocks and verify that we use way less
+    SharedBufferFragmentBuilder fragmentBuilder(1024);
     KeyString::PooledBuilder pooledBuilder(
         fragmentBuilder, KeyString::Version::kLatestVersion, BSONObj(), ALL_ASCENDING);
     static_assert(sizeof(pooledBuilder) <= 104);
@@ -783,16 +776,11 @@ TEST_F(KeyStringBuilderTest, ReasonableSize) {
 
     KeyString::Value value4 = pooledBuilder.getValueCopy();
     ASSERT_LTE(sizeof(value4), 32);
-    // This is safe because we are operating on a copy of the value and it is not shared elsewhere.
     ASSERT_LTE(value4.memUsageForSorter(), 34);
-    // We should still be using the initially-allocated size.
-    ASSERT_LTE(fragmentBuilder.memUsage(), 64);
 
-    // For values created with the pooledBuilder, it is invalid to call memUsageForSorter(). Instead
-    // we look at the mem usage of the builder itself.
     KeyString::Value value5 = pooledBuilder.release();
     ASSERT_LTE(sizeof(value5), 32);
-    ASSERT_LTE(fragmentBuilder.memUsage(), 64);
+    ASSERT_LTE(value5.memUsageForSorter(), 34);
 }
 
 TEST_F(KeyStringBuilderTest, DiscardIfNotReleased) {
@@ -1857,7 +1845,7 @@ TEST_F(KeyStringBuilderTest, RandomizedInputsForToBsonSafe) {
                                                           std::numeric_limits<unsigned int>::max());
 
     const auto interestingElements = getInterestingElements(KeyString::Version::V1);
-    for (const auto& elem : interestingElements) {
+    for (auto elem : interestingElements) {
         const KeyString::Builder ks(KeyString::Version::V1, elem, ALL_ASCENDING);
 
         auto ksBuffer = SharedBuffer::allocate(ks.getSize());
@@ -1918,7 +1906,7 @@ void perfTest(KeyString::Version version, const Numbers& numbers) {
         Timer t;
 
         for (uint64_t i = 0; i < iters; i++)
-            for (const auto& item : numbers) {
+            for (auto item : numbers) {
                 // Assuming there are sufficient invariants in the to/from KeyString::Builder
                 // methods
                 // that calls will not be optimized away.

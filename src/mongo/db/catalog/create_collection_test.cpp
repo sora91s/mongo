@@ -27,32 +27,33 @@
  *    it in the license file.
  */
 
-#include "mongo/base/error_codes.h"
+#include "mongo/platform/basic.h"
+
+#include <memory>
+
 #include "mongo/db/catalog/collection_catalog.h"
-#include "mongo/db/catalog/collection_write_path.h"
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/catalog/virtual_collection_impl.h"
-#include "mongo/db/catalog/virtual_collection_options.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/stdx/utility.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/assert_util.h"
 #include "mongo/util/uuid.h"
 
-namespace mongo {
 namespace {
 
+using namespace mongo;
+
 class CreateCollectionTest : public ServiceContextMongoDTest {
-protected:
+private:
     void setUp() override;
     void tearDown() override;
 
+protected:
     void validateValidator(const std::string& validatorStr, int expectedError);
 
     // Use StorageInterface to access storage features below catalog interface.
@@ -80,18 +81,6 @@ void CreateCollectionTest::tearDown() {
     ServiceContextMongoDTest::tearDown();
 }
 
-class CreateVirtualCollectionTest : public CreateCollectionTest {
-private:
-    void setUp() override {
-        CreateCollectionTest::setUp();
-        computeModeEnabled = true;
-    }
-    void tearDown() override {
-        computeModeEnabled = false;
-        CreateCollectionTest::tearDown();
-    }
-};
-
 /**
  * Creates an OperationContext.
  */
@@ -103,8 +92,7 @@ ServiceContext::UniqueOperationContext makeOpCtx() {
 
 void CreateCollectionTest::validateValidator(const std::string& validatorStr,
                                              const int expectedError) {
-    NamespaceString newNss =
-        NamespaceString::createNamespaceString_forTest("test.newCollWithValidation");
+    NamespaceString newNss("test.newCollWithValidation");
 
     auto opCtx = makeOpCtx();
 
@@ -129,7 +117,7 @@ void CreateCollectionTest::validateValidator(const std::string& validatorStr,
  * Returns true if collection exists.
  */
 bool collectionExists(OperationContext* opCtx, const NamespaceString& nss) {
-    return static_cast<bool>(AutoGetCollectionForRead(opCtx, nss).getCollection());
+    return AutoGetCollectionForRead(opCtx, nss).getCollection() != nullptr;
 }
 
 /**
@@ -143,26 +131,6 @@ CollectionOptions getCollectionOptions(OperationContext* opCtx, const NamespaceS
 }
 
 /**
- * Returns a VirtualCollectionImpl if the underlying implementation object is a virtual collection.
- */
-const VirtualCollectionImpl* getVirtualCollection(OperationContext* opCtx,
-                                                  const NamespaceString& nss) {
-    AutoGetCollectionForRead collection(opCtx, nss);
-    return dynamic_cast<const VirtualCollectionImpl*>(collection.getCollection().get());
-}
-
-/**
- * Returns virtual collection options.
- */
-VirtualCollectionOptions getVirtualCollectionOptions(OperationContext* opCtx,
-                                                     const NamespaceString& nss) {
-    auto vcollPtr = getVirtualCollection(opCtx, nss);
-    ASSERT_TRUE(vcollPtr) << "Collection must be a virtual collection";
-
-    return vcollPtr->getVirtualCollectionOptions();
-}
-
-/**
  * Returns UUID of collection.
  */
 UUID getCollectionUuid(OperationContext* opCtx, const NamespaceString& nss) {
@@ -172,15 +140,15 @@ UUID getCollectionUuid(OperationContext* opCtx, const NamespaceString& nss) {
 }
 
 TEST_F(CreateCollectionTest, CreateCollectionForApplyOpsWithSpecificUuidNoExistingCollection) {
-    NamespaceString newNss = NamespaceString::createNamespaceString_forTest("test.newColl");
+    NamespaceString newNss("test.newColl");
 
     auto opCtx = makeOpCtx();
     ASSERT_FALSE(collectionExists(opCtx.get(), newNss));
 
     auto uuid = UUID::gen();
-    Lock::DBLock lock(opCtx.get(), newNss.dbName(), MODE_IX);
+    Lock::DBLock lock(opCtx.get(), newNss.db(), MODE_IX);
     ASSERT_OK(createCollectionForApplyOps(opCtx.get(),
-                                          newNss.dbName(),
+                                          newNss.db().toString(),
                                           uuid,
                                           BSON("create" << newNss.coll()),
                                           /*allowRenameOutOfTheWay*/ false));
@@ -190,8 +158,8 @@ TEST_F(CreateCollectionTest, CreateCollectionForApplyOpsWithSpecificUuidNoExisti
 
 TEST_F(CreateCollectionTest,
        CreateCollectionForApplyOpsWithSpecificUuidNonDropPendingCurrentCollectionHasSameUuid) {
-    NamespaceString curNss = NamespaceString::createNamespaceString_forTest("test.curColl");
-    NamespaceString newNss = NamespaceString::createNamespaceString_forTest("test.newColl");
+    NamespaceString curNss("test.curColl");
+    NamespaceString newNss("test.newColl");
 
     auto opCtx = makeOpCtx();
     auto uuid = UUID::gen();
@@ -209,7 +177,7 @@ TEST_F(CreateCollectionTest,
     // This should rename the existing collection 'curNss' to the collection 'newNss' we are trying
     // to create.
     ASSERT_OK(createCollectionForApplyOps(opCtx.get(),
-                                          newNss.dbName(),
+                                          newNss.db().toString(),
                                           uuid,
                                           BSON("create" << newNss.coll()),
                                           /*allowRenameOutOfTheWay*/ true));
@@ -220,7 +188,7 @@ TEST_F(CreateCollectionTest,
 
 TEST_F(CreateCollectionTest,
        CreateCollectionForApplyOpsWithSpecificUuidRenamesExistingCollectionWithSameNameOutOfWay) {
-    NamespaceString newNss = NamespaceString::createNamespaceString_forTest("test.newColl");
+    NamespaceString newNss("test.newColl");
 
     auto opCtx = makeOpCtx();
     auto uuid = UUID::gen();
@@ -238,7 +206,7 @@ TEST_F(CreateCollectionTest,
 
     // This should rename the existing collection 'newNss' to a randomly generated collection name.
     ASSERT_OK(createCollectionForApplyOps(opCtx.get(),
-                                          newNss.dbName(),
+                                          newNss.db().toString(),
                                           uuid,
                                           BSON("create" << newNss.coll()),
                                           /*allowRenameOutOfTheWay*/ true));
@@ -257,14 +225,14 @@ TEST_F(CreateCollectionTest,
 
 TEST_F(CreateCollectionTest,
        CreateCollectionForApplyOpsWithSpecificUuidReturnsNamespaceExistsIfCollectionIsDropPending) {
-    NamespaceString curNss = NamespaceString::createNamespaceString_forTest("test.curColl");
+    NamespaceString curNss("test.curColl");
     repl::OpTime dropOpTime(Timestamp(Seconds(100), 0), 1LL);
     auto dropPendingNss = curNss.makeDropPendingNamespace(dropOpTime);
-    NamespaceString newNss = NamespaceString::createNamespaceString_forTest("test.newColl");
+    NamespaceString newNss("test.newColl");
 
     auto opCtx = makeOpCtx();
     auto uuid = UUID::gen();
-    Lock::DBLock lock(opCtx.get(), newNss.dbName(), MODE_IX);
+    Lock::DBLock lock(opCtx.get(), newNss.db(), MODE_IX);
 
     // Create drop pending collection using StorageInterface.
     {
@@ -279,7 +247,7 @@ TEST_F(CreateCollectionTest,
     // state.
     ASSERT_EQUALS(ErrorCodes::NamespaceExists,
                   createCollectionForApplyOps(opCtx.get(),
-                                              newNss.dbName(),
+                                              newNss.db().toString(),
                                               uuid,
                                               BSON("create" << newNss.coll()),
                                               /*allowRenameOutOfTheWay*/ false));
@@ -306,13 +274,12 @@ TEST_F(CreateCollectionTest, ValidationOptions) {
 // <database>.system.resharding.* collection. The primary donor is responsible for validating
 // documents before they are inserted into the recipient's temporary resharding collection.
 TEST_F(CreateCollectionTest, ValidationDisabledForTemporaryReshardingCollection) {
-    NamespaceString reshardingNss =
-        NamespaceString::createNamespaceString_forTest("myDb", "system.resharding.yay");
+    NamespaceString reshardingNss("myDb", "system.resharding.yay");
     auto opCtx = makeOpCtx();
 
     Lock::GlobalLock lk(opCtx.get(), MODE_X);  // Satisfy low-level locking invariants.
     BSONObj createCmdObj = BSON("create" << reshardingNss.coll() << "validator" << BSON("a" << 5));
-    ASSERT_OK(createCollection(opCtx.get(), reshardingNss.dbName(), createCmdObj));
+    ASSERT_OK(createCollection(opCtx.get(), reshardingNss.db().toString(), createCmdObj));
     ASSERT_TRUE(collectionExists(opCtx.get(), reshardingNss));
 
     AutoGetCollection collection(opCtx.get(), reshardingNss, MODE_X);
@@ -321,115 +288,9 @@ TEST_F(CreateCollectionTest, ValidationDisabledForTemporaryReshardingCollection)
     // Ensure a document that violates validator criteria can be inserted into the temporary
     // resharding collection.
     auto insertObj = fromjson("{'_id':2, a:1}");
-    auto status = collection_internal::insertDocument(
-        opCtx.get(), *collection, InsertStatement(insertObj), nullptr, false);
+    auto status =
+        collection->insertDocument(opCtx.get(), InsertStatement(insertObj), nullptr, false);
     ASSERT_OK(status);
 }
 
-const auto kValidUrl1 = ExternalDataSourceMetadata::kUrlProtocolFile + "named_pipe1"s;
-const auto kValidUrl2 = ExternalDataSourceMetadata::kUrlProtocolFile + "named_pipe2"s;
-
-TEST_F(CreateVirtualCollectionTest, VirtualCollectionOptionsWithOneSource) {
-    NamespaceString vcollNss = NamespaceString::createNamespaceString_forTest("myDb", "vcoll.name");
-    auto opCtx = makeOpCtx();
-
-    Lock::GlobalLock lk(opCtx.get(), MODE_X);  // Satisfy low-level locking invariants.
-    VirtualCollectionOptions reqVcollOpts;
-    reqVcollOpts.dataSources.emplace_back(kValidUrl1, StorageTypeEnum::pipe, FileTypeEnum::bson);
-    ASSERT_OK(createVirtualCollection(opCtx.get(), vcollNss, reqVcollOpts));
-    ASSERT_TRUE(getVirtualCollection(opCtx.get(), vcollNss));
-
-    ASSERT_EQ(stdx::to_underlying(getCollectionOptions(opCtx.get(), vcollNss).autoIndexId),
-              stdx::to_underlying(CollectionOptions::NO));
-
-    auto vcollOpts = getVirtualCollectionOptions(opCtx.get(), vcollNss);
-    ASSERT_EQ(vcollOpts.dataSources.size(), 1);
-    ASSERT_EQ(vcollOpts.dataSources[0].url, kValidUrl1);
-    ASSERT_EQ(stdx::to_underlying(vcollOpts.dataSources[0].storageType),
-              stdx::to_underlying(StorageTypeEnum::pipe));
-    ASSERT_EQ(stdx::to_underlying(vcollOpts.dataSources[0].fileType),
-              stdx::to_underlying(FileTypeEnum::bson));
-}
-
-TEST_F(CreateVirtualCollectionTest, VirtualCollectionOptionsWithMultiSource) {
-    NamespaceString vcollNss = NamespaceString::createNamespaceString_forTest("myDb", "vcoll.name");
-    auto opCtx = makeOpCtx();
-
-    Lock::GlobalLock lk(opCtx.get(), MODE_X);  // Satisfy low-level locking invariants.
-    VirtualCollectionOptions reqVcollOpts;
-    reqVcollOpts.dataSources.emplace_back(kValidUrl1, StorageTypeEnum::pipe, FileTypeEnum::bson);
-    reqVcollOpts.dataSources.emplace_back(kValidUrl2, StorageTypeEnum::pipe, FileTypeEnum::bson);
-
-    ASSERT_OK(createVirtualCollection(opCtx.get(), vcollNss, reqVcollOpts));
-    ASSERT_TRUE(getVirtualCollection(opCtx.get(), vcollNss));
-
-    ASSERT_EQ(stdx::to_underlying(getCollectionOptions(opCtx.get(), vcollNss).autoIndexId),
-              stdx::to_underlying(CollectionOptions::NO));
-
-    auto vcollOpts = getVirtualCollectionOptions(opCtx.get(), vcollNss);
-    ASSERT_EQ(vcollOpts.dataSources.size(), 2);
-    for (int i = 0; i < 2; ++i) {
-        ASSERT_EQ(vcollOpts.dataSources[i].url, reqVcollOpts.dataSources[i].url);
-        ASSERT_EQ(stdx::to_underlying(vcollOpts.dataSources[i].storageType),
-                  stdx::to_underlying(StorageTypeEnum::pipe));
-        ASSERT_EQ(stdx::to_underlying(vcollOpts.dataSources[i].fileType),
-                  stdx::to_underlying(FileTypeEnum::bson));
-    }
-}
-
-TEST_F(CreateVirtualCollectionTest, InvalidVirtualCollectionOptions) {
-    using namespace fmt::literals;
-
-    NamespaceString vcollNss = NamespaceString::createNamespaceString_forTest("myDb", "vcoll.name");
-    auto opCtx = makeOpCtx();
-
-    Lock::GlobalLock lk(opCtx.get(), MODE_X);  // Satisfy low-level locking invariants.
-
-    {
-        bool exceptionOccurred = false;
-        VirtualCollectionOptions reqVcollOpts;
-        constexpr auto kInvalidUrl = "fff://abc/named_pipe"_sd;
-        try {
-            reqVcollOpts.dataSources.emplace_back(
-                kInvalidUrl, StorageTypeEnum::pipe, FileTypeEnum::bson);
-        } catch (const DBException&) {
-            exceptionOccurred = true;
-        }
-
-        ASSERT_TRUE(exceptionOccurred)
-            << "Invalid 'url': {} must fail but succeeded"_format(kInvalidUrl);
-    }
-
-    {
-        bool exceptionOccurred = false;
-        VirtualCollectionOptions reqVcollOpts;
-        constexpr auto kInvalidStorageTypeEnum = StorageTypeEnum(2);
-        try {
-            reqVcollOpts.dataSources.emplace_back(
-                kValidUrl1, kInvalidStorageTypeEnum, FileTypeEnum::bson);
-        } catch (const DBException&) {
-            exceptionOccurred = true;
-        }
-
-        ASSERT_TRUE(exceptionOccurred)
-            << "Unknown 'storageType': {} must fail but succeeded"_format(
-                   stdx::to_underlying(kInvalidStorageTypeEnum));
-    }
-
-    {
-        bool exceptionOccurred = false;
-        VirtualCollectionOptions reqVcollOpts;
-        constexpr auto kInvalidFileTypeEnum = FileTypeEnum(2);
-        try {
-            reqVcollOpts.dataSources.emplace_back(
-                kValidUrl1, StorageTypeEnum::pipe, kInvalidFileTypeEnum);
-        } catch (const DBException&) {
-            exceptionOccurred = true;
-        }
-
-        ASSERT_TRUE(exceptionOccurred) << "Unknown 'fileType': {} must fail but succeeded"_format(
-            stdx::to_underlying(kInvalidFileTypeEnum));
-    }
-}
 }  // namespace
-}  // namespace mongo

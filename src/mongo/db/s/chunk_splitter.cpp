@@ -27,10 +27,12 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/s/chunk_splitter.h"
 
 #include "mongo/client/dbclient_cursor.h"
+#include "mongo/client/query.h"
 #include "mongo/db/client.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
@@ -50,9 +52,6 @@
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -82,7 +81,7 @@ Status splitChunkAtMultiplePoints(OperationContext* opCtx,
                                   const ShardId& shardId,
                                   const NamespaceString& nss,
                                   const ShardKeyPattern& shardKeyPattern,
-                                  const ChunkVersion& collectionPlacementVersion,
+                                  const ChunkVersion& collectionVersion,
                                   const ChunkRange& chunkRange,
                                   std::vector<BSONObj>&& splitPoints) {
     invariant(!splitPoints.empty());
@@ -102,8 +101,8 @@ Status splitChunkAtMultiplePoints(OperationContext* opCtx,
                       chunkRange,
                       std::move(splitPoints),
                       shardId.toString(),
-                      collectionPlacementVersion.epoch(),
-                      collectionPlacementVersion.getTimestamp(),
+                      collectionVersion.epoch(),
+                      collectionVersion.getTimestamp(),
                       true /* fromChunkSplitter */)
         .getStatus()
         .withContext("split failed");
@@ -114,7 +113,7 @@ Status splitChunkAtMultiplePoints(OperationContext* opCtx,
  */
 void moveChunk(OperationContext* opCtx, const NamespaceString& nss, const BSONObj& minKey) {
     // We need to have the most up-to-date view of the chunk we are about to move.
-    const auto [cm, _] =
+    const auto cm =
         uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
 
     uassert(ErrorCodes::NamespaceNotSharded,
@@ -261,12 +260,13 @@ void ChunkSplitter::trySplitting(std::shared_ptr<ChunkSplitStateDriver> chunkSpl
     if (!_isPrimary) {
         return;
     }
-    _threadPool.schedule([this, csd = std::move(chunkSplitStateDriver), nss, min, max, dataWritten](
-                             auto status) noexcept {
-        invariant(status);
+    _threadPool.schedule(
+        [ this, csd = std::move(chunkSplitStateDriver), nss, min, max,
+          dataWritten ](auto status) noexcept {
+            invariant(status);
 
-        _runAutosplit(csd, nss, min, max, dataWritten);
-    });
+            _runAutosplit(csd, nss, min, max, dataWritten);
+        });
 }
 
 /**
@@ -303,10 +303,8 @@ void ChunkSplitter::_runAutosplit(std::shared_ptr<ChunkSplitStateDriver> chunkSp
     try {
         const auto opCtx = cc().makeOperationContext();
 
-        const auto cm =
-            uassertStatusOK(
-                Grid::get(opCtx.get())->catalogCache()->getCollectionRoutingInfo(opCtx.get(), nss))
-                .cm;
+        const auto cm = uassertStatusOK(
+            Grid::get(opCtx.get())->catalogCache()->getCollectionRoutingInfo(opCtx.get(), nss));
         uassert(ErrorCodes::NamespaceNotSharded,
                 "Could not split chunk. Collection is no longer sharded",
                 cm.isSharded());

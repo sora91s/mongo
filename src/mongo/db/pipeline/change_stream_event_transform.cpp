@@ -31,7 +31,6 @@
 
 #include "mongo/db/pipeline/change_stream_document_diff_parser.h"
 #include "mongo/db/pipeline/change_stream_filter_helpers.h"
-#include "mongo/db/pipeline/change_stream_helpers_legacy.h"
 #include "mongo/db/pipeline/change_stream_preimage_gen.h"
 #include "mongo/db/pipeline/document_path_support.h"
 #include "mongo/db/pipeline/document_source_change_stream_add_post_image.h"
@@ -39,14 +38,11 @@
 #include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/oplog_entry_gen.h"
-#include "mongo/db/server_feature_flags_gen.h"
 #include "mongo/db/update/update_oplog_entry_serialization.h"
 
 namespace mongo {
 namespace {
 constexpr auto checkValueType = &DocumentSourceChangeStream::checkValueType;
-constexpr auto checkValueTypeOrMissing = &DocumentSourceChangeStream::checkValueTypeOrMissing;
-constexpr auto resolveResumeToken = &DocumentSourceChangeStream::resolveResumeTokenFromSpec;
 
 Document copyDocExceptFields(const Document& source, const std::set<StringData>& fieldNames) {
     MutableDocument doc(source);
@@ -59,14 +55,12 @@ Document copyDocExceptFields(const Document& source, const std::set<StringData>&
 repl::OpTypeEnum getOplogOpType(const Document& oplog) {
     auto opTypeField = oplog[repl::OplogEntry::kOpTypeFieldName];
     checkValueType(opTypeField, repl::OplogEntry::kOpTypeFieldName, BSONType::String);
-    return repl::OpType_parse(IDLParserContext("ChangeStreamEntry.op"), opTypeField.getString());
+    return repl::OpType_parse(IDLParserErrorContext("ChangeStreamEntry.op"),
+                              opTypeField.getString());
 }
 
 Value makeChangeStreamNsField(const NamespaceString& nss) {
-    // For certain types, such as dropDatabase, the collection name may be empty and should be
-    // omitted. We never report the NamespaceString's tenantId in change stream events.
-    return Value(Document{{"db", nss.dbName().db()},
-                          {"coll", (nss.coll().empty() ? Value() : Value(nss.coll()))}});
+    return Value(Document{{"db", nss.db()}, {"coll", nss.coll()}});
 }
 
 void setResumeTokenForEvent(const ResumeTokenData& resumeTokenData, MutableDocument* doc) {
@@ -78,18 +72,16 @@ void setResumeTokenForEvent(const ResumeTokenData& resumeTokenData, MutableDocum
     const bool isSingleElementKey = true;
     doc->metadata().setSortKey(resumeToken, isSingleElementKey);
 }
-
-NamespaceString createNamespaceStringFromOplogEntry(Value tid, StringData ns) {
-    auto tenantId = tid.missing() ? boost::none : boost::optional<TenantId>{tid.getOid()};
-    return NamespaceStringUtil::deserialize(tenantId, ns);
-}
-
 }  // namespace
 
 ChangeStreamEventTransformation::ChangeStreamEventTransformation(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
     const DocumentSourceChangeStreamSpec& spec)
-    : _changeStreamSpec(spec), _expCtx(expCtx), _resumeToken(resolveResumeToken(expCtx, spec)) {
+    : _changeStreamSpec(spec), _expCtx(expCtx) {
+    // Extract the resume token from the spec and store it.
+    _resumeToken =
+        DocumentSourceChangeStream::resolveResumeTokenFromSpec(_expCtx, _changeStreamSpec);
+
     // Determine whether the user requested a point-in-time pre-image, which will affect this
     // stage's output.
     _preImageRequested =
@@ -125,7 +117,10 @@ ResumeTokenData ChangeStreamEventTransformation::makeResumeToken(Value tsVal,
 ChangeStreamDefaultEventTransformation::ChangeStreamDefaultEventTransformation(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
     const DocumentSourceChangeStreamSpec& spec)
-    : ChangeStreamEventTransformation(expCtx, spec) {}
+    : ChangeStreamEventTransformation(expCtx, spec) {
+    _documentKeyCache =
+        std::make_unique<change_stream_legacy::DocumentKeyCache>(expCtx, _resumeToken);
+}
 
 std::set<std::string> ChangeStreamDefaultEventTransformation::getFieldNameDependencies() const {
     std::set<std::string> accessedFields = {repl::OplogEntry::kOpTypeFieldName.toString(),
@@ -137,10 +132,10 @@ std::set<std::string> ChangeStreamDefaultEventTransformation::getFieldNameDepend
                                             repl::OplogEntry::kSessionIdFieldName.toString(),
                                             repl::OplogEntry::kTxnNumberFieldName.toString(),
                                             DocumentSourceChangeStream::kTxnOpIndexField.toString(),
-                                            repl::OplogEntry::kWallClockTimeFieldName.toString(),
-                                            repl::OplogEntry::kTidFieldName.toString()};
+                                            repl::OplogEntry::kWallClockTimeFieldName.toString()};
 
     if (_preImageRequested || _postImageRequested) {
+        accessedFields.insert(repl::OplogEntry::kPreImageOpTimeFieldName.toString());
         accessedFields.insert(DocumentSourceChangeStream::kApplyOpsIndexField.toString());
         accessedFields.insert(DocumentSourceChangeStream::kApplyOpsTsField.toString());
     }
@@ -153,12 +148,11 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
     // Extract the fields we need.
     Value ts = input[repl::OplogEntry::kTimestampFieldName];
     Value ns = input[repl::OplogEntry::kNssFieldName];
-    Value tenantId = input[repl::OplogEntry::kTidFieldName];
     checkValueType(ns, repl::OplogEntry::kNssFieldName, BSONType::String);
     Value uuid = input[repl::OplogEntry::kUuidFieldName];
     auto opType = getOplogOpType(input);
 
-    NamespaceString nss = createNamespaceStringFromOplogEntry(tenantId, ns.getStringData());
+    NamespaceString nss(ns.getString());
     Value id = input.getNestedField("o._id");
     // Non-replace updates have the _id in field "o2".
     StringData operationType;
@@ -173,12 +167,11 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
             operationType = DocumentSourceChangeStream::kInsertOpType;
             fullDocument = input[repl::OplogEntry::kObjectFieldName];
             documentKey = input[repl::OplogEntry::kObject2FieldName];
-
-            // For oplog entries written on an older version of the server (before 5.3), the
-            // documentKey may be missing. This is an unlikely scenario to encounter on a post 6.0
-            // node. We just default to _id as the only document key field for this case.
             if (documentKey.missing()) {
-                documentKey = Value(Document{{"_id", id}});
+                // If the o2 field is missing from the oplog entry, it must have been generated by a
+                // version of the server prior to 5.3. Extract the documentKey via the documentKey
+                // cache instead. This may require us to look up the shard key for this UUID.
+                documentKey = _documentKeyCache->getDocumentKeyForOplogInsert(input);
             }
             break;
         }
@@ -205,24 +198,41 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
                 if (_changeStreamSpec.getShowRawUpdateDescription()) {
                     updateDescription = input[repl::OplogEntry::kObjectFieldName];
                 } else {
-                    const auto showDisambiguatedPaths = _changeStreamSpec.getShowExpandedEvents() &&
-                        feature_flags::gFeatureFlagChangeStreamsFurtherEnrichedEvents.isEnabled(
-                            serverGlobalParams.featureCompatibility);
                     const auto& deltaDesc = change_stream_document_diff_parser::parseDiff(
                         diffObj.getDocument().toBson());
 
-                    updateDescription = Value(Document{
-                        {"updatedFields", deltaDesc.updatedFields},
-                        {"removedFields", std::move(deltaDesc.removedFields)},
-                        {"truncatedArrays", std::move(deltaDesc.truncatedArrays)},
-                        {"disambiguatedPaths",
-                         showDisambiguatedPaths ? Value(deltaDesc.disambiguatedPaths) : Value()}});
+                    updateDescription =
+                        Value(Document{{"updatedFields", deltaDesc.updatedFields},
+                                       {"removedFields", deltaDesc.removedFields},
+                                       {"truncatedArrays", deltaDesc.truncatedArrays}});
                 }
-            } else if (!oplogVersion.missing() || id.missing()) {
-                // This is not a replacement op, and we did not see a valid update version number.
-                uasserted(6741200,
-                          str::stream() << "Unsupported or missing oplog version, $v: "
-                                        << oplogVersion.toString());
+            } else if (id.missing()) {
+                operationType = DocumentSourceChangeStream::kUpdateOpType;
+                checkValueType(input[repl::OplogEntry::kObjectFieldName],
+                               repl::OplogEntry::kObjectFieldName,
+                               BSONType::Object);
+
+                if (_changeStreamSpec.getShowRawUpdateDescription()) {
+                    updateDescription = input[repl::OplogEntry::kObjectFieldName];
+                } else {
+                    Document opObject = input[repl::OplogEntry::kObjectFieldName].getDocument();
+                    Value updatedFields = opObject["$set"];
+                    Value removedFields = opObject["$unset"];
+
+                    // Extract the field names of $unset document.
+                    std::vector<Value> removedFieldsVector;
+                    if (removedFields.getType() == BSONType::Object) {
+                        auto iter = removedFields.getDocument().fieldIterator();
+                        while (iter.more()) {
+                            removedFieldsVector.push_back(Value(iter.next().first));
+                        }
+                    }
+
+                    updateDescription = Value(
+                        Document{{"updatedFields",
+                                  updatedFields.missing() ? Value(Document()) : updatedFields},
+                                 {"removedFields", removedFieldsVector}});
+                }
             } else {
                 operationType = DocumentSourceChangeStream::kReplaceOpType;
                 fullDocument = input[repl::OplogEntry::kObjectFieldName];
@@ -242,16 +252,15 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
                 operationType = DocumentSourceChangeStream::kDropCollectionOpType;
 
                 // The "o.drop" field will contain the actual collection name.
-                nss = NamespaceString(nss.dbName(), nssField.getStringData());
+                nss = NamespaceString(nss.db(), nssField.getString());
             } else if (auto nssField = oField.getField("renameCollection"); !nssField.missing()) {
                 operationType = DocumentSourceChangeStream::kRenameCollectionOpType;
 
                 // The "o.renameCollection" field contains the namespace of the original collection.
-                nss = createNamespaceStringFromOplogEntry(tenantId, nssField.getStringData());
+                nss = NamespaceString(nssField.getString());
 
                 // The "to" field contains the target namespace for the rename.
-                const auto renameTargetNss =
-                    createNamespaceStringFromOplogEntry(tenantId, oField["to"].getStringData());
+                const auto renameTargetNss = NamespaceString(oField["to"].getString());
                 const auto renameTarget = makeChangeStreamNsField(renameTargetNss);
 
                 // The 'to' field predates the 'operationDescription' field which was added in 5.3.
@@ -269,32 +278,32 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
 
                 // Extract the database name from the namespace field and leave the collection name
                 // empty.
-                nss = NamespaceString(nss.tenantId(), nss.dbName().db());
+                nss = NamespaceString(nss.db());
             } else if (auto nssField = oField.getField("create"); !nssField.missing()) {
                 operationType = DocumentSourceChangeStream::kCreateOpType;
-                nss = NamespaceString(nss.dbName(), nssField.getStringData());
+                nss = NamespaceString(nss.db(), nssField.getString());
                 operationDescription = Value(copyDocExceptFields(oField, {"create"_sd}));
             } else if (auto nssField = oField.getField("createIndexes"); !nssField.missing()) {
                 operationType = DocumentSourceChangeStream::kCreateIndexesOpType;
-                nss = NamespaceString(nss.dbName(), nssField.getStringData());
+                nss = NamespaceString(nss.db(), nssField.getString());
                 // Wrap the index spec in an "indexes" array for consistency with commitIndexBuild.
                 auto indexSpec = Value(copyDocExceptFields(oField, {"createIndexes"_sd}));
                 operationDescription = Value(Document{{"indexes", std::vector<Value>{indexSpec}}});
             } else if (auto nssField = oField.getField("commitIndexBuild"); !nssField.missing()) {
                 operationType = DocumentSourceChangeStream::kCreateIndexesOpType;
-                nss = NamespaceString(nss.dbName(), nssField.getStringData());
+                nss = NamespaceString(nss.db(), nssField.getString());
                 operationDescription = Value(Document{{"indexes", oField.getField("indexes")}});
             } else if (auto nssField = oField.getField("dropIndexes"); !nssField.missing()) {
                 const auto o2Field = input[repl::OplogEntry::kObject2FieldName].getDocument();
                 operationType = DocumentSourceChangeStream::kDropIndexesOpType;
-                nss = NamespaceString(nss.dbName(), nssField.getStringData());
+                nss = NamespaceString(nss.db(), nssField.getString());
                 // Wrap the index spec in an "indexes" array for consistency with createIndexes
                 // and commitIndexBuild.
                 auto indexSpec = Value(copyDocExceptFields(o2Field, {"dropIndexes"_sd}));
                 operationDescription = Value(Document{{"indexes", std::vector<Value>{indexSpec}}});
             } else if (auto nssField = oField.getField("collMod"); !nssField.missing()) {
                 operationType = DocumentSourceChangeStream::kModifyOpType;
-                nss = NamespaceString(nss.dbName(), nssField.getStringData());
+                nss = NamespaceString(nss.db(), nssField.getString());
                 operationDescription = Value(copyDocExceptFields(oField, {"collMod"_sd}));
 
                 const auto o2Field = input[repl::OplogEntry::kObject2FieldName].getDocument();
@@ -311,73 +320,52 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
             break;
         }
         case repl::OpTypeEnum::kNoop: {
-            // TODO SERVER-66138: The legacy oplog format for some no-op operations can include
-            // 'type' field, which was removed post 6.0. We can remove all the logic related to the
-            // 'type' field once 7.0 is release.
-            const auto o2Field = change_stream_legacy::convertFromLegacyOplogFormat(
-                input[repl::OplogEntry::kObject2FieldName].getDocument(), nss);
-
             // Check whether this is a shardCollection oplog entry.
-            if (!o2Field["shardCollection"].missing()) {
+            if (!input.getNestedField("o2.shardCollection").missing()) {
+                const auto o2Field = input[repl::OplogEntry::kObject2FieldName].getDocument();
                 operationType = DocumentSourceChangeStream::kShardCollectionOpType;
                 operationDescription = Value(copyDocExceptFields(o2Field, {"shardCollection"_sd}));
                 break;
             }
 
             // Check if this is a migration of the last chunk off a shard.
-            if (!o2Field["migrateLastChunkFromShard"].missing()) {
+            if (!input.getNestedField("o2.migrateLastChunkFromShard").missing()) {
+                const auto o2Field = input[repl::OplogEntry::kObject2FieldName].getDocument();
                 operationType = DocumentSourceChangeStream::kMigrateLastChunkFromShardOpType;
                 operationDescription =
                     Value(copyDocExceptFields(o2Field, {"migrateLastChunkFromShard"_sd}));
                 break;
             }
 
-            // Check whether this is a refineCollectionShardKey oplog entry.
-            if (!o2Field["refineCollectionShardKey"].missing()) {
-                operationType = DocumentSourceChangeStream::kRefineCollectionShardKeyOpType;
-                operationDescription =
-                    Value(copyDocExceptFields(o2Field, {"refineCollectionShardKey"_sd}));
-                break;
-            }
+            // Otherwise, o2.type determines the message type.
+            auto o2Type = input.getNestedField("o2.type");
+            tassert(5052200, "o2.type is missing from noop oplog event", !o2Type.missing());
 
-            // Check whether this is a reshardCollection oplog entry.
-            if (!o2Field["reshardCollection"].missing()) {
-                operationType = DocumentSourceChangeStream::kReshardCollectionOpType;
-                operationDescription =
-                    Value(copyDocExceptFields(o2Field, {"reshardCollection"_sd}));
-                break;
-            }
-
-            if (!o2Field["migrateChunkToNewShard"].missing()) {
-                operationType = change_stream_legacy::getNewShardDetectedOpName(_expCtx);
-                operationDescription =
-                    Value(copyDocExceptFields(o2Field, {"migrateChunkToNewShard"_sd}));
-                break;
-            }
-
-            if (!o2Field["reshardBegin"].missing()) {
+            if (o2Type.getString() == "migrateChunkToNewShard"_sd) {
+                operationType = DocumentSourceChangeStream::kNewShardDetectedOpType;
+                // Generate a fake document Id for NewShardDetected operation so that we can
+                // resume after this operation.
+                documentKey = Value(Document{{DocumentSourceChangeStream::kIdField,
+                                              input[repl::OplogEntry::kObject2FieldName]}});
+            } else if (o2Type.getString() == "reshardBegin"_sd) {
                 operationType = DocumentSourceChangeStream::kReshardBeginOpType;
                 doc.addField(DocumentSourceChangeStream::kReshardingUuidField,
-                             o2Field["reshardingUUID"]);
-                operationDescription = Value(copyDocExceptFields(o2Field, {"reshardBegin"_sd}));
-                break;
-            }
-
-            if (!o2Field["reshardDoneCatchUp"].missing()) {
+                             input.getNestedField("o2.reshardingUUID"));
+                documentKey = Value(Document{{DocumentSourceChangeStream::kIdField,
+                                              input[repl::OplogEntry::kObject2FieldName]}});
+            } else if (o2Type.getString() == "reshardDoneCatchUp"_sd) {
                 operationType = DocumentSourceChangeStream::kReshardDoneCatchUpOpType;
                 doc.addField(DocumentSourceChangeStream::kReshardingUuidField,
-                             o2Field["reshardingUUID"]);
-                operationDescription =
-                    Value(copyDocExceptFields(o2Field, {"reshardDoneCatchUp"_sd}));
-                break;
+                             input.getNestedField("o2.reshardingUUID"));
+                documentKey = Value(Document{{DocumentSourceChangeStream::kIdField,
+                                              input[repl::OplogEntry::kObject2FieldName]}});
+            } else {
+                // We should never see an unknown noop entry.
+                MONGO_UNREACHABLE_TASSERT(5052201);
             }
-
-            // We should never see an unknown noop entry.
-            MONGO_UNREACHABLE_TASSERT(5052201);
+            break;
         }
-        default: {
-            MONGO_UNREACHABLE_TASSERT(6330501);
-        }
+        default: { MONGO_UNREACHABLE_TASSERT(6330501); }
     }
 
     // UUID should always be present except for invalidate and dropDatabase entries.
@@ -394,12 +382,13 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
 
     // Add some additional fields only relevant to transactions.
     if (!txnOpIndex.missing()) {
-        // The lsid and txnNumber may be missing if this is a batched write.
         auto lsid = input[DocumentSourceChangeStream::kLsidField];
-        checkValueTypeOrMissing(lsid, DocumentSourceChangeStream::kLsidField, BSONType::Object);
+        checkValueType(lsid, DocumentSourceChangeStream::kLsidField, BSONType::Object);
+
         auto txnNumber = input[DocumentSourceChangeStream::kTxnNumberField];
-        checkValueTypeOrMissing(
+        checkValueType(
             txnNumber, DocumentSourceChangeStream::kTxnNumberField, BSONType::NumberLong);
+
         doc.addField(DocumentSourceChangeStream::kTxnNumberField, txnNumber);
         doc.addField(DocumentSourceChangeStream::kLsidField, lsid);
     }
@@ -418,9 +407,23 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
         doc.addField(DocumentSourceChangeStream::kCollectionUuidField, uuid);
     }
 
-    const auto wallTime = input[repl::OplogEntry::kWallClockTimeFieldName];
-    checkValueType(wallTime, repl::OplogEntry::kWallClockTimeFieldName, BSONType::Date);
-    doc.addField(DocumentSourceChangeStream::kWallTimeField, wallTime);
+    // Check if the FCV is <= 5.3
+    bool FCVLessThanEq53 = serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+        serverGlobalParams.featureCompatibility.isLessThanOrEqualTo(
+            multiversion::FeatureCompatibilityVersion::kVersion_5_3);
+    if ((FCVLessThanEq53 && _changeStreamSpec.getShowExpandedEvents()) || !FCVLessThanEq53) {
+        const auto wallTime = input[repl::OplogEntry::kWallClockTimeFieldName];
+        checkValueType(wallTime, repl::OplogEntry::kWallClockTimeFieldName, BSONType::Date);
+        doc.addField(DocumentSourceChangeStream::kWallTimeField, wallTime);
+    }
+
+    // Invalidation, topology change, and resharding events have fewer fields.
+    if (operationType == DocumentSourceChangeStream::kInvalidateOpType ||
+        operationType == DocumentSourceChangeStream::kNewShardDetectedOpType ||
+        operationType == DocumentSourceChangeStream::kReshardBeginOpType ||
+        operationType == DocumentSourceChangeStream::kReshardDoneCatchUpOpType) {
+        return doc.freeze();
+    }
 
     // Add the post-image, pre-image id, namespace, documentKey and other fields as appropriate.
     doc.addField(DocumentSourceChangeStream::kFullDocumentField, std::move(fullDocument));
@@ -434,17 +437,25 @@ Document ChangeStreamDefaultEventTransformation::applyTransformation(const Docum
     static const std::set<StringData> postImageOps = {DocumentSourceChangeStream::kUpdateOpType};
     if ((_preImageRequested && preImageOps.count(operationType)) ||
         (_postImageRequested && postImageOps.count(operationType))) {
-        // Set 'kPreImageIdField' to the 'ChangeStreamPreImageId'. The DSCSAddPreImage stage
-        // will use the id in order to fetch the pre-image from the pre-images collection.
-        const auto preImageId = ChangeStreamPreImageId(
-            uuid.getUuid(),
-            applyOpsEntryTs.missing() ? ts.getTimestamp() : applyOpsEntryTs.getTimestamp(),
-            applyOpsIndex.missing() ? 0 : applyOpsIndex.getLong());
-        doc.addField(DocumentSourceChangeStream::kPreImageIdField, Value(preImageId.toBSON()));
+        auto preImageOpTime = input[repl::OplogEntry::kPreImageOpTimeFieldName];
+        if (!preImageOpTime.missing()) {
+            // Set 'kPreImageIdField' to the pre-image optime. The DSCSAddPreImage stage will use
+            // this optime in order to fetch the pre-image from the oplog.
+            doc.addField(DocumentSourceChangeStream::kPreImageIdField, std::move(preImageOpTime));
+        } else {
+            // Set 'kPreImageIdField' to the 'ChangeStreamPreImageId'. The DSCSAddPreImage stage
+            // will use the id in order to fetch the pre-image from the pre-images collection.
+            const auto preImageId = ChangeStreamPreImageId(
+                uuid.getUuid(),
+                applyOpsEntryTs.missing() ? ts.getTimestamp() : applyOpsEntryTs.getTimestamp(),
+                applyOpsIndex.missing() ? 0 : applyOpsIndex.getLong());
+            doc.addField(DocumentSourceChangeStream::kPreImageIdField, Value(preImageId.toBSON()));
+        }
     }
-
-    // Add the 'ns' field to the change stream document, based on the final value of 'nss'.
-    doc.addField(DocumentSourceChangeStream::kNamespaceField, makeChangeStreamNsField(nss));
+    doc.addField(DocumentSourceChangeStream::kNamespaceField,
+                 operationType == DocumentSourceChangeStream::kDropDatabaseOpType
+                     ? Value(Document{{"db", nss.db()}})
+                     : makeChangeStreamNsField(nss));
 
     // The event may have a documentKey OR an operationDescription, but not both. We already
     // validated this while creating the resume token.
@@ -478,15 +489,13 @@ std::set<std::string> ChangeStreamViewDefinitionEventTransformation::getFieldNam
                                  repl::OplogEntry::kUuidFieldName.toString(),
                                  repl::OplogEntry::kObjectFieldName.toString(),
                                  DocumentSourceChangeStream::kTxnOpIndexField.toString(),
-                                 repl::OplogEntry::kWallClockTimeFieldName.toString(),
-                                 repl::OplogEntry::kTidFieldName.toString()};
+                                 repl::OplogEntry::kWallClockTimeFieldName.toString()};
 }
 
 Document ChangeStreamViewDefinitionEventTransformation::applyTransformation(
     const Document& input) const {
     Value ts = input[repl::OplogEntry::kTimestampFieldName];
     auto opType = getOplogOpType(input);
-    Value tenantId = input[repl::OplogEntry::kTidFieldName];
 
     StringData operationType;
     Value operationDescription;
@@ -532,7 +541,7 @@ Document ChangeStreamViewDefinitionEventTransformation::applyTransformation(
                  input[repl::OplogEntry::kWallClockTimeFieldName]);
 
     // The 'o._id' is the full namespace string of the view.
-    const auto nss = createNamespaceStringFromOplogEntry(tenantId, oField["_id"].getStringData());
+    const auto nss = NamespaceString(oField["_id"].getString());
     doc.addField(DocumentSourceChangeStream::kNamespaceField, makeChangeStreamNsField(nss));
     doc.addField(DocumentSourceChangeStream::kOperationDescriptionField, operationDescription);
 
@@ -551,12 +560,7 @@ ChangeStreamEventTransformer::ChangeStreamEventTransformer(
 
 ChangeStreamEventTransformation* ChangeStreamEventTransformer::getBuilder(
     const Document& oplog) const {
-    // 'nss' is only used here determine which type of transformation to use. This is not dependent
-    // on the tenantId, so it is safe to ignore the tenantId in the oplog entry. It is useful to
-    // avoid extracting the tenantId because we must make this determination for every change stream
-    // event, and the check should therefore be as optimized as possible.
-    auto nss = NamespaceString(boost::none, oplog[repl::OplogEntry::kNssFieldName].getStringData());
-
+    auto nss = NamespaceString(oplog[repl::OplogEntry::kNssFieldName].getStringData());
     if (!_isSingleCollStream && nss.isSystemDotViews()) {
         return _viewNsEventBuilder.get();
     }

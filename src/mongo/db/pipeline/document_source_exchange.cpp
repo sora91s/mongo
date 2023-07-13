@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
 
 #include "mongo/platform/basic.h"
 
@@ -39,9 +40,6 @@
 #include "mongo/db/pipeline/document_source_exchange.h"
 #include "mongo/db/storage/key_string.h"
 #include "mongo/logv2/log.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kQuery
-
 
 namespace mongo {
 
@@ -406,7 +404,7 @@ size_t Exchange::getTargetConsumer(const Document& input) {
     // Build the key.
     BSONObjBuilder kb;
     size_t counter = 0;
-    for (const auto& elem : _keyPattern) {
+    for (auto elem : _keyPattern) {
         auto value = input.getNestedField(_keyPaths[counter]);
 
         // By definition we send documents with missing fields to the consumer 0.

@@ -1,3 +1,4 @@
+load("jstests/libs/logv2_helpers.js");
 
 const kSnapshotErrors =
     [ErrorCodes.SnapshotTooOld, ErrorCodes.SnapshotUnavailable, ErrorCodes.StaleChunkHistory];
@@ -98,14 +99,16 @@ function assertNoSuchTransactionOnConn(conn, lsid, txnNumber) {
 
 function waitForFailpoint(hitFailpointStr, numTimes, timeout) {
     // Don't run the hang analyzer because we don't expect waitForFailpoint() to always succeed.
-    const hitFailpointRe = /Hit (\w+) failpoint/;
-    const hitRe = /Hit (\w+)/;
-    const matchHitFailpoint = hitFailpointStr.match(hitFailpointRe);
-    const matchHit = hitFailpointStr.match(hitRe);
-    if (matchHitFailpoint) {
-        hitFailpointStr = `(Hit .+ failpoint.*${matchHitFailpoint[1]}|${hitFailpointStr})`;
-    } else {
-        hitFailpointStr = `(Hit .+.*${matchHit[1]}|${hitFailpointStr})`;
+    if (isJsonLogNoConn()) {
+        const hitFailpointRe = /Hit (\w+) failpoint/;
+        const hitRe = /Hit (\w+)/;
+        const matchHitFailpoint = hitFailpointStr.match(hitFailpointRe);
+        const matchHit = hitFailpointStr.match(hitRe);
+        if (matchHitFailpoint) {
+            hitFailpointStr = `(Hit .+ failpoint.*${matchHitFailpoint[1]}|${hitFailpointStr})`;
+        } else {
+            hitFailpointStr = `(Hit .+.*${matchHit[1]}|${hitFailpointStr})`;
+        }
     }
     assert.soon(
         function() {
@@ -256,6 +259,14 @@ function makePrepareTransactionCmdObj(lsid, txnNumber) {
         autocommit: false,
         writeConcern: {w: "majority"},
     };
+}
+
+function areInternalTransactionsEnabled(conn) {
+    return jsTestOptions().mongosBinVersion !== "last-lts" &&
+        jsTestOptions().mongosBinVersion !== "last-continuous" &&
+        assert
+            .commandWorked(conn.adminCommand({getParameter: 1, featureFlagInternalTransactions: 1}))
+            .featureFlagInternalTransactions.value;
 }
 
 function isUpdateDocumentShardKeyUsingTransactionApiEnabled(conn) {

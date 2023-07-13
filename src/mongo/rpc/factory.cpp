@@ -57,13 +57,12 @@ std::unique_ptr<ReplyInterface> makeReply(const Message* unownedMessage) {
     }
 }
 
-OpMsgRequest opMsgRequestFromAnyProtocol(const Message& unownedMessage, Client* client) {
+OpMsgRequest opMsgRequestFromAnyProtocol(const Message& unownedMessage) {
     switch (unownedMessage.operation()) {
         case mongo::dbMsg:
-            return OpMsgRequest::parseOwned(unownedMessage, client);
-        case mongo::dbQuery: {
+            return OpMsgRequest::parseOwned(unownedMessage);
+        case mongo::dbQuery:
             return opMsgRequestFromLegacyRequest(unownedMessage);
-        }
         default:
             uasserted(ErrorCodes::UnsupportedFormat,
                       str::stream() << "Received a reply message with unexpected opcode: "

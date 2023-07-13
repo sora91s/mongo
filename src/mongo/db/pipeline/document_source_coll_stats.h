@@ -49,7 +49,7 @@ public:
             uassert(5447000,
                     str::stream() << "$collStats must take a nested object but found: " << specElem,
                     specElem.type() == BSONType::Object);
-            auto spec = DocumentSourceCollStatsSpec::parse(IDLParserContext(kStageName),
+            auto spec = DocumentSourceCollStatsSpec::parse(IDLParserErrorContext(kStageName),
                                                            specElem.embeddedObject());
             return std::make_unique<LiteParsed>(specElem.fieldName(), nss, std::move(spec));
         }
@@ -87,8 +87,7 @@ public:
 
     static BSONObj makeStatsForNs(const boost::intrusive_ptr<ExpressionContext>&,
                                   const NamespaceString&,
-                                  const DocumentSourceCollStatsSpec&,
-                                  const boost::optional<BSONObj>& filterObj = boost::none);
+                                  const DocumentSourceCollStatsSpec&);
 
     DocumentSourceCollStats(const boost::intrusive_ptr<ExpressionContext>& pExpCtx,
                             DocumentSourceCollStatsSpec spec)
@@ -115,8 +114,6 @@ public:
     }
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
-
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
 
     static boost::intrusive_ptr<DocumentSource> createFromBson(
         BSONElement elem, const boost::intrusive_ptr<ExpressionContext>& pExpCtx);

@@ -35,15 +35,14 @@ import logging
 import os
 import sys
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, List, Mapping, Set
+from typing import Dict, List, Set
 
 from pymongo import MongoClient
 
 # Permit imports from "buildscripts".
 sys.path.append(os.path.normpath(os.path.join(os.path.abspath(__file__), '../../..')))
 
-# pylint: disable=wrong-import-position
-from idl import syntax
+# pylint: disable=wrong-import-position,wrong-import-order
 from buildscripts.idl.lib import list_idls, parse_idl
 from buildscripts.resmokelib import configure_resmoke
 from buildscripts.resmokelib.logging import loggers
@@ -51,7 +50,7 @@ from buildscripts.resmokelib.testing.fixtures import interface
 from buildscripts.resmokelib.testing.fixtures.fixturelib import FixtureLib
 from buildscripts.resmokelib.testing.fixtures.shardedcluster import ShardedClusterFixture
 from buildscripts.resmokelib.testing.fixtures.standalone import MongoDFixture
-# pylint: enable=wrong-import-position
+from idl import syntax
 
 LOGGER_NAME = 'check-idl-definitions'
 LOGGER = logging.getLogger(LOGGER_NAME)
@@ -112,8 +111,8 @@ def list_commands_for_api(api_version: str, mongod_or_mongos: str, install_dir: 
     fixture.await_ready()
 
     try:
-        client = MongoClient(fixture.get_driver_connection_url())  # type: MongoClient
-        reply = client.admin.command('listCommands')  # type: Mapping[str, Any]
+        client = MongoClient(fixture.get_driver_connection_url())
+        reply = client.admin.command('listCommands')
         commands = {
             name
             for name, info in reply['commands'].items() if api_version in info['apiVersions']

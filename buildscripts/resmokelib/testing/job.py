@@ -12,11 +12,12 @@ from buildscripts.resmokelib.testing.testcases import fixture as _fixture
 from buildscripts.resmokelib.utils import queue as _queue
 
 
-class Job(object):
+class Job(object):  # pylint: disable=too-many-instance-attributes
     """Run tests from a queue."""
 
-    def __init__(self, job_num, logger, fixture, hooks, report, archival, suite_options,
-                 test_queue_logger):
+    def __init__(  # pylint: disable=too-many-arguments
+            self, job_num, logger, fixture, hooks, report, archival, suite_options,
+            test_queue_logger):
         """Initialize the job with the specified fixture and hooks."""
 
         self.logger = logger
@@ -304,7 +305,7 @@ class Job(object):
                 raise errors.StopExecution("A hook's after_test failed")
 
         except:
-            self.report.setError(test, sys.exc_info())
+            self.report.setError(test)
             raise
 
     def _fail_test(self, test, exc_info, return_code=1):
@@ -378,35 +379,23 @@ class FixtureTestCaseManager:
 
         Return True if the teardown was successful, False otherwise.
         """
-        try:
-            test_case = None
 
-            if abort:
-                test_case = _fixture.FixtureAbortTestCase(self.test_queue_logger, self.fixture,
-                                                          "job{}".format(self.job_num),
-                                                          self.times_set_up)
-                self.times_set_up += 1
-            else:
-                test_case = _fixture.FixtureTeardownTestCase(self.test_queue_logger, self.fixture,
-                                                             "job{}".format(self.job_num))
+        # Refresh the fixture table before teardown to capture changes due to
+        # CleanEveryN and stepdown hooks.
+        self.report.logging_prefix = create_fixture_table(self.fixture)
 
-            # Refresh the fixture table before teardown to capture changes due to
-            # CleanEveryN and stepdown hooks.
-            self.report.logging_prefix = create_fixture_table(self.fixture)
-            test_case(self.report)
+        if abort:
+            test_case = _fixture.FixtureAbortTestCase(self.test_queue_logger, self.fixture,
+                                                      "job{}".format(self.job_num),
+                                                      self.times_set_up)
+            self.times_set_up += 1
+        else:
+            test_case = _fixture.FixtureTeardownTestCase(self.test_queue_logger, self.fixture,
+                                                         "job{}".format(self.job_num))
 
-            if self.report.find_test_info(test_case).status != "pass":
-                logger.error("The teardown of %s failed.", self.fixture)
-                return False
+        test_case(self.report)
+        if self.report.find_test_info(test_case).status != "pass":
+            logger.error("The teardown of %s failed.", self.fixture)
+            return False
 
-            return True
-        finally:
-            # This is a failsafe. In the event that 'teardown_fixture' fails,
-            # any rogue logger handlers will be removed from this fixture.
-            # If not cleaned up, these will trigger 'setup failures' --
-            # indicated by exiting with LoggerRuntimeConfigError.EXIT_CODE.
-            if not isinstance(test_case, _fixture.FixtureAbortTestCase):
-                for handler in self.fixture.logger.handlers:
-                    # We ignore the cancellation token returned by close_later() since we always
-                    # want the logs to eventually get flushed.
-                    self.fixture.fixturelib.close_loggers(handler)
+        return True

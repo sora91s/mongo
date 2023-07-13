@@ -13,8 +13,6 @@
 (function() {
 "use strict";
 
-load("jstests/libs/sbe_util.js");  // For checkSBEEnabled.
-
 const memoryLimitMb = 1;
 const memoryLimitBytes = 1 * 1024 * 1024;
 const largeStr = "A".repeat(1024 * 1024);  // 1MB string
@@ -106,11 +104,8 @@ function runTest(conn, allowDiskUseByDefault) {
     // The 'count' command within the memory limit must pass.
     assert.eq(coll.count(), memoryLimitMb + 1);
 
-    // In SBE $sort and $count will not cause spilling, because the largeStr is not saved in memory.
-    // Otherwise, the 'count' command exceeding the memory limit must fail.
-    if (!checkSBEEnabled(testDb)) {
-        assertFailed({count: view.getName()});
-    }
+    // The 'count' command exceeding the memory limit must fail.
+    assertFailed({count: view.getName()});
 
     // The 'distinct' command within the memory limit must pass.
     assert.eq(coll.distinct("x"), [0, 1]);
@@ -125,7 +120,7 @@ rst.startSet();
 rst.initiate();
 const primary = rst.getPrimary();
 prepareData(primary);
-rst.stopSet(/*signal=*/ null, /*forRestart=*/ true);
+rst.stopSet(/*signal=*/null, /*forRestart=*/true);
 
 const tightMemoryLimits = {
     internalDocumentSourceGroupMaxMemoryBytes: memoryLimitBytes,

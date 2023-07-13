@@ -27,21 +27,27 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
+
+#include "mongo/platform/basic.h"
+
 #include <vector>
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/write_concern_options.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/catalog/type_tags.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/update_zone_key_range_request_type.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 namespace mongo {
+
+using std::string;
+
 namespace {
 
 const ReadPreferenceSetting kPrimaryOnlyReadPreference{ReadPreference::PrimaryOnly};
@@ -82,10 +88,10 @@ public:
         return "assigns/remove a range of a sharded collection to a zone";
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const final {
-        auto* as = AuthorizationSession::get(opCtx->getClient());
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const final {
+        auto* as = AuthorizationSession::get(client);
 
         if (as->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
                                                  ActionType::enableSharding)) {
@@ -94,8 +100,7 @@ public:
 
         // Fallback on permissions to directly modify the shard config.
         if (!as->isAuthorizedForActionsOnResource(
-                ResourcePattern::forExactNamespace(NamespaceString::kConfigsvrShardsNamespace),
-                ActionType::find)) {
+                ResourcePattern::forExactNamespace(ShardType::ConfigNS), ActionType::find)) {
             return {ErrorCodes::Unauthorized, "Unauthorized"};
         }
 
@@ -118,7 +123,7 @@ public:
     }
 
     virtual bool run(OperationContext* opCtx,
-                     const DatabaseName&,
+                     const std::string& dbname,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
         auto parsedRequest =

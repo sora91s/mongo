@@ -132,10 +132,9 @@ public:
     virtual void shutDown() = 0;
 
     /**
-     * Notifies the loader that the persisted collection placement version for 'nss' has been
-     * updated.
+     * Notifies the loader that the persisted collection version for 'nss' has been updated.
      */
-    virtual void notifyOfCollectionPlacementVersionUpdate(const NamespaceString& nss) = 0;
+    virtual void notifyOfCollectionVersionUpdate(const NamespaceString& nss) = 0;
 
     /**
      * Non-blocking call, which returns the chunks changed since the specified version to be
@@ -182,7 +181,3 @@ protected:
 };
 
 }  // namespace mongo
-
-#define LOGV2_FOR_CATALOG_REFRESH(ID, DLEVEL, MESSAGE, ...) \
-    LOGV2_DEBUG_OPTIONS(                                    \
-        ID, DLEVEL, {logv2::LogComponent::kShardingCatalogRefresh}, MESSAGE, ##__VA_ARGS__)

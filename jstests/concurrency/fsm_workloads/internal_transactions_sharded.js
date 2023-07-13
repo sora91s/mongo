@@ -8,14 +8,12 @@
  * @tags: [
  *  requires_fcv_60,
  *  requires_sharding,
- *  uses_transactions,
- *  antithesis_incompatible,
+ *  uses_transactions
  * ]
  */
 load('jstests/concurrency/fsm_libs/extend_workload.js');
 load('jstests/concurrency/fsm_workloads/random_moveChunk_base.js');
 load('jstests/concurrency/fsm_workloads/internal_transactions_unsharded.js');
-load('jstests/concurrency/fsm_workload_helpers/balancer.js');
 load('jstests/libs/fail_point_util.js');
 
 var $config = extendWorkload($config, function($config, $super) {
@@ -63,10 +61,6 @@ var $config = extendWorkload($config, function($config, $super) {
     $config.setup = function setup(db, collName, cluster) {
         const ns = db.getName() + "." + collName;
 
-        // Disallow balancing 'ns' during $setup so it does not interfere with the splits.
-        BalancerHelper.disableBalancerForCollection(db, ns);
-        BalancerHelper.joinBalancerRound(db);
-
         // Move the initial chunk to shard0.
         const shards = Object.keys(cluster.getSerializedCluster().shards);
         ChunkHelper.moveChunk(
@@ -85,7 +79,6 @@ var $config = extendWorkload($config, function($config, $super) {
                 assert.commandWorked(db.adminCommand(
                     {split: ns, middle: {[this.defaultShardKeyField]: partition.lower}}));
             }
-
             assert.commandWorked(
                 db.adminCommand({split: ns, middle: {[this.defaultShardKeyField]: partition.mid}}));
 
@@ -112,10 +105,8 @@ var $config = extendWorkload($config, function($config, $super) {
             }
         }
 
-        // Allow balancing 'ns' again.
-        BalancerHelper.enableBalancerForCollection(db, ns);
-
         this.overrideInternalTransactionsReapThreshold(cluster);
+        this.overrideStoreFindAndModifyImagesInSideCollection(cluster);
         if (this.lowerTransactionLifetimeLimitSeconds) {
             this.overrideTransactionLifetimeLimit(cluster);
         }

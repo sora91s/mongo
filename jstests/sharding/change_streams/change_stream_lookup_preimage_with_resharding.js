@@ -4,6 +4,7 @@
  * stream events - ones that happened before, during, and after resharding of the collection.
  *
  * @tags: [
+ *   featureFlagChangeStreamPreAndPostImages,
  *   requires_fcv_60,
  *   uses_change_streams,
  *   assumes_unsharded_collection,

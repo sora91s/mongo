@@ -19,10 +19,6 @@
 #include <boost/atomic/detail/config.hpp>
 #include <boost/atomic/detail/capabilities.hpp>
 
-#ifdef BOOST_HAS_PRAGMA_ONCE
-#pragma once
-#endif
-
 // A memory barrier is effected using a "co-processor 15" instruction,
 // though a separate assembler mnemonic is available for it in v7.
 //

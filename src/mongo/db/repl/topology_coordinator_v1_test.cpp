@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
 
 #include "mongo/platform/basic.h"
 
@@ -57,9 +58,6 @@
 #include "mongo/util/net/socket_utils.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTest
-
 
 #define ASSERT_NO_ACTION(EXPRESSION) \
     ASSERT_EQUALS(mongo::repl::HeartbeatResponseAction::NoAction, (EXPRESSION))
@@ -2320,8 +2318,7 @@ public:
     void prepareHeartbeatResponseV1(const ReplSetHeartbeatArgsV1& args,
                                     ReplSetHeartbeatResponse* response,
                                     Status* result) {
-        *result =
-            getTopoCoord().prepareHeartbeatResponseV1(now()++, args, "rs0", response).getStatus();
+        *result = getTopoCoord().prepareHeartbeatResponseV1(now()++, args, "rs0", response);
     }
 
     int initConfigVersion = 1;
@@ -2403,8 +2400,7 @@ TEST_F(TopoCoordTest, SetConfigVersionToNegativeTwoInHeartbeatResponseWhenNoConf
     args.setSenderId(20);
     ReplSetHeartbeatResponse response;
     // prepare response and check the results
-    Status result =
-        getTopoCoord().prepareHeartbeatResponseV1(now()++, args, "rs0", &response).getStatus();
+    Status result = getTopoCoord().prepareHeartbeatResponseV1(now()++, args, "rs0", &response);
     ASSERT_OK(result);
     // this change to true because we can now see a majority, unlike in the previous cases
     ASSERT_EQUALS("rs0", response.getReplicaSetName());
@@ -3893,6 +3889,19 @@ TEST_F(HeartbeatResponseTestV1, ShouldChangeSyncSourceWhenSyncSourceFormsCycleAn
                                -1 /* primaryIndex */,
                                0 /* syncSourceIndex */,
                                "host1:27017" /* syncSourceHost */),
+        lastOpTimeFetched,
+        now()));
+
+    // Show that we still do not like it when syncSourceHost is not set, but we can rely on
+    // syncSourceIndex to decide if a sync source selection cycle has been formed.
+    nextAction = receiveUpHeartbeat(
+        HostAndPort("host2"), "rs0", MemberState::RS_SECONDARY, election, syncSourceOpTime);
+    ASSERT_NO_ACTION(nextAction.getAction());
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(
+        HostAndPort("host2"),
+        makeReplSetMetadata(OpTime() /* visibleOpTime */, false /* isPrimary */),
+        // Sync source is also syncing from us.
+        makeOplogQueryMetadata(syncSourceOpTime, -1 /* primaryIndex */, 0 /* syncSourceIndex */),
         lastOpTimeFetched,
         now()));
 }

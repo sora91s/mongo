@@ -65,7 +65,7 @@ for (let id = 0; id < nDocs; ++id) {
     next = changeStream.next();
     assert.eq(next.operationType, "update");
     assert.eq(next.documentKey, {shardKey: id, _id: id});
-    assert.docEq({_id: id, shardKey: id, updatedCount: 1}, next.fullDocument);
+    assert.docEq(next.fullDocument, {_id: id, shardKey: id, updatedCount: 1});
 }
 
 st.stop();

@@ -2,8 +2,11 @@
  * Tests that hashed indexes are prohibited on measurement fields.
  *
  * @tags: [
- *   # We need a timeseries collection.
- *   requires_timeseries,
+ *     does_not_support_stepdowns,
+ *     does_not_support_transactions,
+ *     requires_fcv_51,
+ *     requires_find_command,
+ *     requires_getmore,
  * ]
  */
 (function() {

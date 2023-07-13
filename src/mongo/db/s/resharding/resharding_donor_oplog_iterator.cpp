@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
 
 #include "mongo/platform/basic.h"
 
@@ -52,9 +53,6 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
-
-
 namespace mongo {
 
 using namespace fmt::literals;
@@ -66,7 +64,7 @@ namespace {
  */
 ReshardingDonorOplogId getId(const repl::OplogEntry& oplog) {
     return ReshardingDonorOplogId::parse(
-        IDLParserContext("ReshardingDonorOplogIterator::getOplogId"),
+        IDLParserErrorContext("ReshardingDonorOplogIterator::getOplogId"),
         oplog.get_id()->getDocument().toBson());
 }
 
@@ -129,7 +127,7 @@ std::vector<repl::OplogEntry> ReshardingDonorOplogIterator::_fillBatch(Pipeline&
 
         numBytes += obj.objsize();
 
-        if (resharding::isFinalOplog(entry)) {
+        if (isFinalOplog(entry)) {
             // The ReshardingOplogFetcher should never insert documents after the reshardFinalOp
             // entry. We defensively check each oplog entry for being the reshardFinalOp and confirm
             // the pipeline has been exhausted.
@@ -168,7 +166,6 @@ ExecutorFuture<std::vector<repl::OplogEntry>> ReshardingDonorOplogIterator::getN
         ShouldNotConflictWithSecondaryBatchApplicationBlock shouldNotConflictBlock(
             opCtx->lockState());
 
-        Timer fetchTimer;
         if (_pipeline) {
             _pipeline->reattachToOperationContext(opCtx.get());
         } else {
@@ -185,7 +182,7 @@ ExecutorFuture<std::vector<repl::OplogEntry>> ReshardingDonorOplogIterator::getN
             const auto& lastEntryInBatch = batch.back();
             _resumeToken = getId(lastEntryInBatch);
 
-            if (resharding::isFinalOplog(lastEntryInBatch)) {
+            if (isFinalOplog(lastEntryInBatch)) {
                 _hasSeenFinalOplogEntry = true;
                 // Skip returning the final oplog entry because it is known to be a no-op.
                 batch.pop_back();

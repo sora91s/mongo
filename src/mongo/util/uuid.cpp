@@ -31,12 +31,11 @@
 
 #include "mongo/util/uuid.h"
 
-#include <algorithm>
 #include <fmt/format.h>
+#include <pcrecpp.h>
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/platform/random.h"
-#include "mongo/util/ctype.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/static_immortal.h"
 #include "mongo/util/synchronized_value.h"
@@ -47,10 +46,7 @@ namespace {
 
 using namespace fmt::literals;
 
-synchronized_value<SecureRandom>& uuidGen() {
-    static StaticImmortal<synchronized_value<SecureRandom>> uuidGen;
-    return uuidGen.value();
-}
+StaticImmortal<synchronized_value<SecureRandom>> uuidGen;
 
 }  // namespace
 
@@ -89,12 +85,15 @@ UUID UUID::parse(const BSONObj& obj) {
     return res.getValue();
 }
 
-bool UUID::isUUIDString(StringData s) {
-    static constexpr auto pat = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"_sd;
-    return s.size() == pat.size() &&
-        std::mismatch(s.begin(), s.end(), pat.begin(), [](char a, char b) {
-            return b == 'x' ? ctype::isXdigit(a) : a == b;
-        }).first == s.end();
+bool UUID::isUUIDString(const std::string& s) {
+    // Regex to match valid version 4 UUIDs with variant bits set
+    static StaticImmortal<pcrecpp::RE> uuidRegex(
+        "[[:xdigit:]]{8}-"
+        "[[:xdigit:]]{4}-"
+        "[[:xdigit:]]{4}-"
+        "[[:xdigit:]]{4}-"
+        "[[:xdigit:]]{12}");
+    return uuidRegex->FullMatch(s);
 }
 
 bool UUID::isRFC4122v4() const {
@@ -103,7 +102,7 @@ bool UUID::isRFC4122v4() const {
 
 UUID UUID::gen() {
     UUIDStorage randomBytes;
-    uuidGen()->fill(&randomBytes, sizeof(randomBytes));
+    (*uuidGen)->fill(&randomBytes, sizeof(randomBytes));
 
     // Set version in high 4 bits of byte 6 and variant in high 2 bits of byte 8, see RFC 4122,
     // section 4.1.1, 4.1.2 and 4.1.3.

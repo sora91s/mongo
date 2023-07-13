@@ -225,16 +225,6 @@ public:
     Seconds utcOffset(Date_t) const;
 
     /**
-     * Returns the full textual name of the month.
-     */
-    std::string fullMonthName(int) const;
-
-    /**
-     * Returns the full textual name of the month.
-     */
-    std::string threeLetterMonthName(int) const;
-
-    /**
      * Adjusts 'timelibTime' according to this time zone definition.
      */
     void adjustTimeZone(_timelib_time* timelibTime) const;
@@ -297,16 +287,6 @@ public:
                         status != Status::OK())
                         return status;
                     break;
-                case 'B':  // Full name of month
-                    if (auto status = insertString(os, fullMonthName(parts.month));
-                        status != Status::OK())
-                        return status;
-                    break;
-                case 'b':  // Three letter name of month
-                    if (auto status = insertString(os, threeLetterMonthName(parts.month));
-                        status != Status::OK())
-                        return status;
-                    break;
                 case 'j':  // Day of year
                     if (auto status = insertPadded(os, dayOfYear(date), 3); status != Status::OK())
                         return status;
@@ -360,22 +340,13 @@ public:
      * Verifies that any '%' is followed by a valid format character, and that 'format' string
      * ends with an even number of '%' symbols.
      */
-    static bool isValidToStringFormat(StringData format);
-    static bool isValidFromStringFormat(StringData format);
     static void validateToStringFormat(StringData format);
     static void validateFromStringFormat(StringData format);
     std::unique_ptr<_timelib_time, TimelibTimeDeleter> getTimelibTime(Date_t) const;
 
-    _timelib_tzinfo* getTzInfo() const {
+    std::shared_ptr<_timelib_tzinfo> getTzInfo() const {
         return _tzInfo;
     }
-
-    Seconds getUtcOffset() const {
-        return _utcOffset;
-    }
-
-    /** Returns the human readable string represenation of this time zone. */
-    std::string toString() const;
 
 private:
     /**
@@ -410,17 +381,12 @@ private:
         return Status::OK();
     }
 
-    template <typename OutputStream>
-    static auto insertString(OutputStream& os, std::string str) {
-        if (str.length() == 0) {
-            return Status{ErrorCodes::Error{7340200}, "Cannot append empty string"};
-        }
-        os << str;
-        return Status::OK();
-    }
+    struct TimelibTZInfoDeleter {
+        void operator()(_timelib_tzinfo* tzInfo);
+    };
 
     // null if this TimeZone represents the default UTC time zone, or a UTC-offset time zone
-    _timelib_tzinfo* _tzInfo{nullptr};
+    std::shared_ptr<_timelib_tzinfo> _tzInfo;
 
     // represents the UTC offset in seconds if _tzInfo is null and it is not 0
     Seconds _utcOffset{0};
@@ -517,11 +483,9 @@ public:
 
     std::vector<std::string> getTimeZoneStrings() const;
 
-private:
-    struct TimelibTZInfoDeleter {
-        void operator()(_timelib_tzinfo* tzInfo);
-    };
+    std::string toString() const;
 
+private:
     /**
      * Populates '_timeZones' with parsed time zone rules for each timezone specified by
      * 'timeZoneDatabase'.
@@ -540,9 +504,6 @@ private:
 
     // The timelib structure which provides timezone information.
     std::unique_ptr<_timelib_tzdb, TimeZoneDBDeleter> _timeZoneDatabase;
-
-    // The list of pre-load _timelib_tzinfo objects.
-    std::vector<std::unique_ptr<_timelib_tzinfo, TimelibTZInfoDeleter>> _timeZoneInfos;
 };
 
 /**

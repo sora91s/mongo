@@ -7,7 +7,7 @@
  * @tags: [
  *  requires_fcv_60,
  *  uses_transactions,
- *  kills_random_sessions,
+ *  kills_random_sessions
  * ]
  */
 

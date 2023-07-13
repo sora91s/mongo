@@ -271,8 +271,7 @@ public:
     {
         using namespace std;
         BOOST_ASSERT(frame.get() != 0);
-        tuple_index<N> const idx;
-        return (*frame.get())[idx];
+        return (*frame.get())[tuple_index<N>()];
     }
 
 private:

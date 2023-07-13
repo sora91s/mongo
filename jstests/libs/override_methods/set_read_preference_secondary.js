@@ -9,9 +9,6 @@ load("jstests/libs/override_methods/override_helpers.js");
 const kReadPreferenceSecondary = {
     mode: "secondary"
 };
-
-const {defaultReadPreference: kReadPreferenceToUse = kReadPreferenceSecondary} = TestData;
-
 const kCommandsSupportingReadPreference = new Set([
     "aggregate",
     "collStats",
@@ -52,6 +49,14 @@ function runCommandWithReadPreferenceSecondary(
         return func.apply(conn, makeFuncArgs(commandObj));
     }
 
+    // If the command is in a wrapped form, then we look for the actual command object inside
+    // the query/$query object.
+    let commandObjUnwrapped = commandObj;
+    if (commandName === "query" || commandName === "$query") {
+        commandObjUnwrapped = commandObj[commandName];
+        commandName = Object.keys(commandObjUnwrapped)[0];
+    }
+
     if (commandObj[commandName] === "system.profile" || commandName === 'profile') {
         throw new Error(
             "Cowardly refusing to run test that interacts with the system profiler as the " +
@@ -70,13 +75,13 @@ function runCommandWithReadPreferenceSecondary(
         // the test is trying to exercise the behavior around when an unknown cursor id is sent
         // to the server.
         if (commandName === "getMore") {
-            const cursorId = commandObj[commandName];
+            const cursorId = commandObjUnwrapped[commandName];
             const cursorConn = CursorTracker.getConnectionUsedForCursor(cursorId);
             if (cursorConn !== undefined) {
                 return func.apply(cursorConn, makeFuncArgs(commandObj));
             }
         } else if (commandName === "killCursors") {
-            const cursorIds = commandObj.cursors;
+            const cursorIds = commandObjUnwrapped.cursors;
             if (Array.isArray(cursorIds)) {
                 let cursorConn;
 
@@ -103,7 +108,7 @@ function runCommandWithReadPreferenceSecondary(
     let shouldForceReadPreference = kCommandsSupportingReadPreference.has(commandName);
 
     if ((commandName === "mapReduce" || commandName === "mapreduce") &&
-        !OverrideHelpers.isMapReduceWithInlineOutput(commandName, commandObj)) {
+        !OverrideHelpers.isMapReduceWithInlineOutput(commandName, commandObjUnwrapped)) {
         // A map-reduce operation with non-inline output must be sent to the primary.
         shouldForceReadPreference = false;
     } else if ((conn.isMongos() && kDatabasesOnConfigServers.has(dbName)) || conn._isConfigServer) {
@@ -113,7 +118,7 @@ function runCommandWithReadPreferenceSecondary(
     }
 
     if (commandName === "aggregate") {
-        if (OverrideHelpers.isAggregationWithCurrentOpStage(commandName, commandObj)) {
+        if (OverrideHelpers.isAggregationWithCurrentOpStage(commandName, commandObjUnwrapped)) {
             // Setting read preference secondary for an aggregation with $currentOp doesn't make
             // much sense, since there's no guarantee *which* secondary you get results from. We
             // will mirror the currentOp server command behavior here and maintain original read
@@ -130,12 +135,22 @@ function runCommandWithReadPreferenceSecondary(
 
     if (shouldForceReadPreference) {
         if (commandObj.hasOwnProperty("$readPreference") &&
-            !bsonBinaryEqual({_: commandObj.$readPreference}, {_: kReadPreferenceToUse})) {
-            throw new Error("Cowardly refusing to override read preference to " +
-                            tojson(kReadPreferenceToUse) + " for command: " + tojson(commandObj));
-        } else if (!commandObj.hasOwnProperty("$readPreference")) {
-            commandObj.$readPreference = kReadPreferenceToUse;
+            !bsonBinaryEqual({_: commandObj.$readPreference}, {_: kReadPreferenceSecondary})) {
+            throw new Error("Cowardly refusing to override read preference of command: " +
+                            tojson(commandObj));
         }
+
+        if (commandObj === commandObjUnwrapped) {
+            // We wrap the command object using a "query" field rather than a "$query" field to
+            // match the implementation of DB.prototype._attachReadPreferenceToCommand().
+            commandObj = {query: commandObj};
+        } else {
+            // We create a copy of 'commandObj' to avoid mutating the parameter the caller
+            // specified.
+            commandObj = Object.assign({}, commandObj);
+        }
+
+        commandObj.$readPreference = kReadPreferenceSecondary;
     }
 
     const serverResponse = func.apply(conn, makeFuncArgs(commandObj));

@@ -20,6 +20,11 @@ extern "C" {
 
 #include <boost/assert.hpp>
 #include <boost/context/detail/config.hpp>
+#if defined(BOOST_NO_CXX11_HDR_MUTEX)
+# include <boost/thread.hpp>
+#else
+# include <mutex>
+#endif
 
 #include <boost/context/stack_context.hpp>
 
@@ -43,10 +48,24 @@ extern "C" {
 
 namespace {
 
+void system_info_( SYSTEM_INFO * si) BOOST_NOEXCEPT_OR_NOTHROW {
+    ::GetSystemInfo( si);
+}
+
+SYSTEM_INFO system_info() BOOST_NOEXCEPT_OR_NOTHROW {
+    static SYSTEM_INFO si;
+#if defined(BOOST_NO_CXX11_HDR_MUTEX)
+    static boost::once_flag flag = BOOST_ONCE_INIT;
+    boost::call_once( flag, static_cast< void(*)( SYSTEM_INFO *) >( system_info_), & si);
+#else
+    static std::once_flag flag;
+    std::call_once( flag, static_cast< void(*)( SYSTEM_INFO *) >( system_info_), & si);
+#endif
+    return si;
+}
+
 std::size_t pagesize() BOOST_NOEXCEPT_OR_NOTHROW {
-    SYSTEM_INFO si;
-    ::GetSystemInfo(&si);
-    return static_cast< std::size_t >( si.dwPageSize );
+    return static_cast< std::size_t >( system_info().dwPageSize);
 }
 
 }
@@ -65,8 +84,7 @@ stack_traits::is_unbounded() BOOST_NOEXCEPT_OR_NOTHROW {
 BOOST_CONTEXT_DECL
 std::size_t
 stack_traits::page_size() BOOST_NOEXCEPT_OR_NOTHROW {
-    static std::size_t size = pagesize();
-    return size;
+    return pagesize();
 }
 
 BOOST_CONTEXT_DECL

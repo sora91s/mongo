@@ -43,6 +43,7 @@ let result = curDB.runCommand({
             remotes: [],
             nss: "test.mergeCursors",
             allowPartialResults: false,
+            recordRemoteOpWaitTime: false
         }
     }],
     cursor: {},
@@ -63,6 +64,7 @@ result = testDB.runCommand({
             remotes: [],
             nss: "test.mergeCursors",
             allowPartialResults: false,
+            recordRemoteOpWaitTime: false
         }
     }],
     cursor: {},
@@ -83,6 +85,7 @@ result = testDB.runCommand({
             remotes: [],
             nss: "test.mergeCursors",
             allowPartialResults: false,
+            recordRemoteOpWaitTime: false
         }
     }],
     cursor: {},
@@ -146,7 +149,7 @@ result = testDB.runCommand({
     pipeline: [{$project: {_id: 0}}],
     cursor: {},
     writeConcern: {w: "majority"},
-    $_generateV2ResumeTokens: false,
+    $_generateV2ResumeTokens: true,
     apiVersion: "1",
     apiStrict: true
 });

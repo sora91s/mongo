@@ -37,7 +37,9 @@
 #include "mongo/db/query/query_feature_flags_gen.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/query/async_results_merger_params_gen.h"
 #include "mongo/s/query/establish_cursors.h"
 #include "mongo/util/fail_point.h"
 
@@ -80,9 +82,9 @@ bool isShardConfigEvent(const Document& eventDoc) {
     // Check whether this event occurred on the config.shards collection.
     auto nsObj = eventDoc[DocumentSourceChangeStream::kNamespaceField];
     const bool isConfigDotShardsEvent = nsObj["db"_sd].getType() == BSONType::String &&
-        nsObj["db"_sd].getStringData() == NamespaceString::kConfigsvrShardsNamespace.db() &&
+        nsObj["db"_sd].getStringData() == ShardType::ConfigNS.db() &&
         nsObj["coll"_sd].getType() == BSONType::String &&
-        nsObj["coll"_sd].getStringData() == NamespaceString::kConfigsvrShardsNamespace.coll();
+        nsObj["coll"_sd].getStringData() == ShardType::ConfigNS.coll();
 
     // If it isn't from config.shards, treat it as a normal user event.
     if (!isConfigDotShardsEvent) {
@@ -212,7 +214,7 @@ BSONObj DocumentSourceChangeStreamHandleTopologyChange::createUpdatedCommandForN
 
     // Create the 'AggregateCommandRequest' object which will help in creating the parsed pipeline.
     auto aggCmdRequest = aggregation_request_helper::parseFromBSON(
-        opCtx, pExpCtx->ns, shardCommand, boost::none, apiStrict);
+        pExpCtx->ns, shardCommand, boost::none, apiStrict);
 
     // Parse and optimize the pipeline.
     auto pipeline = Pipeline::parse(aggCmdRequest.getPipeline(), pExpCtx);

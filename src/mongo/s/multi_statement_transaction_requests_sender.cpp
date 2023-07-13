@@ -49,7 +49,7 @@ std::vector<AsyncRequestsSender::Request> attachTxnDetails(
     std::vector<AsyncRequestsSender::Request> newRequests;
     newRequests.reserve(requests.size());
 
-    for (const auto& request : requests) {
+    for (auto request : requests) {
         newRequests.emplace_back(
             request.shardId,
             txnRouter.attachTxnFieldsIfNeeded(opCtx, request.shardId, request.cmdObj));
@@ -77,7 +77,7 @@ void processReplyMetadata(OperationContext* opCtx, const AsyncRequestsSender::Re
 MultiStatementTransactionRequestsSender::MultiStatementTransactionRequestsSender(
     OperationContext* opCtx,
     std::shared_ptr<executor::TaskExecutor> executor,
-    const DatabaseName& dbName,
+    StringData dbName,
     const std::vector<AsyncRequestsSender::Request>& requests,
     const ReadPreferenceSetting& readPreference,
     Shard::RetryPolicy retryPolicy)
@@ -85,7 +85,7 @@ MultiStatementTransactionRequestsSender::MultiStatementTransactionRequestsSender
       _ars(std::make_unique<AsyncRequestsSender>(
           opCtx,
           std::move(executor),
-          dbName.db(),
+          dbName,
           attachTxnDetails(opCtx, requests),
           readPreference,
           retryPolicy,

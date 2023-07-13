@@ -33,7 +33,7 @@
 
 #include <windns.h>
 
-#include <cstdio>
+#include <stdio.h>
 
 #include <array>
 #include <cassert>
@@ -279,16 +279,16 @@ public:
                        const DNSQueryClass class_,
                        const DNSQueryType type) {
         PDNS_RECORDA queryResults;
-        auto e = DnsQuery_UTF8(service.c_str(),
-                               WORD(type),
-                               DNS_QUERY_BYPASS_CACHE,
-                               nullptr,
-                               reinterpret_cast<PDNS_RECORD*>(&queryResults),
-                               nullptr);
-        if (e) {
-            auto ec = systemError(e);
+        auto ec = DnsQuery_UTF8(service.c_str(),
+                                WORD(type),
+                                DNS_QUERY_BYPASS_CACHE,
+                                nullptr,
+                                reinterpret_cast<PDNS_RECORD*>(&queryResults),
+                                nullptr);
+
+        if (ec) {
             uasserted(ErrorCodes::DNSHostNotFound,
-                      "Failed to look up service \""s + "\":"s + errorMessage(ec));
+                      "Failed to look up service \""s + "\":"s + errnoWithDescription(ec));
         }
         return DNSResponse{service, queryResults};
     }

@@ -96,8 +96,8 @@ public:
     /**
      * Returns the multikey path information for the given inputs, or boost::none if none exist.
      */
-    boost::optional<MultikeyPaths> getMultikeyPathInfo(const NamespaceString& nss,
-                                                       const std::string& indexName);
+    const boost::optional<MultikeyPaths> getMultikeyPathInfo(const NamespaceString& nss,
+                                                             const std::string& indexName);
 
     /**
      * Specifies that we should track multikey path information on this MultikeyPathTracker. This is

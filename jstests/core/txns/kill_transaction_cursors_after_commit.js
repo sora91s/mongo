@@ -1,7 +1,5 @@
 // Tests that cursors created in transactions may be killed outside of the transaction.
-// The test runs commands that are not allowed with security token: endSession, killCursors.
-// @tags: [
-//   not_allowed_with_security_token,uses_transactions]
+// @tags: [uses_transactions]
 (function() {
 "use strict";
 

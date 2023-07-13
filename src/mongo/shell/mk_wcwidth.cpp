@@ -61,7 +61,7 @@
  * Latest version: http://www.cl.cam.ac.uk/~mgk25/ucs/wcwidth.c
  */
 
-#include <cwchar>
+#include <wchar.h>
 
 struct interval {
     int first;

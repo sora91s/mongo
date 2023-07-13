@@ -33,10 +33,9 @@
 
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/catalog_cache.h"
+#include "mongo/s/shard_id.h"
 
 namespace mongo {
 namespace sharding_util {
@@ -51,18 +50,6 @@ void tellShardsToRefreshCollection(OperationContext* opCtx,
                                    const std::shared_ptr<executor::TaskExecutor>& executor);
 
 /**
- * Process the responses received from a set of requests sent to the shards. If `throwOnError=true`,
- * throws in case one of the commands fails.
- */
-std::vector<AsyncRequestsSender::Response> processShardResponses(
-    OperationContext* opCtx,
-    StringData dbName,
-    const BSONObj& command,
-    const std::vector<AsyncRequestsSender::Request>& requests,
-    const std::shared_ptr<executor::TaskExecutor>& executor,
-    bool throwOnError);
-
-/**
  * Generic utility to send a command to a list of shards. If `throwOnError=true`, throws in case one
  * of the commands fails.
  */
@@ -75,35 +62,13 @@ std::vector<AsyncRequestsSender::Response> sendCommandToShards(
     bool throwOnError = true);
 
 /**
- * Generic utility to send a command to a list of shards attaching the shard version to the request.
- * If `throwOnError=true`, throws in case one of the commands fails.
+ * Unset the `noAutosplit` and `maxChunkSizeBytes` fields from:
+ * - `config.collections` on the CSRS
+ * - `config.cache.collections` on shards
+ *
+ * TODO SERVER-62693 remove this method and all its usages once 6.0 branches out
  */
-std::vector<AsyncRequestsSender::Response> sendCommandToShardsWithVersion(
-    OperationContext* opCtx,
-    StringData dbName,
-    const BSONObj& command,
-    const std::vector<ShardId>& shardIds,
-    const std::shared_ptr<executor::TaskExecutor>& executor,
-    const CollectionRoutingInfo& cri,
-    bool throwOnError = true);
-
-/**
- * Creates the necessary indexes for the sharding index catalog collections.
- */
-Status createShardingIndexCatalogIndexes(OperationContext* opCtx);
-
-/**
- * Creates the necessary indexes for the collections collection.
- */
-Status createShardCollectionCatalogIndexes(OperationContext* opCtx);
-
-/**
- * Helper function to create an index on a collection locally.
- */
-Status createIndexOnCollection(OperationContext* opCtx,
-                               const NamespaceString& ns,
-                               const BSONObj& keys,
-                               bool unique);
+void downgradeCollectionBalancingFieldsToPre53(OperationContext* opCtx);
 
 }  // namespace sharding_util
 }  // namespace mongo

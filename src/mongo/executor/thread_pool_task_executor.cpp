@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT mongo::logv2::LogComponent::kExecutor
 
 #include "mongo/platform/basic.h"
 
@@ -47,9 +48,6 @@
 #include "mongo/util/concurrency/thread_pool_interface.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/time_support.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT mongo::logv2::LogComponent::kExecutor
-
 
 namespace mongo {
 namespace executor {
@@ -569,10 +567,8 @@ void ThreadPoolTaskExecutor::signalEvent_inlock(const EventHandle& event,
                                                 stdx::unique_lock<Latch> lk) {
     invariant(event.isValid());
     auto eventState = checked_cast<EventState*>(getEventFromHandle(event));
-    const auto wasSignaled = std::exchange(eventState->isSignaledFlag, true);
-    if (MONGO_unlikely(wasSignaled && _inShutdown_inlock()))
-        return;
-    invariant(!wasSignaled);
+    invariant(!eventState->isSignaledFlag);
+    eventState->isSignaledFlag = true;
     eventState->isSignaledCondition.notify_all();
     _unsignaledEvents.erase(eventState->iter);
     scheduleIntoPool_inlock(&eventState->waiters, std::move(lk));
@@ -725,7 +721,7 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleExhaust
             stdx::unique_lock<Latch> lk(_mutex);
             if (_inShutdown_inlock() || cbState->exhaustErased.load()) {
                 if (cbState->exhaustIter) {
-                    _poolInProgressQueue.erase(cbState->exhaustIter.value());
+                    _poolInProgressQueue.erase(cbState->exhaustIter.get());
                     cbState->exhaustIter = boost::none;
                 }
                 return;
@@ -733,15 +729,14 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleExhaust
 
             if (cbState->canceled.load()) {
                 // Release any resources the callback function is holding
-                TaskExecutor::CallbackFn callback = [](const CallbackArgs&) {
-                };
+                TaskExecutor::CallbackFn callback = [](const CallbackArgs&) {};
                 std::swap(cbState->callback, callback);
 
                 _networkInProgressQueue.erase(cbState->iter);
                 cbState->exhaustErased.store(1);
 
                 if (cbState->exhaustIter) {
-                    _poolInProgressQueue.erase(cbState->exhaustIter.value());
+                    _poolInProgressQueue.erase(cbState->exhaustIter.get());
                     cbState->exhaustIter = boost::none;
                 }
 
@@ -782,7 +777,7 @@ void ThreadPoolTaskExecutor::scheduleExhaustIntoPool_inlock(std::shared_ptr<Call
                                                             stdx::unique_lock<Latch> lk) {
     _poolInProgressQueue.push_back(cbState);
     cbState->exhaustIter = --_poolInProgressQueue.end();
-    auto expectedExhaustIter = cbState->exhaustIter.value();
+    auto expectedExhaustIter = cbState->exhaustIter.get();
     lk.unlock();
 
     if (cbState->baton) {
@@ -829,8 +824,7 @@ void ThreadPoolTaskExecutor::runCallbackExhaust(std::shared_ptr<CallbackState> c
                       cbState->canceled.load() ? kCallbackCanceledErrorStatus : Status::OK());
 
     if (!cbState->isFinished.load()) {
-        TaskExecutor::CallbackFn callback = [](const CallbackArgs&) {
-        };
+        TaskExecutor::CallbackFn callback = [](const CallbackArgs&) {};
         {
             auto lk = stdx::lock_guard(_mutex);
             std::swap(cbState->callback, callback);
@@ -855,7 +849,7 @@ void ThreadPoolTaskExecutor::runCallbackExhaust(std::shared_ptr<CallbackState> c
     // 'expectedExhaustIter' so that we can still remove this task from the 'poolInProgressQueue' if
     // this happens, but we do not want to reset the 'exhaustIter' value in this case.
     if (cbState->exhaustIter) {
-        if (cbState->exhaustIter.value() == expectedExhaustIter) {
+        if (cbState->exhaustIter.get() == expectedExhaustIter) {
             cbState->exhaustIter = boost::none;
         }
         _poolInProgressQueue.erase(expectedExhaustIter);

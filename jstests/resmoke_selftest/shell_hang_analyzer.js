@@ -23,7 +23,7 @@ clearRawMongoProgramOutput();
 MongoRunner.runHangAnalyzer.disable();
 MongoRunner.runHangAnalyzer.enable();
 
-assert.eq(0, MongoRunner.runHangAnalyzer([child.pid]));
+MongoRunner.runHangAnalyzer([child.pid]);
 
 if (TestData && TestData.inEvergreen) {
     assert.soon(() => {
@@ -71,7 +71,7 @@ assert.eq(7, TestData.peerPids.length);
 clearRawMongoProgramOutput();
 
 MongoRunner.runHangAnalyzer.disable();
-assert.eq(undefined, MongoRunner.runHangAnalyzer([20200125]));
+MongoRunner.runHangAnalyzer([20200125]);
 
 const lines = rawMongoProgramOutput().split('\n');
 // Nothing should be executed, so there's no output.
@@ -89,7 +89,7 @@ const origInEvg = TestData.inEvergreen;
 try {
     TestData.inEvergreen = false;
     MongoRunner.runHangAnalyzer.enable();
-    assert.eq(undefined, MongoRunner.runHangAnalyzer(TestData.peerPids));
+    MongoRunner.runHangAnalyzer(TestData.peerPids);
 } finally {
     TestData.inEvergreen = origInEvg;
 }

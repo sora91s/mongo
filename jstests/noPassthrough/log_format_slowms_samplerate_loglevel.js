@@ -6,6 +6,7 @@
  *   requires_sharding,
  * ]
  */
+load("jstests/libs/logv2_helpers.js");
 
 (function() {
 "use strict";
@@ -16,6 +17,7 @@ TestData.disableImplicitSessions = true;
 
 load("jstests/libs/fixture_helpers.js");  // For FixtureHelpers.
 load("jstests/libs/log.js");              // For findMatchingLogLine.
+load("jstests/libs/sbe_util.js");         // For checkSBEEnabled.
 
 // Prevent the mongo shell from gossiping its cluster time, since this will increase the amount
 // of data logged for each op. For some of the testcases below, including the cluster time would
@@ -83,6 +85,8 @@ function runLoggingTests({db, slowMs, logLevel, sampleRate}) {
         {profile: 0, slowms: (slowMs == null) ? 1000000 : slowMs, sampleRate: sampleRate}));
     assert.commandWorked(db.setLogLevel(logLevel, "command"));
     assert.commandWorked(db.setLogLevel(logLevel, "write"));
+
+    const isSBEEnabled = checkSBEEnabled(db, ["featureFlagSbeFull"]);
 
     // Certain fields in the log lines on mongoD are not applicable in their counterparts on
     // mongoS, and vice-versa. Ignore these fields when examining the logs of an instance on
@@ -179,7 +183,7 @@ function runLoggingTests({db, slowMs, logLevel, sampleRate}) {
                 command: "find",
                 find: coll.getName(),
                 comment: logFormatTestComment,
-                planSummary: "IDHACK",
+                planSummary: isSBEEnabled ? "IXSCAN { _id: 1 }" : "IDHACK",
                 cursorExhausted: 1,
                 keysExamined: 1,
                 docsExamined: 1,

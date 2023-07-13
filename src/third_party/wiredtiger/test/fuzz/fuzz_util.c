@@ -27,19 +27,18 @@
  */
 #include "fuzz_util.h"
 
+#include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
 
 FUZZ_GLOBAL_STATE fuzz_state = {.conn = NULL, .session = NULL};
-
-#define HOME_BUF_SIZE 100
 
 /*
  * fuzzutil_generate_home_name --
  *     Create a unique home directory per worker that LibFuzzer creates.
  */
 static void
-fuzzutil_generate_home_name(char *buf, int buf_len)
+fuzzutil_generate_home_name(char *buf)
 {
     pid_t pid;
 
@@ -49,7 +48,7 @@ fuzzutil_generate_home_name(char *buf, int buf_len)
      * the end of the name.
      */
     pid = getpid();
-    testutil_check(__wt_snprintf(buf, buf_len, "WT_TEST_%d", pid));
+    sprintf(buf, "WT_TEST_%d", pid);
 }
 
 /*
@@ -59,19 +58,17 @@ fuzzutil_generate_home_name(char *buf, int buf_len)
 void
 fuzzutil_setup(void)
 {
-    char home[HOME_BUF_SIZE];
+    char home[100];
 
     if (fuzz_state.conn != NULL) {
-        testutil_assert(fuzz_state.session != NULL);
+        assert(fuzz_state.session != NULL);
         return;
     }
 
     WT_CLEAR(home);
-    fuzzutil_generate_home_name(home, HOME_BUF_SIZE);
+    fuzzutil_generate_home_name(home);
     testutil_make_work_dir(home);
-    testutil_check(wiredtiger_open(home, NULL,
-      "create,cache_size=5MB,statistics=(all),statistics_log=(json,on_close,wait=1)",
-      &fuzz_state.conn));
+    testutil_check(wiredtiger_open(home, NULL, "create,cache_size=5MB", &fuzz_state.conn));
     testutil_check(fuzz_state.conn->open_session(fuzz_state.conn, NULL, NULL, &fuzz_state.session));
 }
 

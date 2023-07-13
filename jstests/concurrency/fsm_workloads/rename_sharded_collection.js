@@ -16,16 +16,14 @@
  *   does_not_support_add_remove_shards,
  *   # This test just performs rename operations that can't be executed in transactions
  *   does_not_support_transactions,
+ *   # Can be removed once PM-1965-Milestone-1 is completed.
  *  ]
  */
-
-load('jstests/concurrency/fsm_workload_helpers/balancer.js');
 
 const numChunks = 20;
 const documentsPerChunk = 5;
 const dbNames = ['db0', 'db1'];
-const collNames =
-    ['rename_sharded_collectionA', 'rename_sharded_collectionB', 'rename_sharded_collectionC'];
+const collNames = ['collA', 'collB', 'collC'];
 
 /*
  * Initialize a collection with expected number of chunks/documents and randomly distribute chunks
@@ -34,10 +32,6 @@ function initAndFillShardedCollection(db, collName, shardNames) {
     const coll = db[collName];
     const ns = coll.getFullName();
     db.adminCommand({shardCollection: ns, key: {x: 1}});
-
-    // Disallow balancing 'ns' during $setup so it does not interfere with the splits.
-    BalancerHelper.disableBalancerForCollection(db, ns);
-    BalancerHelper.joinBalancerRound(db);
 
     var nextShardKeyValue = 0;
     for (var i = 0; i < numChunks; i++) {
@@ -58,9 +52,6 @@ function initAndFillShardedCollection(db, collName, shardNames) {
         });
         assert.commandWorkedOrFailedWithCode(res, ErrorCodes.ConflictingOperationInProgress);
     }
-
-    // Allow balancing 'ns' again.
-    BalancerHelper.enableBalancerForCollection(db, ns);
 }
 
 /*

@@ -8,7 +8,6 @@
 // storage engines which do not support the command.
 // @tags: [
 //    requires_fsync,
-//    temporary_catalog_shard_incompatible,
 // ]
 
 (function() {

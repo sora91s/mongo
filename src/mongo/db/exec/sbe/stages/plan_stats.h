@@ -31,7 +31,6 @@
 
 #include "mongo/db/exec/plan_stats.h"
 #include "mongo/db/exec/plan_stats_visitor.h"
-#include "mongo/db/storage/column_store.h"
 
 namespace mongo::sbe {
 struct CommonStats {
@@ -53,12 +52,13 @@ struct CommonStats {
     // PlanStages corresponds to an MQL operation specified by the user.
     const PlanNodeId nodeId;
 
-    // Time elapsed while working inside this stage.
+    // Time elapsed while working inside this stage. When this field is set to boost::none,
+    // timing info will not be collected during query execution.
     //
     // The field must be populated when running explain or when running with the profiler on. It
     // must also be populated when multi planning, in order to gather stats stored in the plan
-    // cache.  This struct includes the execution time and its precision/unit.
-    QueryExecTime executionTime;
+    // cache.
+    boost::optional<long long> executionTimeMillis;
 
     size_t advances{0};
     size_t opens{0};
@@ -88,47 +88,6 @@ struct ScanStats final : public SpecificStats {
     }
 
     size_t numReads{0};
-};
-
-struct ColumnScanStats final : public SpecificStats {
-    // Struct to hold relevant stats for ColumnCursor and ParentPathCursor
-    // Note: `includeInOutput` field is only relevant for ColumnCursor
-    struct CursorStats final {
-        PathValue path;
-        bool includeInOutput;
-        size_t numNexts;
-        size_t numSeeks;
-
-        CursorStats(PathValue p, bool include)
-            : path(p), includeInOutput(include), numNexts(0), numSeeks(0) {}
-    };
-
-    std::unique_ptr<SpecificStats> clone() const final {
-        return std::make_unique<ColumnScanStats>(*this);
-    }
-
-    uint64_t estimateObjectSizeInBytes() const final {
-        return sizeof(*this);
-    }
-
-    void acceptVisitor(PlanStatsConstVisitor* visitor) const final {
-        visitor->visit(this);
-    }
-
-    void acceptVisitor(PlanStatsMutableVisitor* visitor) final {
-        visitor->visit(this);
-    }
-
-    // Occasionally column scan might need to read records from the corresponding row store. It
-    // might either fetch a record by its id, or scan a few consecutive records from the current
-    // cursor's position ('numRowStoreScans' counts the total number of scanned records).
-    size_t numRowStoreFetches{0};
-    size_t numRowStoreScans{0};
-
-    // Lists holding all of the stats of current struct's cursors. These stats objects are owned
-    // here, and referred to by the cursor execution objects.
-    std::list<ColumnScanStats::CursorStats> cursorStats;
-    std::list<ColumnScanStats::CursorStats> parentCursorStats;
 };
 
 struct IndexScanStats final : public SpecificStats {
@@ -319,13 +278,8 @@ struct HashAggStats : public SpecificStats {
     }
 
     bool usedDisk{false};
-    // The number of times that the entire hash table was spilled.
-    long long spills{0};
-    // The number of individual records spilled to disk.
     long long spilledRecords{0};
-    // An estimate, in bytes, of the size of the final spill table after all spill events have taken
-    // place.
-    long long spilledDataStorageSize{0};
+    long long lastSpilledRecordSize{0};
 };
 
 struct HashLookupStats : public SpecificStats {
@@ -386,5 +340,5 @@ size_t calculateNumberOfReads(const PlanStageStats* root);
 /**
  * Accumulates the summary of all execution statistics by walking over the specific-stats of stages.
  */
-PlanSummaryStats collectExecutionStatsSummary(const PlanStageStats& root);
+PlanSummaryStats collectExecutionStatsSummary(const PlanStageStats* root);
 }  // namespace mongo::sbe

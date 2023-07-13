@@ -8,6 +8,7 @@
 
 #include "wt_internal.h"
 
+#ifdef HAVE_DIAGNOSTIC
 /*
  * __txn_op_log_row_key_check --
  *     Confirm the cursor references the correct key.
@@ -23,7 +24,6 @@ __txn_op_log_row_key_check(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt)
 
     cursor = &cbt->iface;
     WT_ASSERT(session, F_ISSET(cursor, WT_CURSTD_KEY_SET));
-    cmp = 0;
 
     memset(&key, 0, sizeof(key));
 
@@ -39,21 +39,18 @@ __txn_op_log_row_key_check(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt)
         page = cbt->ref->page;
         WT_ASSERT(session, cbt->slot < page->entries);
         rip = &page->pg_row[cbt->slot];
-        WT_ASSERT_ALWAYS(session, __wt_row_leaf_key(session, page, rip, &key, false) == 0,
-          "Failed to instantiate a row-store key, cannot proceed with cursor key verification");
+        WT_ASSERT(session, __wt_row_leaf_key(session, page, rip, &key, false) == 0);
     } else {
         key.data = WT_INSERT_KEY(cbt->ins);
         key.size = WT_INSERT_KEY_SIZE(cbt->ins);
     }
 
-    WT_ASSERT_ALWAYS(session,
-      __wt_compare(session, CUR2BT(cbt)->collator, &key, &cursor->key, &cmp) == 0,
-      "Comparison of row store logging key and cursor key failed");
-    WT_ASSERT_ALWAYS(
-      session, cmp == 0, "Cursor is not referencing the expected key when logging an operation");
+    WT_ASSERT(session, __wt_compare(session, CUR2BT(cbt)->collator, &key, &cursor->key, &cmp) == 0);
+    WT_ASSERT(session, cmp == 0);
 
     __wt_buf_free(session, &key);
 }
+#endif
 
 /*
  * __txn_op_log --
@@ -78,9 +75,9 @@ __txn_op_log(
      * operations, we shouldn't see them here.
      */
     if (CUR2BT(cbt)->type == BTREE_ROW) {
-        if (EXTRA_DIAGNOSTICS_ENABLED(session, WT_DIAGNOSTIC_LOG_VALIDATE))
-            __txn_op_log_row_key_check(session, cbt);
-
+#ifdef HAVE_DIAGNOSTIC
+        __txn_op_log_row_key_check(session, cbt);
+#endif
         switch (upd->type) {
         case WT_UPDATE_MODIFY:
             /*
@@ -222,7 +219,7 @@ __txn_logrec_init(WT_SESSION_IMPL *session)
      * The only way we should ever get in here without a txn id is if we are recording diagnostic
      * information. In that case, allocate an id.
      */
-    if (FLD_ISSET(S2C(session)->debug_flags, WT_CONN_DEBUG_TABLE_LOGGING) && txn->id == WT_TXN_NONE)
+    if (FLD_ISSET(S2C(session)->log_flags, WT_CONN_LOG_DEBUG_MODE) && txn->id == WT_TXN_NONE)
         WT_RET(__wt_txn_id_check(session));
     else
         WT_ASSERT(session, txn->id != WT_TXN_NONE);
@@ -271,7 +268,7 @@ __wt_txn_log_op(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt)
      * skip it.
      */
     if (!F_ISSET(S2BT(session), WT_BTREE_LOGGED) &&
-      FLD_ISSET(conn->debug_flags, WT_CONN_DEBUG_TABLE_LOGGING))
+      FLD_ISSET(conn->log_flags, WT_CONN_LOG_DEBUG_MODE))
         FLD_SET(fileid, WT_LOGOP_IGNORE);
 
     WT_RET(__txn_logrec_init(session));
@@ -455,7 +452,7 @@ __wt_txn_checkpoint_log(WT_SESSION_IMPL *session, bool full, uint32_t flags, WT_
     if (!full) {
         if (txn->full_ckpt) {
             if (lsnp != NULL)
-                WT_ASSIGN_LSN(lsnp, ckpt_lsn);
+                *lsnp = *ckpt_lsn;
             return (0);
         }
         return (__txn_log_file_sync(session, flags, lsnp));
@@ -571,17 +568,13 @@ err:
  *     Begin truncating a range of a file.
  */
 int
-__wt_txn_truncate_log(
-  WT_SESSION_IMPL *session, WT_ITEM *orig_start_key, WT_ITEM *orig_stop_key, bool local_start)
+__wt_txn_truncate_log(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *start, WT_CURSOR_BTREE *stop)
 {
     WT_BTREE *btree;
     WT_ITEM *item;
     WT_TXN_OP *op;
-    uint64_t start_recno, stop_recno;
 
     btree = S2BT(session);
-    start_recno = WT_RECNO_OOB;
-    stop_recno = WT_RECNO_OOB;
 
     WT_RET(__txn_next_op(session, &op));
 
@@ -590,36 +583,23 @@ __wt_txn_truncate_log(
         op->u.truncate_row.mode = WT_TXN_TRUNC_ALL;
         WT_CLEAR(op->u.truncate_row.start);
         WT_CLEAR(op->u.truncate_row.stop);
-        /*
-         * If the user provided a start cursor key (i.e. local_start is false) then use the original
-         * key provided.
-         */
-        if (!local_start && orig_start_key != NULL) {
+        if (start != NULL) {
             op->u.truncate_row.mode = WT_TXN_TRUNC_START;
             item = &op->u.truncate_row.start;
-            WT_RET(__wt_buf_set(session, item, orig_start_key->data, orig_start_key->size));
+            WT_RET(__wt_cursor_get_raw_key(&start->iface, item));
+            WT_RET(__wt_buf_set(session, item, item->data, item->size));
         }
-        if (orig_stop_key != NULL) {
+        if (stop != NULL) {
             op->u.truncate_row.mode =
               (op->u.truncate_row.mode == WT_TXN_TRUNC_ALL) ? WT_TXN_TRUNC_STOP : WT_TXN_TRUNC_BOTH;
             item = &op->u.truncate_row.stop;
-            WT_RET(__wt_buf_set(session, item, orig_stop_key->data, orig_stop_key->size));
+            WT_RET(__wt_cursor_get_raw_key(&stop->iface, item));
+            WT_RET(__wt_buf_set(session, item, item->data, item->size));
         }
     } else {
-        /*
-         * If the user provided cursors, unpack the original keys that were saved in the cursor's
-         * lower_bound field.
-         */
-        if (!local_start && orig_start_key != NULL)
-            WT_RET(__wt_struct_unpack(
-              session, orig_start_key->data, orig_start_key->size, "q", &start_recno));
-        if (orig_stop_key != NULL)
-            WT_RET(__wt_struct_unpack(
-              session, orig_stop_key->data, orig_stop_key->size, "q", &stop_recno));
-
         op->type = WT_TXN_OP_TRUNCATE_COL;
-        op->u.truncate_col.start = start_recno;
-        op->u.truncate_col.stop = stop_recno;
+        op->u.truncate_col.start = (start == NULL) ? WT_RECNO_OOB : start->recno;
+        op->u.truncate_col.stop = (stop == NULL) ? WT_RECNO_OOB : stop->recno;
     }
 
     /* Write that operation into the in-memory log. */

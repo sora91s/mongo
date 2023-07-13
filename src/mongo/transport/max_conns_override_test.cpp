@@ -48,7 +48,7 @@ stdx::variant<CIDR, std::string> makeExemption(T exemption) {
     }
 }
 
-std::shared_ptr<transport::Session> makeIPSession(StringData ip) {
+transport::SessionHandle makeIPSession(StringData ip) {
     return transport::MockSession::create(HostAndPort(ip.toString(), 27017),
                                           HostAndPort(),
                                           SockAddr::create(ip, 27017, AF_INET),
@@ -57,7 +57,7 @@ std::shared_ptr<transport::Session> makeIPSession(StringData ip) {
 }
 
 #ifndef _WIN32
-std::shared_ptr<transport::Session> makeUNIXSession(StringData path) {
+transport::SessionHandle makeUNIXSession(StringData path) {
     return transport::MockSession::create(HostAndPort(""_sd.toString(), -1),
                                           HostAndPort(path.toString(), -1),
                                           SockAddr::create(""_sd, -1, AF_UNIX),

@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include <boost/optional.hpp>
+#include "boost/optional.hpp"
 #include <vector>
 
 #include "mongo/db/exec/document_value/document.h"
@@ -41,6 +41,7 @@
 
 namespace mongo {
 
+class IndexAccessMethod;
 class WorkingSetMember;
 
 typedef size_t WorkingSetID;
@@ -288,7 +289,6 @@ public:
     }
 
     SortableWorkingSetMember getOwned() const;
-    void makeOwned();
 
 private:
     std::shared_ptr<WorkingSetMember> _holder;
@@ -358,16 +358,16 @@ public:
     void transitionToOwnedObj(WorkingSetID id);
 
     /**
-     * Registers the index ident with the WorkingSet, and returns a handle that can be used to
-     * recover the index ident.
+     * Registers an IndexAccessMethod pointer with the WorkingSet, and returns a handle that can be
+     * used to recover the IndexAccessMethod.
      */
-    WorkingSetRegisteredIndexId registerIndexIdent(const std::string& ident);
+    WorkingSetRegisteredIndexId registerIndexAccessMethod(const IndexAccessMethod* indexAccess);
 
     /**
-     * Returns the index ident for an index that has previously been registered with the WorkingSet
-     * using 'registerIndexIdent()'.
+     * Returns the IndexAccessMethod for an index that has previously been registered with the
+     * WorkingSet using 'registerIndexAccessMethod()'.
      */
-    StringData retrieveIndexIdent(WorkingSetRegisteredIndexId indexId) const {
+    const IndexAccessMethod* retrieveIndexAccessMethod(WorkingSetRegisteredIndexId indexId) const {
         return _registeredIndexes[indexId];
     }
 
@@ -406,9 +406,9 @@ private:
     // If _freeList == INVALID_ID, the free list is empty and all elements in _data are in use.
     WorkingSetID _freeList;
 
-    // Holds index idents that have been registered with 'registerIndexIdent()`. The
+    // Holds IndexAccessMethods that have been registered with 'registerIndexAccessMethod()`. The
     // WorkingSetRegisteredIndexId is the offset into the vector.
-    std::vector<std::string> _registeredIndexes;
+    std::vector<const IndexAccessMethod*> _registeredIndexes;
 };
 
 }  // namespace mongo

@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -40,9 +41,6 @@
 #include "mongo/db/s/user_writes_critical_section_document_gen.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 
@@ -111,7 +109,7 @@ void acquireRecoverableCriticalSection(OperationContext* opCtx,
         const auto bsonObj = findRecoverableCriticalSectionDoc(opCtx, nss);
         if (!bsonObj.isEmpty()) {
             const auto collCSDoc = UserWriteBlockingCriticalSectionDocument::parse(
-                IDLParserContext("AcquireUserWritesCS"), bsonObj);
+                IDLParserErrorContext("AcquireUserWritesCS"), bsonObj);
 
             uassert(ErrorCodes::IllegalOperation,
                     str::stream() << "Cannot acquire user writes critical section with different "
@@ -172,8 +170,7 @@ const ReplicaSetAwareServiceRegistry::Registerer<UserWritesRecoverableCriticalSe
         "UserWritesRecoverableCriticalSectionService");
 
 bool UserWritesRecoverableCriticalSectionService::shouldRegisterReplicaSetAwareService() const {
-    return serverGlobalParams.clusterRole == ClusterRole::None ||
-        serverGlobalParams.clusterRole.isShardRole();
+    return serverGlobalParams.clusterRole != ClusterRole::ConfigServer;
 }
 
 void UserWritesRecoverableCriticalSectionService::
@@ -226,7 +223,7 @@ void UserWritesRecoverableCriticalSectionService::
                 !bsonObj.isEmpty());
 
         const auto collCSDoc = UserWriteBlockingCriticalSectionDocument::parse(
-            IDLParserContext("PromoteUserWritesCS"), bsonObj);
+            IDLParserErrorContext("PromoteUserWritesCS"), bsonObj);
 
         uassert(ErrorCodes::IllegalOperation,
                 "Cannot promote user writes critical section to block user writes if sharded DDL "
@@ -285,7 +282,7 @@ void UserWritesRecoverableCriticalSectionService::
         }
 
         const auto collCSDoc = UserWriteBlockingCriticalSectionDocument::parse(
-            IDLParserContext("DemoteUserWritesCS"), bsonObj);
+            IDLParserErrorContext("DemoteUserWritesCS"), bsonObj);
 
         // If we are not currently blocking user writes, then we are done.
         if (!collCSDoc.getBlockUserWrites()) {
@@ -333,7 +330,7 @@ void UserWritesRecoverableCriticalSectionService::releaseRecoverableCriticalSect
         }
 
         const auto collCSDoc = UserWriteBlockingCriticalSectionDocument::parse(
-            IDLParserContext("ReleaseUserWritesCS"), bsonObj);
+            IDLParserErrorContext("ReleaseUserWritesCS"), bsonObj);
 
         // Release the critical section by deleting the critical section document. The OpObserver
         // will release the in-memory CS when reacting to the delete event.

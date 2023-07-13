@@ -3,11 +3,9 @@
  * they are within the time range, regardless of the order in which they are inserted.
  *
  * @tags: [
- *   # This test depends on certain writes ending up in the same bucket. Stepdowns may result in
- *   # writes splitting between two primaries, and thus different buckets.
  *   does_not_support_stepdowns,
- *   # We need a timeseries collection.
- *   requires_timeseries,
+ *   does_not_support_transactions,
+ *   requires_getmore,
  * ]
  */
 (function() {
@@ -37,7 +35,7 @@ TimeseriesTest.run((insert) => {
         assert.contains(bucketsColl.getName(), db.getCollectionNames());
 
         assert.commandWorked(insert(coll, docs));
-        assert.docEq(docs, coll.find().sort({_id: 1}).toArray());
+        assert.docEq(coll.find().sort({_id: 1}).toArray(), docs);
 
         const buckets = bucketsColl.find().sort({_id: 1}).toArray();
         jsTestLog('Checking buckets:' + tojson(buckets));

@@ -371,9 +371,7 @@ ScopedTaskExecutor::ScopedTaskExecutor(std::shared_ptr<TaskExecutor> executor)
 
 ScopedTaskExecutor::ScopedTaskExecutor(std::shared_ptr<TaskExecutor> executor,
                                        Status shutdownStatus)
-    : _executor(std::make_shared<Impl>(std::move(executor), shutdownStatus)) {
-    invariant(ErrorCodes::isA<ErrorCategory::CancellationError>(shutdownStatus));
-}
+    : _executor(std::make_shared<Impl>(std::move(executor), std::move(shutdownStatus))) {}
 
 ScopedTaskExecutor::~ScopedTaskExecutor() {
     _executor->shutdown();

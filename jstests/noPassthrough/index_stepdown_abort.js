@@ -11,6 +11,7 @@
 
 load('jstests/noPassthrough/libs/index_build.js');
 load("jstests/libs/fail_point_util.js");
+load("jstests/libs/logv2_helpers.js");
 
 const rst = new ReplSetTest({
     nodes: [

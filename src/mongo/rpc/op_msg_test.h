@@ -27,15 +27,14 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/platform/basic.h"
 
-#include <third_party/wiredtiger/wiredtiger.h>
 #include <type_traits>
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/rpc/op_msg.h"
-
+#include "third_party/wiredtiger/wiredtiger.h"
 
 namespace mongo {
 namespace rpc {
@@ -130,10 +129,6 @@ public:
 
     OpMsg parse() {
         return OpMsg::parseOwned(done());
-    }
-
-    OpMsg parse(Client* client) {
-        return OpMsg::parseOwned(done(), client);
     }
 
     OpMsgBytes&& addToSize(int32_t extra) && {

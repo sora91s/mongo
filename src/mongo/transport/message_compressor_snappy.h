@@ -30,6 +30,7 @@
 #include "mongo/transport/message_compressor_base.h"
 
 namespace mongo {
+void initMySnappyMessageCompressor();
 class SnappyMessageCompressor final : public MessageCompressorBase {
 public:
     SnappyMessageCompressor();

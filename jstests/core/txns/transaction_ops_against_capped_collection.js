@@ -3,9 +3,7 @@
  * still allowed.
  *
  * 'requires_capped' tagged tests are excluded from txn passthrough suites.
- * The test runs commands that are not allowed with security token: endSession.
- * @tags: [
- *   not_allowed_with_security_token,requires_capped, uses_transactions]
+ * @tags: [requires_capped, uses_transactions]
  */
 (function() {
 "use strict";

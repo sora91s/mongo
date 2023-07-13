@@ -124,13 +124,6 @@ majority write concern needed to set the CWWC, users can run
 `setDefaultRWConcern` with write concern `{w: 1}` instead of making it a majority write so that
 setting CWWC does not get in the way of being able to do a force reconfig.
 
-#### Code References
-- [The definition of an Oplog Entry](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/oplog_entry.idl)
-- [Upper layer uses OpObserver class to write Oplog](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/op_observer/op_observer.h#L112), for example, [it is helpful to take a look at ObObserverImpl::logOperation()](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/op_observer/op_observer_impl.cpp#L114)
-- [Oplog::logOpsInner() is a common function to write Oplogs into Oplog Collection](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/oplog.cpp#L356)
-- [WriteConcernOptions is filled in extractWriteConcern()](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/write_concern.cpp#L71)
-- [Upper level uses waitForWriteConcern() to wait for the write concern to be fulfilled](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/write_concern.cpp#L254)
-
 ## Life as a Secondary
 
 In general, secondaries just choose a node to sync from, their **sync source**, and then pull
@@ -314,11 +307,11 @@ endless loop doing the following:
 6. Use multiple threads to apply the batch in parallel. This means that oplog entries within the
    same batch are not necessarily applied in order. The operations in each batch will be divided
    among the writer threads. The only restriction for creating the vector of operations that each
-   writer thread will apply serially has to do with the documents that the operation applies to.
-   Operations on a document must be atomic and ordered, and are hence put on the same thread to be
-   serialized. Operations on the same collection can still be parallelized if they are working with
-   distinct documents. When applying operations, each writer thread will try to **group** together
-   insert operations for improved performance and will apply all other operations individually.
+   writer thread will apply serially has to do with the namespace that the operation applies to.
+   Operations on a document must be atomic and ordered, so operations on the same namespace will be
+   put on the same thread to be serialized. When applying operations, each writer thread will try to
+   **group** together insert operations for improved performance and will apply all other operations
+   individually.
 7. Tell the storage engine to flush the journal.
 8. Update [**oplog visibility**](../catalog/README.md#oplog-visibility) by notifying the storage
    engine of the new oplog entries. Since entries in an oplog applier batch are applied in
@@ -326,16 +319,6 @@ endless loop doing the following:
    applied, otherwise an oplog hole could be made visible.
 9. Finalize the batch by advancing the global timestamp (and the node's last applied optime) to the
    last optime in the batch.
-
-#### Code References
-- [Start background threads like bgSync/oplogApplier/syncSourceFeedback](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/replication_coordinator_external_state_impl.cpp#L213)
-- [BackgroundSync starts SyncSourceResolver and OplogFetcher to sync log](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/bgsync.cpp#L225)
-- [SyncSourceResolver chooses a sync source to sync from](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/sync_source_resolver.cpp#L545)
-- [OplogBuffer currently uses a BlockingQueue as underlying data structure](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/oplog_buffer_blocking_queue.h#L41)
-- [OplogFetcher queries from sync source and put fetched oplogs in OplogApplier::_oplogBuffer](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/oplog_fetcher.cpp#L209)
-- [OplogBatcher polls oplogs from OplogApplier::_oplogBuffer and creates an OplogBatch to apply](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/oplog_batcher.cpp#L282)
-- [OplogApplier gets batches of oplog entries from the OplogBatcher and applies entries in parallel](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/oplog_applier_impl.cpp#L297)
-- [SyncSourceFeedback keeps checking if there are new oplogs applied on this instance and issues `UpdatePositionCmd` to sync source](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/sync_source_feedback.cpp#L157)
 
 ## Replication and Topology Coordinators
 
@@ -603,16 +586,6 @@ information to its own sync source.
 The `replSetUpdatePosition` command response does not include any information unless there is an
 error, such as in a `ReplSetConfig` mismatch.
 
-#### Code References
-- [OplogFetcher passes on the metadata it received from its sync source](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/oplog_fetcher.cpp#L897)
-- [Node handles heartbeat response and schedules the next heartbeat after it receives heartbeat response](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/replication_coordinator_impl_heartbeat.cpp#L190)
-- [Node responds to heartbeat request](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/repl_set_commands.cpp#L752)
-- [Primary advances the replica set's commit point after receiving replSetUpdatePosition command](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/replication_coordinator_impl.cpp#L1889)
-- [Secondary advances its understanding of the replica set commit point using metadata fetched from its sync source](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/replication_coordinator_impl.cpp#L5649)
-- [TopologyCoordinator updates commit optime](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/topology_coordinator.cpp#L2885)
-- [SyncSourceFeedback triggers replSetUpdatePosition command using Reporter](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/reporter.cpp#L189)
-- [Node updates replica set metadata after receiving replSetUpdatePosition command](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/repl/repl_set_commands.cpp#L675)
-
 ## Read Concern
 
 All reads in MongoDB are executed on snapshots of the data taken at some point in time. However, for
@@ -699,9 +672,6 @@ wait until the committed snapshot is beyond the specified OpTime.
 
 **afterClusterTime** is a read concern option used for supporting **causal consistency**.
 <!-- TODO: link to the Causal Consistency section of the Sharding Architecture Guide -->
-
-#### Code References
-- [ReadConcernArg is filled in _extractReadConcern()](https://github.com/mongodb/mongo/blob/r6.2.0/src/mongo/db/service_entry_point_common.cpp#L261)
 
 # enableMajorityReadConcern Flag
 
@@ -808,7 +778,7 @@ aborts, all of its operations abort and all corresponding data changes are abort
 All transactions are associated with a server session and at any given time, only one open
 transaction can be associated with a single session. The state of a transaction is maintained
 through the
-[`TransactionParticipant`](https://github.com/mongodb/mongo/blob/v6.1/src/mongo/db/transaction/transaction_participant.h),
+[`TransactionParticipant`](https://github.com/mongodb/mongo/blob/r4.2.0/src/mongo/db/transaction_participant.h),
 which is a decoration on the session. Any thread that attempts to modify the state of the
 transaction, which can include committing, aborting, or adding an operation to the transaction, must
 have the correct session checked out before doing so. Only one operation can check out a session at
@@ -1060,7 +1030,7 @@ actually applying the oplog entry and preparing the transaction, the node will w
 application has completed to reconstruct the transaction. If the node encounters a
 `commitTransaction` oplog entry, it will immediately commit the transaction. If the transaction it's
 about to commit was prepared, the node will find the `prepareTransaction` oplog entry(s) using the
-[`TransactionHistoryIterator`](https://github.com/mongodb/mongo/blob/v6.1/src/mongo/db/transaction/transaction_history_iterator.h)
+[`TransactionHistoryIterator`](https://github.com/mongodb/mongo/blob/r4.2.0/src/mongo/db/transaction_history_iterator.h)
 to get the operations for the transaction, prepare it and then immediately commit it.
 
 When oplog application for recovery or initial sync completes, the node will iterate
@@ -1394,17 +1364,13 @@ primary.
 
 ### Conditional
 
-The `replSetStepDown` command is one way that a node relinquishes its position as primary. Stepdown via the
-`replSetStepDown` command is called "conditional" because it may or may not succeed. Success in this case
-depends on the params passed to the command as well as the state of nodes of the replica set.
-* If the `force` option is set to `true`:
-  * In this case the primary node will wait for `secondaryCatchUpPeriodSecs`, a `replSetStepDown` parameter,
-  before stepping down regardless of whether the other nodes have caught up or are electable.
-* If the `force` option is omitted or set to `false`, the following conditions must be met for the command to
-succeed:
-  * The [`lastApplied`](#replication-timestamp-glossary) OpTime of the primary must be replicated to a majority
-  of the nodes
-  * At least one of the up-to-date secondaries must also be electable
+The `replSetStepDown` command is one way that a node relinquishes its position as primary. We
+consider this a conditional step down because it can fail if the following conditions are not met:
+* `force` is true and now > `waitUntil` deadline, which is the amount of time we will wait before
+stepping down (Note: If `force` is true, only this condition needs to be met)
+* The [`lastApplied`](#replication-timestamp-glossary) OpTime of the primary must be replicated to
+a majority of the nodes
+* At least one of the up-to-date secondaries is also electable
 
 When a `replSetStepDown` command comes in, the node begins to check if it can step down. First, the
 node attempts to acquire the [RSTL](#replication-state-transition-lock). In order to do so, it must
@@ -1413,14 +1379,11 @@ kill all conflicting user/system operations and abort all unprepared transaction
 Now, the node loops trying to step down. If force is `false`, it repeatedly checks if a majority of
 nodes have reached the `lastApplied` optime, meaning that they are caught up. It must also check
 that at least one of those nodes is electable. If force is `true`, it does not wait for these
-conditions and steps down immediately after it reaches the `secondaryCatchUpPeriodSecs` deadline.
+conditions and steps down immediately after it reaches the `waitUntil` deadline.
 
 Upon a successful stepdown, it yields locks held by
 [prepared transactions](#stepdown-with-a-prepared-transaction) because we are now a secondary.
 Finally, we log stepdown metrics and update our member state to `SECONDARY`.
-* User-facing documentation is
-available [here](https://www.mongodb.com/docs/manual/reference/command/replSetStepDown/#command-fields).
-* [Code spelunking point](https://github.com/mongodb/mongo/blob/843762120897ed2dbfe8bbc69dbbf99b641c009c/src/mongo/db/repl/replication_coordinator_impl.cpp#L2737).
 
 ### Unconditional
 
@@ -2211,7 +2174,122 @@ written to the oplog.
 
 # Feature Compatibility Version
 
-See the [FCV and Feature Flag README](FCV_AND_FEATURE_FLAG_README.md).
+Feature compatibility version (FCV) is the versioning mechanism for a MongoDB cluster that provides
+safety guarantees when upgrading and downgrading between versions. The FCV determines the version of
+the feature set exposed by the cluster and is often set in lockstep with the binary version as a
+part of [upgrading or downgrading the cluster's binary version](https://docs.mongodb.com/v5.0/release-notes/5.0-upgrade-replica-set/#upgrade-a-replica-set-to-5.0).
+
+FCV is used to disable features that may be problematic when active in a mixed version cluster.
+For example, incompatibility issues can arise if a newer version node accepts an instance of a new
+feature *f* while there are still older version nodes in the cluster that are unable to handle
+*f*.
+
+FCV is persisted as a document in the `admin.system.version` collection. It will look something like
+the following if a node were to be in FCV 5.0:
+<pre><code>
+   { "_id" : "featureCompatibilityVersion", "version" : "5.0" }</code></pre>
+
+This document is present in every mongod in the cluster and is replicated to other members of the
+replica set whenever it is updated via writes to the `admin.system.version` collection. The FCV
+document is also present on standalone nodes.
+
+On a clean startup (the server currently has no replicated collections), the server will create the
+FCV document for the first time. If it is running as a shard server (with the `--shardsvr option`),
+the server will set the FCV to be the last LTS version. This is to ensure compatibility when adding
+the shard to a downgraded version cluster. The config server will run
+`setFeatureCompatibilityVersion`on the shard to match the clusters FCV as part of `addShard`. If the
+server is not running as a shard server, then the server will set its FCV to the latest version by
+default.
+
+As part of a startup with an existing FCV document, the server caches an in-memory value of the FCV
+from disk. The `FcvOpObserver` keeps this in-memory value in sync with the on-disk FCV document
+whenever an update to the document is made. In the period of time during startup where the in-memory
+value has yet to be loaded from disk, the FCV is set to `kUnsetDefaultLastLTSBehavior`. This
+indicates that the server will be using the last-LTS feature set as to ensure compatibility with
+other nodes in the replica set.
+
+As part of initial sync, the in-memory FCV value is always initially set to be 
+`kUnsetDefaultLastLTSBehavior`. This is to ensure compatibility between the sync source and sync
+target. If the sync source is actually in a different feature compatibility version, we will find
+out when we clone the `admin.system.version` collection.
+
+A node that starts with `--replSet` will also have an FCV value of `kUnsetDefaultLastLTSBehavior`
+if it has not yet received the `replSetInitiate` command.
+
+## setFeatureCompatibilityVersion
+
+The FCV can be set using the `setFeatureCompatibilityVersion` admin command to one of the following:
+* The version of the last-LTS (Long Term Support) 
+  * Indicates to the server to use the feature set compatible with the last LTS release version.
+* The version of the last-continuous release
+  * Indicates to the server to use the feature set compatible with the last continuous release
+version.
+* The version of the latest(current) release
+  * Indicates to the server to use the feature set compatible with the latest release version.
+In a replica set configuration, this command should be run against the primary node. In a sharded
+configuration this should be run against the mongos. The mongos will forward the command
+to the config servers which then forward request again to shard primaries. As mongos nodes are
+non-data bearing, they do not have an FCV.
+
+Each `mongod` release will support the following upgrade/downgrade paths:
+* Last-Continuous ←→ Latest
+* Last-LTS ←→ Latest
+* Last-LTS → Last-Continuous
+  * This upgrade-only transition is only possible when requested by the [config server](https://docs.mongodb.com/manual/core/sharded-cluster-config-servers/).
+Additionally, the last LTS must not be equal to the last continuous release.
+
+As part of an upgrade/downgrade, the FCV will transition through three states:
+<pre><code>
+Upgrade:
+   kVersion_X → kUpgradingFrom_X_To_Y → kVersion_Y
+
+Downgrade:
+   kVersion_X → kDowngradingFrom_X_To_Y → kVersion_Y
+</code></pre>
+In above, X will be the source version that we are upgrading/downgrading from while Y is the target
+version that we are upgrading/downgrading to.
+
+Transitioning to one of the `kUpgradingFrom_X_To_Y`/`kDowngradingFrom_X_To_Y` states updates
+the FCV document in `admin.system.version` with a new `targetVersion` field. Transitioning to a
+`kDowngradingFrom_X_to_Y` state in particular will also add a `previousVersion` field along with the
+`targetVersion` field. These updates are done with `writeConcern: majority`.
+
+Some examples of on-disk representations of the upgrading and downgrading states:
+<pre><code>
+kUpgradingFrom_5_0_To_5_1:
+{
+    version: 5.0,
+    targetVersion: 5.1
+}
+
+kDowngradingFrom_5_1_To_5_0:
+{ 
+    version: 5.0, 
+    targetVersion: 5.0,
+    previousVersion: 5.1
+}
+</code></pre>
+
+Once this transition is complete, the global lock is acquired in shared
+mode and then released immediately. This creates a barrier and guarantees safety for operations
+that acquire the global lock either in exclusive or intent exclusive mode. If these operations begin
+and acquire the global lock prior to the FCV change, they will proceed in the context of the old
+FCV, and will guarantee to finish before the FCV change takes place. For the operations that begin
+after the FCV change, they will see the updated FCV and behave accordingly.
+
+Transitioning to one of the `kUpgradingFrom_X_To_Y`/`kDowngradingFrom_X_to_Y`/`kVersion_Y`(on
+upgrade) states sets the `minWireVersion` to `WireVersion::LATEST_WIRE_VERSION` and also closes all
+incoming connections from internal clients with lower binary versions.
+
+Finally, as part of transitioning to the `kVersion_Y` state, the `targetVersion` and the
+`previousVersion` (if applicable) fields of the FCV document are deleted while the `version` field
+is updated to reflect the new upgraded or downgraded state. This update is also done using
+`writeConcern: majority`. The new in-memory FCV value will be updated to reflect the on-disk
+changes.
+
+_Code spelunking starting points:_
+* [The template file used to generate the FCV constants](https://github.com/mongodb/mongo/blob/c4d2ed3292b0e113135dd85185c27a8235ea1814/src/mongo/util/version/releases.h.tpl#L1)
+* [The `FCVTransitions` class, that determines valid FCV transitions](https://github.com/mongodb/mongo/blob/c4d2ed3292b0e113135dd85185c27a8235ea1814/src/mongo/db/commands/feature_compatibility_version.cpp#L75)
 
 # System Collections
 

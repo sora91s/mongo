@@ -12,8 +12,6 @@
 
 #include <boost/spirit/home/support/char_class.hpp>
 #include <boost/spirit/home/karma/detail/generate_to.hpp>
-#include <boost/range/begin.hpp>
-#include <boost/range/end.hpp>
 
 namespace boost { namespace spirit { namespace karma { namespace detail
 {

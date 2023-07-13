@@ -44,18 +44,16 @@
 #include "mongo/db/auth/authz_session_external_state_mock.h"
 #include "mongo/db/auth/restriction_environment.h"
 #include "mongo/db/auth/sasl_options.h"
-#include "mongo/db/auth/security_token_gen.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/aggregation_request_helper.h"
-#include "mongo/db/service_context_d_test_fixture.h"
+#include "mongo/db/service_context_test_fixture.h"
 #include "mongo/idl/server_parameter_test_util.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/transport_layer_mock.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/clock_source_mock.h"
 
 namespace mongo {
 namespace {
@@ -73,7 +71,7 @@ public:
                    const NamespaceString& collectionName,
                    const BSONObj& query,
                    BSONObj* result) override {
-        if (_findsShouldFail && collectionName == NamespaceString::kAdminUsersNamespace) {
+        if (_findsShouldFail && collectionName == AuthorizationManager::usersCollectionNamespace) {
             return Status(ErrorCodes::UnknownError,
                           "findOne on admin.system.users set to fail in mock.");
         }
@@ -84,11 +82,9 @@ private:
     bool _findsShouldFail{false};
 };
 
-class AuthorizationSessionTest : public ServiceContextMongoDTest {
+class AuthorizationSessionTest : public ScopedGlobalServiceContextForTest, public unittest::Test {
 public:
     void setUp() {
-        ServiceContextMongoDTest::setUp();
-
         _session = transportLayer.createSession();
         _client = getServiceContext()->makeClient("testClient", _session);
         RestrictionEnvironment::set(
@@ -107,7 +103,6 @@ public:
             std::move(localSessionState),
             AuthorizationSessionImpl::InstallMockForTestingOrAuthImpl{});
         authzManager->setAuthEnabled(true);
-        authzSession->startContractTracking();
 
         credentials =
             BSON("SCRAM-SHA-1" << scram::Secrets<SHA1Block>::generateCredentials(
@@ -119,7 +114,6 @@ public:
 
     void tearDown() override {
         authzSession->logoutAllDatabases(_client.get(), "Ending AuthorizationSessionTest");
-        ServiceContextMongoDTest::tearDown();
     }
 
     Status createUser(const UserName& username, const std::vector<RoleName>& roles) {
@@ -134,61 +128,13 @@ public:
         }
         rolesBSON.doneFast();
 
-        return managerState->insert(
-            _opCtx.get(),
-            NamespaceString::createNamespaceString_forTest(
-                username.getTenant(), DatabaseName::kAdmin.db(), NamespaceString::kSystemUsers),
-            userDoc.obj(),
-            {});
-    }
-
-    void assertLogout(const ResourcePattern& resource, ActionType action) {
-        ASSERT_FALSE(authzSession->isExpired());
-        ASSERT_EQ(authzSession->getAuthenticationMode(),
-                  AuthorizationSession::AuthenticationMode::kNone);
-        ASSERT_FALSE(authzSession->isAuthenticated());
-        ASSERT_EQ(authzSession->getAuthenticatedUser(), boost::none);
-        ASSERT_FALSE(authzSession->isAuthorizedForActionsOnResource(resource, action));
-    }
-
-    void assertExpired(const ResourcePattern& resource, ActionType action) {
-        ASSERT_TRUE(authzSession->isExpired());
-        ASSERT_EQ(authzSession->getAuthenticationMode(),
-                  AuthorizationSession::AuthenticationMode::kNone);
-        ASSERT_FALSE(authzSession->isAuthenticated());
-        ASSERT_EQ(authzSession->getAuthenticatedUser(), boost::none);
-        ASSERT_FALSE(authzSession->isAuthorizedForActionsOnResource(resource, action));
-    }
-
-    void assertActive(const ResourcePattern& resource, ActionType action) {
-        ASSERT_FALSE(authzSession->isExpired());
-        ASSERT_EQ(authzSession->getAuthenticationMode(),
-                  AuthorizationSession::AuthenticationMode::kConnection);
-        ASSERT_TRUE(authzSession->isAuthenticated());
-        ASSERT_NOT_EQUALS(authzSession->getAuthenticatedUser(), boost::none);
-        ASSERT_TRUE(authzSession->isAuthorizedForActionsOnResource(resource, action));
-    }
-
-    void assertSecurityToken(const ResourcePattern& resource, ActionType action) {
-        ASSERT_FALSE(authzSession->isExpired());
-        ASSERT_EQ(authzSession->getAuthenticationMode(),
-                  AuthorizationSession::AuthenticationMode::kSecurityToken);
-        ASSERT_TRUE(authzSession->isAuthenticated());
-        ASSERT_NOT_EQUALS(authzSession->getAuthenticatedUser(), boost::none);
-        ASSERT_TRUE(authzSession->isAuthorizedForActionsOnResource(resource, action));
-    }
-
-protected:
-    AuthorizationSessionTest() : ServiceContextMongoDTest(Options{}.useMockClock(true)) {}
-
-    ClockSourceMock* clockSource() {
-        return static_cast<ClockSourceMock*>(getServiceContext()->getFastClockSource());
+        return managerState->insertPrivilegeDocument(_opCtx.get(), userDoc.obj(), {});
     }
 
 protected:
     FailureCapableAuthzManagerExternalStateMock* managerState;
     transport::TransportLayerMock transportLayer;
-    std::shared_ptr<transport::Session> _session;
+    transport::SessionHandle _session;
     ServiceContext::UniqueClient _client;
     ServiceContext::UniqueOperationContext _opCtx;
     AuthzSessionExternalStateMock* sessionState;
@@ -197,9 +143,9 @@ protected:
     BSONObj credentials;
 };
 
-const NamespaceString testFooNss = NamespaceString::createNamespaceString_forTest("test.foo");
-const NamespaceString testBarNss = NamespaceString::createNamespaceString_forTest("test.bar");
-const NamespaceString testQuxNss = NamespaceString::createNamespaceString_forTest("test.qux");
+const NamespaceString testFooNss("test.foo");
+const NamespaceString testBarNss("test.bar");
+const NamespaceString testQuxNss("test.qux");
 
 const ResourcePattern testDBResource(ResourcePattern::forDatabaseName("test"));
 const ResourcePattern otherDBResource(ResourcePattern::forDatabaseName("other"));
@@ -207,62 +153,59 @@ const ResourcePattern adminDBResource(ResourcePattern::forDatabaseName("admin"))
 const ResourcePattern testFooCollResource(ResourcePattern::forExactNamespace(testFooNss));
 const ResourcePattern testBarCollResource(ResourcePattern::forExactNamespace(testBarNss));
 const ResourcePattern testQuxCollResource(ResourcePattern::forExactNamespace(testQuxNss));
-const ResourcePattern otherFooCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("other.foo")));
-const ResourcePattern thirdFooCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("third.foo")));
-const ResourcePattern adminFooCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("admin.foo")));
-const ResourcePattern testUsersCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("test.system.users")));
-const ResourcePattern otherUsersCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("other.system.users")));
-const ResourcePattern thirdUsersCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("third.system.users")));
-const ResourcePattern testProfileCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("test.system.profile")));
-const ResourcePattern otherProfileCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("other.system.profile")));
-const ResourcePattern thirdProfileCollResource(ResourcePattern::forExactNamespace(
-    NamespaceString::createNamespaceString_forTest("third.system.profile")));
-
-const UserName kUser1Test("user1"_sd, "test"_sd);
-const UserRequest kUser1TestRequest(kUser1Test, boost::none);
-const UserName kUser2Test("user2"_sd, "test"_sd);
-const UserRequest kUser2TestRequest(kUser2Test, boost::none);
+const ResourcePattern otherFooCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("other.foo")));
+const ResourcePattern thirdFooCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("third.foo")));
+const ResourcePattern adminFooCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("admin.foo")));
+const ResourcePattern testUsersCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("test.system.users")));
+const ResourcePattern otherUsersCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("other.system.users")));
+const ResourcePattern thirdUsersCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("third.system.users")));
+const ResourcePattern testProfileCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("test.system.profile")));
+const ResourcePattern otherProfileCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("other.system.profile")));
+const ResourcePattern thirdProfileCollResource(
+    ResourcePattern::forExactNamespace(NamespaceString("third.system.profile")));
 
 TEST_F(AuthorizationSessionTest, MultiAuthSameUserAllowed) {
-    ASSERT_OK(createUser(kUser1Test, {}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kUser1TestRequest, boost::none));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kUser1TestRequest, boost::none));
+    authzSession->startContractTracking();
+
+    ASSERT_OK(createUser({"user1", "test"}, {}));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), {"user1", "test"}));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), {"user1", "test"}));
     authzSession->logoutAllDatabases(_client.get(), "Test finished");
 }
 
 TEST_F(AuthorizationSessionTest, MultiAuthSameDBDisallowed) {
-    ASSERT_OK(createUser(kUser1Test, {}));
-    ASSERT_OK(createUser(kUser2Test, {}));
+    authzSession->startContractTracking();
 
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kUser1TestRequest, boost::none));
-    ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kUser2TestRequest, boost::none));
+    ASSERT_OK(createUser({"user1", "test"}, {}));
+    ASSERT_OK(createUser({"user2", "test"}, {}));
+
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), {"user1", "test"}));
+    ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), {"user2", "test"}));
     authzSession->logoutAllDatabases(_client.get(), "Test finished");
 }
 
 TEST_F(AuthorizationSessionTest, MultiAuthMultiDBDisallowed) {
-    ASSERT_OK(createUser(kUser1Test, {}));
-    ASSERT_OK(createUser(kUser2Test, {}));
+    authzSession->startContractTracking();
 
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kUser1TestRequest, boost::none));
-    ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kUser2TestRequest, boost::none));
+    ASSERT_OK(createUser({"user", "test1"}, {}));
+    ASSERT_OK(createUser({"user", "test2"}, {}));
+
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), {"user", "test1"}));
+    ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), {"user", "test2"}));
     authzSession->logoutAllDatabases(_client.get(), "Test finished");
 }
 
-const UserName kSpencerTest("spencer"_sd, "test"_sd);
-const UserRequest kSpencerTestRequest(kSpencerTest, boost::none);
-
-const UserName kAdminAdmin("admin"_sd, "admin"_sd);
-const UserRequest kAdminAdminRequest(kAdminAdmin, boost::none);
-
 TEST_F(AuthorizationSessionTest, AddUserAndCheckAuthorization) {
+    authzSession->startContractTracking();
+
     // Check that disabling auth checks works
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::insert));
@@ -274,13 +217,12 @@ TEST_F(AuthorizationSessionTest, AddUserAndCheckAuthorization) {
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::insert));
 
     // Check that you can't authorize a user that doesn't exist.
-    ASSERT_EQUALS(
-        ErrorCodes::UserNotFound,
-        authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
+    ASSERT_EQUALS(ErrorCodes::UserNotFound,
+                  authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
 
     // Add a user with readWrite and dbAdmin on the test DB
     ASSERT_OK(createUser({"spencer", "test"}, {{"readWrite", "test"}, {"dbAdmin", "test"}}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
 
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::insert));
@@ -292,11 +234,10 @@ TEST_F(AuthorizationSessionTest, AddUserAndCheckAuthorization) {
 
     // Add an admin user with readWriteAnyDatabase
     ASSERT_OK(createUser({"admin", "admin"}, {{"readWriteAnyDatabase", "admin"}}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kAdminAdminRequest, boost::none));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("admin", "admin")));
 
     ASSERT_TRUE(authzSession->isAuthorizedForActionsOnResource(
-        ResourcePattern::forExactNamespace(
-            NamespaceString::createNamespaceString_forTest("anydb.somecollection")),
+        ResourcePattern::forExactNamespace(NamespaceString("anydb.somecollection")),
         ActionType::insert));
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(otherDBResource, ActionType::insert));
@@ -328,8 +269,7 @@ TEST_F(AuthorizationSessionTest, AddUserAndCheckAuthorization) {
         std::initializer_list<Privilege>{
             Privilege(ResourcePattern::forDatabaseName("ignored"),
                       {ActionType::insert, ActionType::dbStats}),
-            Privilege(ResourcePattern::forExactNamespace(
-                          NamespaceString::createNamespaceString_forTest("ignored.ignored")),
+            Privilege(ResourcePattern::forExactNamespace(NamespaceString("ignored.ignored")),
                       {ActionType::insert, ActionType::collMod}),
         });
 
@@ -346,9 +286,9 @@ TEST_F(AuthorizationSessionTest, AddUserAndCheckAuthorization) {
 
 TEST_F(AuthorizationSessionTest, DuplicateRolesOK) {
     // Add a user with doubled-up readWrite and single dbAdmin on the test DB
-    ASSERT_OK(createUser(kSpencerTest,
+    ASSERT_OK(createUser({"spencer", "test"},
                          {{"readWrite", "test"}, {"dbAdmin", "test"}, {"readWrite", "test"}}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
 
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::insert));
@@ -359,24 +299,14 @@ TEST_F(AuthorizationSessionTest, DuplicateRolesOK) {
     authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
 }
 
-const UserName kRWTest("rw"_sd, "test"_sd);
-const UserName kUserAdminTest("useradmin"_sd, "test"_sd);
-const UserName kRWAnyTest("rwany"_sd, "test"_sd);
-const UserName kUserAdminAnyTest("useradminany"_sd, "test"_sd);
-
-const UserRequest kRWTestRequest(kRWTest, boost::none);
-const UserRequest kUserAdminTestRequest(kUserAdminTest, boost::none);
-const UserRequest kRWAnyTestRequest(kRWAnyTest, boost::none);
-const UserRequest kUserAdminAnyTestRequest(kUserAdminAnyTest, boost::none);
-
 TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
-    ASSERT_OK(createUser(kRWTest, {{"readWrite", "test"}, {"dbAdmin", "test"}}));
-    ASSERT_OK(createUser(kUserAdminTest, {{"userAdmin", "test"}}));
-    ASSERT_OK(createUser(kRWAnyTest,
+    ASSERT_OK(createUser({"rw", "test"}, {{"readWrite", "test"}, {"dbAdmin", "test"}}));
+    ASSERT_OK(createUser({"useradmin", "test"}, {{"userAdmin", "test"}}));
+    ASSERT_OK(createUser({"rwany", "test"},
                          {{"readWriteAnyDatabase", "admin"}, {"dbAdminAnyDatabase", "admin"}}));
-    ASSERT_OK(createUser(kUserAdminAnyTest, {{"userAdminAnyDatabase", "admin"}}));
+    ASSERT_OK(createUser({"useradminany", "test"}, {{"userAdminAnyDatabase", "admin"}}));
 
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kRWAnyTestRequest, boost::none));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("rwany", "test")));
 
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testUsersCollResource, ActionType::insert));
@@ -392,8 +322,7 @@ TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
         authzSession->isAuthorizedForActionsOnResource(otherProfileCollResource, ActionType::find));
     authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
 
-    ASSERT_OK(
-        authzSession->addAndAuthorizeUser(_opCtx.get(), kUserAdminAnyTestRequest, boost::none));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("useradminany", "test")));
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testUsersCollResource, ActionType::insert));
     ASSERT_TRUE(
@@ -408,7 +337,7 @@ TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
         authzSession->isAuthorizedForActionsOnResource(otherProfileCollResource, ActionType::find));
     authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
 
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kRWTestRequest, boost::none));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("rw", "test")));
 
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testUsersCollResource, ActionType::insert));
@@ -424,7 +353,7 @@ TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
         authzSession->isAuthorizedForActionsOnResource(otherProfileCollResource, ActionType::find));
     authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
 
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kUserAdminTestRequest, boost::none));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("useradmin", "test")));
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testUsersCollResource, ActionType::insert));
     ASSERT_FALSE(
@@ -442,21 +371,24 @@ TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
 
 TEST_F(AuthorizationSessionTest, InvalidateUser) {
     // Add a readWrite user
-    ASSERT_OK(createUser(kSpencerTest, {{"readWrite", "test"}}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
+    ASSERT_OK(createUser({"spencer", "test"}, {{"readWrite", "test"}}));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
 
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::find));
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::insert));
 
-    User* user = authzSession->lookupUser(kSpencerTest);
+    User* user = authzSession->lookupUser(UserName("spencer", "test"));
 
     // Change the user to be read-only
     int ignored;
-    ASSERT_OK(managerState->remove(
-        _opCtx.get(), NamespaceString::kAdminUsersNamespace, BSONObj(), BSONObj(), &ignored));
-    ASSERT_OK(createUser(kSpencerTest, {{"read", "test"}}));
+    ASSERT_OK(managerState->remove(_opCtx.get(),
+                                   AuthorizationManager::usersCollectionNamespace,
+                                   BSONObj(),
+                                   BSONObj(),
+                                   &ignored));
+    ASSERT_OK(createUser({"spencer", "test"}, {{"read", "test"}}));
 
     // Make sure that invalidating the user causes the session to reload its privileges.
     authzManager->invalidateUserByName(_opCtx.get(), user->getName());
@@ -466,11 +398,14 @@ TEST_F(AuthorizationSessionTest, InvalidateUser) {
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::insert));
 
-    user = authzSession->lookupUser(kSpencerTest);
+    user = authzSession->lookupUser(UserName("spencer", "test"));
 
     // Delete the user.
-    ASSERT_OK(managerState->remove(
-        _opCtx.get(), NamespaceString::kAdminUsersNamespace, BSONObj(), BSONObj(), &ignored));
+    ASSERT_OK(managerState->remove(_opCtx.get(),
+                                   AuthorizationManager::usersCollectionNamespace,
+                                   BSONObj(),
+                                   BSONObj(),
+                                   &ignored));
     // Make sure that invalidating the user causes the session to reload its privileges.
     authzManager->invalidateUserByName(_opCtx.get(), user->getName());
     authzSession->startRequest(_opCtx.get());  // Refreshes cached data for invalid users
@@ -478,28 +413,31 @@ TEST_F(AuthorizationSessionTest, InvalidateUser) {
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::find));
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::insert));
-    ASSERT_FALSE(authzSession->lookupUser(kSpencerTest));
+    ASSERT_FALSE(authzSession->lookupUser(UserName("spencer", "test")));
     authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
 }
 
 TEST_F(AuthorizationSessionTest, UseOldUserInfoInFaceOfConnectivityProblems) {
     // Add a readWrite user
     ASSERT_OK(createUser({"spencer", "test"}, {{"readWrite", "test"}}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
 
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::find));
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::insert));
 
-    User* user = authzSession->lookupUser(kSpencerTest);
+    User* user = authzSession->lookupUser(UserName("spencer", "test"));
 
     // Change the user to be read-only
     int ignored;
     managerState->setFindsShouldFail(true);
-    ASSERT_OK(managerState->remove(
-        _opCtx.get(), NamespaceString::kAdminUsersNamespace, BSONObj(), BSONObj(), &ignored));
-    ASSERT_OK(createUser(kSpencerTest, {{"read", "test"}}));
+    ASSERT_OK(managerState->remove(_opCtx.get(),
+                                   AuthorizationManager::usersCollectionNamespace,
+                                   BSONObj(),
+                                   BSONObj(),
+                                   &ignored));
+    ASSERT_OK(createUser({"spencer", "test"}, {{"read", "test"}}));
 
     // Even though the user's privileges have been reduced, since we've configured user
     // document lookup to fail, the authz session should continue to use its known out-of-date
@@ -553,8 +491,7 @@ TEST_F(AuthorizationSessionTest, AcquireUserObtainsAndValidatesAuthenticationRes
                                     std::make_unique<RestrictionEnvironment>(
                                         SockAddr::create(clientSource, 5555, AF_UNSPEC),
                                         SockAddr::create(serverAddress, 27017, AF_UNSPEC)));
-        ASSERT_OK(
-            authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
+        ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
         authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
     };
 
@@ -563,13 +500,11 @@ TEST_F(AuthorizationSessionTest, AcquireUserObtainsAndValidatesAuthenticationRes
                                     std::make_unique<RestrictionEnvironment>(
                                         SockAddr::create(clientSource, 5555, AF_UNSPEC),
                                         SockAddr::create(serverAddress, 27017, AF_UNSPEC)));
-        ASSERT_NOT_OK(
-            authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
+        ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
     };
 
     // The empty RestrictionEnvironment will cause addAndAuthorizeUser to fail.
-    ASSERT_NOT_OK(
-        authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
+    ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
 
     // A clientSource from the 192.168.0.0/24 block will succeed in connecting to a server
     // listening on 192.168.0.2.
@@ -1119,31 +1054,45 @@ TEST_F(AuthorizationSessionTest,
     ASSERT_TRUE(authzSession->isAuthorizedForPrivileges(privileges));
 }
 
-TEST_F(AuthorizationSessionTest, UnauthorizedSessionIsCoauthorizedWithNobody) {
-    ASSERT_TRUE(authzSession->isCoauthorizedWith(boost::none));
+TEST_F(AuthorizationSessionTest, UnauthorizedSessionIsCoauthorizedWithEmptyUserSet) {
+    std::vector<UserName> userSet;
+    ASSERT_TRUE(
+        authzSession->isCoauthorizedWith(makeUserNameIterator(userSet.begin(), userSet.end())));
 }
 
-TEST_F(AuthorizationSessionTest, UnauthorizedSessionIsNotCoauthorizedWithAnybody) {
-    ASSERT_FALSE(authzSession->isCoauthorizedWith(kSpencerTest));
+TEST_F(AuthorizationSessionTest, UnauthorizedSessionIsNotCoauthorizedWithNonemptyUserSet) {
+    std::vector<UserName> userSet;
+    userSet.emplace_back("spencer", "test");
+    ASSERT_FALSE(
+        authzSession->isCoauthorizedWith(makeUserNameIterator(userSet.begin(), userSet.end())));
 }
 
-TEST_F(AuthorizationSessionTest, UnauthorizedSessionIsCoauthorizedWithAnybodyWhenAuthIsDisabled) {
+TEST_F(AuthorizationSessionTest,
+       UnauthorizedSessionIsCoauthorizedWithNonemptyUserSetWhenAuthIsDisabled) {
     authzManager->setAuthEnabled(false);
-    ASSERT_TRUE(authzSession->isCoauthorizedWith(kSpencerTest));
+    std::vector<UserName> userSet;
+    userSet.emplace_back("spencer", "test");
+    ASSERT_TRUE(
+        authzSession->isCoauthorizedWith(makeUserNameIterator(userSet.begin(), userSet.end())));
 }
 
-TEST_F(AuthorizationSessionTest, AuthorizedSessionIsNotCoauthorizedNobody) {
-    ASSERT_OK(createUser(kSpencerTest, {}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
-    ASSERT_FALSE(authzSession->isCoauthorizedWith(boost::none));
+TEST_F(AuthorizationSessionTest, AuthorizedSessionIsNotCoauthorizedWithEmptyUserSet) {
+    ASSERT_OK(createUser({"spencer", "test"}, {}));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
+    std::vector<UserName> userSet;
+    ASSERT_FALSE(
+        authzSession->isCoauthorizedWith(makeUserNameIterator(userSet.begin(), userSet.end())));
     authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
 }
 
-TEST_F(AuthorizationSessionTest, AuthorizedSessionIsCoauthorizedNobodyWhenAuthIsDisabled) {
+TEST_F(AuthorizationSessionTest,
+       AuthorizedSessionIsCoauthorizedWithEmptyUserSetWhenAuthIsDisabled) {
     authzManager->setAuthEnabled(false);
-    ASSERT_OK(createUser(kSpencerTest, {}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
-    ASSERT_TRUE(authzSession->isCoauthorizedWith(kSpencerTest));
+    ASSERT_OK(createUser({"spencer", "test"}, {}));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
+    std::vector<UserName> userSet;
+    ASSERT_TRUE(
+        authzSession->isCoauthorizedWith(makeUserNameIterator(userSet.begin(), userSet.end())));
     authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
 }
 
@@ -1226,6 +1175,8 @@ TEST_F(AuthorizationSessionTest, CanUseUUIDNamespacesWithPrivilege) {
     BSONObj uuidObj = BSON("a" << UUID::gen());
     BSONObj invalidObj = BSON("a" << 12);
 
+    authzSession->startContractTracking();
+
     // Strings require no privileges
     ASSERT_TRUE(authzSession->isAuthorizedToParseNamespaceElement(stringObj.firstElement()));
 
@@ -1257,196 +1208,6 @@ TEST_F(AuthorizationSessionTest, CanUseUUIDNamespacesWithPrivilege) {
     authzSession->verifyContract(&ac);
 }
 
-const UserName kGMarksAdmin("gmarks", "admin");
-const UserRequest kGMarksAdminRequest(kGMarksAdmin, boost::none);
-
-TEST_F(AuthorizationSessionTest, MayBypassWriteBlockingModeIsSetCorrectly) {
-    ASSERT_FALSE(authzSession->mayBypassWriteBlockingMode());
-
-    // Add a user without the restore role and ensure we can't bypass
-    ASSERT_OK(managerState->insertPrivilegeDocument(_opCtx.get(),
-                                                    BSON("user"
-                                                         << "spencer"
-                                                         << "db"
-                                                         << "test"
-                                                         << "credentials" << credentials << "roles"
-                                                         << BSON_ARRAY(BSON("role"
-                                                                            << "readWrite"
-                                                                            << "db"
-                                                                            << "test"))),
-                                                    BSONObj()));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
-    ASSERT_FALSE(authzSession->mayBypassWriteBlockingMode());
-
-    // Add a user with restore role on admin db and ensure we can bypass
-    ASSERT_OK(managerState->insertPrivilegeDocument(_opCtx.get(),
-                                                    BSON("user"
-                                                         << "gmarks"
-                                                         << "db"
-                                                         << "admin"
-                                                         << "credentials" << credentials << "roles"
-                                                         << BSON_ARRAY(BSON("role"
-                                                                            << "restore"
-                                                                            << "db"
-                                                                            << "admin"))),
-                                                    BSONObj()));
-    authzSession->logoutDatabase(_client.get(), "test", "End of test");
-
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kGMarksAdminRequest, boost::none));
-    ASSERT_TRUE(authzSession->mayBypassWriteBlockingMode());
-
-    // Remove that user by logging out of the admin db and ensure we can't bypass anymore
-    authzSession->logoutDatabase(_client.get(), "admin", "");
-    ASSERT_FALSE(authzSession->mayBypassWriteBlockingMode());
-
-    // Add a user with the root role, which should confer restore role for cluster resource, and
-    // ensure we can bypass
-    ASSERT_OK(managerState->insertPrivilegeDocument(_opCtx.get(),
-                                                    BSON("user"
-                                                         << "admin"
-                                                         << "db"
-                                                         << "admin"
-                                                         << "credentials" << credentials << "roles"
-                                                         << BSON_ARRAY(BSON("role"
-                                                                            << "root"
-                                                                            << "db"
-                                                                            << "admin"))),
-                                                    BSONObj()));
-    authzSession->logoutDatabase(_client.get(), "admin", "");
-
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kAdminAdminRequest, boost::none));
-    ASSERT_TRUE(authzSession->mayBypassWriteBlockingMode());
-
-    // Remove non-privileged user by logging out of test db and ensure we can still bypass
-    authzSession->logoutDatabase(_client.get(), "test", "");
-    ASSERT_TRUE(authzSession->mayBypassWriteBlockingMode());
-
-    // Remove privileged user by logging out of admin db and ensure we cannot bypass
-    authzSession->logoutDatabase(_client.get(), "admin", "");
-    ASSERT_FALSE(authzSession->mayBypassWriteBlockingMode());
-}
-
-TEST_F(AuthorizationSessionTest, InvalidExpirationTime) {
-    // Create and authorize valid user with invalid expiration.
-    Date_t expirationTime = clockSource()->now() - Hours(1);
-    ASSERT_OK(createUser({"spencer", "test"}, {{"readWrite", "test"}, {"dbAdmin", "test"}}));
-    ASSERT_NOT_OK(
-        authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, expirationTime));
-}
-
-TEST_F(AuthorizationSessionTest, NoExpirationTime) {
-    // Create and authorize valid user with no expiration.
-    ASSERT_OK(createUser({"spencer", "test"}, {{"readWrite", "test"}, {"dbAdmin", "test"}}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, boost::none));
-    assertActive(testFooCollResource, ActionType::insert);
-
-    // Assert that moving the clock forward has no impact on a session without expiration time.
-    clockSource()->advance(Hours(24));
-    authzSession->startRequest(_opCtx.get());
-    assertActive(testFooCollResource, ActionType::insert);
-
-    // Assert that logout occurs normally.
-    authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
-    assertLogout(testFooCollResource, ActionType::insert);
-}
-
-TEST_F(AuthorizationSessionTest, ExpiredSessionWithReauth) {
-    // Tests authorization session flow from unauthenticated to active to expired to active (reauth)
-    // to expired to logged out.
-
-    // Create and authorize a user with a valid expiration time set in the future.
-    Date_t expirationTime = clockSource()->now() + Hours(1);
-    ASSERT_OK(createUser({"spencer", "test"}, {{"readWrite", "test"}, {"dbAdmin", "test"}}));
-    ASSERT_OK(createUser({"admin", "admin"}, {{"readWriteAnyDatabase", "admin"}}));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, expirationTime));
-
-    // Assert that advancing the clock by 30 minutes does not trigger expiration.
-    auto clock = clockSource();
-    clock->advance(Minutes(30));
-    authzSession->startRequest(
-        _opCtx.get());  // Refreshes session's authentication state based on expiration.
-    assertActive(testFooCollResource, ActionType::insert);
-
-    // Assert that the session is now expired and subsequently is no longer authenticated or
-    // authorized to do anything after fast-forwarding the clock source.
-    clock->advance(Hours(2));
-    authzSession->startRequest(
-        _opCtx.get());  // Refreshes session's authentication state based on expiration.
-    assertExpired(testFooCollResource, ActionType::insert);
-
-    // Authorize the same user again to simulate re-login.
-    expirationTime += Hours(2);
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kSpencerTestRequest, expirationTime));
-    assertActive(testFooCollResource, ActionType::insert);
-
-    // Expire the user again, this time by setting clock to the exact expiration time boundary.
-    clock->reset(expirationTime);
-    authzSession->startRequest(_opCtx.get());
-    assertExpired(testFooCollResource, ActionType::insert);
-
-    // Assert that a different user cannot log in on the expired connection.
-    ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), kAdminAdminRequest, boost::none));
-    assertExpired(testFooCollResource, ActionType::insert);
-
-    // Check that explicit logout from an expired connection works as expected.
-    authzSession->logoutDatabase(_client.get(), "test", "Kill the test!");
-    assertLogout(ResourcePattern::forExactNamespace(
-                     NamespaceString::createNamespaceString_forTest("anydb.somecollection")),
-                 ActionType::insert);
-}
-
-TEST_F(AuthorizationSessionTest, ExpirationWithSecurityTokenNOK) {
-    // Tests authorization flow from unauthenticated to active (via token) to unauthenticated to
-    // active (via stateful connection) to unauthenticated.
-    using VTS = auth::ValidatedTenancyScope;
-
-    // Create and authorize a security token user.
-    constexpr auto authUserFieldName = auth::SecurityToken::kAuthenticatedUserFieldName;
-    auto kOid = OID::gen();
-    auto body = BSON("ping" << 1 << "$tenant" << kOid);
-    const UserName user("spencer", "test", TenantId(kOid));
-    const UserRequest userRequest(user, boost::none);
-    const UserName adminUser("admin", "admin");
-    const UserRequest adminUserRequest(adminUser, boost::none);
-
-    ASSERT_OK(createUser(user, {{"readWrite", "test"}, {"dbAdmin", "test"}}));
-    ASSERT_OK(createUser(adminUser, {{"readWriteAnyDatabase", "admin"}}));
-
-    VTS validatedTenancyScope = VTS(BSON(authUserFieldName << user.toBSON(true /* encodeTenant */)),
-                                    VTS::TokenForTestingTag{});
-    VTS::set(_opCtx.get(), validatedTenancyScope);
-
-    // Make sure that security token users can't be authorized with an expiration date.
-    Date_t expirationTime = clockSource()->now() + Hours(1);
-    ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), userRequest, expirationTime));
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), userRequest, boost::none));
-
-    // Assert that the session is authenticated and authorized as expected.
-    assertSecurityToken(testFooCollResource, ActionType::insert);
-
-    // Assert that another user can't be authorized while the security token is auth'd.
-    ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), adminUserRequest, boost::none));
-
-    // Check that starting a new request without the security token decoration results in token user
-    // logout.
-    VTS::set(_opCtx.get(), boost::none);
-    authzSession->startRequest(_opCtx.get());
-    assertLogout(testFooCollResource, ActionType::insert);
-
-    // Assert that a connection-based user with an expiration policy can be authorized after token
-    // logout.
-    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), adminUserRequest, expirationTime));
-    assertActive(ResourcePattern::forExactNamespace(
-                     NamespaceString::createNamespaceString_forTest("anydb.somecollection")),
-                 ActionType::insert);
-
-    // Check that logout proceeds normally.
-    authzSession->logoutDatabase(_client.get(), "admin", "Kill the test!");
-    assertLogout(ResourcePattern::forExactNamespace(
-                     NamespaceString::createNamespaceString_forTest("anydb.somecollection")),
-                 ActionType::insert);
-}
-
 class SystemBucketsTest : public AuthorizationSessionTest {
 protected:
     static constexpr auto sb_db_test = "sb_db_test"_sd;
@@ -1467,24 +1228,18 @@ protected:
 };
 
 const ResourcePattern SystemBucketsTest::testMissingSystemBucketResource(
-    ResourcePattern::forExactNamespace(
-        NamespaceString::createNamespaceString_forTest("sb_db_test.sb_coll_test")));
+    ResourcePattern::forExactNamespace(NamespaceString("sb_db_test.sb_coll_test")));
 const ResourcePattern SystemBucketsTest::otherMissingSystemBucketResource(
-    ResourcePattern::forExactNamespace(
-        NamespaceString::createNamespaceString_forTest("sb_db_test.sb_coll_other")));
+    ResourcePattern::forExactNamespace(NamespaceString("sb_db_test.sb_coll_other")));
 const ResourcePattern SystemBucketsTest::otherDbMissingSystemBucketResource(
-    ResourcePattern::forExactNamespace(
-        NamespaceString::createNamespaceString_forTest("sb_db_other.sb_coll_test")));
+    ResourcePattern::forExactNamespace(NamespaceString("sb_db_other.sb_coll_test")));
 
 const ResourcePattern SystemBucketsTest::testSystemBucketResource(
-    ResourcePattern::forExactNamespace(
-        NamespaceString::createNamespaceString_forTest("sb_db_test.system.buckets.sb_coll_test")));
+    ResourcePattern::forExactNamespace(NamespaceString("sb_db_test.system.buckets.sb_coll_test")));
 const ResourcePattern SystemBucketsTest::otherSystemBucketResource(
-    ResourcePattern::forExactNamespace(
-        NamespaceString::createNamespaceString_forTest("sb_db_test.system.buckets.sb_coll_other")));
+    ResourcePattern::forExactNamespace(NamespaceString("sb_db_test.system.buckets.sb_coll_other")));
 const ResourcePattern SystemBucketsTest::otherDbSystemBucketResource(
-    ResourcePattern::forExactNamespace(
-        NamespaceString::createNamespaceString_forTest("sb_db_other.system.buckets.sb_coll_test")));
+    ResourcePattern::forExactNamespace(NamespaceString("sb_db_other.system.buckets.sb_coll_test")));
 
 const ResourcePattern SystemBucketsTest::testBucketResource(
     ResourcePattern::forExactSystemBucketsCollection("sb_db_test", "sb_coll_test"));
@@ -1703,6 +1458,72 @@ TEST_F(SystemBucketsTest, CanCheckIfHasAnyPrivilegeInResourceDBForSystemBuckets)
         Privilege(ResourcePattern::forAnySystemBuckets(), ActionType::find));
     ASSERT_TRUE(authzSession->isAuthorizedForAnyActionOnAnyResourceInDB(sb_db_test));
     ASSERT_TRUE(authzSession->isAuthorizedForAnyActionOnAnyResourceInDB(sb_db_other));
+}
+
+TEST_F(AuthorizationSessionTest, MayBypassWriteBlockingModeIsSetCorrectly) {
+    ASSERT_FALSE(authzSession->mayBypassWriteBlockingMode());
+
+    // Add a user without the restore role and ensure we can't bypass
+    ASSERT_OK(managerState->insertPrivilegeDocument(_opCtx.get(),
+                                                    BSON("user"
+                                                         << "spencer"
+                                                         << "db"
+                                                         << "test"
+                                                         << "credentials" << credentials << "roles"
+                                                         << BSON_ARRAY(BSON("role"
+                                                                            << "readWrite"
+                                                                            << "db"
+                                                                            << "test"))),
+                                                    BSONObj()));
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
+    ASSERT_FALSE(authzSession->mayBypassWriteBlockingMode());
+
+    // Add a user with restore role on admin db and ensure we can bypass
+    ASSERT_OK(managerState->insertPrivilegeDocument(_opCtx.get(),
+                                                    BSON("user"
+                                                         << "gmarks"
+                                                         << "db"
+                                                         << "admin"
+                                                         << "credentials" << credentials << "roles"
+                                                         << BSON_ARRAY(BSON("role"
+                                                                            << "restore"
+                                                                            << "db"
+                                                                            << "admin"))),
+                                                    BSONObj()));
+    authzSession->logoutDatabase(_client.get(), "test", "End of test");
+
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("gmarks", "admin")));
+    ASSERT_TRUE(authzSession->mayBypassWriteBlockingMode());
+
+    // Remove that user by logging out of the admin db and ensure we can't bypass anymore
+    authzSession->logoutDatabase(_client.get(), "admin", "");
+    ASSERT_FALSE(authzSession->mayBypassWriteBlockingMode());
+
+    // Add a user with the root role, which should confer restore role for cluster resource, and
+    // ensure we can bypass
+    ASSERT_OK(managerState->insertPrivilegeDocument(_opCtx.get(),
+                                                    BSON("user"
+                                                         << "admin"
+                                                         << "db"
+                                                         << "admin"
+                                                         << "credentials" << credentials << "roles"
+                                                         << BSON_ARRAY(BSON("role"
+                                                                            << "root"
+                                                                            << "db"
+                                                                            << "admin"))),
+                                                    BSONObj()));
+    authzSession->logoutDatabase(_client.get(), "admin", "");
+
+    ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("admin", "admin")));
+    ASSERT_TRUE(authzSession->mayBypassWriteBlockingMode());
+
+    // Remove non-privileged user by logging out of test db and ensure we can still bypass
+    authzSession->logoutDatabase(_client.get(), "test", "");
+    ASSERT_TRUE(authzSession->mayBypassWriteBlockingMode());
+
+    // Remove privileged user by logging out of admin db and ensure we cannot bypass
+    authzSession->logoutDatabase(_client.get(), "admin", "");
+    ASSERT_FALSE(authzSession->mayBypassWriteBlockingMode());
 }
 
 }  // namespace

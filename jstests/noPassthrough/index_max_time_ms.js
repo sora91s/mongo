@@ -43,7 +43,7 @@ const createIndexesCmd = {
     ],
     // This timeout value should be long enough for this test to locate the index build in the
     // db.currentOp() output.
-    maxTimeMS: 20000,
+    maxTimeMS: 10000,
 };
 
 const createIdx =

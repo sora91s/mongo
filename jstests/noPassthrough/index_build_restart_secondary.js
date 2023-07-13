@@ -3,6 +3,7 @@
  * node starts back up.
  *
  * @tags: [
+ *   requires_journaling,
  *   requires_persistence,
  *   requires_replication,
  * ]

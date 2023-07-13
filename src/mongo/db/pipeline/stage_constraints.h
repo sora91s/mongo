@@ -55,10 +55,11 @@ struct StageConstraints {
     enum class PositionRequirement {
         kNone,
         kFirst,
-        kLast,
-        // Stages with 'kCustom' requirement must also implement the 'validatePipelinePosition()'
-        // method which is called during pipeline validation.
-        kCustom
+        // User can specify this stage anywhere, as long as the system can move the stage to be
+        // first. If pipeline optimization is disabled, then the stage must be first prior to
+        // optimization.
+        kFirstAfterOptimization,
+        kLast
     };
 
     /**
@@ -77,10 +78,6 @@ struct StageConstraints {
         kAnyShard,
         // Indicates that the stage can only run on mongoS.
         kMongoS,
-        // Indicates that the stage should run on all data-bearing nodes, primary and seconday, for
-        // the participating shards. This is useful for stages like $currentOp which generate
-        // node-specific metadata.
-        kAllShardServers,
     };
 
     /**
@@ -96,15 +93,10 @@ struct StageConstraints {
 
     /**
      * A ChangeStreamRequirement determines whether a particular stage is itself a ChangeStream
-     * stage, whether it is allowed to exist in a $changeStream pipeline, or whether it can only
-     * exist in a change stream pipeline.
+     * stage, whether it is allowed to exist in a $changeStream pipeline, or whether it is
+     * denylisted from $changeStream.
      */
-    enum class ChangeStreamRequirement {
-        kChangeStreamStage,    // This stage is an actual change stream stage.
-        kAllowlist,            // This stage is permitted in a change stream pipeline.
-        kDenylist,             // This stage is banned from change stream pipelines.
-        kRequiresChangeStream  // This stage is only allowed in a change stream pipeline.
-    };
+    enum class ChangeStreamRequirement { kChangeStreamStage, kAllowlist, kDenylist };
 
     /**
      * A FacetRequirement indicates whether this stage may be used within a $facet pipeline.
@@ -194,8 +186,7 @@ struct StageConstraints {
         // shard, since it needs to be able to run on mongoS in a cluster.
         invariant(!(changeStreamRequirement == ChangeStreamRequirement::kAllowlist &&
                     (hostRequirement == HostTypeRequirement::kAnyShard ||
-                     hostRequirement == HostTypeRequirement::kPrimaryShard ||
-                     hostRequirement == HostTypeRequirement::kAllShardServers)));
+                     hostRequirement == HostTypeRequirement::kPrimaryShard)));
 
         // A stage which is allowlisted for $changeStream cannot have a position requirement.
         invariant(!(changeStreamRequirement == ChangeStreamRequirement::kAllowlist &&
@@ -214,13 +205,6 @@ struct StageConstraints {
         if (diskRequirement == DiskUseRequirement::kWritesPersistentData) {
             invariant(!isAllowedInTransaction());
         }
-
-        tassert(
-            7355706,
-            "Stage can only broadcast to all shard servers if it must be the first stage in the "
-            "pipeline.",
-            hostRequirement != HostTypeRequirement::kAllShardServers ||
-                (requiredPosition == PositionRequirement::kFirst));
     }
 
     /**
@@ -262,13 +246,6 @@ struct StageConstraints {
      */
     bool isChangeStreamStage() const {
         return changeStreamRequirement == ChangeStreamRequirement::kChangeStreamStage;
-    }
-
-    /**
-     * True if this stage must run in a pipeline which starts with $changeStream.
-     */
-    bool requiresChangeStream() const {
-        return changeStreamRequirement == ChangeStreamRequirement::kRequiresChangeStream;
     }
 
     /**
@@ -366,11 +343,6 @@ struct StageConstraints {
     // Indicates that a stage is allowed within a pipeline-stlye update.
     bool isAllowedWithinUpdatePipeline = false;
 
-    // If true, then this stage may only appear in the pipeline once, though it can appear at an
-    // arbitrary position. It is not necessary to consider this for stages which have a strict
-    // PositionRequirement, since the presence of a second stage will violate that constraint.
-    bool canAppearOnlyOnceInPipeline = false;
-
     // Indicates that a stage does not modify anything to do with a sort and can be done before a
     // following merge sort.
     bool preservesOrderAndMetadata = false;
@@ -386,8 +358,6 @@ struct StageConstraints {
             isIndependentOfAnyCollection == other.isIndependentOfAnyCollection &&
             canSwapWithMatch == other.canSwapWithMatch &&
             canSwapWithSkippingOrLimitingStage == other.canSwapWithSkippingOrLimitingStage &&
-            canSwapWithSingleDocTransform == other.canSwapWithSingleDocTransform &&
-            canAppearOnlyOnceInPipeline == other.canAppearOnlyOnceInPipeline &&
             isAllowedWithinUpdatePipeline == other.isAllowedWithinUpdatePipeline &&
             unionRequirement == other.unionRequirement &&
             preservesOrderAndMetadata == other.preservesOrderAndMetadata;

@@ -107,7 +107,7 @@ public:
             client->allowInsecureHTTP(isLocalhost);
             auto timeoutSecs = cmd.getTimeoutSecs();
             if (timeoutSecs) {
-                client->setTimeout(Seconds(timeoutSecs.value()));
+                client->setTimeout(Seconds(timeoutSecs.get()));
             }
 
             auto ret = client->request(HttpClient::HttpMethod::kGET, uri, {nullptr, 0});

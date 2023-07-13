@@ -94,8 +94,7 @@ pop_ops = Operation(Operation.OP_INSERT, tables[0])
 pop_ops = op_populate_with_range(pop_ops, tables, icount, random_range, populate_threads)
 pop_thread = Thread(pop_ops)
 pop_workload = Workload(context, populate_threads * pop_thread)
-ret = pop_workload.run(conn)
-assert ret == 0, ret
+pop_workload.run(conn)
 
 ops = Operation(Operation.OP_INSERT, tables[0], Key(Key.KEYGEN_PARETO, 0, ParetoOptions(10)))
 # Updated the range_partition to False, because workgen has some issues with range_partition true.
@@ -122,8 +121,7 @@ workload.options.sample_interval_ms = 5000
 # Uncomment to fail instead of generating a warning
 # workload.options.max_idle_table_cycle_fatal = True
 workload.options.max_idle_table_cycle = 2
-ret = workload.run(conn)
-assert ret == 0, ret
+workload.run(conn)
 
 latency_filename = context.args.home + "/latency.out"
 latency.workload_latency(workload, latency_filename)

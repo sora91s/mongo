@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/platform/basic.h"
 
@@ -46,9 +47,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/sharded_ddl_commands_gen.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
-
 namespace mongo {
 namespace {
 
@@ -58,11 +56,10 @@ const WriteConcernOptions kMajorityWriteConcern{WriteConcernOptions::kMajority,
 }
 
 bool SetClusterParameterCoordinator::hasSameOptions(const BSONObj& otherDocBSON) const {
-    const auto otherDoc =
-        StateDoc::parse(IDLParserContext("SetClusterParameterCoordinatorDocument"), otherDocBSON);
+    const auto otherDoc = StateDoc::parse(
+        IDLParserErrorContext("SetClusterParameterCoordinatorDocument"), otherDocBSON);
     return SimpleBSONObjComparator::kInstance.evaluate(_doc.getParameter() ==
-                                                       otherDoc.getParameter()) &&
-        _doc.getTenantId() == otherDoc.getTenantId();
+                                                       otherDoc.getParameter());
 }
 
 boost::optional<BSONObj> SetClusterParameterCoordinator::reportForCurrentOp(
@@ -75,10 +72,6 @@ boost::optional<BSONObj> SetClusterParameterCoordinator::reportForCurrentOp(
     bob.append("type", "op");
     bob.append("desc", "SetClusterParameterCoordinator");
     bob.append("op", "command");
-    auto tenantId = _doc.getTenantId();
-    if (tenantId.is_initialized()) {
-        bob.append("tenantId", tenantId->toString());
-    }
     bob.append("currentPhase", _doc.getPhase());
     bob.append("command", cmdBob.obj());
     bob.append("active", true);
@@ -127,7 +120,7 @@ bool SetClusterParameterCoordinator::_isClusterParameterSetAtTimestamp(Operation
             opCtx,
             ReadPreferenceSetting(ReadPreference::PrimaryOnly),
             repl::ReadConcernLevel::kMajorityReadConcern,
-            NamespaceString::makeClusterParametersNSS(_doc.getTenantId()),
+            NamespaceString::kClusterParametersNamespace,
             BSON("_id" << parameterName << "clusterParameterTime"
                        << *_doc.getClusterParameterTime()),
             BSONObj(),
@@ -147,11 +140,11 @@ void SetClusterParameterCoordinator::_sendSetClusterParameterToAllShards(
     LOGV2_DEBUG(6387001, 1, "Sending setClusterParameter to shards:", "shards"_attr = shards);
 
     ShardsvrSetClusterParameter request(_doc.getParameter());
-    request.setDbName(DatabaseName(_doc.getTenantId(), DatabaseName::kAdmin.db()));
+    request.setDbName(NamespaceString::kAdminDb);
     request.setClusterParameterTime(*_doc.getClusterParameterTime());
     sharding_util::sendCommandToShards(
         opCtx,
-        DatabaseName::kAdmin.db(),
+        NamespaceString::kAdminDb,
         CommandHelpers::appendMajorityWriteConcern(request.toBSON(session.toBSON())),
         shards,
         **executor);
@@ -161,8 +154,7 @@ void SetClusterParameterCoordinator::_commit(OperationContext* opCtx) {
     LOGV2_DEBUG(6387002, 1, "Updating configsvr cluster parameter");
 
     SetClusterParameter setClusterParameterRequest(_doc.getParameter());
-    setClusterParameterRequest.setDbName(
-        DatabaseName(_doc.getTenantId(), DatabaseName::kAdmin.db()));
+    setClusterParameterRequest.setDbName(NamespaceString::kAdminDb);
     std::unique_ptr<ServerParameterService> parameterService =
         std::make_unique<ClusterParameterService>();
     DBDirectClient client(opCtx);
@@ -194,7 +186,7 @@ ExecutorFuture<void> SetClusterParameterCoordinator::_runImpl(
                 _doc.setClusterParameterTime(clusterParameterTime.asTimestamp());
             }
         })
-        .then(_buildPhaseHandler(
+        .then(_executePhase(
             Phase::kSetClusterParameter, [this, executor = executor, anchor = shared_from_this()] {
                 auto opCtxHolder = cc().makeOperationContext();
                 auto* opCtx = opCtxHolder.get();

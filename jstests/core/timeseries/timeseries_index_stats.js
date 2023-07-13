@@ -6,11 +6,11 @@
  *   # $indexStats stage. The former operation must be routed to the primary in a replica set,
  *   # whereas the latter may be routed to a secondary.
  *   assumes_read_preference_unchanged,
- *   # This test depends on certain writes ending up in the same bucket. Stepdowns may result in
- *   # writes splitting between two primaries, and thus different buckets.
  *   does_not_support_stepdowns,
- *   # We need a timeseries collection.
- *   requires_timeseries,
+ *   does_not_support_transactions,
+ *   requires_getmore,
+ *   requires_non_retryable_writes,
+ *   requires_fcv_52,
  * ]
  */
 (function() {
@@ -41,12 +41,6 @@ TimeseriesTest.run((insert) => {
         index2: {[metaFieldName + '.tag3']: 1, [metaFieldName + '.tag4']: 1},
     };
 
-    if (TimeseriesTest.timeseriesScalabilityImprovementsEnabled(db)) {
-        // When enabled, the {meta: 1, time: 1} index gets built by default on the
-        // time-series bucket collection.
-        indexKeys["mm_1_tm_1"] = {[metaFieldName]: 1, [timeFieldName]: 1};
-    }
-
     // Create a few indexes on the time-series collections that $indexStats should return.
     for (const [indexName, indexKey] of Object.entries(indexKeys)) {
         assert.commandWorked(coll.createIndex(indexKey, {name: indexName}),
@@ -71,12 +65,12 @@ TimeseriesTest.run((insert) => {
         const stat = indexStatsDocs[i];
         assert(indexKeys.hasOwnProperty(stat.name),
                '$indexStats returned unknown index: ' + stat.name + ': ' + tojson(indexStatsDocs));
-        assert.docEq(stat.key,
-                     indexKeys[stat.name],
+        assert.docEq(indexKeys[stat.name],
+                     stat.key,
                      '$indexStats returned unexpected top-level key for index: ' + stat.name +
                          ': ' + tojson(indexStatsDocs));
-        assert.docEq(stat.spec.key,
-                     indexKeys[stat.name],
+        assert.docEq(indexKeys[stat.name],
+                     stat.spec.key,
                      '$indexStats returned unexpected nested key in spec for index: ' + stat.name +
                          ': ' + tojson(indexStatsDocs));
     }

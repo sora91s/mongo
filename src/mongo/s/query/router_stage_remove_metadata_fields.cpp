@@ -53,14 +53,9 @@ StatusWith<ClusterQueryResult> RouterStageRemoveMetadataFields::next() {
     }
 
     BSONObjIterator iterator(*childResult.getValue().getResult());
-
     // Find the first field that we need to remove.
-    for (; iterator.more(); ++iterator) {
-        // To save some time, we ensure that the current field name starts with a $
-        // before checking if it's actually a metadata field in the map.
-        if ((*iterator).fieldName()[0] == '$' && _metaFields.contains((*iterator).fieldName())) {
-            break;
-        }
+    while (iterator.more() && (*iterator).fieldName()[0] != '$') {
+        ++iterator;
     }
 
     if (!iterator.more()) {

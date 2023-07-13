@@ -2,10 +2,7 @@
  * Test that time-series bucket collections work as expected with $unionWith.
  *
  * @tags: [
- *   # This test depends on certain writes ending up in the same bucket. Stepdowns may result in
- *   # writes splitting between two primaries, and thus different buckets.
- *   does_not_support_stepdowns,
- *   # We need a timeseries collection.
+ *   does_not_support_transactions,
  *   requires_timeseries,
  * ]
  */

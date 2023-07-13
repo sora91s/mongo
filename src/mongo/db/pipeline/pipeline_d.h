@@ -205,7 +205,6 @@ private:
         const AggregateCommandRequest* aggRequest,
         const MatchExpressionParser::AllowedFeatureSet& matcherFeatures,
         bool* hasNoRequirements,
-        bool timeseriesBoundedSortOptimization,
         QueryPlannerParams plannerOpts = QueryPlannerParams{});
 
     /**

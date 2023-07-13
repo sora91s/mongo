@@ -27,6 +27,10 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/s/collection_sharding_state_factory_standalone.h"
 
 namespace mongo {
@@ -48,56 +52,21 @@ const auto kUnshardedCollection = std::make_shared<UnshardedCollection>();
 
 class CollectionShardingStateStandalone final : public CollectionShardingState {
 public:
-    CollectionShardingStateStandalone(const NamespaceString& nss) : _nss(nss) {}
-
-    const NamespaceString& nss() const override {
-        return _nss;
-    }
-
-    ScopedCollectionDescription getCollectionDescription(OperationContext* opCtx) const override {
+    ScopedCollectionDescription getCollectionDescription(OperationContext* opCtx) override {
         return {kUnshardedCollection};
     }
-
-    ScopedCollectionDescription getCollectionDescription(OperationContext* opCtx,
-                                                         bool operationIsVersioned) const override {
-        return {kUnshardedCollection};
-    }
-
     ScopedCollectionFilter getOwnershipFilter(OperationContext*,
                                               OrphanCleanupPolicy orphanCleanupPolicy,
-                                              bool supportNonVersionedOperations) const override {
+                                              bool supportNonVersionedOperations) override {
         return {kUnshardedCollection};
     }
+    void checkShardVersionOrThrow(OperationContext*) override {}
 
-    boost::optional<CollectionIndexes> getCollectionIndexes(
-        OperationContext* opCtx) const override {
-        return boost::none;
-    }
-
-    boost::optional<ShardingIndexesCatalogCache> getIndexes(
-        OperationContext* opCtx) const override {
-        return boost::none;
-    }
-
-    ScopedCollectionFilter getOwnershipFilter(
-        OperationContext*,
-        OrphanCleanupPolicy orphanCleanupPolicy,
-        const ShardVersion& receivedShardVersion) const override {
-        return {kUnshardedCollection};
-    }
-
-    void checkShardVersionOrThrow(OperationContext*) const override {}
-
-    void checkShardVersionOrThrow(OperationContext*, const ShardVersion&) const override {}
-
-    void appendShardVersion(BSONObjBuilder* builder) const override {}
+    void appendShardVersion(BSONObjBuilder* builder) override {}
 
     size_t numberOfRangesScheduledForDeletion() const override {
         return 0;
     }
-
-private:
-    const NamespaceString& _nss;
 };
 
 }  // namespace
@@ -109,8 +78,8 @@ CollectionShardingStateFactoryStandalone::CollectionShardingStateFactoryStandalo
 void CollectionShardingStateFactoryStandalone::join() {}
 
 std::unique_ptr<CollectionShardingState> CollectionShardingStateFactoryStandalone::make(
-    const NamespaceString& nss) {
-    return std::make_unique<CollectionShardingStateStandalone>(nss);
+    const NamespaceString&) {
+    return std::make_unique<CollectionShardingStateStandalone>();
 }
 
 }  // namespace mongo

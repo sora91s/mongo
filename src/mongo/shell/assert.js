@@ -8,9 +8,9 @@ doassert = function(msg, obj) {
 
     if (jsTest.options().traceExceptions) {
         if (typeof (msg) == "string" && msg.indexOf("assert") == 0)
-            print(new Date().toISOString() + " " + msg);
+            print(msg);
         else
-            print(new Date().toISOString() + " assert: " + msg);
+            print("assert: " + msg);
     }
 
     var ex;
@@ -182,45 +182,40 @@ assert = (function() {
     };
 
     function _isDocEq(a, b) {
-        return a === b || bsonUnorderedFieldsCompare(a, b) === 0;
+        if (a == b) {
+            return true;
+        }
+
+        var aSorted = sortDoc(a);
+        var bSorted = sortDoc(b);
+
+        if ((aSorted != null && bSorted != null) && friendlyEqual(aSorted, bSorted)) {
+            return true;
+        }
+
+        return false;
     }
 
-    /**
-     * Throws if 'actualDoc' object is not equal to 'expectedDoc' object. The order of fields
-     * (properties) within objects is disregarded.
-     * Throws if object representation in BSON exceeds 16793600 bytes.
-     */
-    assert.docEq = function(expectedDoc, actualDoc, msg) {
+    assert.docEq = function(a, b, msg) {
         _validateAssertionMessage(msg);
 
-        if (_isDocEq(expectedDoc, actualDoc)) {
+        if (_isDocEq(a, b)) {
             return;
         }
 
-        doassert(_buildAssertionMessage(msg,
-                                        "expected document " + tojson(expectedDoc) +
-                                            " and actual document " + tojson(actualDoc) +
-                                            " are not equal"));
+        doassert(_buildAssertionMessage(
+            msg, "[" + tojson(a) + "] != [" + tojson(b) + "] are not equal"));
     };
 
-    /**
-     * Throws if the elements of the two given sets are not the same. Use only for primitive
-     * (non-object) set element types.
-     */
-    assert.setEq = function(expectedSet, actualSet, msg) {
-        _validateAssertionMessage(msg);
-
+    assert.setEq = function(aSet, bSet, msg) {
         const failAssertion = function() {
-            doassert(_buildAssertionMessage(msg,
-                                            "expected set " + tojson(expectedSet) +
-                                                " and actual set " + tojson(actualSet) +
-                                                " are not equal"));
+            doassert(_buildAssertionMessage(msg, tojson(aSet) + " != " + tojson(bSet)));
         };
-        if (expectedSet.size !== actualSet.size) {
+        if (aSet.size !== bSet.size) {
             failAssertion();
         }
-        for (let a of expectedSet) {
-            if (!actualSet.has(a)) {
+        for (let a of aSet) {
+            if (!bSet.has(a)) {
                 failAssertion();
             }
         }
@@ -346,6 +341,14 @@ assert = (function() {
     assert.soon = function(func, msg, timeout, interval, {runHangAnalyzer = true} = {}) {
         _validateAssertionMessage(msg);
 
+        var msgPrefix = "assert.soon failed: " + func;
+
+        if (msg) {
+            if (typeof (msg) != "function") {
+                msgPrefix = "assert.soon failed, msg";
+            }
+        }
+
         var start = new Date();
 
         if (TestData && TestData.inEvergreen) {
@@ -355,14 +358,6 @@ assert = (function() {
         }
 
         interval = interval || 200;
-
-        var msgPrefix = "assert.soon failed (timeout " + timeout + "ms): " + func;
-
-        if (msg) {
-            if (typeof (msg) != "function") {
-                msgPrefix = "assert.soon failed (timeout " + timeout + "ms), msg";
-            }
-        }
 
         while (1) {
             if (typeof (func) == "string") {
@@ -847,12 +842,10 @@ assert = (function() {
 
     assert.commandWorkedOrFailedWithCode = function commandWorkedOrFailedWithCode(
         res, errorCodeSet, msg) {
-        try {
-            // First check if the command worked.
-            return assert.commandWorked(res, msg);
-        } catch (e) {
-            // If the command did not work, assert it failed with one of the specified codes.
+        if (!res.ok) {
             return assert.commandFailedWithCode(res, errorCodeSet, msg);
+        } else {
+            return assert.commandWorked(res, msg);
         }
     };
 

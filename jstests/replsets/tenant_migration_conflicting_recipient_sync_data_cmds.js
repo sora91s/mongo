@@ -2,6 +2,7 @@
  * Test that tenant migration recipient rejects conflicting recipientSyncData commands.
  *
  * @tags: [
+ *   incompatible_with_eft,
  *   incompatible_with_macos,
  *   requires_fcv_52,
  *   incompatible_with_windows_tls,
@@ -10,18 +11,16 @@
  *   serverless,
  * ]
  */
+(function() {
 
-import {
-    getCertificateAndPrivateKey,
-    makeX509OptionsForTest
-} from "jstests/replsets/libs/tenant_migration_util.js";
-
-load("jstests/libs/fail_point_util.js");
+"use strict";
 load("jstests/libs/fail_point_util.js");
 load("jstests/libs/parallelTester.js");
 load("jstests/libs/uuid_util.js");
+load("jstests/replsets/libs/tenant_migration_util.js");
 
-var rst = new ReplSetTest({nodes: 1, nodeOptions: makeX509OptionsForTest().donor});
+var rst =
+    new ReplSetTest({nodes: 1, nodeOptions: TenantMigrationUtil.makeX509OptionsForTest().donor});
 rst.startSet();
 rst.initiate();
 const primary = rst.getPrimary();
@@ -37,9 +36,9 @@ const kSecondaryReadPreference = {
     mode: "secondary"
 };
 const kRecipientCertificateForDonor =
-    getCertificateAndPrivateKey("jstests/libs/tenant_migration_recipient.pem");
-const kExpiredRecipientCertificateForDonor =
-    getCertificateAndPrivateKey("jstests/libs/tenant_migration_recipient_expired.pem");
+    TenantMigrationUtil.getCertificateAndPrivateKey("jstests/libs/tenant_migration_recipient.pem");
+const kExpiredRecipientCertificateForDonor = TenantMigrationUtil.getCertificateAndPrivateKey(
+    "jstests/libs/tenant_migration_recipient_expired.pem");
 
 TestData.stopFailPointErrorCode = 4880402;
 
@@ -165,7 +164,7 @@ assert.commandWorked(primary.adminCommand({
 
     // Only one instance should have succeeded in persisting the state doc, other should have failed
     // with ErrorCodes.ConflictingOperationInProgress.
-    assert.eq(1, configRecipientsColl.count({}));
+    assert.eq(1, configRecipientsColl.count({tenantId: tenantId}));
 
     // Run another recipientSyncData cmd for the tenant. Since the previous migration hasn't been
     // garbage collected, the migration is considered as active. So this command should fail with
@@ -178,7 +177,7 @@ assert.commandWorked(primary.adminCommand({
     assert.commandFailedWithCode(res2, ErrorCodes.ConflictingOperationInProgress);
 
     // Collection count should remain the same.
-    assert.eq(1, configRecipientsColl.count({}));
+    assert.eq(1, configRecipientsColl.count({tenantId: tenantId}));
     fpPauseBeforeRunTenantMigrationRecipientInstance.off();
 })();
 
@@ -298,3 +297,4 @@ function testConcurrentConflictingMigration(migrationOpts0, migrationOpts1) {
 })();
 
 rst.stopSet();
+})();

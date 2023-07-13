@@ -27,19 +27,17 @@
  *    it in the license file.
  */
 
-#include "mongo/db/concurrency/deferred_writer.h"
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kWrite
 
-#include "mongo/db/catalog/collection_write_path.h"
+#include "mongo/db/concurrency/deferred_writer.h"
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/client.h"
-#include "mongo/db/concurrency/exception_util.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/concurrency/thread_pool.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kWrite
 
 namespace mongo {
 
@@ -75,7 +73,7 @@ Status DeferredWriter::_makeCollection(OperationContext* opCtx) {
     builder.append("create", _nss.coll());
     builder.appendElements(_collectionOptions.toBSON());
     try {
-        return createCollection(opCtx, _nss.dbName(), builder.obj().getOwned());
+        return createCollection(opCtx, _nss.db().toString(), builder.obj().getOwned());
     } catch (const DBException& exception) {
         return exception.toStatus();
     }
@@ -116,8 +114,7 @@ Status DeferredWriter::_worker(InsertStatement stmt) noexcept try {
 
     Status status = writeConflictRetry(opCtx, "deferred insert", _nss.ns(), [&] {
         WriteUnitOfWork wuow(opCtx);
-        Status status =
-            collection_internal::insertDocument(opCtx, collection, stmt, nullptr, false);
+        Status status = collection->insertDocument(opCtx, stmt, nullptr, false);
         if (!status.isOK()) {
             return status;
         }

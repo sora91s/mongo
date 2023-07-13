@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTransaction
 
 #include "mongo/platform/basic.h"
 
@@ -38,13 +39,10 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/transaction_coordinator_service.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/transaction/transaction_participant.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/logv2/log.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kTransaction
-
 
 namespace mongo {
 namespace {
@@ -56,14 +54,6 @@ class PrepareTransactionCmd : public TypedCommand<PrepareTransactionCmd> {
 public:
     bool skipApiVersionCheck() const override {
         // Internal command (server to server).
-        return true;
-    }
-
-    bool isTransactionCommand() const final {
-        return true;
-    }
-
-    bool allowedInTransactions() const final {
         return true;
     }
 
@@ -285,7 +275,7 @@ public:
                 // (in all cases except the one where this command aborts the local participant), so
                 // ensure waiting for the client's writeConcern of the decision.
                 repl::ReplClientInfo::forClient(opCtx->getClient())
-                    .setLastOpToSystemLastOpTimeIgnoringCtxInterrupted(opCtx);
+                    .setLastOpToSystemLastOpTimeIgnoringInterrupt(opCtx);
             });
 
             if (coordinatorDecisionFuture) {
@@ -328,9 +318,8 @@ public:
                         "txnNumberAndRetryCounter"_attr = txnNumberAndRetryCounter);
 
             boost::optional<SharedSemiFuture<void>> participantExitPrepareFuture;
-            auto mongoDSessionCatalog = MongoDSessionCatalog::get(opCtx);
             {
-                auto sessionTxnState = mongoDSessionCatalog->checkOutSession(opCtx);
+                MongoDOperationContextSession sessionTxnState(opCtx);
                 auto txnParticipant = TransactionParticipant::get(opCtx);
                 txnParticipant.beginOrContinue(opCtx,
                                                txnNumberAndRetryCounter,
@@ -350,7 +339,7 @@ public:
             participantExitPrepareFuture->get(opCtx);
 
             {
-                auto sessionTxnState = mongoDSessionCatalog->checkOutSession(opCtx);
+                MongoDOperationContextSession sessionTxnState(opCtx);
                 auto txnParticipant = TransactionParticipant::get(opCtx);
 
                 // Call beginOrContinue again in case the transaction number has changed.
@@ -390,18 +379,6 @@ public:
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
-    }
-
-    bool isTransactionCommand() const final {
-        return true;
-    }
-
-    bool shouldCheckoutSession() const final {
-        return false;
-    }
-
-    bool allowedInTransactions() const final {
-        return true;
     }
 
 } coordinateCommitTransactionCmd;

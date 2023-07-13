@@ -50,7 +50,7 @@ jsTestLog("Verify that the document is in the same state as it was at the common
 primary = rollbackTest.getPrimary();
 testDB = primary.getDB(dbName);
 testColl = testDB.getCollection(collName);
-assert.docEq({_id: 42, a: "one"}, testColl.findOne({_id: 42}));
+assert.docEq(testColl.findOne({_id: 42}), {_id: 42, a: "one"});
 
 rollbackTest.stop();
 })();

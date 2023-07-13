@@ -32,7 +32,6 @@
 #include "mongo/db/auth/auth_op_observer.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/client.h"
-#include "mongo/db/concurrency/exception_util.h"
 #include "mongo/db/concurrency/locker_noop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
@@ -45,8 +44,8 @@
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/storage_interface_mock.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/db/session/session_catalog_mongod.h"
-#include "mongo/db/transaction/transaction_participant.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/util/clock_source_mock.h"
 
@@ -75,22 +74,7 @@ public:
         // Ensure that we are primary.
         auto replCoord = repl::ReplicationCoordinator::get(opCtx.get());
         ASSERT_OK(replCoord->setFollowerMode(repl::MemberState::RS_PRIMARY));
-
-        // Create test collection
-        writeConflictRetry(opCtx.get(), "createColl", _nss.ns(), [&] {
-            opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNoTimestamp);
-            opCtx->recoveryUnit()->abandonSnapshot();
-
-            WriteUnitOfWork wunit(opCtx.get());
-            AutoGetCollection collRaii(opCtx.get(), _nss, MODE_X);
-
-            auto db = collRaii.ensureDbExists(opCtx.get());
-            invariant(db->createCollection(opCtx.get(), _nss, {}));
-            wunit.commit();
-        });
     }
-
-    NamespaceString _nss = NamespaceString::createNamespaceString_forTest("test", "coll");
 
 private:
     // Creates a reasonable set of ReplSettings for most tests.  We need to be able to
@@ -111,18 +95,19 @@ TEST_F(AuthOpObserverTest, OnRollbackInvalidatesAuthCacheWhenAuthNamespaceRolled
 
     // Verify that the rollback op observer invalidates the user cache for each auth namespace by
     // checking that the cache generation changes after a call to the rollback observer method.
+    auto nss = AuthorizationManager::rolesCollectionNamespace;
     OpObserver::RollbackObserverInfo rbInfo;
-    rbInfo.rollbackNamespaces = {NamespaceString::kAdminRolesNamespace};
+    rbInfo.rollbackNamespaces = {AuthorizationManager::rolesCollectionNamespace};
     opObserver.onReplicationRollback(opCtx.get(), rbInfo);
     ASSERT_NE(initCacheGen, authMgr->getCacheGeneration());
 
     initCacheGen = authMgr->getCacheGeneration();
-    rbInfo.rollbackNamespaces = {NamespaceString::kAdminUsersNamespace};
+    rbInfo.rollbackNamespaces = {AuthorizationManager::usersCollectionNamespace};
     opObserver.onReplicationRollback(opCtx.get(), rbInfo);
     ASSERT_NE(initCacheGen, authMgr->getCacheGeneration());
 
     initCacheGen = authMgr->getCacheGeneration();
-    rbInfo.rollbackNamespaces = {NamespaceString::kServerConfigurationNamespace};
+    rbInfo.rollbackNamespaces = {AuthorizationManager::versionCollectionNamespace};
     opObserver.onReplicationRollback(opCtx.get(), rbInfo);
     ASSERT_NE(initCacheGen, authMgr->getCacheGeneration());
 }
@@ -134,6 +119,7 @@ TEST_F(AuthOpObserverTest, OnRollbackDoesntInvalidateAuthCacheWhenNoAuthNamespac
     auto initCacheGen = authMgr->getCacheGeneration();
 
     // Verify that the rollback op observer doesn't invalidate the user cache.
+    auto nss = AuthorizationManager::rolesCollectionNamespace;
     OpObserver::RollbackObserverInfo rbInfo;
     opObserver.onReplicationRollback(opCtx.get(), rbInfo);
     auto newCacheGen = authMgr->getCacheGeneration();
@@ -141,34 +127,35 @@ TEST_F(AuthOpObserverTest, OnRollbackDoesntInvalidateAuthCacheWhenNoAuthNamespac
 }
 
 TEST_F(AuthOpObserverTest, MultipleAboutToDeleteAndOnDelete) {
+    auto uuid = UUID::gen();
     AuthOpObserver opObserver;
     auto opCtx = cc().makeOperationContext();
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test", "coll");
+    NamespaceString nss = {"test", "coll"};
+    AutoGetDb autoDb(opCtx.get(), nss.db(), MODE_X);
     WriteUnitOfWork wunit(opCtx.get());
-    AutoGetCollection autoColl(opCtx.get(), nss, MODE_IX);
-    opObserver.aboutToDelete(opCtx.get(), *autoColl, BSON("_id" << 1));
-    opObserver.onDelete(opCtx.get(), *autoColl, {}, {});
-    opObserver.aboutToDelete(opCtx.get(), *autoColl, BSON("_id" << 1));
-    opObserver.onDelete(opCtx.get(), *autoColl, {}, {});
+    opObserver.aboutToDelete(opCtx.get(), nss, uuid, BSON("_id" << 1));
+    opObserver.onDelete(opCtx.get(), nss, uuid, {}, {});
+    opObserver.aboutToDelete(opCtx.get(), nss, uuid, BSON("_id" << 1));
+    opObserver.onDelete(opCtx.get(), nss, uuid, {}, {});
 }
 
 DEATH_TEST_F(AuthOpObserverTest, AboutToDeleteMustPreceedOnDelete, "invariant") {
     AuthOpObserver opObserver;
     auto opCtx = cc().makeOperationContext();
     cc().swapLockState(std::make_unique<LockerNoop>());
-    NamespaceString nss = NamespaceString::createNamespaceString_forTest("test", "coll");
-    AutoGetCollection autoColl(opCtx.get(), nss, MODE_IX);
-    opObserver.onDelete(opCtx.get(), *autoColl, {}, {});
+    NamespaceString nss = {"test", "coll"};
+    opObserver.onDelete(opCtx.get(), nss, UUID::gen(), {}, {});
 }
 
 DEATH_TEST_F(AuthOpObserverTest, EachOnDeleteRequiresAboutToDelete, "invariant") {
+    auto uuid = UUID::gen();
     AuthOpObserver opObserver;
     auto opCtx = cc().makeOperationContext();
     cc().swapLockState(std::make_unique<LockerNoop>());
-    AutoGetCollection autoColl(opCtx.get(), _nss, MODE_IX);
-    opObserver.aboutToDelete(opCtx.get(), *autoColl, {});
-    opObserver.onDelete(opCtx.get(), *autoColl, {}, {});
-    opObserver.onDelete(opCtx.get(), *autoColl, {}, {});
+    NamespaceString nss = {"test", "coll"};
+    opObserver.aboutToDelete(opCtx.get(), nss, uuid, {});
+    opObserver.onDelete(opCtx.get(), nss, uuid, {}, {});
+    opObserver.onDelete(opCtx.get(), nss, uuid, {}, {});
 }
 
 }  // namespace

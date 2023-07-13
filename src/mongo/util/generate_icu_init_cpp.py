@@ -49,6 +49,7 @@ def main(argv):
 
 
 def generate_cpp_file(data_file_path, cpp_file_path):
+    print(cpp_file_path)
     source_template = '''// AUTO-GENERATED FILE DO NOT EDIT
 // See generate_icu_init_cpp.py.
 /**
@@ -103,12 +104,13 @@ alignas(16) const uint8_t kRawData[] = {%(decimal_encoded_data)s};
 
 }  // namespace
 
-MONGO_INITIALIZER_GENERAL(LoadICUData, (), ("BeginStartupOptionHandling"))(
-        InitializerContext* context) {
-    UErrorCode status = U_ZERO_ERROR;
-    udata_setCommonData(kRawData, &status);
-    fassert(40089, U_SUCCESS(status));
-}
+//MONGO_INITIALIZER_GENERAL(LoadICUData, (), ("BeginStartupOptionHandling"))(
+//        InitializerContext* context) {
+//    UErrorCode status = U_ZERO_ERROR;
+ //   udata_setCommonData(kRawData, &status);
+//    fassert(40089, U_SUCCESS(status));
+//}
+// icunmsl
 
 }  // namespace mongo
 '''

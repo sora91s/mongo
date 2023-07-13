@@ -30,7 +30,6 @@
 #pragma once
 
 #include "mongo/db/repl/replica_set_aware_service.h"
-#include "mongo/db/s/balancer/auto_merger_policy.h"
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy.h"
 #include "mongo/db/s/balancer/balancer_random.h"
 #include "mongo/platform/mutex.h"
@@ -45,6 +44,7 @@ class ChunkType;
 class ClusterStatistics;
 class BalancerCommandsScheduler;
 class BalancerDefragmentationPolicy;
+class ClusterChunksResizePolicy;
 class MigrationSecondaryThrottleOptions;
 class OperationContext;
 class ServiceContext;
@@ -170,6 +170,12 @@ public:
     void abortCollectionDefragmentation(OperationContext* opCtx, const NamespaceString& nss);
 
     /**
+     * Asynchronously requests the resize of all the chunks defined in the cluster, so that
+     * the "Collection Max Chunk Size" constraint existing in FCV 5.0 is enforced.
+     */
+    SharedSemiFuture<void> applyLegacyChunkSizeConstraintsOnClusterData(OperationContext* opCtx);
+
+    /**
      * Returns if a given collection is draining due to a removed shard, has chunks on an invalid
      * zone or the number of chunks is imbalanced across the cluster
      */
@@ -192,7 +198,6 @@ private:
      * ReplicaSetAwareService entry points.
      */
     void onStartup(OperationContext* opCtx) final {}
-    void onSetCurrentConfig(OperationContext* opCtx) final {}
     void onInitialDataAvailable(OperationContext* opCtx, bool isMajorityDataAvailable) final {}
     void onShutdown() final {}
     void onStepUpBegin(OperationContext* opCtx, long long term) final;
@@ -240,7 +245,7 @@ private:
      * calculates split points that evenly partition the key space into N ranges (where N is
      * minNumChunksForSessionsCollection rounded up the next power of 2), and splits any chunks that
      * straddle those split points. If the collection is any other collection, splits any chunks
-     * that straddle zone boundaries.
+     * that straddle tag boundaries.
      */
     Status _splitChunksIfNeeded(OperationContext* opCtx);
 
@@ -272,7 +277,7 @@ private:
 
     AtomicWord<int> _outstandingStreamingOps{0};
 
-    AtomicWord<bool> _actionStreamsStateUpdated{true};
+    AtomicWord<bool> _newInfoOnStreamingActions{true};
 
     // Indicates whether the balancer is currently executing a balancer round
     bool _inBalancerRound{false};
@@ -284,7 +289,7 @@ private:
     // changes (in particular, state/balancer round and number of balancer rounds).
     stdx::condition_variable _condVar;
 
-    stdx::condition_variable _actionStreamCondVar;
+    stdx::condition_variable _defragmentationCondVar;
 
     // Number of moved chunks in last round
     int _balancedLastTime;
@@ -304,7 +309,8 @@ private:
 
     std::unique_ptr<BalancerDefragmentationPolicy> _defragmentationPolicy;
 
-    std::unique_ptr<AutoMergerPolicy> _autoMergerPolicy;
+    // TODO  SERVER-65332 remove logic bound to this policy object When kLastLTS is 6.0
+    std::unique_ptr<ClusterChunksResizePolicy> _clusterChunksResizePolicy;
 };
 
 }  // namespace mongo

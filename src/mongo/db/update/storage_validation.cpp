@@ -112,12 +112,17 @@ void validateDollarPrefixElement(mutablebson::ConstElement elem) {
                 curr.rightSibling().ok() && curr.rightSibling().getFieldName() == "$id");
     } else {
         // Not an okay, $ prefixed field name.
+        const auto replaceWithHint =
+            serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+                serverGlobalParams.featureCompatibility.isGreaterThanOrEqualTo(
+                    multiversion::FeatureCompatibilityVersion::kFullyDowngradedTo_5_0)
+            ? "' is not allowed in the context of an update's replacement document. Consider using "
+              "an aggregation pipeline with $replaceWith."
+            : "' is not valid for storage.";
+
         uasserted(ErrorCodes::DollarPrefixedFieldName,
                   str::stream() << "The dollar ($) prefixed field '" << elem.getFieldName()
-                                << "' in '" << mutablebson::getFullName(elem)
-                                << "' is not allowed in the context of an update's replacement"
-                                   " document. Consider using an aggregation pipeline with"
-                                   " $replaceWith.");
+                                << "' in '" << mutablebson::getFullName(elem) << replaceWithHint);
     }
 }
 }  // namespace
@@ -132,7 +137,10 @@ Status storageValidIdField(const mongo::BSONElement& element) {
                               << "The '_id' value cannot be of type " << typeName(element.type()));
         case BSONType::Object: {
             auto status = element.Obj().storageValidEmbedded();
-            if (!status.isOK() && status.code() == ErrorCodes::DollarPrefixedFieldName) {
+            if (!status.isOK() && status.code() == ErrorCodes::DollarPrefixedFieldName &&
+                serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+                serverGlobalParams.featureCompatibility.isGreaterThanOrEqualTo(
+                    multiversion::FeatureCompatibilityVersion::kFullyDowngradedTo_5_0)) {
                 return Status(status.code(),
                               str::stream() << "_id fields may not contain '$'-prefixed fields: "
                                             << status.reason());
@@ -192,16 +200,21 @@ void scanDocument(mutablebson::ConstElement elem,
     // Only check top-level fields if 'allowTopLevelDollarPrefixes' is false, and don't validate any
     // fields for '$'-prefixes if 'allowTopLevelDollarPrefixes' is true.
     const bool checkTopLevelFields = !allowTopLevelDollarPrefixes && (recursionLevel == 1);
+    const bool dotsAndDollarsFeatureEnabled =
+        serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+        serverGlobalParams.featureCompatibility.isGreaterThanOrEqualTo(
+            multiversion::FeatureCompatibilityVersion::kFullyDowngradedTo_5_0);
+    const bool checkFields = !dotsAndDollarsFeatureEnabled || checkTopLevelFields;
 
     auto fieldName = elem.getFieldName();
     if (fieldName[0] == '$') {
-        if (containsDotsAndDollarsField) {
+        if (dotsAndDollarsFeatureEnabled && containsDotsAndDollarsField) {
             *containsDotsAndDollarsField = true;
             // If we are not validating for storage, return once a $-prefixed field is found.
             if (!shouldValidate)
                 return;
         }
-        if (!childOfArray && checkTopLevelFields && shouldValidate) {
+        if (!childOfArray && checkFields && shouldValidate) {
             // Cannot start with "$", unless dbref.
             validateDollarPrefixElement(elem);
         }

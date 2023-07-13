@@ -324,15 +324,14 @@ void BSONColumn::Iterator::_initializeInterleaving() {
         *_control == bsoncolumn::kInterleavedStartArrayRootControlByte ? Array : Object;
     _interleavedReferenceObj = BSONObj(_control + 1);
 
-    BSONObjTraversal t(
-        _interleavedArrays,
-        _interleavedRootType,
-        [](StringData fieldName, const BSONObj& obj, BSONType type) { return true; },
-        [this](const BSONElement& elem) {
-            _states.emplace_back();
-            _states.back()._loadLiteral(elem);
-            return true;
-        });
+    BSONObjTraversal t(_interleavedArrays,
+                       _interleavedRootType,
+                       [](StringData fieldName, const BSONObj& obj, BSONType type) { return true; },
+                       [this](const BSONElement& elem) {
+                           _states.emplace_back();
+                           _states.back()._loadLiteral(elem);
+                           return true;
+                       });
     t.traverse(_interleavedReferenceObj);
     uassert(6067610, "Invalid BSONColumn encoding", !_states.empty());
 
@@ -725,14 +724,6 @@ BSONElement BSONColumn::Iterator::DecodingState::_loadDelta(BSONColumn& column,
         case bsonTimestamp: {
             DataView(elem.value()).write<LittleEndian<long long>>(valueToWrite);
         } break;
-        case RegEx:
-        case DBRef:
-        case CodeWScope:
-        case Symbol:
-        case Object:
-        case Array:
-        case EOO:  // EOO indicates the end of an interleaved object.
-            uasserted(6785500, "Invalid delta in BSON Column encoding");
         default:
             // No other types use int64 and need to allocate value storage
             MONGO_UNREACHABLE;
@@ -767,7 +758,7 @@ BSONElement BSONColumn::Iterator::DecodingState::_loadDelta(BSONColumn& column,
     }
 
     // Write value depending on type
-    auto elemFn = [&]() -> ElementStorage::Element {
+    auto elem = [&]() -> ElementStorage::Element {
         switch (_lastType) {
             case String:
             case Code: {
@@ -810,7 +801,7 @@ BSONElement BSONColumn::Iterator::DecodingState::_loadDelta(BSONColumn& column,
         }
     }();
 
-    _lastValue = elemFn.element();
+    _lastValue = elem.element();
     return _lastValue;
 }
 

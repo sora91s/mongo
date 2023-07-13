@@ -33,9 +33,8 @@
 
 #include <memory>
 
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/working_set_common.h"
-#include "mongo/db/query/plan_executor_impl.h"
-#include "mongo/util/assert_util.h"
 
 namespace mongo {
 
@@ -55,29 +54,18 @@ void MultiIteratorStage::addIterator(unique_ptr<RecordCursor> it) {
 
 PlanStage::StageState MultiIteratorStage::doWork(WorkingSetID* out) {
     boost::optional<Record> record;
-
-    const auto ret = handlePlanStageYield(
-        expCtx(),
-        "MultiIteratorStage",
-        collection()->ns().ns(),
-        [&] {
-            while (!_iterators.empty()) {
-                record = _iterators.back()->next();
-                if (record)
-                    break;
-                _iterators.pop_back();
-            }
-            return PlanStage::ADVANCED;
-        },
-        [&] {
-            // yieldHandler
-            // If _advance throws a WCE we shouldn't have moved.
-            invariant(!_iterators.empty());
-            *out = WorkingSet::INVALID_ID;
-        });
-
-    if (ret != PlanStage::ADVANCED) {
-        return ret;
+    try {
+        while (!_iterators.empty()) {
+            record = _iterators.back()->next();
+            if (record)
+                break;
+            _iterators.pop_back();
+        }
+    } catch (const WriteConflictException&) {
+        // If _advance throws a WCE we shouldn't have moved.
+        invariant(!_iterators.empty());
+        *out = WorkingSet::INVALID_ID;
+        return NEED_YIELD;
     }
 
     if (!record)
@@ -85,7 +73,7 @@ PlanStage::StageState MultiIteratorStage::doWork(WorkingSetID* out) {
 
     *out = _ws->allocate();
     WorkingSetMember* member = _ws->get(*out);
-    member->recordId = std::move(record->id);
+    member->recordId = record->id;
     member->resetDocument(opCtx()->recoveryUnit()->getSnapshotId(), record->data.releaseToBson());
     _ws->transitionToRecordIdAndObj(*out);
     return PlanStage::ADVANCED;

@@ -27,13 +27,13 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/s/balancer/balancer_commands_scheduler.h"
 #include "mongo/db/s/balancer/balancer_commands_scheduler_impl.h"
 #include "mongo/db/s/config/config_server_test_fixture.h"
 #include "mongo/s/catalog/sharding_catalog_client_mock.h"
-#include "mongo/s/request_types/move_range_request_gen.h"
-#include "mongo/s/shard_version_factory.h"
 
 namespace mongo {
 namespace {
@@ -51,9 +51,8 @@ public:
         ShardType(kShardId0.toString(), kShardHost0.toString()),
         ShardType(kShardId1.toString(), kShardHost1.toString())};
 
-    const NamespaceString kNss = NamespaceString::createNamespaceString_forTest("testDb.testColl");
-    const NamespaceString kNssWithCustomizedSize =
-        NamespaceString::createNamespaceString_forTest("testDb.testCollCustomized");
+    const NamespaceString kNss{"testDb.testColl"};
+    const NamespaceString kNssWithCustomizedSize{"testDb.testCollCustomized"};
 
     const UUID kUuid = UUID::gen();
 
@@ -66,7 +65,7 @@ public:
         chunk.setMax(BSON("x" << min + 10));
         chunk.setJumbo(false);
         chunk.setShard(shardId);
-        chunk.setVersion(ChunkVersion({OID::gen(), Timestamp(10)}, {1, 1}));
+        chunk.setVersion(ChunkVersion(1, 1, OID::gen(), Timestamp(10)));
         return chunk;
     }
 
@@ -77,8 +76,8 @@ public:
                            kUuid,
                            BSON("x" << min),
                            BSON("x" << min + 10),
-                           ChunkVersion({OID::gen(), Timestamp(10)}, {1, 1}),
-                           ForceJumbo::kDoNotForce);
+                           ChunkVersion(1, 1, OID::gen(), Timestamp(10)),
+                           MoveChunkRequest::ForceJumbo::kDoNotForce);
     }
 
     MoveChunkSettings getMoveChunkSettings(int64_t maxChunkSize = kDefaultMaxChunkSizeBytes) {
@@ -170,10 +169,8 @@ TEST_F(BalancerCommandsSchedulerTest, SuccessfulMoveChunkCommand) {
         globalFailPointRegistry().find("deferredCleanupCompletedCheckpoint");
     auto timesEnteredFailPoint =
         deferredCleanupCompletedCheckpoint->setMode(FailPoint::alwaysOn, 0);
-    auto remoteResponsesFuture =
-        setRemoteResponses({[&](const executor::RemoteCommandRequest& request) {
-            return OkReply().toBSON();
-        }});
+    auto remoteResponsesFuture = setRemoteResponses(
+        {[&](const executor::RemoteCommandRequest& request) { return OkReply().toBSON(); }});
 
     _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
     MigrateInfo migrateInfo = makeMigrationInfo(0, kShardId1, kShardId0);
@@ -183,6 +180,15 @@ TEST_F(BalancerCommandsSchedulerTest, SuccessfulMoveChunkCommand) {
     ASSERT_OK(futureResponse.getNoThrow());
     remoteResponsesFuture.default_timed_get();
     deferredCleanupCompletedCheckpoint->waitForTimesEntered(timesEnteredFailPoint + 1);
+    // Ensure DistLock is released correctly
+    {
+        auto opCtx = Client::getCurrent()->getOperationContext();
+        const std::string whyMessage(str::stream()
+                                     << "Test acquisition of distLock for " << kNss.ns());
+        auto scopedDistLock = DistLockManager::get(opCtx)->lock(
+            opCtx, kNss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
+        ASSERT_OK(scopedDistLock.getStatus());
+    }
     deferredCleanupCompletedCheckpoint->setMode(FailPoint::off, 0);
     _scheduler.stop();
 }
@@ -192,13 +198,11 @@ TEST_F(BalancerCommandsSchedulerTest, SuccessfulMoveRangeCommand) {
         globalFailPointRegistry().find("deferredCleanupCompletedCheckpoint");
     auto timesEnteredFailPoint =
         deferredCleanupCompletedCheckpoint->setMode(FailPoint::alwaysOn, 0);
-    auto remoteResponsesFuture =
-        setRemoteResponses({[&](const executor::RemoteCommandRequest& request) {
-            return OkReply().toBSON();
-        }});
+    auto remoteResponsesFuture = setRemoteResponses(
+        {[&](const executor::RemoteCommandRequest& request) { return OkReply().toBSON(); }});
     _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
     ShardsvrMoveRange shardsvrRequest(kNss);
-    shardsvrRequest.setDbName(DatabaseName::kAdmin);
+    shardsvrRequest.setDbName(NamespaceString::kAdminDb);
     shardsvrRequest.setFromShard(kShardId0);
     shardsvrRequest.setMaxChunkSizeBytes(1024);
     auto& moveRangeRequestBase = shardsvrRequest.getMoveRangeRequestBase();
@@ -211,19 +215,26 @@ TEST_F(BalancerCommandsSchedulerTest, SuccessfulMoveRangeCommand) {
     ASSERT_OK(futureResponse.getNoThrow());
     remoteResponsesFuture.default_timed_get();
     deferredCleanupCompletedCheckpoint->waitForTimesEntered(timesEnteredFailPoint + 1);
+    // Ensure DistLock is released correctly
+    {
+        auto opCtx = Client::getCurrent()->getOperationContext();
+        const std::string whyMessage(str::stream()
+                                     << "Test acquisition of distLock for " << kNss.ns());
+        auto scopedDistLock = DistLockManager::get(opCtx)->lock(
+            opCtx, kNss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
+        ASSERT_OK(scopedDistLock.getStatus());
+    }
     deferredCleanupCompletedCheckpoint->setMode(FailPoint::off, 0);
     _scheduler.stop();
 }
 
 TEST_F(BalancerCommandsSchedulerTest, SuccessfulMergeChunkCommand) {
-    auto remoteResponsesFuture =
-        setRemoteResponses({[&](const executor::RemoteCommandRequest& request) {
-            return OkReply().toBSON();
-        }});
+    auto remoteResponsesFuture = setRemoteResponses(
+        {[&](const executor::RemoteCommandRequest& request) { return OkReply().toBSON(); }});
     _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
 
     ChunkRange range(BSON("x" << 0), BSON("x" << 20));
-    ChunkVersion version({OID::gen(), Timestamp(10)}, {1, 1});
+    ChunkVersion version(1, 1, OID::gen(), Timestamp(10));
     auto futureResponse =
         _scheduler.requestMergeChunks(operationContext(), kNss, kShardId0, range, version);
     ASSERT_OK(futureResponse.getNoThrow());
@@ -235,11 +246,64 @@ TEST_F(BalancerCommandsSchedulerTest, MergeChunkNonexistentShard) {
     auto remoteResponsesFuture = setRemoteResponses();
     _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
     ChunkRange range(BSON("x" << 0), BSON("x" << 20));
-    ChunkVersion version({OID::gen(), Timestamp(10)}, {1, 1});
+    ChunkVersion version(1, 1, OID::gen(), Timestamp(10));
     auto futureResponse = _scheduler.requestMergeChunks(
         operationContext(), kNss, ShardId("nonexistent"), range, version);
     auto shardNotFoundError = Status{ErrorCodes::ShardNotFound, "Shard nonexistent not found"};
     ASSERT_EQ(futureResponse.getNoThrow(), shardNotFoundError);
+    remoteResponsesFuture.default_timed_get();
+    _scheduler.stop();
+}
+
+TEST_F(BalancerCommandsSchedulerTest, SuccessfulAutoSplitVectorCommand) {
+    BSONObjBuilder autoSplitVectorResponse;
+    autoSplitVectorResponse.append("ok", "1");
+    BSONArrayBuilder splitKeys(autoSplitVectorResponse.subarrayStart("splitKeys"));
+    splitKeys.append(BSON("x" << 7));
+    splitKeys.append(BSON("x" << 9));
+    splitKeys.done();
+    autoSplitVectorResponse.append("continuation", false);
+
+    auto remoteResponsesFuture =
+        setRemoteResponses({[&](const executor::RemoteCommandRequest& request) {
+            return autoSplitVectorResponse.obj();
+        }});
+    _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
+
+    ChunkType splitChunk = makeChunk(0, kShardId0);
+    auto futureResponse = _scheduler.requestAutoSplitVector(operationContext(),
+                                                            kNss,
+                                                            splitChunk.getShard(),
+                                                            BSON("x" << 1),
+                                                            splitChunk.getMin(),
+                                                            splitChunk.getMax(),
+                                                            4);
+    auto swAutoSplitVectorResponse = futureResponse.getNoThrow();
+    ASSERT_OK(swAutoSplitVectorResponse.getStatus());
+    auto receivedSplitKeys = swAutoSplitVectorResponse.getValue().getSplitKeys();
+    auto continuation = swAutoSplitVectorResponse.getValue().getContinuation();
+    ASSERT_EQ(receivedSplitKeys.size(), 2);
+    ASSERT_BSONOBJ_EQ(receivedSplitKeys[0], BSON("x" << 7));
+    ASSERT_BSONOBJ_EQ(receivedSplitKeys[1], BSON("x" << 9));
+    ASSERT_FALSE(continuation);
+    remoteResponsesFuture.default_timed_get();
+    _scheduler.stop();
+}
+
+TEST_F(BalancerCommandsSchedulerTest, SuccessfulSplitChunkCommand) {
+    auto remoteResponsesFuture = setRemoteResponses(
+        {[&](const executor::RemoteCommandRequest& request) { return OkReply().toBSON(); }});
+    _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
+    ChunkType splitChunk = makeChunk(0, kShardId0);
+    auto futureResponse = _scheduler.requestSplitChunk(operationContext(),
+                                                       kNss,
+                                                       splitChunk.getShard(),
+                                                       splitChunk.getVersion(),
+                                                       KeyPattern(BSON("x" << 1)),
+                                                       splitChunk.getMin(),
+                                                       splitChunk.getMax(),
+                                                       std::vector<BSONObj>{BSON("x" << 5)});
+    ASSERT_OK(futureResponse.getNoThrow());
     remoteResponsesFuture.default_timed_get();
     _scheduler.stop();
 }
@@ -249,24 +313,19 @@ TEST_F(BalancerCommandsSchedulerTest, SuccessfulRequestChunkDataSizeCommand) {
     chunkSizeResponse.append("ok", "1");
     chunkSizeResponse.append("size", 156);
     chunkSizeResponse.append("numObjects", 25);
-    auto remoteResponsesFuture =
-        setRemoteResponses({[&](const executor::RemoteCommandRequest& request) {
-            return chunkSizeResponse.obj();
-        }});
+    auto remoteResponsesFuture = setRemoteResponses(
+        {[&](const executor::RemoteCommandRequest& request) { return chunkSizeResponse.obj(); }});
 
     _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
     ChunkType chunk = makeChunk(0, kShardId0);
 
-    auto futureResponse = _scheduler.requestDataSize(
-        operationContext(),
-        kNss,
-        chunk.getShard(),
-        chunk.getRange(),
-        ShardVersionFactory::make(chunk.getVersion(),
-                                  boost::optional<CollectionIndexes>(boost::none)),
-        KeyPattern(BSON("x" << 1)),
-        false /* issuedByRemoteUser */,
-        (kDefaultMaxChunkSizeBytes / 100) * 25 /* maxSize */);
+    auto futureResponse = _scheduler.requestDataSize(operationContext(),
+                                                     kNss,
+                                                     chunk.getShard(),
+                                                     chunk.getRange(),
+                                                     chunk.getVersion(),
+                                                     KeyPattern(BSON("x" << 1)),
+                                                     false /* issuedByRemoteUser */);
     auto swReceivedDataSize = futureResponse.getNoThrow();
     ASSERT_OK(swReceivedDataSize.getStatus());
     auto receivedDataSize = swReceivedDataSize.getValue();
@@ -282,10 +341,8 @@ TEST_F(BalancerCommandsSchedulerTest, CommandFailsWhenNetworkReturnsError) {
     auto timesEnteredFailPoint =
         deferredCleanupCompletedCheckpoint->setMode(FailPoint::alwaysOn, 0);
     auto timeoutError = Status{ErrorCodes::NetworkTimeout, "Mock error: network timed out"};
-    auto remoteResponsesFuture =
-        setRemoteResponses({[&](const executor::RemoteCommandRequest& request) {
-            return timeoutError;
-        }});
+    auto remoteResponsesFuture = setRemoteResponses(
+        {[&](const executor::RemoteCommandRequest& request) { return timeoutError; }});
     _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
     MigrateInfo migrateInfo = makeMigrationInfo(0, kShardId1, kShardId0);
 
@@ -294,6 +351,16 @@ TEST_F(BalancerCommandsSchedulerTest, CommandFailsWhenNetworkReturnsError) {
     ASSERT_EQUALS(futureResponse.getNoThrow(), timeoutError);
     remoteResponsesFuture.default_timed_get();
     deferredCleanupCompletedCheckpoint->waitForTimesEntered(timesEnteredFailPoint + 1);
+
+    // Ensure DistLock is released correctly
+    {
+        auto opCtx = Client::getCurrent()->getOperationContext();
+        const std::string whyMessage(str::stream()
+                                     << "Test acquisition of distLock for " << kNss.ns());
+        auto scopedDistLock = DistLockManager::get(opCtx)->lock(
+            opCtx, kNss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
+        ASSERT_OK(scopedDistLock.getStatus());
+    }
     deferredCleanupCompletedCheckpoint->setMode(FailPoint::off, 0);
     _scheduler.stop();
 }
@@ -305,6 +372,15 @@ TEST_F(BalancerCommandsSchedulerTest, CommandFailsWhenSchedulerIsStopped) {
     ASSERT_EQUALS(futureResponse.getNoThrow(),
                   Status(ErrorCodes::BalancerInterrupted,
                          "Request rejected - balancer scheduler is stopped"));
+    // Ensure DistLock is not taken
+    {
+        auto opCtx = Client::getCurrent()->getOperationContext();
+        const std::string whyMessage(str::stream()
+                                     << "Test acquisition of distLock for " << kNss.ns());
+        auto scopedDistLock = DistLockManager::get(opCtx)->lock(
+            opCtx, kNss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
+        ASSERT_OK(scopedDistLock.getStatus());
+    }
 }
 
 TEST_F(BalancerCommandsSchedulerTest, CommandCanceledIfUnsubmittedBeforeBalancerStops) {
@@ -324,6 +400,15 @@ TEST_F(BalancerCommandsSchedulerTest, CommandCanceledIfUnsubmittedBeforeBalancer
     ASSERT_EQUALS(futureResponse.getNoThrow(),
                   Status(ErrorCodes::BalancerInterrupted,
                          "Request cancelled - balancer scheduler is stopping"));
+    // Ensure DistLock is released correctly
+    {
+        auto opCtx = Client::getCurrent()->getOperationContext();
+        const std::string whyMessage(str::stream()
+                                     << "Test acquisition of distLock for " << kNss.ns());
+        auto scopedDistLock = DistLockManager::get(opCtx)->lock(
+            opCtx, kNss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
+        ASSERT_OK(scopedDistLock.getStatus());
+    }
 }
 
 TEST_F(BalancerCommandsSchedulerTest, MoveChunkCommandGetsPersistedOnDiskWhenRequestIsSubmitted) {
@@ -348,6 +433,7 @@ TEST_F(BalancerCommandsSchedulerTest, MoveChunkCommandGetsPersistedOnDiskWhenReq
                 MoveChunkCommandInfo::recoverFrom(swPersistedCommand.getValue(), defaultValues);
             ASSERT_EQ(kNss, recoveredCommand->getNameSpace());
             ASSERT_EQ(migrateInfo.from, recoveredCommand->getTarget());
+            ASSERT_TRUE(recoveredCommand->requiresDistributedLock());
 
             MoveChunkCommandInfo originalCommandInfo(migrateInfo.nss,
                                                      migrateInfo.from,
@@ -410,6 +496,33 @@ TEST_F(BalancerCommandsSchedulerTest, PersistedCommandsAreReissuedWhenRecovering
     _scheduler.stop();
     auto persistedCommandDocs = getPersistedCommandDocuments(operationContext());
     ASSERT_EQUALS(0, persistedCommandDocs.size());
+}
+
+TEST_F(BalancerCommandsSchedulerTest, DistLockPreventsMoveChunkWithConcurrentDDL) {
+    OperationContext* opCtx;
+    FailPoint* failpoint = globalFailPointRegistry().find("pauseSubmissionsFailPoint");
+    failpoint->setMode(FailPoint::Mode::alwaysOn);
+    {
+        auto remoteResponsesFuture = setRemoteResponses();
+        _scheduler.start(operationContext(), getMigrationRecoveryDefaultValues());
+        opCtx = Client::getCurrent()->getOperationContext();
+        const std::string whyMessage(str::stream()
+                                     << "Test acquisition of distLock for " << kNss.ns());
+        auto scopedDistLock = DistLockManager::get(opCtx)->lock(
+            opCtx, kNss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
+        ASSERT_OK(scopedDistLock.getStatus());
+        failpoint->setMode(FailPoint::Mode::off);
+        MigrateInfo migrateInfo = makeMigrationInfo(0, kShardId1, kShardId0);
+        auto futureResponse = _scheduler.requestMoveChunk(operationContext(),
+                                                          migrateInfo,
+                                                          getMoveChunkSettings(),
+                                                          false /* issuedByRemoteUser */);
+        remoteResponsesFuture.default_timed_get();
+        ASSERT_EQ(
+            futureResponse.getNoThrow(),
+            Status(ErrorCodes::LockBusy, "Failed to acquire dist lock testDb.testColl locally"));
+    }
+    _scheduler.stop();
 }
 
 }  // namespace

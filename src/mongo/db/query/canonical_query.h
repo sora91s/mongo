@@ -53,10 +53,9 @@ public:
     // with parameter markers.
     typedef std::string QueryShapeString;
     // A second encoding of query shape similar to 'QueryShapeString' above, except designed to work
-    // with index filters and the 'planCacheClear' command. A caller can encode a query into an
-    // 'PlanCacheCommandKey' in order to look for for matching index filters that should apply to
-    // the query, or plan cache entries to which the 'planCacheClear' command should be applied.
-    typedef std::string PlanCacheCommandKey;
+    // with index filters rather than the plan cache key. A caller can encode a query into an
+    // 'IndexFilterKey' in order to look for matching index filters that should apply to the query.
+    typedef std::string IndexFilterKey;
 
     /**
      * If parsing succeeds, returns a std::unique_ptr<CanonicalQuery> representing the parsed
@@ -74,8 +73,7 @@ public:
         MatchExpressionParser::AllowedFeatureSet allowedFeatures =
             MatchExpressionParser::kDefaultSpecialFeatures,
         const ProjectionPolicies& projectionPolicies = ProjectionPolicies::findProjectionPolicies(),
-        std::vector<std::unique_ptr<InnerPipelineStageInterface>> pipeline = {},
-        bool isCountLike = false);
+        std::vector<std::unique_ptr<InnerPipelineStageInterface>> pipeline = {});
 
     /**
      * For testing or for internal clients to use.
@@ -120,11 +118,11 @@ public:
      */
     static Status isValidNormalized(const MatchExpression* root);
 
-    NamespaceString nss() const {
+    const NamespaceString nss() const {
         invariant(_findCommand->getNamespaceOrUUID().nss());
         return *_findCommand->getNamespaceOrUUID().nss();
     }
-    std::string ns() const {
+    const std::string ns() const {
         return nss().ns();
     }
 
@@ -182,10 +180,11 @@ public:
     QueryShapeString encodeKey() const;
 
     /**
-     * Similar to 'encodeKey()' above, but intended for use with plan cache commands rather than
-     * the plan cache itself.
+     * Encode a shape string for the query suitable for matching the query against the set of
+     * pre-defined index filters. Similar to 'encodeKey()' above, but intended for use with index
+     * filters rather than the plan cache.
      */
-    PlanCacheCommandKey encodeKeyForPlanCacheCommand() const;
+    IndexFilterKey encodeKeyForIndexFilters() const;
 
     /**
      * Sets this CanonicalQuery's collator, and sets the collator on this CanonicalQuery's match
@@ -234,14 +233,6 @@ public:
         return _sbeCompatible;
     }
 
-    void setUseCqfIfEligible(bool useCqfIfEligible) {
-        _useCqfIfEligible = useCqfIfEligible;
-    }
-
-    bool useCqfIfEligible() const {
-        return _useCqfIfEligible;
-    }
-
     bool isParameterized() const {
         return !_inputParamIdToExpressionMap.empty();
     }
@@ -252,14 +243,6 @@ public:
 
     void setExplain(bool explain) {
         _explain = explain;
-    }
-
-    bool getForceGenerateRecordId() const {
-        return _forceGenerateRecordId;
-    }
-
-    void setForceGenerateRecordId(bool value) {
-        _forceGenerateRecordId = value;
     }
 
     OperationContext* getOpCtx() const {
@@ -282,21 +265,6 @@ public:
         return _pipeline;
     }
 
-    /**
-     * Returns true if the query is a count-like query, i.e. has no dependencies on inputs (see
-     * DepsTracker::hasNoRequirements()). These queries can be served without accessing the source
-     * documents (e.g. {$group: {_id: null, c: {$min: 42}}}) in which case we might be able to avoid
-     * scanning the collection and instead use COUNT_SCAN or other optimizations.
-     *
-     * Note that this applies to the find/non-pipeline portion of the query. If the count-like group
-     * is pushed down, later execution stages cannot be treated like a count. In other words, a
-     * query with a pushed-down group may be considered a count at the data access layer but not
-     * above the canonical query.
-     */
-    bool isCountLike() const {
-        return _isCountLike;
-    }
-
 private:
     // You must go through canonicalize to create a CanonicalQuery.
     CanonicalQuery() {}
@@ -307,8 +275,7 @@ private:
                 bool canHaveNoopMatchNodes,
                 std::unique_ptr<MatchExpression> root,
                 const ProjectionPolicies& projectionPolicies,
-                std::vector<std::unique_ptr<InnerPipelineStageInterface>> pipeline,
-                bool isCountLike);
+                std::vector<std::unique_ptr<InnerPipelineStageInterface>> pipeline);
 
     // Initializes '_sortPattern', adding any metadata dependencies implied by the sort.
     //
@@ -326,8 +293,6 @@ private:
 
     boost::optional<SortPattern> _sortPattern;
 
-    // A query can include a post-processing pipeline here. Logically it is applied after all the
-    // other operations (filter, sort, project, skip, limit).
     std::vector<std::unique_ptr<InnerPipelineStageInterface>> _pipeline;
 
     // Keeps track of what metadata has been explicitly requested.
@@ -343,32 +308,8 @@ private:
     // True if this query can be executed by the SBE.
     bool _sbeCompatible = false;
 
-    // If true, indicates that we should use CQF if this query is eligible (see the
-    // isEligibleForBonsai() function for eligiblitly requirements).
-    // If false, indicates that we shouldn't use CQF even if this query is eligible. This is used to
-    // prevent hybrid classic and CQF plans in the following cases:
-    // 1. A pipeline that is not eligible for CQF but has an eligible prefix pushed down to find.
-    // 2. A subpipeline pushed down to find as part of a $lookup or $graphLookup.
-    // The default value of false ensures that only codepaths (find command) which opt-in are able
-    // to use CQF.
-    bool _useCqfIfEligible = false;
-
-    // True if this query must produce a RecordId output in addition to the BSON objects that
-    // constitute the result set of the query. Any generated query solution must not discard record
-    // ids, even if the optimizer detects that they are not going to be consumed downstream.
-    bool _forceGenerateRecordId = false;
-
     // A map from assigned InputParamId's to parameterised MatchExpression's.
     std::vector<const MatchExpression*> _inputParamIdToExpressionMap;
-
-    // "True" for queries that after doing a scan of an index can produce an empty document and
-    // still be correct. For example, this applies to queries like [{$match: {x: 42}}, {$count:
-    // "c"}] in presence of index on "x". The stage that follows the index scan doesn't have to be
-    // $count but it must have no dependencies on the fields from the prior stages. Note, that
-    // [{$match: {x: 42}}, {$group: {_id: "$y"}}, {$count: "c"}]] is _not_ "count like" because
-    // the first $group stage needs to access field "y" and this access cannot be incorporated into
-    // the index scan.
-    bool _isCountLike = false;
 };
 
 }  // namespace mongo

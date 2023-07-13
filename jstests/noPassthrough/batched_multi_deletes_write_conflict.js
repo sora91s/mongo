@@ -2,7 +2,7 @@
  * Validate basic batched multi-deletion handling with write conflicts.
  *
  * @tags: [
- *   requires_fcv_61,
+ *   requires_fcv_53,
  * ]
  */
 
@@ -15,8 +15,11 @@ load("jstests/libs/fail_point_util.js");           // For 'configureFailPoint()'
 
 const conn = MongoRunner.runMongod();
 
-const testDB = conn.getDB("test");
-const coll = testDB.getCollection("c");
+// '__internalBatchedDeletesTesting.Collection0' is a special, hardcoded namespace that batches
+// multi-doc deletes if the 'internalBatchUserMultiDeletesForTest' server parameter is set.
+// TODO (SERVER-63044): remove this special handling.
+const testDB = conn.getDB("__internalBatchedDeletesTesting");
+const coll = testDB.getCollection("Collection0");
 const collName = coll.getName();
 const ns = coll.getFullName();
 
@@ -24,10 +27,13 @@ assertDropCollection(testDB, collName);
 
 const collCount = 50002;  // Intentionally not a multiple of the default batch size.
 
-assert.commandWorked(coll.insertMany(
-    [...Array(collCount).keys()].map(x => ({_id: x, a: "a".repeat(1024)})), {ordered: false}));
+assert.commandWorked(
+    coll.insertMany([...Array(collCount).keys()].map(x => ({_id: x, a: "a".repeat(1024)}))));
 
 assert.commandWorked(testDB.setProfilingLevel(2));
+
+assert.commandWorked(
+    testDB.adminCommand({setParameter: 1, internalBatchUserMultiDeletesForTest: 1}));
 
 // While test is not deterministic, there will most likely be several write conflicts during the
 // execution. ~250 write conflicts on average.

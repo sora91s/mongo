@@ -61,8 +61,7 @@ public:
                      // Each element of 'inputVals' must be the same size as 'outputVals'.
                      std::vector<value::SlotVector> inputVals,
                      value::SlotVector outputVals,
-                     PlanNodeId planNodeId,
-                     bool participateInTrialRunTracking = true);
+                     PlanNodeId planNodeId);
 
     std::unique_ptr<PlanStage> clone() const final;
 

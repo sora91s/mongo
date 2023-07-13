@@ -42,7 +42,7 @@ for (let event of expectedEvents) {
     assert.soon(() => csCursor.hasNext());
     const nextDoc = csCursor.next();
     assert.eq(nextDoc.operationType, event.op);
-    assert.docEq(event.doc, nextDoc.fullDocument);
+    assert.docEq(nextDoc.fullDocument, event.doc);
 }
 
 st.stop();

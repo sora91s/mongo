@@ -33,9 +33,8 @@
 #include <vector>
 
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/s/resharding/resharding_metrics.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/executor/task_executor.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/util/cancellation.h"
 #include "mongo/util/duration.h"
 #include "mongo/util/future.h"
@@ -69,8 +68,7 @@ public:
         Milliseconds max;
     };
 
-    CoordinatorCommitMonitor(std::shared_ptr<ReshardingMetrics> metrics,
-                             NamespaceString ns,
+    CoordinatorCommitMonitor(NamespaceString ns,
                              std::vector<ShardId> recipientShards,
                              TaskExecutorPtr executor,
                              CancellationToken cancelToken,
@@ -95,12 +93,10 @@ private:
     static constexpr auto kDiagnosticLogLevel = 0;
     static constexpr auto kMaxDelayBetweenQueries = Seconds(30);
 
-    std::shared_ptr<ReshardingMetrics> _metrics;
     const NamespaceString _ns;
     const std::vector<ShardId> _recipientShards;
     const TaskExecutorPtr _executor;
     const CancellationToken _cancelToken;
-
     const Milliseconds _threshold;
     const Milliseconds _maxDelayBetweenQueries;
 

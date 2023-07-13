@@ -36,6 +36,7 @@ namespace mongo {
 
 class BSONObj;
 class ShardingCatalogClient;
+struct ChunkVersion;
 class CollectionType;
 class ShardRegistry;
 
@@ -143,7 +144,7 @@ protected:
 private:
     std::unique_ptr<ShardingCatalogClient> makeShardingCatalogClient() override;
 
-    std::shared_ptr<transport::Session> _transportSession;
+    transport::SessionHandle _transportSession;
 
     // For the Grid's fixed executor.
     std::shared_ptr<executor::TaskExecutor> _fixedExecutor;

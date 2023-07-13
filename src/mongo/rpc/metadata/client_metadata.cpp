@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
 
 #include "mongo/platform/basic.h"
 
@@ -48,9 +49,6 @@
 #include "mongo/util/str.h"
 #include "mongo/util/testing_proctor.h"
 #include "mongo/util/version.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kNetwork
-
 
 namespace mongo {
 
@@ -108,7 +106,7 @@ ClientMetadata::ClientMetadata(BSONObj doc) {
 
     uassert(ErrorCodes::ClientMetadataDocumentTooLarge,
             str::stream() << "The client metadata document must be less then or equal to "
-                          << maxLength << " bytes",
+                          << maxLength << "bytes",
             static_cast<uint32_t>(doc.objsize()) <= maxLength);
 
     const auto isobj = [](StringData name, const BSONElement& e) {
@@ -307,7 +305,7 @@ void ClientMetadata::serialize(StringData driverName,
     ProcessInfo processInfo;
 
     std::string appName;
-    if (TestingProctor::instance().isEnabled()) {
+    if (kDebugBuild) {
         appName = processInfo.getProcessName();
         if (appName.length() > kMaxApplicationNameByteLength) {
             static constexpr auto kEllipsis = "..."_sd;
@@ -368,7 +366,7 @@ Status ClientMetadata::serializePrivate(StringData driverName,
         if (!appName.empty()) {
             BSONObjBuilder subObjBuilder(metaObjBuilder.subobjStart(kApplication));
             subObjBuilder.append(kName, appName);
-            if (TestingProctor::instance().isEnabled()) {
+            if (kDebugBuild) {
                 subObjBuilder.append(kPid, ProcessId::getCurrent().toString());
             }
         }
@@ -440,7 +438,7 @@ const ClientMetadata* ClientMetadata::getForClient(Client* client) noexcept {
         // If we haven't finalized, it's still okay to return our existing value.
         return nullptr;
     }
-    return &state.meta.value();
+    return &state.meta.get();
 }
 
 const ClientMetadata* ClientMetadata::getForOperation(OperationContext* opCtx) noexcept {
@@ -449,7 +447,7 @@ const ClientMetadata* ClientMetadata::getForOperation(OperationContext* opCtx) n
         return nullptr;
     }
     invariant(state.meta);
-    return &state.meta.value();
+    return &state.meta.get();
 }
 
 const ClientMetadata* ClientMetadata::get(Client* client) noexcept {

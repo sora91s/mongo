@@ -33,6 +33,8 @@
 #include "mongo/bson/bsonobj.h"
 
 namespace mongo {
+    
+void initMyChangeStreamInvalidationInfo();
 
 class BSONObjBuilder;
 

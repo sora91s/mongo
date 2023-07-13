@@ -40,15 +40,13 @@
 
 namespace mongo {
 void ClusterAuthModeServerParameter::append(OperationContext*,
-                                            BSONObjBuilder* builder,
-                                            StringData fieldName,
-                                            const boost::optional<TenantId>&) {
+                                            BSONObjBuilder& builder,
+                                            const std::string& fieldName) {
     const auto clusterAuthMode = ClusterAuthMode::get(getGlobalServiceContext());
-    builder->append(fieldName, clusterAuthMode.toString());
+    builder.append(fieldName, clusterAuthMode.toString());
 }
 
-Status ClusterAuthModeServerParameter::setFromString(StringData strMode,
-                                                     const boost::optional<TenantId>&) try {
+Status ClusterAuthModeServerParameter::setFromString(const std::string& strMode) try {
     auto mode = uassertStatusOK(ClusterAuthMode::parse(strMode));
 
     auto sslMode = sslGlobalParams.sslMode.load();

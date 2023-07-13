@@ -14,7 +14,6 @@ static inline int
 __insert_simple_func(
   WT_SESSION_IMPL *session, WT_INSERT ***ins_stack, WT_INSERT *new_ins, u_int skipdepth)
 {
-    WT_INSERT *old_ins;
     u_int i;
 
     WT_UNUSED(session);
@@ -30,15 +29,7 @@ __insert_simple_func(
      * implementations read the old value multiple times.
      */
     for (i = 0; i < skipdepth; i++) {
-        /*
-         * The insert stack position must be read only once - if the compiler chooses to re-read the
-         * shared variable it could lead to skip list corruption. Specifically the comparison
-         * against the next pointer might indicate that the skip list location is still valid, but
-         * that may no longer be true when the atomic_cas operation executes.
-         *
-         * Place a read barrier here to avoid this issue.
-         */
-        WT_ORDERED_READ(old_ins, *ins_stack[i]);
+        WT_INSERT *old_ins = *ins_stack[i];
         if (old_ins != new_ins->next[i] || !__wt_atomic_cas_ptr(ins_stack[i], old_ins, new_ins))
             return (i == 0 ? WT_RESTART : 0);
     }
@@ -54,7 +45,6 @@ static inline int
 __insert_serial_func(WT_SESSION_IMPL *session, WT_INSERT_HEAD *ins_head, WT_INSERT ***ins_stack,
   WT_INSERT *new_ins, u_int skipdepth)
 {
-    WT_INSERT *old_ins;
     u_int i;
 
     /* The cursor should be positioned. */
@@ -73,15 +63,7 @@ __insert_serial_func(WT_SESSION_IMPL *session, WT_INSERT_HEAD *ins_head, WT_INSE
      * implementations read the old value multiple times.
      */
     for (i = 0; i < skipdepth; i++) {
-        /*
-         * The insert stack position must be read only once - if the compiler chooses to re-read the
-         * shared variable it could lead to skip list corruption. Specifically the comparison
-         * against the next pointer might indicate that the skip list location is still valid, but
-         * that may no longer be true when the atomic_cas operation executes.
-         *
-         * Place a read barrier here to avoid this issue.
-         */
-        WT_ORDERED_READ(old_ins, *ins_stack[i]);
+        WT_INSERT *old_ins = *ins_stack[i];
         if (old_ins != new_ins->next[i] || !__wt_atomic_cas_ptr(ins_stack[i], old_ins, new_ins))
             return (i == 0 ? WT_RESTART : 0);
         if (ins_head->tail[i] == NULL || ins_stack[i] == &ins_head->tail[i]->next[i])
@@ -239,15 +221,14 @@ __wt_update_serial(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt, WT_PAGE *page
   WT_UPDATE **srch_upd, WT_UPDATE **updp, size_t upd_size, bool exclusive)
 {
     WT_DECL_RET;
-    WT_UPDATE *upd;
+    WT_UPDATE *obsolete, *upd;
     wt_timestamp_t obsolete_timestamp, prev_upd_ts;
     uint64_t txn;
 
     /* Clear references to memory we now own and must free on error. */
     upd = *updp;
     *updp = NULL;
-
-    WT_ASSERT(session, upd != NULL);
+    prev_upd_ts = WT_TS_NONE;
 
     prev_upd_ts = upd->prev_durable_ts;
 
@@ -259,8 +240,8 @@ __wt_update_serial(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt, WT_PAGE *page
      * Check if our update is still permitted.
      */
     while (!__wt_atomic_cas_ptr(srch_upd, upd->next, upd)) {
-        if ((ret = __wt_txn_modify_check(
-               session, cbt, upd->next = *srch_upd, &prev_upd_ts, upd->type)) != 0) {
+        if ((ret = __wt_txn_modify_check(session, cbt, upd->next = *srch_upd, &prev_upd_ts,
+               (upd == NULL) ? WT_UPDATE_INVALID : upd->type)) != 0) {
             /* Free unused memory on error. */
             __wt_free(session, upd);
             return (ret);
@@ -300,15 +281,7 @@ __wt_update_serial(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt, WT_PAGE *page
         obsolete_timestamp = page->modify->obsolete_check_timestamp;
         if (!__wt_txn_visible_all(session, txn, obsolete_timestamp)) {
             /* Try to move the oldest ID forward and re-check. */
-            ret = __wt_txn_update_oldest(session, 0);
-            /*
-             * We cannot proceed if we fail here as we have inserted the updates to the update
-             * chain. Panic instead. Currently, we don't ever return any error from
-             * __wt_txn_visible_all. We can catch it if we start to do so in the future and properly
-             * handle it.
-             */
-            if (ret != 0)
-                WT_RET_PANIC(session, ret, "fail to update oldest after serializing the updates");
+            WT_RET(__wt_txn_update_oldest(session, 0));
 
             if (!__wt_txn_visible_all(session, txn, obsolete_timestamp))
                 return (0);
@@ -317,7 +290,15 @@ __wt_update_serial(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt, WT_PAGE *page
         page->modify->obsolete_check_txn = WT_TXN_NONE;
     }
 
-    __wt_update_obsolete_check(session, cbt, upd->next, true);
+    /* If we can't lock it, don't scan, that's okay. */
+    if (WT_PAGE_TRYLOCK(session, page) != 0)
+        return (0);
+
+    obsolete = __wt_update_obsolete_check(session, cbt, upd->next, true);
+
+    WT_PAGE_UNLOCK(session, page);
+
+    __wt_free_update_list(session, &obsolete);
 
     return (0);
 }

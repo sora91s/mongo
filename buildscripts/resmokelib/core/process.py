@@ -76,6 +76,8 @@ class Process(object):
     """Wrapper around subprocess.Popen class."""
 
     # pylint: disable=protected-access
+    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-instance-attributes
 
     def __init__(self, logger, args, env=None, env_vars=None, cwd=None):
         """Initialize the process with the specified logger, arguments, and environment."""
@@ -87,14 +89,7 @@ class Process(object):
 
         self.logger = logger
         self.args = args
-
         self.env = utils.default_if_none(env, os.environ.copy())
-        if not self.env.get('RESMOKE_PARENT_PROCESS'):
-            self.env['RESMOKE_PARENT_PROCESS'] = os.environ.get('RESMOKE_PARENT_PROCESS',
-                                                                str(os.getpid()))
-        if not self.env.get('RESMOKE_PARENT_CTIME'):
-            self.env['RESMOKE_PARENT_CTIME'] = os.environ.get('RESMOKE_PARENT_CTIME',
-                                                              str(psutil.Process().create_time()))
         if env_vars is not None:
             self.env.update(env_vars)
 
@@ -173,7 +168,7 @@ class Process(object):
                 if return_code == win32con.STILL_ACTIVE:
                     raise
 
-    def stop(self, mode=None):
+    def stop(self, mode=None):  # pylint: disable=too-many-branches
         """Terminate the process."""
         if mode is None:
             mode = fixture_interface.TeardownMode.TERMINATE

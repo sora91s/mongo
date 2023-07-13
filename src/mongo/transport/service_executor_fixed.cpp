@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kExecutor
 
 #include "mongo/transport/service_executor_fixed.h"
 
@@ -40,10 +41,10 @@
 #include "mongo/util/testing_proctor.h"
 #include "mongo/util/thread_safety_context.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kExecutor
-
-
 namespace mongo::transport {
+void initMyServiceExecutorFixed() {
+    
+}
 namespace {
 
 MONGO_FAIL_POINT_DEFINE(hangBeforeSchedulingServiceExecutorFixedTask);
@@ -259,7 +260,7 @@ Status ServiceExecutorFixed::start() {
     _threadPool->schedule([this, reactor](Status) {
         {
             // Check to make sure we haven't been shutdown already. Note that there is still a brief
-            // race that immediately follows this check. AsioReactor::stop() is not permanent, thus
+            // race that immediately follows this check. ASIOReactor::stop() is not permanent, thus
             // our run() could "restart" the reactor.
             auto lk = stdx::lock_guard(_mutex);
             if (_state != State::kRunning) {
@@ -282,9 +283,7 @@ ServiceExecutorFixed* ServiceExecutorFixed::get(ServiceContext* ctx) {
 
 bool ServiceExecutorFixed::_waitForStop(stdx::unique_lock<Mutex>& lk,
                                         boost::optional<Milliseconds> timeout) {
-    auto isStopped = [&] {
-        return _state == State::kStopped;
-    };
+    auto isStopped = [&] { return _state == State::kStopped; };
     if (timeout)
         return _shutdownCondition.wait_for(lk, timeout->toSystemDuration(), isStopped);
     _shutdownCondition.wait(lk, isStopped);
@@ -383,7 +382,37 @@ void ServiceExecutorFixed::_checkForShutdown() {
     reactor->stop();
 }
 
-void ServiceExecutorFixed::_schedule(Task task) {
+Status ServiceExecutorFixed::scheduleTask(Task task, ScheduleFlags flags) try {
+    {
+        auto lk = stdx::lock_guard(_mutex);
+        if (_state != State::kRunning)
+            return inShutdownStatus();
+        _stats->tasksScheduled.fetchAndAdd(1);
+    }
+
+    // Inline execution requires:
+    //  - `kMayRecurse` flag must be set.
+    //  - Calling thread's `_executorContext` must be valid and within its recursion limit.
+    if ((flags & ScheduleFlags::kMayRecurse) == ScheduleFlags::kMayRecurse && _executorContext &&
+        _executorContext->getRecursionDepth() < fixedServiceExecutorRecursionLimit.loadRelaxed()) {
+        // Recursively executing the task on the executor thread.
+        _executorContext->run(std::move(task));
+        return Status::OK();
+    }
+
+    hangBeforeSchedulingServiceExecutorFixedTask.pauseWhileSet();
+
+    _threadPool->schedule([this, task = std::move(task)](Status status) mutable {
+        invariant(status);
+        _executorContext->run([&] { task(); });
+    });
+
+    return Status::OK();
+} catch (DBException& e) {
+    return e.toStatus();
+}
+
+void ServiceExecutorFixed::_schedule(OutOfLineExecutor::Task task) noexcept {
     {
         auto lk = stdx::unique_lock(_mutex);
         if (_state != State::kRunning) {
@@ -395,7 +424,6 @@ void ServiceExecutorFixed::_schedule(Task task) {
         _stats->tasksScheduled.fetchAndAdd(1);
     }
 
-    hangBeforeSchedulingServiceExecutorFixedTask.pauseWhileSet();
     _threadPool->schedule([this, task = std::move(task)](Status status) mutable {
         _executorContext->run([&] { task(std::move(status)); });
     });
@@ -405,8 +433,8 @@ size_t ServiceExecutorFixed::getRunningThreads() const {
     return _stats->threadsRunning();
 }
 
-void ServiceExecutorFixed::_runOnDataAvailable(const std::shared_ptr<Session>& session,
-                                               Task onCompletionCallback) {
+void ServiceExecutorFixed::runOnDataAvailable(const SessionHandle& session,
+                                              OutOfLineExecutor::Task onCompletionCallback) {
     invariant(session);
     yieldIfAppropriate();
 
@@ -424,19 +452,17 @@ void ServiceExecutorFixed::_runOnDataAvailable(const std::shared_ptr<Session>& s
     lk.unlock();
 
     auto anchor = shared_from_this();
-    session->asyncWaitForData()
-        .thenRunOn(makeTaskRunner())
-        .getAsync([this, anchor, it](Status status) {
-            // Remove our waiter from the list.
-            auto lk = stdx::unique_lock(_mutex);
-            auto waiter = std::exchange(*it, {});
-            _waiters.erase(it);
-            _stats->waitersEnded.fetchAndAdd(1);
-            lk.unlock();
+    session->asyncWaitForData().thenRunOn(anchor).getAsync([this, anchor, it](Status status) {
+        // Remove our waiter from the list.
+        auto lk = stdx::unique_lock(_mutex);
+        auto waiter = std::exchange(*it, {});
+        _waiters.erase(it);
+        _stats->waitersEnded.fetchAndAdd(1);
+        lk.unlock();
 
-            waiter.session = nullptr;
-            waiter.onCompletionCallback(std::move(status));
-        });
+        waiter.session = nullptr;
+        waiter.onCompletionCallback(std::move(status));
+    });
 }
 
 void ServiceExecutorFixed::appendStats(BSONObjBuilder* bob) const {
@@ -452,28 +478,6 @@ void ServiceExecutorFixed::appendStats(BSONObjBuilder* bob) const {
 int ServiceExecutorFixed::getRecursionDepthForExecutorThread() const {
     invariant(_executorContext);
     return _executorContext->getRecursionDepth();
-}
-
-auto ServiceExecutorFixed::makeTaskRunner() -> std::unique_ptr<TaskRunner> {
-    iassert(ErrorCodes::ShutdownInProgress, "Executor is not running", _state == State::kRunning);
-
-    /** Schedules on this. */
-    class ForwardingTaskRunner : public TaskRunner {
-    public:
-        explicit ForwardingTaskRunner(ServiceExecutorFixed* e) : _e{e} {}
-
-        void schedule(Task task) override {
-            _e->_schedule(std::move(task));
-        }
-
-        void runOnDataAvailable(std::shared_ptr<Session> session, Task task) override {
-            _e->_runOnDataAvailable(std::move(session), std::move(task));
-        }
-
-    private:
-        ServiceExecutorFixed* _e;
-    };
-    return std::make_unique<ForwardingTaskRunner>(this);
 }
 
 }  // namespace mongo::transport

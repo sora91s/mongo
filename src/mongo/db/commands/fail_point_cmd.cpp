@@ -87,22 +87,16 @@ public:
     }
 
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const override {
-        return Status::OK();
-    }
-
-    bool allowedWithSecurityToken() const final {
-        return true;
-    }
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const override {}
 
     std::string help() const override {
         return "modifies the settings of a fail point";
     }
 
     bool run(OperationContext* opCtx,
-             const DatabaseName&,
+             const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         const std::string failPointName(cmdObj.firstElement().str());

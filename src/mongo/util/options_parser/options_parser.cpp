@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/util/options_parser/options_parser.h"
 
@@ -37,9 +38,9 @@
 #include <boost/iostreams/stream_buffer.hpp>
 #include <boost/program_options.hpp>
 #include <cerrno>
-#include <cstdio>
 #include <fcntl.h>
 #include <fstream>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <yaml-cpp/yaml.h>
@@ -70,10 +71,15 @@
 #include "mongo/util/str.h"
 #include "mongo/util/text.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
+#include <iostream>
+using namespace std;
 
 namespace mongo {
+    
+void initMyOptionsParser() {
+
+}
+
 namespace optionenvironment {
 
 namespace po = boost::program_options;
@@ -286,7 +292,7 @@ class ConfigExpandNode {
 public:
     ConfigExpandNode(const YAML::Node& node,
                      const std::string& nodePath,
-                     const ConfigExpand& configExpand) {
+                     const OptionsParser::ConfigExpand& configExpand) {
         invariant(node.IsMap());
 
         auto nodeName = nodePath;
@@ -569,7 +575,7 @@ std::string runYAMLRestExpansion(StringData url, Seconds timeout) {
  */
 StatusWith<YAML::Node> runYAMLExpansion(const YAML::Node& node,
                                         const std::string& nodePath,
-                                        const ConfigExpand& configExpand) try {
+                                        const OptionsParser::ConfigExpand& configExpand) try {
     invariant(node.IsMap());
     ConfigExpandNode expansion(node, nodePath, configExpand);
 
@@ -623,7 +629,7 @@ Status YAMLNodeToValue(const YAML::Node& YAMLNode,
                        const Key& key,
                        OptionDescription const** option,
                        Value* value,
-                       const ConfigExpand& configExpand) {
+                       const OptionsParser::ConfigExpand& configExpand) {
     bool isRegistered = false;
 
     // The logic below should ensure that we don't use this uninitialized, but we need to
@@ -907,7 +913,7 @@ Status addYAMLNodesToEnvironment(const YAML::Node& root,
                                  const OptionSection& options,
                                  const std::string parentPath,
                                  Environment* environment,
-                                 const ConfigExpand& configExpand) {
+                                 const OptionsParser::ConfigExpand& configExpand) {
     std::vector<OptionDescription> options_vector;
     Status ret = options.getAllOptions(&options_vector);
     if (!ret.isOK()) {
@@ -923,8 +929,11 @@ Status addYAMLNodesToEnvironment(const YAML::Node& root,
         auto swExpansion = runYAMLExpansion(root, parentPath, configExpand);
         if (swExpansion.isOK()) {
             // Expanded fine, but disallow recursion.
-            return addYAMLNodesToEnvironment(
-                swExpansion.getValue(), options, parentPath, environment, ConfigExpand());
+            return addYAMLNodesToEnvironment(swExpansion.getValue(),
+                                             options,
+                                             parentPath,
+                                             environment,
+                                             OptionsParser::ConfigExpand());
         } else if (swExpansion.getStatus().code() != ErrorCodes::NoSuchKey) {
             return swExpansion.getStatus();
         }  // else not an expansion block.
@@ -964,7 +973,7 @@ Status addYAMLNodesToEnvironment(const YAML::Node& root,
             auto swExpansion = runYAMLExpansion(YAMLNode, dottedName, expand);
             if (swExpansion.isOK()) {
                 YAMLNode = std::move(swExpansion.getValue());
-                expand = ConfigExpand();
+                expand = OptionsParser::ConfigExpand();
             } else if (swExpansion.getStatus().code() != ErrorCodes::NoSuchKey) {
                 return swExpansion.getStatus();
             }  // else not an expansion block.
@@ -1363,9 +1372,8 @@ Status checkFileOwnershipAndMode(int fd, mode_t prohibit, StringData modeDesc) {
     struct stat stats;
 
     if (::fstat(fd, &stats) == -1) {
-        auto ec = lastSystemError();
-        return {ErrorCodes::InvalidPath,
-                str::stream() << "Error reading file metadata: " << errorMessage(ec)};
+        const auto& ewd = errnoWithDescription();
+        return {ErrorCodes::InvalidPath, str::stream() << "Error reading file metadata: " << ewd};
     }
 
     if (stats.st_uid != ::getuid()) {
@@ -1407,19 +1415,15 @@ Status OptionsParser::addDefaultValues(const OptionSection& options, Environment
     return Status::OK();
 }
 
-Status OptionsParser::readConfigFile(const std::string& filename,
-                                     std::string* contents,
-                                     ConfigExpand configExpand) {
-    return readRawFile(filename, contents, configExpand);
-}
-
 /**
  * Reads the entire config file into the output string.  This was done this way because the JSON
  * parser only takes complete strings, and we were using that to parse the config file before.
  * We could redesign the parser to use some kind of streaming interface, but for now this is
  * simple and works for the current use case of config files which should be limited in size.
  */
-Status readRawFile(const std::string& filename, std::string* contents, ConfigExpand configExpand) {
+Status OptionsParser::readConfigFile(const std::string& filename,
+                                     std::string* contents,
+                                     ConfigExpand configExpand) {
     // check if it's a valid file
     const auto badFile = [&](StringData errMsg) -> Status {
         return {ErrorCodes::BadValue,
@@ -1441,9 +1445,8 @@ Status readRawFile(const std::string& filename, std::string* contents, ConfigExp
 #endif
 
     if (fd < 0) {
-        auto ec = lastPosixError();
-        return {ErrorCodes::InternalError,
-                str::stream() << "Error opening config file: " << errorMessage(ec)};
+        const auto& ewd = errnoWithDescription();
+        return {ErrorCodes::InternalError, str::stream() << "Error opening config file: " << ewd};
     }
 
 #ifdef _WIN32
@@ -1684,8 +1687,8 @@ StatusWith<std::vector<std::string>> transformImplicitOptions(
 
 }  // namespace
 
-StatusWith<ConfigExpand> parseConfigExpand(const Environment& cli) {
-    ConfigExpand ret;
+StatusWith<OptionsParser::ConfigExpand> parseConfigExpand(const Environment& cli) {
+    OptionsParser::ConfigExpand ret;
 
     if (!cli.count("configExpand")) {
         return ret;

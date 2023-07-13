@@ -27,19 +27,18 @@
  *    it in the license file.
  */
 
-#include "mongo/db/query/shard_filterer_factory_impl.h"
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/exec/shard_filterer_impl.h"
+#include "mongo/db/query/shard_filterer_factory_impl.h"
 #include "mongo/db/s/collection_sharding_state.h"
 
 namespace mongo {
 
 std::unique_ptr<ShardFilterer> ShardFiltererFactoryImpl::makeShardFilterer(
     OperationContext* opCtx) const {
-    auto scopedCss =
-        CollectionShardingState::assertCollectionLockedAndAcquire(opCtx, _collection->ns());
-    return std::make_unique<ShardFiltererImpl>(scopedCss->getOwnershipFilter(
+    auto css = CollectionShardingState::get(opCtx, _collection->ns());
+    return std::make_unique<ShardFiltererImpl>(css->getOwnershipFilter(
         opCtx, CollectionShardingState::OrphanCleanupPolicy::kDisallowOrphanCleanup));
 }
-
 }  // namespace mongo

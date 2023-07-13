@@ -27,10 +27,12 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/jsobj.h"
 #include "mongo/db/s/balancer/type_migration.h"
 #include "mongo/s/catalog/type_chunk.h"
-#include "mongo/s/request_types/move_range_request_gen.h"
+
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -46,7 +48,7 @@ const ShardId kToShard("shard0001");
 const bool kWaitForDelete{true};
 
 TEST(MigrationTypeTest, FromAndToBSONWithoutOptionalFields) {
-    const ChunkVersion version({OID::gen(), Timestamp(1, 1)}, {1, 2});
+    const ChunkVersion version(1, 2, OID::gen(), Timestamp(1, 1));
 
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
@@ -54,9 +56,10 @@ TEST(MigrationTypeTest, FromAndToBSONWithoutOptionalFields) {
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
-    version.serialize("chunkVersion", &builder);
+    version.serializeToBSON("chunkVersion", &builder);
     builder.append(MigrationType::waitForDelete(), kWaitForDelete);
-    builder.append(MigrationType::forceJumbo(), ForceJumbo_serializer(ForceJumbo::kDoNotForce));
+    builder.append(MigrationType::forceJumbo(),
+                   MoveChunkRequest::forceJumboToString(MoveChunkRequest::ForceJumbo::kDoNotForce));
 
     BSONObj obj = builder.obj();
 
@@ -65,7 +68,7 @@ TEST(MigrationTypeTest, FromAndToBSONWithoutOptionalFields) {
 }
 
 TEST(MigrationTypeTest, FromAndToBSONWitOptionalFields) {
-    const ChunkVersion version({OID::gen(), Timestamp(1, 1)}, {1, 2});
+    const ChunkVersion version(1, 2, OID::gen(), Timestamp(1, 1));
     const auto secondaryThrottle =
         MigrationSecondaryThrottleOptions::createWithWriteConcern(WriteConcernOptions(
             "majority", WriteConcernOptions::SyncMode::JOURNAL, Milliseconds(60000)));
@@ -76,9 +79,10 @@ TEST(MigrationTypeTest, FromAndToBSONWitOptionalFields) {
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
-    version.serialize("chunkVersion", &builder);
+    version.serializeToBSON("chunkVersion", &builder);
     builder.append(MigrationType::waitForDelete(), kWaitForDelete);
-    builder.append(MigrationType::forceJumbo(), ForceJumbo_serializer(ForceJumbo::kDoNotForce));
+    builder.append(MigrationType::forceJumbo(),
+                   MoveChunkRequest::forceJumboToString(MoveChunkRequest::ForceJumbo::kDoNotForce));
     builder.append(MigrationType::maxChunkSizeBytes(), 512 * 1024 * 1024);
     secondaryThrottle.append(&builder);
 
@@ -90,14 +94,14 @@ TEST(MigrationTypeTest, FromAndToBSONWitOptionalFields) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredNamespaceField) {
-    const ChunkVersion version({OID::gen(), Timestamp(1, 1)}, {1, 2});
+    const ChunkVersion version(1, 2, OID::gen(), Timestamp(1, 1));
 
     BSONObjBuilder builder;
     builder.append(MigrationType::min(), kMin);
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
-    version.serialize("chunkVersion", &builder);
+    version.serializeToBSON("chunkVersion", &builder);
 
     BSONObj obj = builder.obj();
 
@@ -107,14 +111,14 @@ TEST(MigrationTypeTest, MissingRequiredNamespaceField) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredMinField) {
-    const ChunkVersion version({OID::gen(), Timestamp(1, 1)}, {1, 2});
+    const ChunkVersion version(1, 2, OID::gen(), Timestamp(1, 1));
 
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
-    version.serialize("chunkVersion", &builder);
+    version.serializeToBSON("chunkVersion", &builder);
 
     BSONObj obj = builder.obj();
 
@@ -124,14 +128,14 @@ TEST(MigrationTypeTest, MissingRequiredMinField) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredMaxField) {
-    const ChunkVersion version({OID::gen(), Timestamp(1, 1)}, {1, 2});
+    const ChunkVersion version(1, 2, OID::gen(), Timestamp(1, 1));
 
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
     builder.append(MigrationType::min(), kMin);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
-    version.serialize("chunkVersion", &builder);
+    version.serializeToBSON("chunkVersion", &builder);
 
     BSONObj obj = builder.obj();
 
@@ -141,14 +145,14 @@ TEST(MigrationTypeTest, MissingRequiredMaxField) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredFromShardField) {
-    const ChunkVersion version({OID::gen(), Timestamp(1, 1)}, {1, 2});
+    const ChunkVersion version(1, 2, OID::gen(), Timestamp(1, 1));
 
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
     builder.append(MigrationType::min(), kMin);
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::toShard(), kToShard.toString());
-    version.serialize("chunkVersion", &builder);
+    version.serializeToBSON("chunkVersion", &builder);
 
     BSONObj obj = builder.obj();
 
@@ -158,14 +162,14 @@ TEST(MigrationTypeTest, MissingRequiredFromShardField) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredToShardField) {
-    const ChunkVersion version({OID::gen(), Timestamp(1, 1)}, {1, 2});
+    const ChunkVersion version(1, 2, OID::gen(), Timestamp(1, 1));
 
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
     builder.append(MigrationType::min(), kMin);
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
-    version.serialize("chunkVersion", &builder);
+    version.serializeToBSON("chunkVersion", &builder);
 
     BSONObj obj = builder.obj();
 

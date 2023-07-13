@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include "mongo/db/read_write_concern_defaults_cache_lookup_mongod.h"
 
@@ -36,9 +37,6 @@
 #include "mongo/db/server_options.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/fail_point.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -62,8 +60,9 @@ boost::optional<RWConcernDefault> readWriteConcernDefaultsCacheLookupMongoD(
     // Note that a default constructed RWConcern is returned if no document is found instead of
     // boost::none. This is to avoid excessive lookups when there is no defaults document, because
     // otherwise every attempt to get the defaults from the RWC cache would trigger a lookup.
-    return RWConcernDefault::parse(IDLParserContext("ReadWriteConcernDefaultsCacheLookupMongoD"),
-                                   getPersistedDefaultRWConcernDocument(opCtx));
+    return RWConcernDefault::parse(
+        IDLParserErrorContext("ReadWriteConcernDefaultsCacheLookupMongoD"),
+        getPersistedDefaultRWConcernDocument(opCtx));
 }
 
 void readWriteConcernDefaultsMongodStartupChecks(OperationContext* opCtx) {

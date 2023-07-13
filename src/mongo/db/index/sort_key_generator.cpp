@@ -33,7 +33,7 @@
 
 #include "mongo/bson/bsonobj_comparator.h"
 #include "mongo/db/query/collation/collation_index_key.h"
-#include "mongo/util/overloaded_visitor.h"
+#include "mongo/util/visit_helper.h"
 
 namespace mongo {
 
@@ -72,6 +72,7 @@ SortKeyGenerator::SortKeyGenerator(SortPattern sortPattern, const CollatorInterf
     _indexKeyGen = std::make_unique<BtreeKeyGenerator>(fieldNames,
                                                        fixed,
                                                        isSparse,
+                                                       _collator,
                                                        KeyString::Version::kLatestVersion,
                                                        Ordering::make(_sortSpecWithoutMeta));
 }
@@ -167,7 +168,7 @@ StatusWith<BSONObj> SortKeyGenerator::computeSortKeyFromDocumentWithoutMetadata(
         // multikey when getting the index keys for sorting.
         MultikeyPaths* multikeyPaths = nullptr;
         const auto skipMultikey = false;
-        _indexKeyGen->getKeys(allocator, obj, skipMultikey, &keys, multikeyPaths, _collator);
+        _indexKeyGen->getKeys(allocator, obj, skipMultikey, &keys, multikeyPaths);
     } catch (const AssertionException& e) {
         // Probably a parallel array.
         if (ErrorCodes::CannotIndexParallelArrays == e.code()) {
@@ -223,7 +224,7 @@ boost::optional<Value> SortKeyGenerator::extractKeyPart(
         auto keyVariant = doc.getNestedFieldNonCaching(*patternPart.fieldPath);
 
         auto key = stdx::visit(
-            OverloadedVisitor{
+            visit_helper::Overloaded{
                 // In this case, the document has an array along the path given. This means the
                 // document is ineligible for taking the fast path for index key generation.
                 [](Document::TraversesArrayTag) -> boost::optional<Value> { return boost::none; },

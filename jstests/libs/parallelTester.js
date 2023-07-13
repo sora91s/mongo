@@ -124,8 +124,8 @@ if (typeof _threadInject != "undefined") {
         this.params.push(args);
     };
 
-    ParallelTester.prototype.run = async function(msg) {
-        await assert.parallelTests(this.params, msg);
+    ParallelTester.prototype.run = function(msg) {
+        assert.parallelTests(this.params, msg);
     };
 
     // creates lists of tests from jstests dir in a format suitable for use by
@@ -147,7 +147,7 @@ if (typeof _threadInject != "undefined") {
 
         // some tests can't run in parallel with most others
         var skipTests = makeKeys([
-            "index/indexb.js",
+            "indexb.js",
 
             // Tests that set a parameter that causes the server to ignore
             // long index keys.
@@ -159,7 +159,7 @@ if (typeof _threadInject != "undefined") {
             "notablescan.js",
             "notablescan_capped.js",
 
-            "query/mr/mr_fail_invalid_js.js",
+            "mr_fail_invalid_js.js",
             "run_program1.js",
             "bench_test1.js",
 
@@ -168,32 +168,32 @@ if (typeof _threadInject != "undefined") {
             // logs so much that the line they are looking for has been rotated off the server's
             // in-memory buffer of log messages, which only stores the 1024 most recent operations.
             "comment_field.js",
-            "administrative/getlog2.js",
+            "getlog2.js",
             "logprocessdetails.js",
-            "query/queryoptimizera.js",
+            "queryoptimizera.js",
             "log_remote_op_wait.js",
 
             "connections_opened.js",  // counts connections, globally
             "opcounters_write_cmd.js",
-            "administrative/set_param1.js",        // changes global state
-            "index/geo/geo_update_btree2.js",      // SERVER-11132 test disables table scans
-            "write/update/update_setOnInsert.js",  // SERVER-9982
-            "max_time_ms.js",                      // Sensitive to query execution time, by design
-            "shell/autocomplete.js",               // Likewise.
+            "set_param1.js",          // changes global state
+            "geo_update_btree2.js",   // SERVER-11132 test disables table scans
+            "update_setOnInsert.js",  // SERVER-9982
+            "max_time_ms.js",         // Sensitive to query execution time, by design
+            "autocomplete.js",        // Likewise.
 
             // This overwrites MinKey/MaxKey's singleton which breaks
             // any other test that uses MinKey/MaxKey
-            "query/type/type6.js",
+            "type6.js",
 
             // Assumes that other tests are not creating cursors.
             "kill_cursors.js",
 
             // Assumes that other tests are not starting operations.
-            "administrative/current_op/currentop_shell.js",
+            "currentop_shell.js",
 
             // These tests check global command counters.
-            "write/find_and_modify/find_and_modify_metrics.js",
-            "write/update/update_metrics.js",
+            "find_and_modify_metrics.js",
+            "update_metrics.js",
 
             // Views tests
             "views/invalid_system_views.js",      // Puts invalid view definitions in system.views.
@@ -202,7 +202,7 @@ if (typeof _threadInject != "undefined") {
 
             // This test causes collMod commands to hang, which interferes with other tests running
             // collMod.
-            "write/crud_ops_do_not_throw_locktimeout.js",
+            "crud_ops_do_not_throw_locktimeout.js",
 
             // Can fail if isMaster takes too long on a loaded machine.
             "dbadmin.js",
@@ -210,16 +210,12 @@ if (typeof _threadInject != "undefined") {
             // Other tests will fail while the requireApiVersion server parameter is set.
             "require_api_version.js",
 
-            // This sets the 'disablePipelineOptimization' failpoint, which causes other tests
-            // running in parallel to fail if they were expecting their pipelines to be optimized.
-            "type_bracket.js",
-
             // This test updates global memory usage counters in the bucket catalog in a way that
             // may affect other time-series tests running concurrently.
             "timeseries/timeseries_idle_buckets.js",
 
             // Assumes that other tests are not creating API version 1 incompatible data.
-            "administrative/validate_db_metadata_command.js",
+            "validate_db_metadata_command.js",
 
             // The tests in 'bench_test*.js' files use 'benchRun()'. The main purpose of
             // 'benchRun()' is for performance testing and the 'benchRun()' implementation itself
@@ -237,34 +233,17 @@ if (typeof _threadInject != "undefined") {
 
             // These tests rely on no writes happening that would force oplog truncation.
             "write_change_stream_pit_preimage_in_transaction.js",
-            "write/write_change_stream_pit_preimage.js",
+            "write_change_stream_pit_preimage.js",
 
             // These tests convert a non-unique index to a unique one, which is not compatible
             // when running against inMemory storage engine variants. Since this test only fails
             // in the parallel tester, which does not respect test tags, we omit the tests
             // instead of manually checking TestData values in the mongo shell for the Evergreen
             // variant.
-            "ddl/collmod_convert_index_uniqueness.js",
-            "ddl/collmod_convert_to_unique_apply_ops.js",
-            "ddl/collmod_convert_to_unique_violations.js",
-            "ddl/collmod_convert_to_unique_violations_size_limit.js",
-
-            // The parallel tester does not respect test tags, compact cannot run against the
-            // inMemory storage engine.
-            "timeseries/timeseries_compact.js",
-
-            // These tests load 'sbe_assert_error_override.js' unconditionally, which causes
-            // failures in the parallel suite.
-            "computed_projections.js",
-            "query/project/projection_expr_mod.js",
-
-            // TODO (SERVER-66393): Remove this exclusion once the feature flag is enabled by
-            // default.
-            "timeseries/timeseries_update_multi.js",
-            "timeseries/timeseries_delete_multi.js",
-            "timeseries/timeseries_delete_one.js",
-            "timeseries/timeseries_update_one.js",
-            "timeseries/timeseries_delete_collation.js",
+            "collmod_convert_index_uniqueness.js",
+            "collmod_convert_to_unique_apply_ops.js",
+            "collmod_convert_to_unique_violations.js",
+            "collmod_convert_to_unique_violations_size_limit.js",
         ]);
 
         // Get files, including files in subdirectories.
@@ -295,8 +274,8 @@ if (typeof _threadInject != "undefined") {
         var serialTestsArr = [
             // These tests use fsyncLock.
             parallelFilesDir + "/fsync.js",
-            parallelFilesDir + "/administrative/current_op/currentop.js",
-            parallelFilesDir + "/ddl/killop_drop_collection.js",
+            parallelFilesDir + "/currentop.js",
+            parallelFilesDir + "/killop_drop_collection.js",
 
             // These tests expect the profiler to be on or off at specific points. They should not
             // be run in parallel with tests that perform fsyncLock. User operations skip writing to
@@ -305,36 +284,34 @@ if (typeof _threadInject != "undefined") {
             // Most profiler tests can be run in parallel with each other as they use test-specific
             // databases, with the exception of tests which modify slowms or the profiler's sampling
             // rate, since those affect profile settings globally.
-            parallelFilesDir + "/api/apitest_db_profile_level.js",
-            parallelFilesDir + "/index/geo/geo_s2cursorlimitskip.js",
-            parallelFilesDir + "/administrative/profile/profile1.js",
-            parallelFilesDir + "/administrative/profile/profile2.js",
-            parallelFilesDir + "/administrative/profile/profile3.js",
-            parallelFilesDir + "/administrative/profile/profile_agg.js",
-            parallelFilesDir + "/administrative/profile/profile_count.js",
-            parallelFilesDir + "/administrative/profile/profile_delete.js",
-            parallelFilesDir + "/administrative/profile/profile_distinct.js",
-            parallelFilesDir + "/administrative/profile/profile_find.js",
-            parallelFilesDir + "/administrative/profile/profile_findandmodify.js",
-            parallelFilesDir + "/administrative/profile/profile_getmore.js",
-            parallelFilesDir + "/administrative/profile/profile_hide_index.js",
-            parallelFilesDir + "/administrative/profile/profile_insert.js",
-            parallelFilesDir + "/administrative/profile/profile_list_collections.js",
-            parallelFilesDir + "/administrative/profile/profile_list_indexes.js",
-            parallelFilesDir + "/administrative/profile/profile_mapreduce.js",
-            parallelFilesDir + "/administrative/profile/profile_no_such_db.js",
-            parallelFilesDir + "/administrative/profile/profile_query_hash.js",
-            parallelFilesDir + "/administrative/profile/profile_sampling.js",
-            parallelFilesDir + "/administrative/profile/profile_update.js",
-            parallelFilesDir + "/query/plan_cache/cached_plan_trial_does_not_discard_work.js",
-            parallelFilesDir + "/sbe/from_plan_cache_flag.js",
-            parallelFilesDir + "/timeseries/bucket_unpacking_with_sort_plan_cache.js",
+            parallelFilesDir + "/apitest_db_profile_level.js",
+            parallelFilesDir + "/geo_s2cursorlimitskip.js",
+            parallelFilesDir + "/profile1.js",
+            parallelFilesDir + "/profile2.js",
+            parallelFilesDir + "/profile3.js",
+            parallelFilesDir + "/profile_agg.js",
+            parallelFilesDir + "/profile_count.js",
+            parallelFilesDir + "/profile_delete.js",
+            parallelFilesDir + "/profile_distinct.js",
+            parallelFilesDir + "/profile_find.js",
+            parallelFilesDir + "/profile_findandmodify.js",
+            parallelFilesDir + "/profile_getmore.js",
+            parallelFilesDir + "/profile_hide_index.js",
+            parallelFilesDir + "/profile_insert.js",
+            parallelFilesDir + "/profile_list_collections.js",
+            parallelFilesDir + "/profile_list_indexes.js",
+            parallelFilesDir + "/profile_mapreduce.js",
+            parallelFilesDir + "/profile_no_such_db.js",
+            parallelFilesDir + "/profile_query_hash.js",
+            parallelFilesDir + "/profile_sampling.js",
+            parallelFilesDir + "/profile_update.js",
+            parallelFilesDir + "/cached_plan_trial_does_not_discard_work.js",
 
             // These tests rely on a deterministically refreshable logical session cache. If they
             // run in parallel, they could interfere with the cache and cause failures.
-            parallelFilesDir + "/administrative/list_all_local_sessions.js",
-            parallelFilesDir + "/administrative/list_all_sessions.js",
-            parallelFilesDir + "/administrative/list_sessions.js",
+            parallelFilesDir + "/list_all_local_sessions.js",
+            parallelFilesDir + "/list_all_sessions.js",
+            parallelFilesDir + "/list_sessions.js",
         ];
         var serialTests = makeKeys(serialTestsArr);
 
@@ -367,28 +344,22 @@ if (typeof _threadInject != "undefined") {
         return params;
     };
 
-    async function measureAsync(fn) {
-        const start = new Date();
-        await fn.apply(null, Array.from(arguments).slice(2));
-        return (new Date()).getTime() - start.getTime();
-    }
-
     // runs a set of test files
     // first argument is an identifier for this tester, remaining arguments are file names
-    ParallelTester.fileTester = async function() {
+    ParallelTester.fileTester = function() {
         var args = Array.from(arguments);
         var suite = args.shift();
-        for (const x of args) {
+        args.forEach(function(x) {
             print("         S" + suite + " Test : " + x + " ...");
-            const time = await measureAsync(async function() {
+            var time = Date.timeFunc(function() {
                 // Create a new connection to the db for each file. If tests share the same
                 // connection it can create difficult to debug issues.
                 db = new Mongo(db.getMongo().host).getDB(db.getName());
                 gc();
-                await import(x);
-            });
+                load(x);
+            }, 1);
             print("         S" + suite + " Test : " + x + " " + time + "ms");
-        }
+        });
     };
 
     // params: array of arrays, each element of which consists of a function followed
@@ -412,8 +383,6 @@ if (typeof _threadInject != "undefined") {
                 };
             }
         }
-
-        TestData.isParallelTest = true;
 
         var runners = new Array();
         for (var i in params) {

@@ -66,8 +66,6 @@ public:
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain) const final;
 
-    void addVariableRefs(std::set<Variables::Id>* refs) const final {}
-
     static boost::intrusive_ptr<DocumentSourceChangeStreamCheckInvalidate> createFromBson(
         BSONElement spec, const boost::intrusive_ptr<ExpressionContext>& expCtx);
 

@@ -6,6 +6,7 @@
 // @tags: [
 //   requires_persistence,
 //   requires_majority_read_concern,
+//   live_record_incompatible,
 // ]
 (function() {
 "use strict";

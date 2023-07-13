@@ -2,6 +2,7 @@
  * Tests that an unprepared transaction can be rolled back.
  * @tags: [
  *   requires_replication,
+ *   requires_wiredtiger,
  * ]
  */
 (function() {

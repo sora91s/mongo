@@ -2,7 +2,6 @@
  * Test TransientTransactionError error label for commands in transactions with write concern.
  * @tags: [
  *   uses_transactions,
- *   temporary_catalog_shard_incompatible,
  * ]
  */
 (function() {

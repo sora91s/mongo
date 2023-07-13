@@ -76,18 +76,15 @@ public:
         : _preVisitor{preVisitor}, _inVisitor{inVisitor}, _postVisitor{postVisitor} {}
 
     void preVisit(ASTNodePtr node) {
-        if (_preVisitor)
-            node->acceptVisitor(_preVisitor);
+        node->acceptVisitor(_preVisitor);
     }
 
     void postVisit(ASTNodePtr node) {
-        if (_postVisitor)
-            node->acceptVisitor(_postVisitor);
+        node->acceptVisitor(_postVisitor);
     }
 
     void inVisit(long count, ASTNodePtr node) {
-        if (_inVisitor)
-            node->acceptVisitor(_inVisitor);
+        node->acceptVisitor(_inVisitor);
     }
 
 private:

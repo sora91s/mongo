@@ -76,7 +76,7 @@ TEST(KmsTest, TestGoodKey) {
         service->encryptDataKeyByString(ConstDataRange(myKey.rawData(), myKey.size()), "");
 
     LocalMasterKeyAndMaterial glob =
-        LocalMasterKeyAndMaterial::parse(IDLParserContext("root"), material);
+        LocalMasterKeyAndMaterial::parse(IDLParserErrorContext("root"), material);
 
     auto keyMaterial = glob.getKeyMaterial();
 

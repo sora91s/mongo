@@ -369,11 +369,6 @@ Status ReplicationCoordinatorNoOp::setMaintenanceMode(OperationContext*, bool) {
     MONGO_UNREACHABLE;
 }
 
-ChangeSyncSourceAction ReplicationCoordinatorNoOp::shouldChangeSyncSourceOnError(
-    const HostAndPort&, const OpTime&) const {
-    MONGO_UNREACHABLE;
-}
-
 Status ReplicationCoordinatorNoOp::processReplSetSyncFrom(OperationContext*,
                                                           const HostAndPort&,
                                                           BSONObjBuilder*) {
@@ -402,8 +397,7 @@ Status ReplicationCoordinatorNoOp::doOptimizedReconfig(OperationContext* opCtx,
 }
 
 Status ReplicationCoordinatorNoOp::awaitConfigCommitment(OperationContext* opCtx,
-                                                         bool waitForOplogCommitment,
-                                                         long long term) {
+                                                         bool waitForOplogCommitment) {
     MONGO_UNREACHABLE;
 }
 
@@ -469,7 +463,8 @@ ChangeSyncSourceAction ReplicationCoordinatorNoOp::shouldChangeSyncSource(
     MONGO_UNREACHABLE;
 }
 
-bool ReplicationCoordinatorNoOp::shouldDropSyncSourceAfterShardSplit(OID replicaSetId) const {
+ChangeSyncSourceAction ReplicationCoordinatorNoOp::shouldChangeSyncSourceOnError(
+    const HostAndPort&, const OpTime&) const {
     MONGO_UNREACHABLE;
 }
 
@@ -581,8 +576,8 @@ ReplicationCoordinatorNoOp::getHelloResponseFuture(
     MONGO_UNREACHABLE;
 }
 
-StatusWith<OpTime> ReplicationCoordinatorNoOp::getLatestWriteOpTime(
-    OperationContext* opCtx) const noexcept {
+StatusWith<OpTime> ReplicationCoordinatorNoOp::getLatestWriteOpTime(OperationContext* opCtx) const
+    noexcept {
     return getMyLastAppliedOpTime();
 }
 
@@ -615,14 +610,7 @@ void ReplicationCoordinatorNoOp::recordIfCWWCIsSetOnConfigServerOnStartup(Operat
 ReplicationCoordinatorNoOp::WriteConcernTagChanges*
 ReplicationCoordinatorNoOp::getWriteConcernTagChanges() {
     MONGO_UNREACHABLE;
-}
-
-SplitPrepareSessionManager* ReplicationCoordinatorNoOp::getSplitPrepareSessionManager() {
-    MONGO_UNREACHABLE;
-}
-
-bool ReplicationCoordinatorNoOp::isRetryableWrite(OperationContext* opCtx) const {
-    MONGO_UNREACHABLE;
+    return nullptr;
 }
 
 }  // namespace repl

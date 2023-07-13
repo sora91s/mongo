@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -37,9 +38,6 @@
 #include "mongo/s/client/shard.h"
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
 
 namespace mongo {
 namespace {
@@ -79,7 +77,7 @@ public:
         Reply typedRun(OperationContext* opCtx) {
             auto shardResponses = scatterGatherUnversionedTargetAllShards(
                 opCtx,
-                request().getDbName().db(),
+                request().getDbName(),
                 applyReadWriteConcern(
                     opCtx,
                     this,
@@ -105,7 +103,7 @@ public:
                             "The array element in 'apiVersionErrors' should be object",
                             error.type() == Object);
                     ErrorReplyElement apiVersionError = ErrorReplyElement::parse(
-                        IDLParserContext("ErrorReplyElement"), error.Obj());
+                        IDLParserErrorContext("ErrorReplyElement"), error.Obj());
 
                     // Ensure that the final output doesn't exceed max BSON size.
                     apiVersionError.setShard(StringData(shardRes.shardId.toString()));

@@ -1,3 +1,11 @@
+/**
+ *
+ * @tags: [
+ *  requires_fcv_53,
+ *  featureFlagPerCollBalancingSettings,
+ * ]
+ */
+
 (function() {
 'use strict';
 

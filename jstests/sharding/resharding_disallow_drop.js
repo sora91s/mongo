@@ -3,7 +3,6 @@
  * @tags: [
  *  requires_fcv_53,
  *  featureFlagRecoverableShardsvrReshardCollectionCoordinator,
- *  temporary_catalog_shard_incompatible,
  * ]
  */
 (function() {

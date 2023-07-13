@@ -2,6 +2,13 @@
 (function() {
 "use strict";
 
+load("jstests/libs/retryable_writes_util.js");
+
+if (!RetryableWritesUtil.storageEngineSupportsRetryableWrites(jsTest.options().storageEngine)) {
+    jsTestLog("Retryable writes are not supported, skipping test");
+    return;
+}
+
 let rst = new ReplSetTest({nodes: 1});
 rst.startSet();
 rst.initiate();
@@ -22,6 +29,11 @@ function runShellScript(uri, cmdArgs, insertShouldHaveTxnNumber, shellFn) {
         Mongo.prototype.runCommand = function runCommandSpy(dbName, cmdObj, options) {
             let cmdObjSeen = cmdObj;
             let cmdName = Object.keys(cmdObjSeen)[0];
+
+            if (cmdName === "query" || cmdName === "$query") {
+                cmdObjSeen = cmdObjSeen[cmdName];
+                cmdName = Object.keys(cmdObj)[0];
+            }
 
             if (cmdName === "insert") {
                 insertFound = true;

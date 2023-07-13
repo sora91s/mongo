@@ -44,8 +44,7 @@ using std::string;
 using std::unique_ptr;
 using unittest::assertGet;
 
-static const NamespaceString nss =
-    NamespaceString::createNamespaceString_forTest("testdb.testcoll");
+static const NamespaceString nss("testdb.testcoll");
 
 /**
  * Helper function to parse the given BSON object as a MatchExpression, checks the status,
@@ -282,7 +281,9 @@ TEST(CanonicalQueryTest, CanonicalizeFromBaseQuery) {
     MatchExpression* firstClauseExpr = baseCq->root()->getChild(0);
     auto childCq = assertGet(CanonicalQuery::canonicalize(opCtx.get(), *baseCq, firstClauseExpr));
 
-    ASSERT_BSONOBJ_EQ(childCq->getFindCommandRequest().getFilter(), firstClauseExpr->serialize());
+    BSONObjBuilder expectedFilter;
+    firstClauseExpr->serialize(&expectedFilter);
+    ASSERT_BSONOBJ_EQ(childCq->getFindCommandRequest().getFilter(), expectedFilter.obj());
 
     ASSERT_BSONOBJ_EQ(childCq->getFindCommandRequest().getProjection(),
                       baseCq->getFindCommandRequest().getProjection());
@@ -455,6 +456,7 @@ TEST(CanonicalQueryTest, InvalidSortOrdersFailToCanonicalize) {
 }
 
 TEST(CanonicalQueryTest, DoNotParameterizeTextExpressions) {
+    RAIIServerParameterControllerForTest controllerSBEPlanCache("featureFlagSbePlanCache", true);
     auto cq =
         canonicalize("{$text: {$search: \"Hello World!\"}}",
                      MatchExpressionParser::kDefaultSpecialFeatures | MatchExpressionParser::kText);
@@ -462,6 +464,7 @@ TEST(CanonicalQueryTest, DoNotParameterizeTextExpressions) {
 }
 
 TEST(CanonicalQueryTest, DoParameterizeRegularExpressions) {
+    RAIIServerParameterControllerForTest controllerSBEPlanCache("featureFlagSbePlanCache", true);
     auto cq = canonicalize("{a: 1, b: {$lt: 5}}");
     ASSERT_TRUE(cq->isParameterized());
 }

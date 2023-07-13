@@ -27,22 +27,20 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
 
 #include "mongo/platform/basic.h"
 
 #ifdef _WIN32
 #include <crtdbg.h>
-#include <cstdio>
-#include <cstdlib>
 #include <mmsystem.h>
+#include <stdio.h>
+#include <stdlib.h>
 #endif
 
 #include "mongo/base/init.h"
 #include "mongo/logv2/log.h"
 #include "mongo/util/stacktrace.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kControl
-
 
 #ifdef _WIN32
 

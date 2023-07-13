@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
 
 #include <string>
 #include <vector>
@@ -37,18 +38,13 @@
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/commands.h"
-#include "mongo/db/s/chunk_operation_precondition_checks.h"
 #include "mongo/db/s/collection_sharding_runtime.h"
 #include "mongo/db/s/operation_sharding_state.h"
-#include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/split_chunk.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/util/str.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kSharding
-
 
 namespace mongo {
 namespace {
@@ -76,19 +72,18 @@ public:
         return true;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        if (!AuthorizationSession::get(opCtx->getClient())
-                 ->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
-                                                    ActionType::internal)) {
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
+        if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
+                ResourcePattern::forClusterResource(), ActionType::internal)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
         return Status::OK();
     }
 
-    NamespaceString parseNs(const DatabaseName& dbName, const BSONObj& cmdObj) const override {
-        return NamespaceString(dbName.tenantId(), CommandHelpers::parseNsFullyQualified(cmdObj));
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsFullyQualified(cmdObj);
     }
 
     bool errmsgRun(OperationContext* opCtx,
@@ -98,7 +93,30 @@ public:
                    BSONObjBuilder& result) override {
         uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
 
-        const NamespaceString nss(parseNs({boost::none, dbname}, cmdObj));
+        const NamespaceString nss = NamespaceString(parseNs(dbname, cmdObj));
+
+        // throw if the provided shard version is too old
+        {
+            AutoGetCollection autoColl(opCtx, nss, MODE_IS);
+            auto csr = CollectionShardingRuntime::get(opCtx, nss);
+
+            // pre 5.1 client  will send the collection version, which will make
+            // checkShardVersionOrThrow fail. TODO remove try-catch in 6.1
+            try {
+                csr->checkShardVersionOrThrow(opCtx);
+            } catch (const ExceptionFor<ErrorCodes::StaleConfig>& e) {
+                do {
+                    if (auto staleInfo = e.extraInfo<StaleConfigInfo>()) {
+                        if (staleInfo->getVersionWanted() &&
+                            staleInfo->getVersionWanted()->isOlderThan(
+                                staleInfo->getVersionReceived())) {
+                            break;
+                        }
+                    }
+                    throw;  // cause a refresh
+                } while (false);
+            }
+        }
 
         // Check whether parameters passed to splitChunk are sound
         BSONObj keyPatternObj;
@@ -157,18 +175,6 @@ public:
             Status status = bsonExtractBooleanField(cmdObj, "fromChunkSplitter", &field);
             return status.isOK() && field;
         }();
-
-        // Check that the preconditions for split chunk are met and throw StaleShardVersion
-        // otherwise.
-        {
-            onCollectionPlacementVersionMismatch(opCtx, nss, boost::none);
-            OperationShardingState::
-                unsetShardRoleForLegacyDDLOperationsSentWithShardVersionIfNeeded(opCtx, nss);
-            const auto [metadata, indexInfo] = checkCollectionIdentity(
-                opCtx, nss, expectedCollectionEpoch, expectedCollectionTimestamp);
-            checkShardKeyPattern(opCtx, nss, metadata, indexInfo, chunkRange);
-            checkChunkMatchesRange(opCtx, nss, metadata, indexInfo, chunkRange);
-        }
 
         auto topChunk = uassertStatusOK(splitChunk(opCtx,
                                                    nss,

@@ -3,7 +3,6 @@ test_kind: parallel_fsm_workload_test
 selector:
   roots:
   - jstests/concurrency/fsm_workloads/**/*.js
-  - src/mongo/db/modules/*/jstests/concurrency/fsm_workloads/*.js
   exclude_files:
   # These workloads implicitly assume that their tid ranges are [0, $config.threadCount). This
   # isn't guaranteed to be true when they are run in parallel with other workloads.
@@ -50,10 +49,13 @@ selector:
   - jstests/concurrency/fsm_workloads/reindex_background.js
   - jstests/concurrency/fsm_workloads/reindex_writeconflict.js
 
+  # This workload involves upgrading and downgrading the FCV, and can cause failure on other
+  # FSM workloads which depend on features which are only available in the latest FCV.
+  - jstests/concurrency/fsm_workloads/internal_transactions_setFCV.js
+
   exclude_with_any_tags:
   - requires_sharding
   - kills_random_sessions
-  - incompatible_with_concurrency_simultaneous
 
   group_size: 10
   group_count_multiplier: 1.0
@@ -94,7 +96,6 @@ executor:
         # system running out of WiredTiger write tickets. We intentionally lower the number of
         # WiredTiger write tickets available to below the maximum number of database clients to
         # trigger this situation at least some of the time.
-        storageEngineConcurrencyAdjustmentAlgorithm: ""
         wiredTigerConcurrentWriteTransactions: 64
         roleGraphInvalidationIsFatal: 1
     num_nodes: 3

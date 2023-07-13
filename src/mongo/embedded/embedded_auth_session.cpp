@@ -70,9 +70,7 @@ public:
 
     void startContractTracking() override {}
 
-    Status addAndAuthorizeUser(OperationContext*,
-                               const UserRequest&,
-                               boost::optional<Date_t>) override {
+    Status addAndAuthorizeUser(OperationContext*, const UserName&) override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
@@ -80,7 +78,7 @@ public:
         UASSERT_NOT_IMPLEMENTED;
     }
 
-    boost::optional<UserHandle> getAuthenticatedUser() override {
+    User* getSingleUser() override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
@@ -94,8 +92,8 @@ public:
         return false;
     }
 
-    boost::optional<UserName> getAuthenticatedUserName() override {
-        return boost::none;
+    UserNameIterator getAuthenticatedUserNames() override {
+        return UserNameIterator(std::make_unique<Impl>());
     }
 
     RoleNameIterator getAuthenticatedRoleNames() override {
@@ -171,11 +169,12 @@ public:
         return true;
     }
 
-    void setImpersonatedUserData(const UserName&, const std::vector<RoleName>&) override {
+    void setImpersonatedUserData(const std::vector<UserName>&,
+                                 const std::vector<RoleName>&) override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
-    boost::optional<UserName> getImpersonatedUserName() override {
+    UserNameIterator getImpersonatedUserNames() override {
         UASSERT_NOT_IMPLEMENTED;
     }
 
@@ -191,7 +190,7 @@ public:
         return true;
     }
 
-    bool isCoauthorizedWith(const boost::optional<UserName>&) override {
+    bool isCoauthorizedWith(UserNameIterator) override {
         return true;
     }
 
@@ -228,16 +227,8 @@ public:
         return true;
     }
 
-    bool isExpired() const override {
-        return false;
-    }
-
-    BSONArray getUserRoles() override {
-        UASSERT_NOT_IMPLEMENTED;
-    }
-
 protected:
-    std::tuple<boost::optional<UserName>*, std::vector<RoleName>*> _getImpersonations() override {
+    std::tuple<std::vector<UserName>*, std::vector<RoleName>*> _getImpersonations() override {
         UASSERT_NOT_IMPLEMENTED;
     }
 

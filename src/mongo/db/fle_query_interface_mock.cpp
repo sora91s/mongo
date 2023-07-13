@@ -53,34 +53,19 @@ uint64_t FLEQueryInterfaceMock::countDocuments(const NamespaceString& nss) {
     return uassertStatusOK(_storage->getCollectionCount(_opCtx, nss));
 }
 
-std::vector<std::vector<FLEEdgeCountInfo>> FLEQueryInterfaceMock::getTags(
+StatusWith<write_ops::InsertCommandReply> FLEQueryInterfaceMock::insertDocument(
     const NamespaceString& nss,
-    const std::vector<std::vector<FLEEdgePrfBlock>>& tokensSets,
-    FLETagQueryInterface::TagQueryType type) {
-
-    auto docCount = countDocuments(nss);
-
-    TxnCollectionReader reader(docCount, this, nss);
-
-    return ESCCollection::getTags(reader, tokensSets, type);
-}
-
-StatusWith<write_ops::InsertCommandReply> FLEQueryInterfaceMock::insertDocuments(
-    const NamespaceString& nss,
-    std::vector<BSONObj> objs,
+    BSONObj obj,
     StmtId* pStmtId,
     bool translateDuplicateKey,
     bool bypassDocumentValidation) {
+    repl::TimestampedBSONObj tb;
+    tb.obj = obj;
 
-    for (auto& obj : objs) {
-        repl::TimestampedBSONObj tb;
-        tb.obj = obj;
+    auto status = _storage->insertDocument(_opCtx, nss, tb, 0);
 
-        auto status = _storage->insertDocument(_opCtx, nss, tb, 0);
-
-        if (!status.isOK()) {
-            return status;
-        }
+    if (!status.isOK()) {
+        return status;
     }
 
     return write_ops::InsertCommandReply();
@@ -115,11 +100,6 @@ std::pair<write_ops::DeleteCommandReply, BSONObj> FLEQueryInterfaceMock::deleteW
     }
 
     return {write_ops::DeleteCommandReply(), uassertStatusOK(swDoc)};
-}
-
-write_ops::DeleteCommandReply FLEQueryInterfaceMock::deleteDocument(
-    const NamespaceString& nss, int32_t stmtId, write_ops::DeleteCommandRequest& deleteRequest) {
-    return deleteWithPreimage(nss, {}, deleteRequest).first;
 }
 
 std::pair<write_ops::UpdateCommandReply, BSONObj> FLEQueryInterfaceMock::updateWithPreimage(

@@ -32,10 +32,9 @@
 namespace mongo {
 
 // Hardcoded resource IDs.
-const ResourceId resourceIdLocalDB =
-    ResourceId(RESOURCE_DATABASE, DatabaseName(boost::none, "local"));
-const ResourceId resourceIdAdminDB =
-    ResourceId(RESOURCE_DATABASE, DatabaseName(boost::none, "admin"));
+const ResourceId resourceIdLocalDB = ResourceId(RESOURCE_DATABASE, StringData("local"));
+const ResourceId resourceIdOplog = ResourceId(RESOURCE_COLLECTION, StringData("local.oplog.rs"));
+const ResourceId resourceIdAdminDB = ResourceId(RESOURCE_DATABASE, StringData("admin"));
 const ResourceId resourceIdGlobal =
     ResourceId(RESOURCE_GLOBAL, static_cast<uint8_t>(ResourceGlobalId::kGlobal));
 const ResourceId resourceIdParallelBatchWriterMode =

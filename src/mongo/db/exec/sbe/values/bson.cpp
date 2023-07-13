@@ -167,13 +167,13 @@ std::pair<value::TypeTags, value::Value> convertFrom(const char* be,
             if constexpr (View) {
                 return {value::TypeTags::bsonObject, value::bitcastFrom<const char*>(be)};
             }
-            const auto objEnd = be + ConstDataView(be).read<LittleEndian<uint32_t>>();
+            // Skip document length.
             be += 4;
             auto [tag, val] = value::makeNewObject();
-            const auto obj = value::getObjectView(val);
+            auto obj = value::getObjectView(val);
 
-            while (be != objEnd - 1) {
-                auto sv = bson::fieldNameAndLength(be);
+            while (*be != 0) {
+                auto sv = bson::fieldNameView(be);
 
                 auto [tag, val] = convertFrom<false>(be, end, sv.size());
                 obj->push_back(sv, tag, val);
@@ -187,13 +187,12 @@ std::pair<value::TypeTags, value::Value> convertFrom(const char* be,
                 return {value::TypeTags::bsonArray, value::bitcastFrom<const char*>(be)};
             }
             // Skip array length.
-            const auto arrEnd = be + ConstDataView(be).read<LittleEndian<uint32_t>>();
             be += 4;
             auto [tag, val] = value::makeNewArray();
             auto arr = value::getArrayView(val);
 
-            while (be != arrEnd - 1) {
-                auto sv = bson::fieldNameAndLength(be);
+            while (*be != 0) {
+                auto sv = bson::fieldNameView(be);
 
                 auto [tag, val] = convertFrom<false>(be, end, sv.size());
                 arr->push_back(tag, val);

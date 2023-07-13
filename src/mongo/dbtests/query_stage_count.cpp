@@ -27,7 +27,10 @@
  *    it in the license file.
  */
 
-#include "mongo/db/catalog/collection_write_path.h"
+#include <memory>
+
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -43,8 +46,10 @@
 #include "mongo/db/query/count_command_gen.h"
 #include "mongo/dbtests/dbtests.h"
 
-namespace mongo {
 namespace QueryStageCount {
+
+using std::unique_ptr;
+using std::vector;
 
 const int kDocuments = 100;
 const int kInterjections = kDocuments;
@@ -53,8 +58,8 @@ const NamespaceString kTestNss = NamespaceString("db.dummy");
 class CountStageTest {
 public:
     CountStageTest()
-        : _dbLock(&_opCtx, nss().dbName(), MODE_X),
-          _ctx(&_opCtx, nss()),
+        : _dbLock(&_opCtx, nsToDatabaseSubstring(ns()), MODE_X),
+          _ctx(&_opCtx, ns()),
           _expCtx(make_intrusive<ExpressionContext>(&_opCtx, nullptr, kTestNss)),
           _coll(nullptr) {}
 
@@ -75,7 +80,7 @@ public:
                                                       << "x_1"
                                                       << "v" << 1))
             .status_with_transitional_ignore();
-        _coll = CollectionPtr(coll);
+        _coll = coll;
 
         for (int i = 0; i < kDocuments; i++) {
             insert(BSON(GENOID << "x" << i));
@@ -92,7 +97,7 @@ public:
         params.direction = CollectionScanParams::FORWARD;
         params.tailable = false;
 
-        std::unique_ptr<CollectionScan> scan(
+        unique_ptr<CollectionScan> scan(
             new CollectionScan(_expCtx.get(), _coll, params, &ws, nullptr));
         while (!scan->isEOF()) {
             WorkingSetID id = WorkingSet::INVALID_ID;
@@ -108,32 +113,28 @@ public:
     void insert(const BSONObj& doc) {
         WriteUnitOfWork wunit(&_opCtx);
         OpDebug* const nullOpDebug = nullptr;
-        collection_internal::insertDocument(&_opCtx, _coll, InsertStatement(doc), nullOpDebug)
-            .transitional_ignore();
+        _coll->insertDocument(&_opCtx, InsertStatement(doc), nullOpDebug).transitional_ignore();
         wunit.commit();
     }
 
     void remove(const RecordId& recordId) {
         WriteUnitOfWork wunit(&_opCtx);
         OpDebug* const nullOpDebug = nullptr;
-        collection_internal::deleteDocument(
-            &_opCtx, _coll, kUninitializedStmtId, recordId, nullOpDebug);
+        _coll->deleteDocument(&_opCtx, kUninitializedStmtId, recordId, nullOpDebug);
         wunit.commit();
     }
 
     void update(const RecordId& oldrecordId, const BSONObj& newDoc) {
         WriteUnitOfWork wunit(&_opCtx);
         BSONObj oldDoc = _coll->getRecordStore()->dataFor(&_opCtx, oldrecordId).releaseToBson();
-        CollectionUpdateArgs args{oldDoc};
-        collection_internal::updateDocument(
-            &_opCtx,
-            _coll,
-            oldrecordId,
-            Snapshotted<BSONObj>(_opCtx.recoveryUnit()->getSnapshotId(), oldDoc),
-            newDoc,
-            collection_internal::kUpdateAllIndexes,
-            nullptr,
-            &args);
+        CollectionUpdateArgs args;
+        _coll->updateDocument(&_opCtx,
+                              oldrecordId,
+                              Snapshotted<BSONObj>(_opCtx.recoveryUnit()->getSnapshotId(), oldDoc),
+                              newDoc,
+                              true,
+                              nullptr,
+                              &args);
         wunit.commit();
     }
 
@@ -149,12 +150,12 @@ public:
         setup();
         getRecordIds();
 
-        std::unique_ptr<WorkingSet> ws(new WorkingSet);
+        unique_ptr<WorkingSet> ws(new WorkingSet);
 
         StatusWithMatchExpression statusWithMatcher =
             MatchExpressionParser::parse(request.getQuery(), _expCtx);
         ASSERT(statusWithMatcher.isOK());
-        std::unique_ptr<MatchExpression> expression = std::move(statusWithMatcher.getValue());
+        unique_ptr<MatchExpression> expression = std::move(statusWithMatcher.getValue());
 
         PlanStage* scan;
         if (indexed) {
@@ -202,8 +203,7 @@ public:
     IndexScan* createIndexScan(MatchExpression* expr, WorkingSet* ws) {
         const IndexCatalog* catalog = _coll->getIndexCatalog();
         std::vector<const IndexDescriptor*> indexes;
-        catalog->findIndexesByKeyPattern(
-            &_opCtx, BSON("x" << 1), IndexCatalog::InclusionPolicy::kReady, &indexes);
+        catalog->findIndexesByKeyPattern(&_opCtx, BSON("x" << 1), false, &indexes);
         ASSERT_EQ(indexes.size(), 1U);
         auto descriptor = indexes[0];
 
@@ -235,7 +235,7 @@ public:
     }
 
 protected:
-    std::vector<RecordId> _recordIds;
+    vector<RecordId> _recordIds;
     const ServiceContext::UniqueOperationContext _opCtxPtr = cc().makeOperationContext();
     OperationContext& _opCtx = *_opCtxPtr;
     Lock::DBLock _dbLock;
@@ -326,15 +326,12 @@ public:
 class QueryStageCountUpdateDuringYield : public CountStageTest {
 public:
     void run() {
+        // expected count would be kDocuments-2 but we update the first and second records
+        // after doing the first unit of work so they wind up getting counted later on
         CountCommandRequest request((NamespaceString(ns())));
         request.setQuery(BSON("x" << GTE << 2));
 
-        // We call 'interject' after first unit of work that skips the first document, so it is
-        // not counted.
-        testCount(request, kDocuments - 1);
-
-        // We call 'interject' after first unit of work and even if some documents are skipped,
-        // they are added to the end of the index on x so they are counted later.
+        testCount(request, kDocuments);
         testCount(request, kDocuments, true);
     }
 
@@ -382,4 +379,3 @@ public:
 OldStyleSuiteInitializer<All> queryStageCountAll;
 
 }  // namespace QueryStageCount
-}  // namespace mongo

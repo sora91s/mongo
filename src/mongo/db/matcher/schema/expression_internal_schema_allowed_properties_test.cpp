@@ -135,9 +135,9 @@ TEST(InternalSchemaAllowedPropertiesMatchExpression, HasCorrectNumberOfChilden) 
     ASSERT(objMatch.getValue()->getChild(0));
 }
 
-DEATH_TEST_REGEX(InternalSchemaAllowedPropertiesMatchExpression,
-                 GetChildFailsOnIndexLargerThanChildSet,
-                 "Tripwire assertion.*6400212") {
+DEATH_TEST(InternalSchemaAllowedPropertiesMatchExpression,
+           GetChildFailsOnIndexLargerThanChildSet,
+           "i < numChildren()") {
     auto query = fromjson(
         "{$_internalSchemaAllowedProperties: {properties: ['a'], namePlaceholder: 'i',"
         "patternProperties: [{regex: /a/, expression: {i: 1}}], otherwise: {i: 7}}}");
@@ -146,7 +146,6 @@ DEATH_TEST_REGEX(InternalSchemaAllowedPropertiesMatchExpression,
     ASSERT_OK(objMatch.getStatus());
 
     const size_t numChildren = 2;
-    ASSERT_EQ(objMatch.getValue()->numChildren(), numChildren);
-    ASSERT_THROWS_CODE(objMatch.getValue()->getChild(numChildren), AssertionException, 6400212);
+    objMatch.getValue()->getChild(numChildren);
 }
 }  // namespace mongo

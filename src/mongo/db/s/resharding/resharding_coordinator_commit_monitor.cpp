@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
 
 #include <boost/optional.hpp>
 #include <fmt/format.h>
@@ -37,6 +38,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/client/read_preference.h"
 #include "mongo/db/cancelable_operation_context.h"
+#include "mongo/db/s/resharding/resharding_metrics.h"
 #include "mongo/db/s/resharding/resharding_server_parameters_gen.h"
 #include "mongo/logv2/log.h"
 #include "mongo/s/async_requests_sender.h"
@@ -45,9 +47,6 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/testing_proctor.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kResharding
-
 
 using namespace fmt::literals;
 
@@ -61,7 +60,7 @@ MONGO_FAIL_POINT_DEFINE(hangBeforeQueryingRecipients);
 
 BSONObj makeCommandObj(const NamespaceString& ns) {
     auto command = _shardsvrReshardingOperationTime(ns);
-    command.setDbName(DatabaseName(ns.tenantId(), "admin"));
+    command.setDbName("admin");
     return command.toBSON({});
 }
 
@@ -88,14 +87,12 @@ boost::optional<Milliseconds> extractOperationRemainingTime(const BSONObj& obj) 
 }  // namespace
 
 CoordinatorCommitMonitor::CoordinatorCommitMonitor(
-    std::shared_ptr<ReshardingMetrics> metrics,
     NamespaceString ns,
     std::vector<ShardId> recipientShards,
     CoordinatorCommitMonitor::TaskExecutorPtr executor,
     CancellationToken cancelToken,
     Milliseconds maxDelayBetweenQueries)
-    : _metrics{std::move(metrics)},
-      _ns(std::move(ns)),
+    : _ns(std::move(ns)),
       _recipientShards(std::move(recipientShards)),
       _executor(std::move(executor)),
       _cancelToken(std::move(cancelToken)),
@@ -220,13 +217,14 @@ ExecutorFuture<void> CoordinatorCommitMonitor::_makeFuture() const {
             return RemainingOperationTimes{Milliseconds(-1), Milliseconds::max()};
         })
         .then([this, anchor = shared_from_this()](RemainingOperationTimes remainingTimes) {
+            auto metrics = ReshardingMetrics::get(cc().getServiceContext());
             // If remainingTimes.max (or remainingTimes.min) is Milliseconds::max, then use -1 so
             // that the scale of the y-axis is still useful when looking at FTDC metrics.
             auto clampIfMax = [](Milliseconds t) {
                 return t != Milliseconds::max() ? t : Milliseconds(-1);
             };
-            _metrics->setCoordinatorHighEstimateRemainingTimeMillis(clampIfMax(remainingTimes.max));
-            _metrics->setCoordinatorLowEstimateRemainingTimeMillis(clampIfMax(remainingTimes.min));
+            metrics->setMinRemainingOperationTime(clampIfMax(remainingTimes.min));
+            metrics->setMaxRemainingOperationTime(clampIfMax(remainingTimes.max));
 
             // Check if all recipient shards are within the commit threshold.
             if (remainingTimes.max <= _threshold)

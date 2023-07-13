@@ -86,11 +86,11 @@ Status AbstractAsyncComponent::startup() noexcept {
                           str::stream() << _componentName << " completed");
     }
 
-    try {
-        _doStartup_inlock();
-    } catch (const DBException& ex) {
+    auto status = _doStartup_inlock();
+
+    if (!status.isOK()) {
         _state = State::kComplete;
-        return ex.toStatus();
+        return status;
     }
 
     return Status::OK();

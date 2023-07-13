@@ -40,13 +40,10 @@ const Status CatalogCacheMock::kChunkManagerInternalErrorStatus = {
 CatalogCacheMock::CatalogCacheMock(ServiceContext* serviceContext, CatalogCacheLoaderMock& loader)
     : CatalogCache(serviceContext, loader) {}
 
-StatusWith<CollectionRoutingInfo> CatalogCacheMock::getCollectionRoutingInfo(
-    OperationContext* opCtx, const NamespaceString& nss, bool allowLocks) {
-    if (!_swChunkManagerReturnValue.isOK()) {
-        return _swChunkManagerReturnValue.getStatus();
-    }
-    ChunkManager cm = _swChunkManagerReturnValue.getValue();
-    return CollectionRoutingInfo(std::move(cm), boost::none);
+StatusWith<ChunkManager> CatalogCacheMock::getCollectionRoutingInfo(OperationContext* opCtx,
+                                                                    const NamespaceString& nss,
+                                                                    bool allowLocks) {
+    return _swChunkManagerReturnValue;
 }
 
 void CatalogCacheMock::setChunkManagerReturnValue(StatusWith<ChunkManager> statusWithChunks) {

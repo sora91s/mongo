@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kFTDC
 
 #include "mongo/platform/basic.h"
 
@@ -38,9 +39,6 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
 #include "mongo/util/text.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kFTDC
-
 
 namespace mongo {
 
@@ -56,9 +54,10 @@ MONGO_INITIALIZER(PdhInit)(InitializerContext* context) {
 
     hPdhLibrary = LoadLibraryW(L"pdh.dll");
     if (nullptr == hPdhLibrary) {
-        auto ec = lastSystemError();
+        DWORD gle = GetLastError();
         uasserted(ErrorCodes::WindowsPdhError,
-                  str::stream() << "LoadLibrary of pdh.dll failed with " << errorMessage(ec));
+                  str::stream() << "LoadLibrary of pdh.dll failed with "
+                                << errnoWithDescription(gle));
     }
 }
 

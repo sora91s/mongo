@@ -139,13 +139,6 @@ public:
         virtual boost::optional<BSONObj> reportForCurrentOp(
             MongoProcessInterface::CurrentOpConnectionsMode connMode,
             MongoProcessInterface::CurrentOpSessionsMode sessionMode) noexcept = 0;
-
-        /**
-         * Validate the found instance matches options in the state document of a new instance.
-         * Called in PrimaryOnlyService::getOrCreateInstance to check found instances for conflict.
-         * Throws an exception if state document conflicts with found instance.
-         */
-        virtual void checkIfOptionsConflict(const BSONObj& stateDoc) const = 0;
     };
 
     /**
@@ -180,10 +173,8 @@ public:
          */
         static std::shared_ptr<InstanceType> getOrCreate(OperationContext* opCtx,
                                                          PrimaryOnlyService* service,
-                                                         BSONObj initialState,
-                                                         bool checkOptions = true) {
-            auto [instance, _] =
-                service->getOrCreateInstance(opCtx, std::move(initialState), checkOptions);
+                                                         BSONObj initialState) {
+            auto [instance, _] = service->getOrCreateInstance(opCtx, std::move(initialState));
             return checked_pointer_cast<InstanceType>(instance);
         }
     };
@@ -302,9 +293,7 @@ protected:
 
     /**
      * Validate the instance to be created with initialState does not conflict with any existing
-     * ones. The implementation can choose to throw ConflictingOperationInProgress if there is a
-     * conflict or a named error code specified to the particular service if it would like to attach
-     * ErrorExtraInfo.
+     * ones. The implementation should throw ConflictingOperationInProgress if there is a conflict.
      */
     virtual void checkIfConflictsWithOtherInstances(
         OperationContext* opCtx,
@@ -338,8 +327,7 @@ protected:
      * Throws NotWritablePrimary if the node is not currently primary.
      */
     std::pair<std::shared_ptr<Instance>, bool> getOrCreateInstance(OperationContext* opCtx,
-                                                                   BSONObj initialState,
-                                                                   bool checkOptions = true);
+                                                                   BSONObj initialState);
 
     /**
      * Since, scoped task executor shuts down on stepdown, we might need to run some instance work,
@@ -368,9 +356,9 @@ private:
     public:
         ActiveInstance(std::shared_ptr<Instance> instance,
                        CancellationSource source,
-                       SemiFuture<void> runCompleteFuture)
+                       SemiFuture<void> instanceComplete)
             : _instance(std::move(instance)),
-              _runCompleteFuture(std::move(runCompleteFuture)),
+              _instanceComplete(std::move(instanceComplete)),
               _source(std::move(source)) {
             invariant(_instance);
         }
@@ -385,7 +373,7 @@ private:
          * Blocking call that returns once the instance has finished running.
          */
         void waitForCompletion() const {
-            _runCompleteFuture.wait();
+            _instanceComplete.wait();
         }
 
         std::shared_ptr<Instance> getInstance() const {
@@ -401,7 +389,7 @@ private:
         const std::shared_ptr<Instance> _instance;
 
         // A future that will be resolved when the passed in Instance has finished running.
-        const SemiFuture<void> _runCompleteFuture;
+        const SemiFuture<void> _instanceComplete;
 
         // Each instance of a PrimaryOnlyService will own a CancellationSource for memory management
         // purposes. Any memory associated with an instance's CancellationSource will be cleaned up
@@ -578,7 +566,6 @@ public:
                                        std::vector<BSONObj>* ops) noexcept;
 
     void onStartup(OperationContext*) final;
-    void onSetCurrentConfig(OperationContext* opCtx) final {}
     void onInitialDataAvailable(OperationContext* opCtx, bool isMajorityDataAvailable) final {}
     void onShutdown() final;
     void onStepUpBegin(OperationContext*, long long term) final {}

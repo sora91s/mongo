@@ -2,7 +2,7 @@
  * Tests that MongoDB sets the WiredTiger table logging settings correctly under different
  * circumstances.
  *
- * @tags: [requires_wiredtiger]
+ * @tags: [requires_wiredtiger, requires_journaling]
  */
 (function() {
 
@@ -53,7 +53,7 @@ for (let i = 0; i < 10; i++) {
     assert.commandWorked(conn.getDB(i.toString()).createCollection(i.toString()));
 }
 
-checkTableLogSettings(conn, /*enabled=*/ true);
+checkTableLogSettings(conn, /*enabled=*/true);
 MongoRunner.stopMongod(conn);
 
 /**
@@ -90,8 +90,8 @@ checkLog.containsJson(conn, 5548302);
 
 // Changing table logging settings.
 assert(checkLog.checkContainsWithCountJson(conn, 22432, undefined, 0));
-checkTableLogSettings(conn, /*enabled=*/ false);
-MongoRunner.stopMongod(conn, null, {skipValidation: true});
+checkTableLogSettings(conn, /*enabled=*/false);
+MongoRunner.stopMongod(conn);
 
 /**
  * Test 3. Change into a single node replica set again. Table log settings are checked but none are
@@ -122,6 +122,6 @@ checkLog.containsJson(conn, 22432);
 
 // Skipping table logging checks.
 assert(checkLog.checkContainsWithCountJson(conn, 5548302, undefined, 0));
-checkTableLogSettings(conn, /*enabled=*/ true);
+checkTableLogSettings(conn, /*enabled=*/true);
 MongoRunner.stopMongod(conn);
 }());

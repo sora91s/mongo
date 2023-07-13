@@ -27,8 +27,10 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/bson/bsonobj.h"
-#include "mongo/db/catalog/collection_write_path.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/catalog/rename_collection.h"
@@ -38,31 +40,35 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/record_id.h"
 #include "mongo/dbtests/dbtests.h"
+#include "mongo/unittest/unittest.h"
 
-namespace mongo {
+using mongo::unittest::assertGet;
+using std::list;
+using std::string;
+using std::unique_ptr;
+
 namespace RollbackTests {
-namespace {
 
+namespace {
 const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
 
 void dropDatabase(OperationContext* opCtx, const NamespaceString& nss) {
     Lock::GlobalWrite globalWriteLock(opCtx);
     auto databaseHolder = DatabaseHolder::get(opCtx);
-    auto db = databaseHolder->getDb(opCtx, nss.dbName());
+    auto db = databaseHolder->getDb(opCtx, TenantDatabaseName(boost::none, nss.db()));
 
     if (db) {
         databaseHolder->dropDb(opCtx, db);
     }
 }
-
-bool collectionExists(OperationContext* opCtx, OldClientContext* ctx, const std::string& ns) {
+bool collectionExists(OperationContext* opCtx, OldClientContext* ctx, const string& ns) {
     return (bool)CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx,
                                                                             NamespaceString(ns));
 }
 
 void createCollection(OperationContext* opCtx, const NamespaceString& nss) {
-    Lock::DBLock dbXLock(opCtx, nss.dbName(), MODE_X);
-    OldClientContext ctx(opCtx, nss);
+    Lock::DBLock dbXLock(opCtx, nss.db(), MODE_X);
+    OldClientContext ctx(opCtx, nss.ns());
     {
         WriteUnitOfWork uow(opCtx);
         ASSERT(!collectionExists(opCtx, &ctx, nss.ns()));
@@ -72,26 +78,22 @@ void createCollection(OperationContext* opCtx, const NamespaceString& nss) {
         uow.commit();
     }
 }
-
 Status renameCollection(OperationContext* opCtx,
                         const NamespaceString& source,
                         const NamespaceString& target) {
     ASSERT_EQ(source.db(), target.db());
     return renameCollection(opCtx, source, target, {});
 }
-
 Status truncateCollection(OperationContext* opCtx, const NamespaceString& nss) {
     CollectionWriter coll(opCtx, nss);
-    return coll.getWritableCollection(opCtx)->truncate(opCtx);
+    return coll.getWritableCollection()->truncate(opCtx);
 }
 
 void insertRecord(OperationContext* opCtx, const NamespaceString& nss, const BSONObj& data) {
     auto coll = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
     OpDebug* const nullOpDebug = nullptr;
-    ASSERT_OK(collection_internal::insertDocument(
-        opCtx, CollectionPtr(coll), InsertStatement(data), nullOpDebug, false));
+    ASSERT_OK(coll->insertDocument(opCtx, InsertStatement(data), nullOpDebug, false));
 }
-
 void assertOnlyRecord(OperationContext* opCtx, const NamespaceString& nss, const BSONObj& data) {
     auto coll = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
     auto cursor = coll->getCursor(opCtx);
@@ -102,35 +104,26 @@ void assertOnlyRecord(OperationContext* opCtx, const NamespaceString& nss, const
 
     ASSERT(!cursor->next());
 }
-
 void assertEmpty(OperationContext* opCtx, const NamespaceString& nss) {
     auto coll = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
     ASSERT(!coll->getCursor(opCtx)->next());
 }
-
-bool indexExists(OperationContext* opCtx, const NamespaceString& nss, const std::string& idxName) {
+bool indexExists(OperationContext* opCtx, const NamespaceString& nss, const string& idxName) {
     auto coll = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
-    return coll->getIndexCatalog()->findIndexByName(
-               opCtx,
-               idxName,
-               IndexCatalog::InclusionPolicy::kReady |
-                   IndexCatalog::InclusionPolicy::kUnfinished) != nullptr;
+    return coll->getIndexCatalog()->findIndexByName(opCtx, idxName, true) != nullptr;
 }
-
-bool indexReady(OperationContext* opCtx, const NamespaceString& nss, const std::string& idxName) {
+bool indexReady(OperationContext* opCtx, const NamespaceString& nss, const string& idxName) {
     auto coll = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
-    return coll->getIndexCatalog()->findIndexByName(
-               opCtx, idxName, IndexCatalog::InclusionPolicy::kReady) != nullptr;
+    return coll->getIndexCatalog()->findIndexByName(opCtx, idxName, false) != nullptr;
 }
-
 size_t getNumIndexEntries(OperationContext* opCtx,
                           const NamespaceString& nss,
-                          const std::string& idxName) {
+                          const string& idxName) {
     size_t numEntries = 0;
 
     auto coll = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss);
     const IndexCatalog* catalog = coll->getIndexCatalog();
-    auto desc = catalog->findIndexByName(opCtx, idxName, IndexCatalog::InclusionPolicy::kReady);
+    auto desc = catalog->findIndexByName(opCtx, idxName, false);
 
     if (desc) {
         auto iam = catalog->getEntry(desc)->accessMethod()->asSortedData();
@@ -146,15 +139,13 @@ size_t getNumIndexEntries(OperationContext* opCtx,
     return numEntries;
 }
 
-void dropIndex(OperationContext* opCtx, const NamespaceString& nss, const std::string& idxName) {
+void dropIndex(OperationContext* opCtx, const NamespaceString& nss, const string& idxName) {
     CollectionWriter coll(opCtx, nss);
-    auto desc =
-        coll.getWritableCollection(opCtx)->getIndexCatalog()->findIndexByName(opCtx, idxName);
+    auto desc = coll.getWritableCollection()->getIndexCatalog()->findIndexByName(opCtx, idxName);
     ASSERT(desc);
-    ASSERT_OK(coll.getWritableCollection(opCtx)->getIndexCatalog()->dropIndex(
-        opCtx, coll.getWritableCollection(opCtx), desc));
+    ASSERT_OK(coll.getWritableCollection()->getIndexCatalog()->dropIndex(
+        opCtx, coll.getWritableCollection(), desc));
 }
-
 }  // namespace
 
 template <bool rollback, bool defaultIndexes, bool capped>
@@ -166,14 +157,14 @@ public:
             return;
         }
 
-        std::string ns = "unittests.rollback_create_collection";
+        string ns = "unittests.rollback_create_collection";
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
         NamespaceString nss(ns);
         dropDatabase(&opCtx, nss);
 
-        Lock::DBLock dbXLock(&opCtx, nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, nss);
+        Lock::DBLock dbXLock(&opCtx, nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, ns);
         {
             WriteUnitOfWork uow(&opCtx);
             ASSERT(!collectionExists(&opCtx, &ctx, ns));
@@ -203,14 +194,14 @@ public:
             return;
         }
 
-        std::string ns = "unittests.rollback_drop_collection";
+        string ns = "unittests.rollback_drop_collection";
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
         NamespaceString nss(ns);
         dropDatabase(&opCtx, nss);
 
-        Lock::DBLock dbXLock(&opCtx, nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, nss);
+        Lock::DBLock dbXLock(&opCtx, nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, ns);
         {
             WriteUnitOfWork uow(&opCtx);
             ASSERT(!collectionExists(&opCtx, &ctx, ns));
@@ -259,7 +250,7 @@ public:
         dropDatabase(&opCtx, target);
 
         Lock::GlobalWrite globalWriteLock(&opCtx);
-        OldClientContext ctx(&opCtx, source);
+        OldClientContext ctx(&opCtx, source.ns());
 
         {
             WriteUnitOfWork uow(&opCtx);
@@ -313,7 +304,7 @@ public:
         dropDatabase(&opCtx, target);
 
         Lock::GlobalWrite globalWriteLock(&opCtx);
-        OldClientContext ctx(&opCtx, source);
+        OldClientContext ctx(&opCtx, source.ns());
 
         BSONObj sourceDoc = BSON("_id"
                                  << "source");
@@ -380,8 +371,8 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         dropDatabase(&opCtx, nss);
 
-        Lock::DBLock dbXLock(&opCtx, nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, nss);
+        Lock::DBLock dbXLock(&opCtx, nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, nss.ns());
 
         BSONObj oldDoc = BSON("_id"
                               << "old");
@@ -438,8 +429,8 @@ public:
         OperationContext& opCtx = *opCtxPtr;
         dropDatabase(&opCtx, nss);
 
-        Lock::DBLock dbXLock(&opCtx, nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, nss);
+        Lock::DBLock dbXLock(&opCtx, nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, nss.ns());
 
         BSONObj doc = BSON("_id"
                            << "foo");
@@ -484,18 +475,18 @@ template <bool rollback>
 class CreateIndex {
 public:
     void run() {
-        std::string ns = "unittests.rollback_create_index";
+        string ns = "unittests.rollback_create_index";
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
         NamespaceString nss(ns);
         dropDatabase(&opCtx, nss);
         createCollection(&opCtx, nss);
 
-        AutoGetDb autoDb(&opCtx, nss.dbName(), MODE_X);
+        AutoGetDb autoDb(&opCtx, nss.db(), MODE_X);
 
         CollectionWriter coll(&opCtx, nss);
 
-        std::string idxName = "a";
+        string idxName = "a";
         BSONObj spec = BSON("key" << BSON("a" << 1) << "name" << idxName << "v"
                                   << static_cast<int>(kIndexVersion));
 
@@ -503,9 +494,9 @@ public:
 
         {
             WriteUnitOfWork uow(&opCtx);
-            IndexCatalog* catalog = coll.getWritableCollection(&opCtx)->getIndexCatalog();
-            ASSERT_OK(catalog->createIndexOnEmptyCollection(
-                &opCtx, coll.getWritableCollection(&opCtx), spec));
+            IndexCatalog* catalog = coll.getWritableCollection()->getIndexCatalog();
+            ASSERT_OK(
+                catalog->createIndexOnEmptyCollection(&opCtx, coll.getWritableCollection(), spec));
             insertRecord(&opCtx, nss, BSON("a" << 1));
             insertRecord(&opCtx, nss, BSON("a" << 2));
             insertRecord(&opCtx, nss, BSON("a" << 3));
@@ -526,26 +517,26 @@ template <bool rollback>
 class DropIndex {
 public:
     void run() {
-        std::string ns = "unittests.rollback_drop_index";
+        string ns = "unittests.rollback_drop_index";
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
         NamespaceString nss(ns);
         dropDatabase(&opCtx, nss);
         createCollection(&opCtx, nss);
 
-        AutoGetDb autoDb(&opCtx, nss.dbName(), MODE_X);
+        AutoGetDb autoDb(&opCtx, nss.db(), MODE_X);
 
         CollectionWriter coll(&opCtx, nss);
 
-        std::string idxName = "a";
+        string idxName = "a";
         BSONObj spec = BSON("key" << BSON("a" << 1) << "name" << idxName << "v"
                                   << static_cast<int>(kIndexVersion));
 
         {
             WriteUnitOfWork uow(&opCtx);
-            IndexCatalog* catalog = coll.getWritableCollection(&opCtx)->getIndexCatalog();
-            ASSERT_OK(catalog->createIndexOnEmptyCollection(
-                &opCtx, coll.getWritableCollection(&opCtx), spec));
+            IndexCatalog* catalog = coll.getWritableCollection()->getIndexCatalog();
+            ASSERT_OK(
+                catalog->createIndexOnEmptyCollection(&opCtx, coll.getWritableCollection(), spec));
             insertRecord(&opCtx, nss, BSON("a" << 1));
             insertRecord(&opCtx, nss, BSON("a" << 2));
             insertRecord(&opCtx, nss, BSON("a" << 3));
@@ -580,17 +571,17 @@ template <bool rollback>
 class CreateDropIndex {
 public:
     void run() {
-        std::string ns = "unittests.rollback_create_drop_index";
+        string ns = "unittests.rollback_create_drop_index";
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
         NamespaceString nss(ns);
         dropDatabase(&opCtx, nss);
         createCollection(&opCtx, nss);
 
-        AutoGetDb autoDb(&opCtx, nss.dbName(), MODE_X);
+        AutoGetDb autoDb(&opCtx, nss.db(), MODE_X);
         CollectionWriter coll(&opCtx, nss);
 
-        std::string idxName = "a";
+        string idxName = "a";
         BSONObj spec = BSON("key" << BSON("a" << 1) << "name" << idxName << "v"
                                   << static_cast<int>(kIndexVersion));
 
@@ -598,10 +589,10 @@ public:
 
         {
             WriteUnitOfWork uow(&opCtx);
-            IndexCatalog* catalog = coll.getWritableCollection(&opCtx)->getIndexCatalog();
+            IndexCatalog* catalog = coll.getWritableCollection()->getIndexCatalog();
 
-            ASSERT_OK(catalog->createIndexOnEmptyCollection(
-                &opCtx, coll.getWritableCollection(&opCtx), spec));
+            ASSERT_OK(
+                catalog->createIndexOnEmptyCollection(&opCtx, coll.getWritableCollection(), spec));
             insertRecord(&opCtx, nss, BSON("a" << 1));
             insertRecord(&opCtx, nss, BSON("a" << 2));
             insertRecord(&opCtx, nss, BSON("a" << 3));
@@ -624,18 +615,18 @@ template <bool rollback>
 class CreateCollectionAndIndexes {
 public:
     void run() {
-        std::string ns = "unittests.rollback_create_collection_and_indexes";
+        string ns = "unittests.rollback_create_collection_and_indexes";
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
         NamespaceString nss(ns);
         dropDatabase(&opCtx, nss);
 
-        Lock::DBLock dbXLock(&opCtx, nss.dbName(), MODE_X);
-        OldClientContext ctx(&opCtx, nss);
+        Lock::DBLock dbXLock(&opCtx, nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, nss.ns());
 
-        std::string idxNameA = "indexA";
-        std::string idxNameB = "indexB";
-        std::string idxNameC = "indexC";
+        string idxNameA = "indexA";
+        string idxNameB = "indexB";
+        string idxNameC = "indexC";
         BSONObj specA = BSON("key" << BSON("a" << 1) << "name" << idxNameA << "v"
                                    << static_cast<int>(kIndexVersion));
         BSONObj specB = BSON("key" << BSON("b" << 1) << "name" << idxNameB << "v"
@@ -653,7 +644,7 @@ public:
             ASSERT_OK(ctx.db()->userCreateNS(&opCtx, nss, collectionOptions, false));
             ASSERT(collectionExists(&opCtx, &ctx, nss.ns()));
             CollectionWriter coll(&opCtx, nss);
-            auto writableColl = coll.getWritableCollection(&opCtx);
+            auto writableColl = coll.getWritableCollection();
             IndexCatalog* catalog = writableColl->getIndexCatalog();
 
             ASSERT_OK(catalog->createIndexOnEmptyCollection(&opCtx, writableColl, specA));
@@ -722,4 +713,3 @@ public:
 OldStyleSuiteInitializer<All> all;
 
 }  // namespace RollbackTests
-}  // namespace mongo

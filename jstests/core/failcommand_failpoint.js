@@ -1,15 +1,12 @@
 /**
  * Tests the "failCommand" failpoint.
- * The test runs commands that are not allowed with security token: whatsmyuri.
  * @tags: [
- *   not_allowed_with_security_token,
  *   assumes_read_concern_unchanged,
  *   assumes_read_preference_unchanged,
  *   no_selinux,
  *   # This test expects that the connection (i.e. 'threadName') does not change throughout each
  *   # test case. That is not always true when there is a background tenant migration.
  *   tenant_migration_incompatible,
- *   does_not_support_repeated_reads,
  * ]
  */
 (function() {
@@ -557,9 +554,11 @@ assert.commandWorked(adminDB.runCommand({
 }));
 assert.commandWorked(testDB.runCommand({ping: 1}));
 
-// Only run error labels override tests for replica set because the tests require retryable writes.
+// Only run error labels override tests for replica set if storage engine supports document-level
+// locking because the tests require retryable writes.
 // And mongos doesn't return RetryableWriteError labels.
-if (!FixtureHelpers.isReplSet(adminDB)) {
+if (!FixtureHelpers.isReplSet(adminDB) ||
+    !RetryableWritesUtil.storageEngineSupportsRetryableWrites(jsTest.options().storageEngine)) {
     jsTestLog("Skipping error labels override tests");
     return;
 }

@@ -50,25 +50,19 @@ using std::string;
 using std::stringstream;
 
 // Testing only, enabled via command-line.
-class CmdHashElt : public BasicCommand {
+class CmdHashElt : public ErrmsgCommandDeprecated {
 public:
-    CmdHashElt() : BasicCommand("_hashBSONElement") {}
-
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
+    CmdHashElt() : ErrmsgCommandDeprecated("_hashBSONElement"){};
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
-
     // No auth needed because it only works when enabled via command line.
-    Status checkAuthForOperation(OperationContext*,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
-        return Status::OK();
-    }
-
+    virtual void addRequiredPrivileges(const std::string& dbname,
+                                       const BSONObj& cmdObj,
+                                       std::vector<Privilege>* out) const {}
     std::string help() const override {
         return "returns the hash of the first BSONElement val in a BSONObj";
     }
@@ -85,17 +79,17 @@ public:
      *>  "out" : NumberLong(6271151123721111923),
      *>  "ok" : 1 }
      **/
-    bool run(OperationContext* opCtx,
-             const DatabaseName&,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
+    bool errmsgRun(OperationContext* opCtx,
+                   const string& db,
+                   const BSONObj& cmdObj,
+                   string& errmsg,
+                   BSONObjBuilder& result) {
         result.appendAs(cmdObj.firstElement(), "key");
 
         int seed = 0;
         if (cmdObj.hasField("seed")) {
             if (!cmdObj["seed"].isNumber()) {
-                CommandHelpers::appendSimpleCommandStatus(
-                    result, false /* ok */, "seed must be a number" /* errmsg */);
+                errmsg += "seed must be a number";
                 return false;
             }
             seed = cmdObj["seed"].numberInt();

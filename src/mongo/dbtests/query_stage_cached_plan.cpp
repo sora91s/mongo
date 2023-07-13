@@ -27,8 +27,12 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
+#include <memory>
+
 #include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/db/catalog/collection_write_path.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
@@ -48,10 +52,6 @@
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/db/query/query_planner_params.h"
 #include "mongo/dbtests/dbtests.h"
-
-namespace mongo {
-
-using unittest::assertGet;
 
 namespace QueryStageCachedPlan {
 
@@ -96,13 +96,14 @@ public:
     }
 
     void dropIndex(BSONObj keyPattern) {
-        _client.dropIndex(nss, std::move(keyPattern));
+        _client.dropIndex(nss.ns(), std::move(keyPattern));
     }
 
     void dropCollection() {
-        Lock::DBLock dbLock(&_opCtx, nss.dbName(), MODE_X);
+        Lock::DBLock dbLock(&_opCtx, nss.db(), MODE_X);
+        const TenantDatabaseName tenantDbName(boost::none, nss.db());
         auto databaseHolder = DatabaseHolder::get(&_opCtx);
-        auto database = databaseHolder->getDb(&_opCtx, nss.dbName());
+        auto database = databaseHolder->getDb(&_opCtx, tenantDbName);
         if (!database) {
             return;
         }
@@ -116,8 +117,7 @@ public:
         WriteUnitOfWork wuow(&_opCtx);
 
         OpDebug* const nullOpDebug = nullptr;
-        ASSERT_OK(collection_internal::insertDocument(
-            &_opCtx, collection, InsertStatement(obj), nullOpDebug));
+        ASSERT_OK(collection->insertDocument(&_opCtx, InsertStatement(obj), nullOpDebug));
         wuow.commit();
     }
 
@@ -319,7 +319,7 @@ TEST_F(QueryStageCachedPlan, QueryStageCachedPlanAddsActiveCacheEntries) {
     auto entry = assertGet(cache->getEntry(planCacheKey));
     size_t works = 1U;
     ASSERT_TRUE(entry->works);
-    ASSERT_EQ(entry->works.value(), works);
+    ASSERT_EQ(entry->works.get(), works);
 
     const size_t kExpectedNumWorks = 10;
     for (int i = 0; i < std::ceil(std::log(kExpectedNumWorks) / std::log(2)); ++i) {
@@ -334,7 +334,7 @@ TEST_F(QueryStageCachedPlan, QueryStageCachedPlanAddsActiveCacheEntries) {
         // The works on the cache entry should have doubled.
         entry = assertGet(cache->getEntry(planCacheKey));
         ASSERT_TRUE(entry->works);
-        ASSERT_EQ(entry->works.value(), works);
+        ASSERT_EQ(entry->works.get(), works);
     }
 
     // Run another query which takes less time, and be sure an active entry is created.
@@ -347,7 +347,7 @@ TEST_F(QueryStageCachedPlan, QueryStageCachedPlanAddsActiveCacheEntries) {
     entry = assertGet(cache->getEntry(planCacheKey));
     // This will query will match {a: 6} through {a:9} (4 works), plus one for EOF = 5 works.
     ASSERT_TRUE(entry->works);
-    ASSERT_EQ(entry->works.value(), 5U);
+    ASSERT_EQ(entry->works.get(), 5U);
 }
 
 
@@ -390,7 +390,7 @@ TEST_F(QueryStageCachedPlan, DeactivatesEntriesOnReplan) {
     auto entry = assertGet(cache->getEntry(planCacheKey));
     size_t works = 1U;
     ASSERT_TRUE(entry->works);
-    ASSERT_EQ(entry->works.value(), works);
+    ASSERT_EQ(entry->works.get(), works);
 
     // Run another query which takes long enough to evict the active cache entry. The current
     // cache entry's works value is a very low number. When replanning is triggered, the cache
@@ -403,7 +403,7 @@ TEST_F(QueryStageCachedPlan, DeactivatesEntriesOnReplan) {
     ASSERT_EQ(cache->get(planCacheKey).state, PlanCache::CacheEntryState::kPresentInactive);
     entry = assertGet(cache->getEntry(planCacheKey));
     ASSERT_TRUE(entry->works);
-    ASSERT_EQ(entry->works.value(), 2U);
+    ASSERT_EQ(entry->works.get(), 2U);
 
     // Again, force replanning. This time run the initial query which finds no results. The multi
     // planner will choose a plan with works value lower than the existing inactive
@@ -413,7 +413,7 @@ TEST_F(QueryStageCachedPlan, DeactivatesEntriesOnReplan) {
     ASSERT_EQ(cache->get(planCacheKey).state, PlanCache::CacheEntryState::kPresentActive);
     entry = assertGet(cache->getEntry(planCacheKey));
     ASSERT_TRUE(entry->works);
-    ASSERT_EQ(entry->works.value(), 1U);
+    ASSERT_EQ(entry->works.get(), 1U);
 }
 
 TEST_F(QueryStageCachedPlan, EntriesAreNotDeactivatedWhenInactiveEntriesDisabled) {
@@ -551,4 +551,3 @@ TEST_F(QueryStageCachedPlan, DoesNotThrowOnYieldRecoveryWhenIndexIsDroppedAferPl
 }
 
 }  // namespace QueryStageCachedPlan
-}  // namespace mongo

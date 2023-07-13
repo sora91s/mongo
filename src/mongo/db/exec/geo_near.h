@@ -29,8 +29,6 @@
 
 #pragma once
 
-#include <s2cellunion.h>
-
 #include "mongo/db/exec/index_scan.h"
 #include "mongo/db/exec/near.h"
 #include "mongo/db/exec/plan_stats.h"
@@ -42,7 +40,7 @@
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_geo.h"
 #include "mongo/db/query/index_bounds.h"
-
+#include "third_party/s2/s2cellunion.h"
 
 namespace mongo {
 

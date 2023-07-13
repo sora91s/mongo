@@ -11,8 +11,6 @@
  *  assumes_balancer_off,
  *  requires_non_retryable_writes,
  *  incompatible_with_gcov,
- *  # The config fuzzer causes certain commands to time out periodically.
- *  does_not_support_config_fuzzer,
  *]
  */
 load('jstests/concurrency/fsm_libs/extend_workload.js');                 // for extendWorkload

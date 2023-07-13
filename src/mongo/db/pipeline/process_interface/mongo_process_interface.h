@@ -57,7 +57,7 @@
 #include "mongo/db/storage/backup_cursor_state.h"
 #include "mongo/db/storage/temporary_record_store.h"
 #include "mongo/executor/task_executor.h"
-#include "mongo/s/shard_version.h"
+#include "mongo/s/chunk_version.h"
 
 namespace mongo {
 
@@ -178,11 +178,6 @@ public:
                           const WriteConcernOptions& wc,
                           boost::optional<OID> targetEpoch) = 0;
 
-    virtual Status insertTimeseries(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                    const NamespaceString& ns,
-                                    std::vector<BSONObj>&& objs,
-                                    const WriteConcernOptions& wc,
-                                    boost::optional<OID> targetEpoch) = 0;
     /**
      * Updates the documents matching 'queries' with the objects 'updates'. Returns an error Status
      * if any of the updates fail, otherwise returns an 'UpdateResult' objects with the details of
@@ -234,17 +229,12 @@ public:
                                     BSONObjBuilder* builder) const = 0;
 
     /**
-     * Appends storage statistics for collection "nss" to "builder".
-     *
-     * By passing a BSONObj as the parameter 'filterObj' in this function, the caller can request
-     * specific stats to be appended to parameter 'builder'. By passing 'boost::none' to
-     * 'filterObj', the caller is requesting to append all possible storage stats.
+     * Appends storage statistics for collection "nss" to "builder"
      */
     virtual Status appendStorageStats(OperationContext* opCtx,
                                       const NamespaceString& nss,
                                       const StorageStatsSpec& spec,
-                                      BSONObjBuilder* builder,
-                                      const boost::optional<BSONObj>& filterObj) const = 0;
+                                      BSONObjBuilder* builder) const = 0;
 
     /**
      * Appends the record count for collection "nss" to "builder".
@@ -252,7 +242,6 @@ public:
     virtual Status appendRecordCount(OperationContext* opCtx,
                                      const NamespaceString& nss,
                                      BSONObjBuilder* builder) const = 0;
-
     /**
      * Appends the exec stats for the collection 'nss' to 'builder'.
      */
@@ -275,11 +264,8 @@ public:
      */
     virtual void renameIfOptionsAndIndexesHaveNotChanged(
         OperationContext* opCtx,
-        const NamespaceString& sourceNs,
+        const BSONObj& renameCommandObj,
         const NamespaceString& targetNs,
-        bool dropTarget,
-        bool stayTemp,
-        bool allowBuckets,
         const BSONObj& originalCollectionOptions,
         const std::list<BSONObj>& originalIndexes) = 0;
 
@@ -288,14 +274,8 @@ public:
      * the primary shard of 'dbName'.
      */
     virtual void createCollection(OperationContext* opCtx,
-                                  const DatabaseName& dbName,
+                                  const std::string& dbName,
                                   const BSONObj& cmdObj) = 0;
-
-    virtual void createTimeseries(OperationContext* opCtx,
-                                  const NamespaceString& ns,
-                                  const BSONObj& options,
-                                  bool createView) = 0;
-
 
     /**
      * Runs createIndexes on the given database for the given index specs. If running on a shardsvr
@@ -349,6 +329,12 @@ public:
      */
     virtual std::unique_ptr<Pipeline, PipelineDeleter> attachCursorSourceToPipelineForLocalRead(
         Pipeline* pipeline) = 0;
+
+    /**
+     * Produces a ShardFilterer. May return null.
+     */
+    virtual std::unique_ptr<ShardFilterer> getShardFilterer(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx) const = 0;
 
     /**
      * Returns a vector of owned BSONObjs, each of which contains details of an in-progress
@@ -464,20 +450,18 @@ public:
      * request to be sent to the config servers. If another thread has already requested a refresh,
      * it will instead wait for that response.
      */
-    virtual boost::optional<ShardVersion> refreshAndGetCollectionVersion(
+    virtual boost::optional<ChunkVersion> refreshAndGetCollectionVersion(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
         const NamespaceString& nss) const = 0;
 
     /**
      * Consults the CatalogCache to determine if this node has routing information for the
-     * collection given by 'nss' which reports the same epoch as given by
-     * 'targetCollectionPlacementVersion'. Major and minor versions in
-     * 'targetCollectionPlacementVersion' are ignored.
+     * collection given by 'nss' which reports the same epoch as given by 'targetCollectionVersion'.
+     * Major and minor versions in 'targetCollectionVersion' are ignored.
      */
-    virtual void checkRoutingInfoEpochOrThrow(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        const NamespaceString& nss,
-        ChunkVersion targetCollectionPlacementVersion) const = 0;
+    virtual void checkRoutingInfoEpochOrThrow(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                              const NamespaceString& nss,
+                                              ChunkVersion targetCollectionVersion) const = 0;
 
     /**
      * Used to enforce the constraint that the foreign collection must be unsharded.
@@ -505,15 +489,14 @@ public:
      * which can be either the "_id" field, or a shard key, depending on the 'outputNs' collection
      * type and the server type (mongod or mongos). Also returns an optional ChunkVersion,
      * populated with the version stored in the sharding catalog when we asked for the shard key
-     * (on mongos only). On mongod, this is the value of the 'targetCollectionPlacementVersion'
-     * parameter, which is the target placement version of the collection, as sent by mongos.
+     * (on mongos only). On mongod, this is the value of the 'targetCollectionVersion' parameter,
+     * which is the target shard version of the collection, as sent by mongos.
      */
     virtual std::pair<std::set<FieldPath>, boost::optional<ChunkVersion>>
-    ensureFieldsUniqueOrResolveDocumentKey(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        boost::optional<std::set<FieldPath>> fieldPaths,
-        boost::optional<ChunkVersion> targetCollectionPlacementVersion,
-        const NamespaceString& outputNs) const = 0;
+    ensureFieldsUniqueOrResolveDocumentKey(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                           boost::optional<std::set<FieldPath>> fieldPaths,
+                                           boost::optional<ChunkVersion> targetCollectionVersion,
+                                           const NamespaceString& outputNs) const = 0;
 
     std::shared_ptr<executor::TaskExecutor> taskExecutor;
 

@@ -31,8 +31,8 @@
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/s/database_sharding_state.h"
-#include "mongo/db/shard_id.h"
 #include "mongo/s/request_types/move_primary_gen.h"
+#include "mongo/s/shard_id.h"
 #include "mongo/util/timer.h"
 
 namespace mongo {
@@ -60,8 +60,6 @@ class Status;
  *
  * At any point in time it is safe to let the MovePrimarySourceManager object go out of scope in
  * which case the destructor will take care of clean up based on how far we have advanced.
- *
- * TODO (SERVER-71309): Remove once 7.0 becomes last LTS.
  */
 class MovePrimarySourceManager {
     MovePrimarySourceManager(const MovePrimarySourceManager&) = delete;
@@ -77,6 +75,7 @@ public:
      *  - StaleConfigException if the expected database version does not match what we find it
      *      to be after acquiring the distributed lock.
      */
+
     MovePrimarySourceManager(OperationContext* opCtx,
                              ShardMovePrimary requestArgs,
                              StringData dbname,

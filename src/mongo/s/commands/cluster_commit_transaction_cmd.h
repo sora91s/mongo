@@ -55,7 +55,7 @@ public:
         ClusterCommitTransactionCmdBase<Impl>>::RequestParser;
 
     void validateResult(const BSONObj& resultObj) final {
-        auto ctx = IDLParserContext("CommitReply");
+        auto ctx = IDLParserErrorContext("CommitReply");
         if (!BaseType::checkIsErrorStatus(resultObj, ctx)) {
             // Will throw if the result doesn't match the commitReply.
             Reply::parse(ctx, resultObj);
@@ -83,21 +83,13 @@ public:
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName&,
-                                 const BSONObj&) const override {
+                                 const std::string& dbname,
+                                 const BSONObj& cmdObj) const override {
         return Impl::checkAuthForOperation(opCtx);
     }
 
-    bool isTransactionCommand() const final {
-        return true;
-    }
-
-    bool allowedInTransactions() const final {
-        return true;
-    }
-
     bool runWithRequestParser(OperationContext* opCtx,
-                              const DatabaseName& dbName,
+                              const std::string& dbName,
                               const BSONObj& cmdObj,
                               const RequestParser& requestParser,
                               BSONObjBuilder& result) final {

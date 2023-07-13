@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
 
 #include "mongo/platform/basic.h"
 
@@ -39,25 +40,21 @@
 #include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/query/store_possible_cursor.h"
 
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCommand
-
-
 namespace mongo {
 namespace {
 
 constexpr auto systemBucketsDot = "system.buckets."_sd;
 
 bool cursorCommandPassthroughPrimaryShard(OperationContext* opCtx,
-                                          const DatabaseName& dbName,
+                                          StringData dbName,
                                           const CachedDatabaseInfo& dbInfo,
                                           const BSONObj& cmdObj,
                                           const NamespaceString& nss,
                                           BSONObjBuilder* out,
                                           const PrivilegeVector& privileges) {
-    // TODO SERVER-67411 change executeCommandAgainstDatabasePrimary to take in DatabaseName
     auto response = executeCommandAgainstDatabasePrimary(
         opCtx,
-        dbName.toStringWithTenantId(),
+        dbName,
         dbInfo,
         CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
         ReadPreferenceSetting::get(opCtx),
@@ -80,7 +77,7 @@ bool cursorCommandPassthroughPrimaryShard(OperationContext* opCtx,
 }
 
 BSONObj rewriteCommandForListingOwnCollections(OperationContext* opCtx,
-                                               const DatabaseName& dbName,
+                                               const std::string& dbName,
                                                const BSONObj& cmdObj) {
     mutablebson::Document rewrittenCmdObj(cmdObj);
     mutablebson::Element ownCollections =
@@ -110,7 +107,7 @@ BSONObj rewriteCommandForListingOwnCollections(OperationContext* opCtx,
     // DB resource grants all non-system collections, so filter out system collections. This is done
     // inside the $or, since some system collections might be granted specific privileges.
     if (authzSession->isAuthorizedForAnyActionOnResource(
-            ResourcePattern::forDatabaseName(dbName.toStringWithTenantId()))) {
+            ResourcePattern::forDatabaseName(dbName))) {
         mutablebson::Element systemCollectionsFilter = rewrittenCmdObj.makeElementObject(
             "", BSON("name" << BSON("$regex" << BSONRegEx("^(?!system\\.)"))));
         uassertStatusOK(newFilterOr.pushBack(systemCollectionsFilter));
@@ -119,7 +116,7 @@ BSONObj rewriteCommandForListingOwnCollections(OperationContext* opCtx,
     // system_buckets DB resource grants all system_buckets.* collections so create a filter to
     // include them
     if (authzSession->isAuthorizedForAnyActionOnResource(
-            ResourcePattern::forAnySystemBucketsInDatabase(dbName.toStringWithTenantId())) ||
+            ResourcePattern::forAnySystemBucketsInDatabase(dbName)) ||
         authzSession->isAuthorizedForAnyActionOnResource(ResourcePattern::forAnySystemBuckets())) {
         mutablebson::Element systemCollectionsFilter = rewrittenCmdObj.makeElementObject(
             "", BSON("name" << BSON("$regex" << BSONRegEx("^system\\.buckets\\."))));
@@ -128,17 +125,18 @@ BSONObj rewriteCommandForListingOwnCollections(OperationContext* opCtx,
 
     // Compute the set of collection names which would be permissible to return.
     std::set<std::string> collectionNames;
-    if (auto authUser = authzSession->getAuthenticatedUser()) {
-        for (const auto& [resource, privilege] : authUser.value()->getPrivileges()) {
+    for (UserNameIterator nameIter = authzSession->getAuthenticatedUserNames(); nameIter.more();
+         nameIter.next()) {
+        User* authUser = authzSession->lookupUser(*nameIter);
+        for (const auto& [resource, privilege] : authUser->getPrivileges()) {
             if (resource.isCollectionPattern() ||
-                (resource.isExactNamespacePattern() &&
-                 resource.databaseToMatch() == dbName.toStringWithTenantId())) {
+                (resource.isExactNamespacePattern() && resource.databaseToMatch() == dbName)) {
                 collectionNames.emplace(resource.collectionToMatch().toString());
             }
 
             if (resource.isAnySystemBucketsCollectionInAnyDB() ||
                 (resource.isExactSystemBucketsCollection() &&
-                 resource.databaseToMatch() == dbName.toStringWithTenantId())) {
+                 resource.databaseToMatch() == dbName)) {
                 collectionNames.emplace(systemBucketsDot + resource.collectionToMatch().toString());
             }
         }
@@ -179,7 +177,8 @@ BSONObj rewriteCommandForListingOwnCollections(OperationContext* opCtx,
     // testing because an error while parsing indicates an internal error, not something that should
     // surface to a user.
     if (getTestCommandsEnabled()) {
-        ListCollections::parse(IDLParserContext("ListCollectionsForOwnCollections"), rewrittenCmd);
+        ListCollections::parse(IDLParserErrorContext("ListCollectionsForOwnCollections"),
+                               rewrittenCmd);
     }
 
     return rewrittenCmd;
@@ -209,15 +208,15 @@ public:
         return false;
     }
 
-    Status checkAuthForOperation(OperationContext* opCtx,
-                                 const DatabaseName& dbName,
-                                 const BSONObj& cmdObj) const final {
-        auto* authzSession = AuthorizationSession::get(opCtx->getClient());
-        return authzSession->checkAuthorizedToListCollections(dbName.db(), cmdObj).getStatus();
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const final {
+        AuthorizationSession* authzSession = AuthorizationSession::get(client);
+        return authzSession->checkAuthorizedToListCollections(dbname, cmdObj).getStatus();
     }
 
     bool runWithRequestParser(OperationContext* opCtx,
-                              const DatabaseName& dbName,
+                              const std::string& dbName,
                               const BSONObj& cmdObj,
                               const RequestParser& requestParser,
                               BSONObjBuilder& output) final {
@@ -233,11 +232,9 @@ public:
             newCmd = rewriteCommandForListingOwnCollections(opCtx, dbName, cmdObj);
         }
 
-        // TODO SERVER-67797 Change CatalogCache to use DatabaseName object
-        auto dbInfoStatus =
-            Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, dbName.toStringWithTenantId());
+        auto dbInfoStatus = Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, dbName);
         if (!dbInfoStatus.isOK()) {
-            appendEmptyResultSet(opCtx, output, dbInfoStatus.getStatus(), nss);
+            appendEmptyResultSet(opCtx, output, dbInfoStatus.getStatus(), nss.ns());
             return true;
         }
 
@@ -250,14 +247,13 @@ public:
             &output,
             // Use the original command object rather than the rewritten one to preserve whether
             // 'authorizedCollections' field is set.
-            uassertStatusOK(
-                AuthorizationSession::get(opCtx->getClient())
-                    ->checkAuthorizedToListCollections(dbName.toStringWithTenantId(), cmdObj)));
+            uassertStatusOK(AuthorizationSession::get(opCtx->getClient())
+                                ->checkAuthorizedToListCollections(dbName, cmdObj)));
     }
 
     void validateResult(const BSONObj& result) final {
         StringDataSet ignorableFields({ErrorReply::kOkFieldName});
-        ListCollectionsReply::parse(IDLParserContext("ListCollectionsReply"),
+        ListCollectionsReply::parse(IDLParserErrorContext("ListCollectionsReply"),
                                     result.removeFields(ignorableFields));
     }
 

@@ -32,7 +32,6 @@
 #include <boost/optional.hpp>
 
 #include "mongo/db/concurrency/lock_manager_defs.h"
-#include "mongo/db/concurrency/locker.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -64,14 +63,15 @@ public:
      */
     ReplicationStateTransitionLockGuard(OperationContext* opCtx, LockMode mode, EnqueueOnly);
 
-    ReplicationStateTransitionLockGuard(ReplicationStateTransitionLockGuard&&);
+    ReplicationStateTransitionLockGuard(ReplicationStateTransitionLockGuard&&) = delete;
+    ReplicationStateTransitionLockGuard& operator=(ReplicationStateTransitionLockGuard&&) = delete;
 
     ~ReplicationStateTransitionLockGuard();
 
     /**
      * Waits for RSTL to be granted.
      */
-    void waitForLockUntil(Date_t deadline, const Locker::LockTimeoutCallback& onTimeout = nullptr);
+    void waitForLockUntil(Date_t deadline);
 
     /**
      * Release and reacquire the RSTL.

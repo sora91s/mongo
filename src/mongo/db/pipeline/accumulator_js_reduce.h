@@ -66,8 +66,7 @@ public:
 
     virtual Document serialize(boost::intrusive_ptr<Expression> initializer,
                                boost::intrusive_ptr<Expression> argument,
-                               bool explain,
-                               SerializationOptions options = {}) const override;
+                               bool explain) const override;
 
 private:
     static std::string parseReduceFunction(BSONElement func);
@@ -102,10 +101,10 @@ public:
     void processInternal(const Value& input, bool merging) final;
     void reduceMemoryConsumptionIfAble() final;
 
+
     Document serialize(boost::intrusive_ptr<Expression> initializer,
                        boost::intrusive_ptr<Expression> argument,
-                       bool explain,
-                       SerializationOptions options = {}) const final;
+                       bool explain) const final;
     void startNewGroup(Value const& input) final;
 
 private:

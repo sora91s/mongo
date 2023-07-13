@@ -27,6 +27,7 @@
  *    it in the license file.
  */
 
+#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCatalog
 
 #include "mongo/db/catalog/local_oplog_info.h"
 
@@ -37,9 +38,6 @@
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/vector_clock_mutable.h"
 #include "mongo/util/assert_util.h"
-
-#define MONGO_LOGV2_DEFAULT_COMPONENT ::mongo::logv2::LogComponent::kCatalog
-
 
 namespace mongo {
 namespace {
@@ -63,16 +61,16 @@ LocalOplogInfo* LocalOplogInfo::get(OperationContext* opCtx) {
     return get(opCtx->getServiceContext());
 }
 
-const Collection* LocalOplogInfo::getCollection() const {
+const CollectionPtr& LocalOplogInfo::getCollection() const {
     return _oplog;
 }
 
-void LocalOplogInfo::setCollection(const Collection* oplog) {
-    _oplog = oplog;
+void LocalOplogInfo::setCollection(const CollectionPtr& oplog) {
+    _oplog = CollectionPtr(oplog.get(), CollectionPtr::NoYieldTag{});
 }
 
 void LocalOplogInfo::resetCollection() {
-    _oplog = nullptr;
+    _oplog.reset();
 }
 
 void LocalOplogInfo::setNewTimestamp(ServiceContext* service, const Timestamp& newTime) {
@@ -122,7 +120,7 @@ std::vector<OplogSlot> LocalOplogInfo::getNextOpTimes(OperationContext* opCtx, s
     // stable timestamp if necessary, since this oplog hole may have been holding back the stable
     // timestamp.
     opCtx->recoveryUnit()->onRollback(
-        [replCoord](OperationContext*) { replCoord->attemptToAdvanceStableTimestamp(); });
+        [replCoord]() { replCoord->attemptToAdvanceStableTimestamp(); });
 
     return oplogSlots;
 }

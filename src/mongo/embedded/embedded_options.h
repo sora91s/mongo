@@ -41,8 +41,8 @@ Status addOptions(optionenvironment::OptionSection* options);
 /**
  * Canonicalize options for the given environment.
  *
- * For example, "--verbose" string argument and the "-vvvv" argument.
- *
+ * For example, the options "dur", "nodur", "journal", "nojournal", and
+ * "storage.journaling.enabled" should all be merged into "storage.journaling.enabled".
  */
 Status canonicalizeOptions(optionenvironment::Environment* params);
 

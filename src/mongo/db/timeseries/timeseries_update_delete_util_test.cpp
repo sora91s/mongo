@@ -103,8 +103,7 @@ protected:
 
     ServiceContext::UniqueOperationContext _opCtx;
     StringData _metaField = "tag";
-    NamespaceString _ns = NamespaceString::createNamespaceString_forTest(
-        "timeseries_update_delete_util_test", "system.buckets.t");
+    NamespaceString _ns{"timeseries_update_delete_util_test", "system.buckets.t"};
 };
 
 TEST_F(TimeseriesUpdateDeleteUtilTest, TranslateQueryEmpty) {
